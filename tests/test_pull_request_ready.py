@@ -326,10 +326,10 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body['item']['status'],'failed',body['item']['last_error'])
         self.assertFalse(any(m=='POST' for m,_ in self.calls))
 
-    async def test_provider_has_no_github_or_enterprise_endpoint_escape(self):
+    async def test_both_providers_explicitly_declare_readiness(self):
         from codex_web.services.gitlab_action_provider import GitLabActionProvider
         provider=GitLabActionProvider(self.resources)
-        self.assertNotIn(ACTION,[definition.action_id for definition in provider.actions()])
+        self.assertIn(ACTION,[definition.action_id for definition in provider.actions()])
         self.assertIn(ACTION,[definition.action_id for definition in self.provider.actions()])
 
     async def test_definition_superseded_during_read_prevents_mutation(self):
