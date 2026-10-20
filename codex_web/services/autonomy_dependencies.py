@@ -53,6 +53,7 @@ class AutonomyRuntimeDependencies:
     project_scope: Callable[[str], tuple[str | None, str | None]]
     update_work_item_state: Callable[..., Any] | None = None
     schedule_current_work_item_writeback: Callable[[str], Any] | None = None
+    owner_lane_recovery: Any | None = None
     handoff_delivery_timeout_seconds: Callable[[], float] = lambda: 3600.0
 
     @classmethod

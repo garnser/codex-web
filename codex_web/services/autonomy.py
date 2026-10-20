@@ -125,6 +125,13 @@ class AutonomyService:
             # this same preparation outcome, never start another worker after
             # an uncertain or failed replacement.
             prepared = binding
+            native_recovery = getattr(self.runtime, "owner_lane_recovery", None)
+            if (recovery_reason is not None and work_item is not None and native_recovery is not None
+                    and await asyncio.to_thread(native_recovery.candidate, binding, work_item)):
+                # A retained uncertain input is not admissible current work.
+                # This path reserves a distinct exact current-work request and
+                # never transfers old queues or replaces their native history.
+                return await native_recovery.recover(binding, work_item, text)
             if recovery_reason is not None:
                 if not recovery_attempted:
                     recovery_attempted = True
@@ -511,7 +518,18 @@ class AutonomyService:
             items = await asyncio.to_thread(d.orchestrator_watchdog_candidates, project_id)
             if not items:
                 continue
-            if await asyncio.to_thread(self._watchdog_lane_busy, binding, 3, True):
+            recovery = getattr(d, "owner_lane_recovery", None)
+            recovery_work = None
+            if recovery is not None:
+                states = await asyncio.to_thread(d.load_work_item_states)
+                owned = [state for state in states.values()
+                    if state.project_id == project_id and state.current_stage in self.ACTIONABLE_OWNER_STAGES
+                    and recovery.owns(binding, state)]
+                owned.sort(key=lambda state: (d.owner_activity_timestamp(state), state.ref))
+                recovery_work = owned[0] if owned else None
+            recoverable = (recovery_work is not None
+                and await asyncio.to_thread(recovery.candidate, binding, recovery_work))
+            if not recoverable and await asyncio.to_thread(self._watchdog_lane_busy, binding, 3, True):
                 continue
             dispatch_key = f"orchestrator-watchdog:{project_id}:{binding.thread_id}"
             if not d.watchdog_dispatch_allowed(dispatch_key):
@@ -523,6 +541,7 @@ class AutonomyService:
                 recovery_reason="orchestrator-watchdog",
                 queue_limit=3, allow_active=True,
                 cycle_key=dispatch_key,
+                work_item=recovery_work if recoverable else None,
                 payload={
                     "project_id": project_id,
                     "item_refs": [state.ref for _, state, _ in items[:8]],

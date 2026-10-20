@@ -4104,7 +4104,30 @@ def _autonomy_project_scope(
     return project.organization_id, project.workspace_id
 
 
+from codex_web.services.owner_lane_recovery import OwnerLaneRecoveryService
+
+def _owner_recovery_project_enabled(project_id):
+    routing = configuration_state.gitlab_routing.load()
+    project = routing.projects.get(project_id)
+    return (routing.enabled and project is not None and project.enabled
+        and bot_runtime_gate_reason(project_id) is None)
+
+owner_lane_recovery_service = OwnerLaneRecoveryService(
+    execution=turn_execution_service, preflight=execution_preflight_service,
+    dispatch=bot_event_dispatch_service,
+    get_state=work_item_state_machine._work_item_state,
+    load_bindings=bot_binding_repository.load,
+    binding_owner=bot_presentation_service.binding_prefix,
+    controller=autonomy_controller, project_enabled=_owner_recovery_project_enabled,
+    goal_for=lambda state: goal_service.get(state.goal_id,
+        scope=TenantScope(organization_id=state.organization_id, workspace_id=state.workspace_id),
+        project_id=state.project_id),
+)
+turn_execution_service.owner_lane_recovery = owner_lane_recovery_service
+app.state.owner_lane_recovery_service = owner_lane_recovery_service
+
 autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
+    owner_lane_recovery=owner_lane_recovery_service,
     schedule_current_work_item_writeback=(
         work_item_service.schedule_current_task_source_writeback
     ),
