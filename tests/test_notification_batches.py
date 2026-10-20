@@ -190,9 +190,11 @@ class NotificationBatchPlanTests(unittest.TestCase):
         handoff = deepcopy(self.items[:2])
         handoff[1].handoff_requested_at = 123
         self.assertIsNone(self.select(handoff))
-        human = deepcopy(self.items[:2])
-        human[0].source = "slack"
-        self.assertIsNone(self.select(human))
+        for source in ("slack", "web", "telegram", "operator-ui", "operator-retry", "steer:queued:web"):
+            with self.subTest(human_source=source):
+                human = deepcopy(self.items[:2])
+                human[0].source = source
+                self.assertIsNone(self.select(human))
 
     def test_no_message_based_attestation_and_snapshot_change_or_foreign_tenant(self):
         items = deepcopy(self.items[:2])
