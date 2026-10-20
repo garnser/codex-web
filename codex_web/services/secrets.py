@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.secrets import SecretAuditEvent, SecretCreate, SecretReference, SecretRotate, SecretStatus
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.async_operations import run_settled
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.secret_backends import SecretBackend, SecretBackendError
 
@@ -289,6 +290,12 @@ class SecretBroker:
         )
         return result
 
+    async def _audit_async(self, reference, actor, action, outcome, **kwargs):
+        # Audit is durable before the result/error is returned. Cancellation
+        # joins the actual writer through the existing settled-operation helper.
+        # No provider/credential operation or authority check is moved here.
+        await run_settled(lambda: self._audit(reference, actor, action, outcome, **kwargs))
+
     async def use_async(
         self,
         secret_id: str,
@@ -301,17 +308,17 @@ class SecretBroker:
         reference = self._reference(secret_id)
         self._scope(actor, reference)
         if reference.status() != SecretStatus.ACTIVE:
-            self._audit(reference, actor, "use", "denied", reason=reference.status().value)
+            await self._audit_async(reference, actor, "use", "denied", reason=reference.status().value)
             raise SecretUseDeniedError(f"secret is {reference.status().value}")
         if not self._can_use(actor, reference):
-            self._audit(reference, actor, "use", "denied", reason="authority")
+            await self._audit_async(reference, actor, "use", "denied", reason="authority")
             raise SecretUseDeniedError("secret use authority denied")
         backend = self._backend(reference)
         value = backend.get(reference.id)
         try:
             result = await consumer(value)
         except Exception as exc:
-            self._audit(
+            await self._audit_async(
                 reference,
                 actor,
                 "use",
@@ -323,10 +330,10 @@ class SecretBroker:
         if _contains_secret(result, value):
             scrubbed = scrub_secret(result, (value,))
             if _contains_secret(scrubbed, value):
-                self._audit(reference, actor, "use", "failed", reason="secret-escape")
+                await self._audit_async(reference, actor, "use", "failed", reason="secret-escape")
                 raise SecretUnavailableError("provider result attempted to expose secret material")
             result = scrubbed
-        self._audit(
+        await self._audit_async(
             reference,
             actor,
             "use",
