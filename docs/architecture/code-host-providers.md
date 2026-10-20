@@ -12,7 +12,13 @@ not require a mutation-provider binding. A repair in a new execution can reuse
 an existing MR only when the verified branch publication explicitly attests the
 same MR number and original issue. That newer verified publication may supersede
 an older TaskSource head snapshot without rewriting it; a newer conflicting
-snapshot still refuses routing.
+snapshot still refuses routing. A verified typed existing-MR publication is also
+sufficient when no successful MR-upsert receipt exists: the publisher already
+attested the open MR and related owning issue before the exact-head CAS.
+Cancelled or uncertain historical MR updates remain unchanged and confer no
+proof; route provenance records a null request-intent ID rather than inventing
+a creation/adoption receipt. If a successful upsert exists, its MR/branch and
+execution or typed-repair relationship must still agree.
 
 New canonical notifications preserve exact head and publication-binding identity
 in bounded provider metadata. Adapter-only redelivery compatibility ignores

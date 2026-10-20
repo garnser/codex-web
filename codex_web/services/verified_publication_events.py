@@ -18,7 +18,7 @@ from fastapi import HTTPException
 class VerifiedPublicationRoute:
     state: object
     branch_intent_id: str
-    request_intent_id: str
+    request_intent_id: str | None
     head_revision: str
     mr_ref: str
 
@@ -173,36 +173,46 @@ class VerifiedPublicationEventRouting:
             verified = [(i, output) for i, output in verified if output is not None]
             branches = [(i, o) for i, o in verified if i.action_id == 'code-host.branch.publish']
             requests = [(i, o) for i, o in verified if i.action_id == 'code-host.pull-request.upsert']
-            if not branches or not requests:
+            if not branches:
                 continue
             key = lambda pair: (pair[0].completed_at or pair[0].updated_at, pair[0].created_at, pair[0].id)
             branch_intent, branch_output = max(branches, key=key)
-            request_intent, request_output = max(requests, key=key)
-            number = request_output.get('change_request_number')
+            request_intent, request_output = max(requests, key=key) if requests else (None, None)
+            # Existing-MR publication independently verifies the provider's open
+            # MR, source project/branch/head, related owning issue and CAS before
+            # push. It need not have created/adopted that MR through an upsert.
+            number = (request_output.get('change_request_number') if request_output is not None
+                      else branch_intent.request.parameters.get('existing_change_request_number'))
             original_issue = ref.removeprefix(project_path + '#')
             typed_repair = (
                 ref.startswith(project_path + '#') and original_issue.isdigit()
+                and type(number) is int and number > 0
                 and type(branch_intent.request.parameters.get('existing_change_request_number')) is int
                 and branch_intent.request.parameters['existing_change_request_number'] == number
                 and type(branch_output.get('existing_change_request_number')) is int
                 and branch_output['existing_change_request_number'] == number
                 and type(branch_output.get('work_item_issue_number')) is int
                 and branch_output['work_item_issue_number'] == int(original_issue)
-                and (branch_intent.completed_at or branch_intent.updated_at)
-                    >= (request_intent.completed_at or request_intent.updated_at))
-            same_execution = (branch_intent.execution_id == request_intent.execution_id
+                and (request_intent is None or (branch_intent.completed_at or branch_intent.updated_at)
+                    >= (request_intent.completed_at or request_intent.updated_at)))
+            same_execution = (request_intent is not None
+                and branch_intent.execution_id == request_intent.execution_id
                 and branch_intent.requested_by == request_intent.requested_by)
             if (branch_intent.request.parameters.get('branch') != branch
                     or branch_intent.request.parameters.get('head_revision') != revision
                     or branch_output.get('branch') != branch or branch_output.get('head_revision') != revision
-                    or request_intent.request.parameters.get('head') != branch
-                    or request_output.get('head') != branch or not str(number).isdigit() or int(number) < 1
-                    or not branch_intent.execution_id or not request_intent.execution_id
-                    or not (same_execution or typed_repair)
+                    or not str(number).isdigit() or int(number) < 1
+                    or not branch_intent.execution_id
+                    or not (same_execution or typed_repair)):
+                continue
+            if request_intent is not None and (
+                    request_intent.request.parameters.get('head') != branch
+                    or request_output.get('head') != branch or not request_intent.execution_id
                     or branch_intent.binding_id != request_intent.binding_id):
                 continue
+            outputs = (branch_output, request_output) if request_output is not None else (branch_output,)
             if any(o.get('resource_id') != resources[0] or o.get('repository') != project_path
-                   for o in (branch_output, request_output)):
+                   for o in outputs):
                 continue
             if kind == 'merge_request' and str(attrs.get('iid')) != str(number):
                 continue
@@ -232,7 +242,7 @@ class VerifiedPublicationEventRouting:
                 except (ValueError, OverflowError):
                     continue
             claims[state.ref] = VerifiedPublicationRoute(state, branch_intent.id,
-                request_intent.id, revision, mr_ref)
+                request_intent.id if request_intent else None, revision, mr_ref)
         if len(claims) != 1:
             raise PublicationEventRoutingRefused('publication_event_lineage_ambiguous_or_stale')
         return next(iter(claims.values()))
