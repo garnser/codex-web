@@ -33,6 +33,7 @@ from codex_web.action_intents import (
 )
 from codex_web.action_providers import ActionRequest
 from codex_web.services.action_providers import ActionProviderNotFoundError
+from codex_web.services.async_operations import run_settled
 from codex_web.authority import (
     AuthorityDecisionOutcome,
     AuthorityEvaluationRequest,
@@ -1944,9 +1945,9 @@ class ControlPlaneBrokerService:
                     "workspace refresh accepts only revision"
                 )
             try:
-                current_workspace = self.execution_workspaces.get(
+                current_workspace = await run_settled(lambda: self.execution_workspaces.get(
                     assignment.execution_workspace_id, requester_actor
-                )
+                ))
             except ExecutionWorkspaceNotFoundError as exc:
                 raise ControlPlaneBrokerRequestError(
                     str(exc), status_code=404
@@ -1962,12 +1963,24 @@ class ControlPlaneBrokerService:
                 )
             requested_revision = str(payload.get("revision") or "").strip().casefold()
             materialization = None
+
+            async def refresh(materialization=None):
+                cancelled = threading.Event()
+
+                def validate_current():
+                    if cancelled.is_set():
+                        raise ExecutionWorkspaceConflictError("workspace refresh cancelled")
+                    if assignment_validator is not None:
+                        assignment_validator()
+
+                return await run_settled(lambda: self.execution_workspaces.refresh_revision(
+                    assignment.execution_workspace_id, requested_revision,
+                    actor=requester_actor, materialization=materialization,
+                    validate_current=validate_current,
+                ), on_cancel=cancelled.set)
+
             try:
-                refreshed = self.execution_workspaces.refresh_revision(
-                    assignment.execution_workspace_id,
-                    requested_revision,
-                    actor=requester_actor,
-                )
+                refreshed = await refresh()
             except ExecutionWorkspaceNotFoundError as exc:
                 if not re.fullmatch(r"[0-9a-f]{40}", requested_revision):
                     raise ControlPlaneBrokerRequestError(
@@ -2039,12 +2052,7 @@ class ControlPlaneBrokerService:
                     await self.procedure_admission(assignment=assignment, actor=requester_actor,
                         operation=operation, resource_ids=assignment.resource_ids, payload=payload)
                 try:
-                    refreshed = self.execution_workspaces.refresh_revision(
-                        assignment.execution_workspace_id,
-                        requested_revision,
-                        actor=requester_actor,
-                        materialization=materialization,
-                    )
+                    refreshed = await refresh(materialization)
                 except ExecutionWorkspaceNotFoundError as refresh_exc:
                     raise ControlPlaneBrokerRequestError(
                         "materialized revision is unavailable in the execution workspace",
@@ -2909,7 +2917,7 @@ class AssignmentBoundControlPlaneBroker:
                     assignment_validator=self._validate_current,
                 )
             )
-            self.service._audit(
+            await run_settled(lambda: self.service._audit(
                 snapshot=self.snapshot,
                 worker_id=self.worker_id,
                 fence=self.fence,
@@ -2923,7 +2931,7 @@ class AssignmentBoundControlPlaneBroker:
                 actor_identity_id=actor_identity_id,
                 authority_decision=authority_decision,
                 response_status=status,
-            )
+            ))
             await self._write(
                 writer,
                 status,
@@ -2971,7 +2979,7 @@ class AssignmentBoundControlPlaneBroker:
         finally:
             if denial_reason is not None:
                 with contextlib.suppress(Exception):
-                    self.service._audit(
+                    await run_settled(lambda: self.service._audit(
                         snapshot=self.snapshot,
                         worker_id=self.worker_id,
                         fence=self.fence,
@@ -2991,7 +2999,7 @@ class AssignmentBoundControlPlaneBroker:
                         response_status=status,
                         denial_reason=(json.dumps({"message": denial_reason[:80],
                             "history_readiness": history_readiness}) if history_readiness else denial_reason),
-                    )
+                    ))
                 if not writer.is_closing():
                     with contextlib.suppress(Exception):
                         await self._write(

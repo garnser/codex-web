@@ -435,6 +435,7 @@ class ExecutionWorkspaceService:
         *,
         actor: AuthenticationActor,
         materialization: CodeHostRevisionMaterializationFact | None = None,
+        validate_current: Callable[[], None] | None = None,
     ) -> ExecutionWorkspace:
         """Move a clean, actively leased single-repository workspace to one commit."""
         with self._revision_refresh_lock:
@@ -443,6 +444,7 @@ class ExecutionWorkspaceService:
                 revision,
                 actor=actor,
                 materialization=materialization,
+                validate_current=validate_current,
             )
 
     def _refresh_revision_locked(
@@ -452,7 +454,12 @@ class ExecutionWorkspaceService:
         *,
         actor: AuthenticationActor,
         materialization: CodeHostRevisionMaterializationFact | None,
+        validate_current: Callable[[], None] | None = None,
     ) -> ExecutionWorkspace:
+        # Run under the existing serialization lock: queued work must not
+        # mutate after cancellation or assignment revocation.
+        if validate_current is not None:
+            validate_current()
         requested = str(revision or "").strip().casefold()
         if not re.fullmatch(r"[0-9a-f]{7,40}", requested):
             raise ExecutionWorkspaceBackendError(
@@ -541,17 +548,32 @@ class ExecutionWorkspaceService:
         refresh_event = ExecutionWorkspaceEvent(workspace_id=workspace_id,
             event_type="workspace_revision_refreshed", actor_identity_id=actor.identity_id,
             details=details)
+        if validate_current is not None:
+            validate_current()
         git("reset", "--hard", resolved)
         observed = git("rev-parse", "HEAD").stdout.strip()
         observed_tree = git("rev-parse", "HEAD^{tree}").stdout.strip()
         if observed != resolved or observed_tree != expected_tree:
             raise ExecutionWorkspaceBackendError("workspace refresh verification failed")
         updated_at = time.time()
+        # Resolve external assignment authority before taking the workspace
+        # transaction lock; avoid inverting worker/workspace lock order.
+        if validate_current is not None:
+            validate_current()
 
         def update(current_state):
             for index, item in enumerate(current_state.workspaces):
                 if item.id != workspace_id:
                     continue
+                current_lease = next((lease for lease in current_state.leases
+                    if lease.id == item.lease_id), None)
+                if (item.status != ExecutionWorkspaceStatus.ACTIVE
+                        or item.lease_id != workspace.lease_id
+                        or item.owner_identity_id != workspace.owner_identity_id
+                        or item.repository_members != workspace.repository_members
+                        or current_lease is None or current_lease.released_at is not None
+                        or current_lease.expires_at <= time.time()):
+                    raise ExecutionWorkspaceConflictError("workspace authority changed during refresh")
                 members = tuple(
                     current.model_copy(update={"base_revision": resolved, "head_revision": resolved})
                     if current.resource_id == member.resource_id else current

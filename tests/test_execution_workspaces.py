@@ -355,8 +355,33 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             reference = self.service._workspace_reference(workspace)
             self.assertEqual(reference.workspace_id, workspace.id)
 
-    def test_exact_revision_refresh_requires_clean_active_workspace(self) -> None:
-        workspace = self._acquire("refresh-exec", self.repo.id)
+    def test_refresh_checks_current_authority_after_waiting_for_revision_lock(self):
+        workspace = self._acquire("queued-authority-refresh", self.repo.id)
+        waiting = threading.Event()
+        revoked = threading.Event()
+        def validate():
+            if revoked.is_set():
+                raise ExecutionWorkspaceConflictError("assignment revoked")
+        def refresh():
+            waiting.set()
+            return self.service.refresh_revision(workspace.id, "a"*40,
+                actor=self.actor, validate_current=validate)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.service._revision_refresh_lock:
+                with patch("codex_web.services.execution_workspaces.subprocess.run") as git:
+                    future = pool.submit(refresh)
+                    self.assertTrue(waiting.wait(1))
+                    revoked.set()
+                # The operation is still queued on the canonical lock.
+                self.assertFalse(future.done())
+                git.assert_not_called()
+            with self.assertRaisesRegex(ExecutionWorkspaceConflictError,"revoked"):
+                future.result(timeout=2)
+        self.assertEqual(self.service.get(workspace.id,self.actor).head_revision,
+            workspace.head_revision)
+
+    def _real_refresh_fixture(self):
+        workspace = self._acquire("refresh-exec-"+str(time.monotonic_ns()), self.repo.id)
         checkout = Path(workspace.path)
         subprocess.run(["git", "init", "-b", workspace.branch_name], cwd=checkout, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=checkout, check=True)
@@ -368,6 +393,50 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         (checkout / "value.txt").write_text("second\n", encoding="utf-8")
         subprocess.run(["git", "commit", "-am", "second"], cwd=checkout, check=True, capture_output=True)
         second = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+
+        return workspace, checkout, first, second
+
+    def test_refresh_rechecks_authority_before_reset_and_before_metadata(self):
+        for revoke_at in (2, 3):
+            with self.subTest(revoke_at=revoke_at):
+                workspace, checkout, first, second = self._real_refresh_fixture()
+                checks = []
+                def validate():
+                    checks.append(True)
+                    if len(checks) == revoke_at:
+                        raise ExecutionWorkspaceConflictError("assignment revoked")
+                with self.assertRaisesRegex(ExecutionWorkspaceConflictError,"revoked"):
+                    self.service.refresh_revision(workspace.id, first, actor=self.actor,
+                        validate_current=validate)
+                observed = subprocess.check_output(["git","rev-parse","HEAD"],cwd=checkout,text=True).strip()
+                self.assertEqual(observed,second if revoke_at==2 else first)
+                self.assertEqual(self.service.get(workspace.id,self.actor).head_revision,
+                    workspace.head_revision)
+                self.assertFalse(any(e.event_type=="workspace_revision_refreshed"
+                    for e in self.service.events(workspace.id,actor=self.actor)))
+                # Each case owns a distinct mutable repository acquisition.
+                self.service.release(workspace.id, ExecutionWorkspaceRelease(
+                    reason="test complete"),actor=self.actor,preserve_files=True)
+
+    def test_refresh_cannot_overwrite_workspace_released_before_metadata_update(self):
+        workspace, checkout, first, second = self._real_refresh_fixture()
+        checks = []
+        def validate():
+            checks.append(True)
+            if len(checks)==3:
+                self.service.release(workspace.id,ExecutionWorkspaceRelease(
+                    reason="concurrent release"),actor=self.actor,preserve_files=True)
+        with self.assertRaisesRegex(ExecutionWorkspaceConflictError,"authority changed"):
+            self.service.refresh_revision(workspace.id,first,actor=self.actor,
+                validate_current=validate)
+        current=self.service.get(workspace.id,self.actor)
+        self.assertEqual(current.status,ExecutionWorkspaceStatus.RELEASED)
+        self.assertEqual(current.head_revision,workspace.head_revision)
+        self.assertFalse(any(e.event_type=="workspace_revision_refreshed"
+            for e in self.service.events(workspace.id,actor=self.actor)))
+
+    def test_exact_revision_refresh_requires_clean_active_workspace(self) -> None:
+        workspace, checkout, first, second = self._real_refresh_fixture()
 
         refreshed = self.service.refresh_revision(
             workspace.id, first[:12], actor=self.actor

@@ -214,6 +214,19 @@ installed baseline dependencies work without network access.
 
 Cleanup removes the worktree. Normal/expired cleanup keeps the branch so crash recovery does not destroy unmerged work; an explicit discard may delete the branch.
 
+Broker workspace reads, synchronous refresh work and success/denial audit
+persistence run off the asyncio loop so they do not block runtime supervision.
+They use the existing executor and the shared exact-future settlement path;
+request cancellation joins that operation before propagating, without retrying.
+Refresh checks cancellation/current assignment authority after acquiring the
+existing revision lock, before Git reset and before metadata persistence. The
+metadata transaction checks the workspace's current lifecycle, repository
+members and lease without acquiring worker-store locks. Cancellation or
+revocation during a reset can leave changed files with uncommitted metadata;
+that remains uncertain and requires inspection, never an inferred rollback.
+Audit persistence still precedes any success or denial response. These changes
+do not extend supervision budgets, leases, authority or repository scope.
+
 An active repository-write assignment may request an exact-revision refresh
 through its assignment-bound broker. The broker requires the assignment's exact
 workspace ID and singular writable Resource; the workspace service separately
