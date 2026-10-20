@@ -68,6 +68,19 @@ class GovernedManualVerificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_governed_reconciliation_keeps_plain_locked_evidence_callback(self):
         await operator_api.RecoveryOperatorApiTests.test_real_operator_route_commits_once_preserving_unknown_and_current_preview(self)
 
+    async def test_lost_admission_context_cannot_settle_the_original_unknown(self):
+        async with self.client() as client:
+            before = (self.recovery.store.load(), self.recovery.evidence.store.load(), self.governance.store.load())
+            original = self.recovery._write_key_bound
+            def lost_context(*args, **kwargs):
+                self.assertIsNotNone(kwargs['mutation_admission'])
+                return original(*args, **{**kwargs, 'mutation_admission': {}})
+            with patch.object(self.recovery, '_write_key_bound', side_effect=lost_context):
+                response = await client.post(self.url(), json=self.body())
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertNotEqual(response.json()['item']['status'], 'succeeded')
+            self.assertEqual((self.recovery.store.load(), self.recovery.evidence.store.load(), self.governance.store.load()), before)
+
 
 class GovernedScheduledVerificationTests(unittest.IsolatedAsyncioTestCase):
     setUp = fixtures.ScheduledRecoveryTests.setUp

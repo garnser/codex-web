@@ -269,15 +269,15 @@ class RecoveryService:
         else:
             # Existing bounded row transaction takes globally sorted namespace
             # locks once. Guard-only identity/admission rows are NOT rewritten.
-            selected = dict(mutation_admission['guard_rows']) if mutation_admission else {}
+            selected = dict(mutation_admission['guard_rows']) if mutation_admission is not None else {}
             selected.update({name: (None,) for name in defaults})
             def guarded(rows):
-                if mutation_admission:
+                if mutation_admission is not None:
                     mutation_admission['guard'](rows)
                 documents = {name: rows[name][None] if rows[name][None] is not None else default
                              for name, default in defaults.items()}
                 updated = apply(documents)
-                if mutation_admission:
+                if mutation_admission is not None:
                     mutation_admission['guard'](rows)
                 return {name: {None: value} for name, value in updated.items()}
             changed = self.store.store.record_mutate_many(selected, guarded)
