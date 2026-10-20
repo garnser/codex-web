@@ -337,6 +337,34 @@ class PostgresStateStore:
         cls._touch_record_revision(cursor, namespace, minimum=previous or 0.0)
 
     @classmethod
+    def _update_records_in_cursor(cls, cursor, namespace, before, records):
+        """Keep retained rows intact while applying an already locked update.
+
+        ``before`` contains serialized snapshots taken before the callback: an
+        updater may mutate nested values in place, and JSON booleans/numbers
+        must remain distinguishable even though Python compares True == 1.
+        Explicit record replacement and migration retain their separate path.
+        """
+        prefix = state_record_prefix(namespace)
+        cursor.execute(
+            'SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace = %s OR '
+            '(namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s)',
+            (namespace, prefix, prefix + "\uffff"),
+        )
+        previous = cursor.fetchone()[0]
+        normalized = {str(key): payload for key, payload in records.items()}
+        for key in before.keys() - normalized.keys():
+            cursor.execute("DELETE FROM codex_state_documents WHERE namespace = %s",
+                           (state_record_storage_key(namespace, key),))
+        for key, payload in normalized.items():
+            if key not in before or before[key] != cls._serialized(payload):
+                cls._upsert(cursor, state_record_storage_key(namespace, key), payload)
+        # Preserve the old mapping-update revision and legacy-shadow cleanup
+        # contracts without deleting/reinserting the retained collection.
+        cursor.execute("DELETE FROM codex_state_documents WHERE namespace = %s", (namespace,))
+        cls._touch_record_revision(cursor, namespace, minimum=previous or 0.0)
+
+    @classmethod
     def _ensure_record_collection_in_cursor(
         cls,
         cursor: Any,
@@ -902,14 +930,16 @@ class PostgresStateStore:
                         cursor,
                         namespace,
                     )
+                    before = {key: self._serialized(value) for key, value in current.items()}
                     updated = self._run_updater(connection, updater, current)
                     if not isinstance(updated, dict):
                         raise TypeError(
                             "record-backed namespace updates must return a mapping"
                         )
-                    self._replace_records_in_cursor(
+                    self._update_records_in_cursor(
                         cursor,
                         namespace,
+                        before,
                         updated,
                     )
                     return updated
@@ -954,6 +984,9 @@ class PostgresStateStore:
                         cursor.fetchone(),
                         defaults[namespace],
                     )
+                before = {namespace: {key: self._serialized(value)
+                                     for key, value in current[namespace].items()}
+                          for namespace in record_backed}
                 updated = self._run_updater(connection, updater, current)
                 if set(updated) != set(namespaces):
                     raise ValueError(
@@ -965,9 +998,10 @@ class PostgresStateStore:
                             raise TypeError(
                                 "record-backed namespace updates must return a mapping"
                             )
-                        self._replace_records_in_cursor(
+                        self._update_records_in_cursor(
                             cursor,
                             namespace,
+                            before[namespace],
                             updated[namespace],
                         )
                     else:

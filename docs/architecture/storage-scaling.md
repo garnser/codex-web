@@ -177,8 +177,15 @@ revisions advance even when the system clock is frozen or moves backwards, and
 removing an older or final record still invalidates readers in another process.
 A pre-existing marker is initialized from retained record timestamps once on its
 first mutation; the additive metadata preserves schema-version compatibility.
-Aggregate writes to keyed state use the same replacement path. Failed writes
-roll back both data and revision.
+PostgreSQL mapping `update` and `update_many` keep their complete read and
+transaction contracts, but write only added, changed and removed records.
+Serialized snapshots precede the mutable callback, so nested in-place changes
+and distinct JSON boolean/number types remain visible. Unchanged rows retain
+their payload bytes, timestamps and physical identity. Successful mapping
+updates still advance each collection revision, including unchanged mappings;
+explicit `record_replace` retains its replacement semantics. These operations
+still read the requested collections and are not bounded point reads. Failed
+writes roll back both data and revision.
 
 PostgreSQL collection writers acquire the namespace advisory lock before record
 and marker locks, including point updates and replacement. This serializes
