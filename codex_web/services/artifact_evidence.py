@@ -71,6 +71,36 @@ class ArtifactEvidenceConflictError(ArtifactEvidenceError):
     pass
 
 
+class _GovernedCreation:
+    """Prepared domain/governance mutation for one owning StateStore transaction."""
+
+    def __init__(self, service, updater):
+        self.service, self.updater = service, updater
+        self.domains = {service.store.namespace: (None,)}
+        if service.governance is not None:
+            if service.governance.store.store is not service.store.store:
+                raise ArtifactEvidenceConflictError("creation requires one shared canonical governance store")
+            self.domains[service.governance.store.namespace] = (None,)
+
+    def apply(self, rows):
+        service = self.service
+        state = service.store._decode(rows[service.store.namespace][None])
+        governance = (service.governance.store._decode(rows[service.governance.store.namespace][None])
+                      if service.governance is not None else None)
+        updated = self.updater(state, governance)
+        changes = {service.store.namespace: {None: updated.model_dump(mode="json")}}
+        if governance is not None:
+            changes[service.governance.store.namespace] = {None: governance.model_dump(mode="json")}
+        return changes
+
+    def __call__(self, current):
+        # Old composed writers must fail before metadata registration rather than
+        # accidentally committing governance outside their guarded transaction.
+        if self.service.governance is not None:
+            raise ArtifactEvidenceConflictError("governed creation requires its complete transaction domains")
+        return self.updater(current, None)
+
+
 class ArtifactEvidenceService:
     def __init__(
         self,
@@ -90,6 +120,15 @@ class ArtifactEvidenceService:
         self.content = content
         self.content_backend_resolver = content_backend_resolver
         self.organizational_memory = organizational_memory
+
+    def _commit_creation(self, updater, composed_commit):
+        creation = _GovernedCreation(self, updater)
+        if composed_commit is not None:
+            composed_commit(creation)
+        elif self.governance is None:
+            self.store.update(creation)
+        else:
+            self.store.store.record_mutate_many(creation.domains, creation.apply)
 
     def _research_sources(self, ids, *, actor, project_id):
         try:
@@ -539,11 +578,6 @@ class ArtifactEvidenceService:
         state = self.store.load()
         if len(source_artifact_ids) + len(source_evidence_ids) > 64:
             raise ArtifactEvidenceConflictError("derived Artifact source limit exceeded")
-        derived_sources = [self._artifact(state, sid, actor) for sid in source_artifact_ids]
-        derived_sources += [self._evidence(state, sid, actor) for sid in source_evidence_ids]
-        if any(source.project_id != payload.project_id or source.lifecycle not in {"active", "valid"}
-               or not source.governance_record_id for source in derived_sources):
-            raise ArtifactEvidenceConflictError("derived Artifact requires current governed sources in the same Project")
         superseded = None
         if payload.supersedes_artifact_id:
             superseded = self._artifact(state, payload.supersedes_artifact_id, actor)
@@ -575,39 +609,48 @@ class ArtifactEvidenceService:
             produced_at=payload.produced_at or time.time(),
             metadata=payload.metadata,
         )
-        if self.governance is not None:
-            source_record_ids = (
-                (superseded.governance_record_id,)
-                if superseded is not None and superseded.governance_record_id
-                else ()
-            )
-            governance_record = self.governance.register_domain_record(
-                GovernedDataCreate(
-                    project_id=payload.project_id,
-                    object_type="artifact",
-                    object_id=artifact.id,
-                    category=DataCategory.ARTIFACT,
-                    classification=payload.classification,
-                    retention_policy_ref=payload.retention_policy_ref,
-                    retention_expires_at=payload.retention_expires_at,
-                    retention_action=payload.retention_action,
-                    residency_tags=payload.residency_tags,
-                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources),
-                        *(source.governance_record_id for source in derived_sources)),
-                    deny_model_context=payload.deny_model_context,
-                    reason="artifact_created",
-                ),
-                actor=actor,
-            )
-            artifact = artifact.model_copy(
-                update={
-                    "governance_record_id": governance_record.id,
-                    "retention_expires_at": governance_record.retention_expires_at,
-                }
-            )
         now = time.time()
 
-        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+        def apply(current: ArtifactEvidenceState, governance) -> ArtifactEvidenceState:
+            nonlocal artifact
+            derived_sources = [self._artifact(current, sid, actor) for sid in source_artifact_ids]
+            derived_sources += [self._evidence(current, sid, actor) for sid in source_evidence_ids]
+            if any(source.project_id != payload.project_id or source.lifecycle not in {"active", "valid"}
+                   or not source.governance_record_id for source in derived_sources):
+                raise ArtifactEvidenceConflictError("derived Artifact requires current governed sources in the same Project")
+            current_superseded = self._artifact(current, superseded.id, actor) if superseded else None
+            if current_superseded is not None and current_superseded.lifecycle != ArtifactLifecycle.ACTIVE:
+                raise ArtifactEvidenceConflictError("only an active artifact can be superseded")
+            if self.governance is not None:
+                source_record_ids = (
+                    (current_superseded.governance_record_id,)
+                    if current_superseded is not None and current_superseded.governance_record_id
+                    else ()
+                )
+                governance_record = self.governance.register_domain_record(
+                    GovernedDataCreate(
+                        project_id=payload.project_id,
+                        object_type="artifact",
+                        object_id=artifact.id,
+                        category=DataCategory.ARTIFACT,
+                        classification=payload.classification,
+                        retention_policy_ref=payload.retention_policy_ref,
+                        retention_expires_at=payload.retention_expires_at,
+                        retention_action=payload.retention_action,
+                        residency_tags=payload.residency_tags,
+                        source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources),
+                            *(source.governance_record_id for source in derived_sources)),
+                        deny_model_context=payload.deny_model_context,
+                        reason="artifact_created",
+                    ),
+                    actor=actor, state=governance,
+                )
+                artifact = artifact.model_copy(
+                    update={
+                        "governance_record_id": governance_record.id,
+                        "retention_expires_at": governance_record.retention_expires_at,
+                    }
+                )
             if superseded is not None:
                 for index, item in enumerate(current.artifacts):
                     if item.id == superseded.id:
@@ -629,7 +672,7 @@ class ArtifactEvidenceService:
             current.artifacts.append(artifact)
             return current
 
-        (_commit or self.store.update)(apply)
+        self._commit_creation(apply, _commit)
         return artifact
 
     @staticmethod
@@ -712,50 +755,57 @@ class ArtifactEvidenceService:
         previous = existing_or_conflict(state)
         if previous is not None:
             return previous
-        if self.governance is not None:
-            source_record_ids = tuple(
-                item.governance_record_id
-                for item in artifacts
-                if item.governance_record_id is not None
-            )
-            governance_record = self.governance.register_domain_record(
-                GovernedDataCreate(
-                    project_id=payload.project_id,
-                    object_type="evidence",
-                    object_id=evidence.id,
-                    category=DataCategory.EVIDENCE,
-                    classification=payload.classification,
-                    retention_policy_ref=payload.retention_policy_ref,
-                    retention_expires_at=payload.retention_expires_at,
-                    retention_action=payload.retention_action,
-                    residency_tags=payload.residency_tags,
-                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources),
-                        *(item.governance_record_id for item in source_evidence if item.governance_record_id)),
-                    deny_model_context=payload.deny_model_context,
-                    reason="evidence_created",
-                ),
-                actor=actor,
-            )
-            evidence = evidence.model_copy(
-                update={
-                    "governance_record_id": governance_record.id,
-                    "retention_expires_at": governance_record.retention_expires_at,
-                }
-            )
-
         returned = []
-        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+        def apply(current: ArtifactEvidenceState, governance) -> ArtifactEvidenceState:
+            nonlocal evidence
             previous = existing_or_conflict(current)
             if previous is not None:
                 returned.append(previous)
                 return current
+            artifacts = [self._artifact(current, artifact_id, actor) for artifact_id in payload.artifact_ids]
+            if any(item.lifecycle != ArtifactLifecycle.ACTIVE for item in artifacts):
+                raise ArtifactEvidenceConflictError("evidence cannot reference inactive artifacts")
+            source_evidence = [self._evidence(current, sid, actor) for sid in source_evidence_ids]
+            if any(item.project_id != payload.project_id for item in source_evidence):
+                raise ArtifactEvidenceConflictError("derived Evidence sources must match its Project")
+            if self.governance is not None:
+                source_record_ids = tuple(
+                    item.governance_record_id
+                    for item in artifacts
+                    if item.governance_record_id is not None
+                )
+                governance_record = self.governance.register_domain_record(
+                    GovernedDataCreate(
+                        project_id=payload.project_id,
+                        object_type="evidence",
+                        object_id=evidence.id,
+                        category=DataCategory.EVIDENCE,
+                        classification=payload.classification,
+                        retention_policy_ref=payload.retention_policy_ref,
+                        retention_expires_at=payload.retention_expires_at,
+                        retention_action=payload.retention_action,
+                        residency_tags=payload.residency_tags,
+                        source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources),
+                            *(item.governance_record_id for item in source_evidence if item.governance_record_id)),
+                        deny_model_context=payload.deny_model_context,
+                        reason="evidence_created",
+                    ),
+                    actor=actor, state=governance,
+                )
+                evidence = evidence.model_copy(
+                    update={
+                        "governance_record_id": governance_record.id,
+                        "retention_expires_at": governance_record.retention_expires_at,
+                    }
+                )
+
             current.evidence.append(evidence)
             returned.append(evidence)
             return current
 
         # Internal composition seam: caller commits this prepared mutation in its
         # existing canonical multi-document transaction; never opens a nested store.
-        (self.store.update if _commit is None else _commit)(apply)
+        self._commit_creation(apply, _commit)
         return returned[0]
 
     def create_verification(

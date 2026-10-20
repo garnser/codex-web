@@ -525,8 +525,9 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
         def wrapped(*args,**kwargs):
             reserve=kwargs['_commit']
             def guarded(updater):
-                def while_locked(state):
-                    result=updater(state)
+                prepared=updater.apply
+                def while_locked(rows):
+                    result=prepared(rows)
                     def retire():
                         try:
                             entered.set();writer.rotate(key_id,actor=self.actor)
@@ -537,7 +538,8 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(entered.wait(2))
                     self.assertFalse(finished.wait(.05),'retirement crossed locked capture reservation')
                     return result
-                return reserve(while_locked)
+                with patch.object(updater,'apply',side_effect=while_locked):
+                    return reserve(updater)
             kwargs['_commit']=guarded
             return real(*args,**kwargs)
         async with self.client() as client:

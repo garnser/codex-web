@@ -449,7 +449,7 @@ class StoragePreservationOperations:
             limits=self.effective_limits(inventory)
             if action_id==CAPTURE:
                 def reserve(updater):
-                    domains={**admission['guard_rows'],store.namespace:(None,),
+                    domains={**admission['guard_rows'],**updater.domains,
                              service.crypto.store.namespace:(None,),service.store.namespace:(None,),
                              self.configuration.store.namespace:(None,)}
                     def apply(rows):
@@ -457,9 +457,9 @@ class StoragePreservationOperations:
                         _,now_config,now_pins,now_key=self.current(payload,actor,capacity=False)
                         if now_config!=config or now_pins!=pins or now_key!=key:
                             raise RecoveryConflictError('Capture key/configuration changed before reservation')
-                        current=updater(store._decode(rows[store.namespace][None]))
+                        changes=updater.apply(rows)
                         admission['guard'](None)
-                        return {store.namespace:{None:current.model_dump(mode='json')}}
+                        return changes
                     service.state_store.record_mutate_many(domains,apply)
                 artifact=evidence_service.create_artifact(ArtifactCreate(artifact_type=ArtifactType.REPORT,
                     name='Opaque StateStore preservation',resource_ids=(payload.resource_id,),source=SOURCE,
@@ -594,10 +594,11 @@ class StoragePreservationOperations:
                                 'capture_evidence_id':evidence_service._idempotent_evidence_id(actor,SOURCE,intent_id)}.items()
                                         if not k.startswith('pending_content_')}})
                         current.artifacts=[changed if a.id==artifact.id else a for a in current.artifacts]
-                    current=updater(current)
+                    rows[store.namespace][None]=current.model_dump(mode='json')
+                    changes=updater.apply(rows)
                     admission['guard'](None)
-                    return {store.namespace:{None:current.model_dump(mode='json')}}
-                service.state_store.record_mutate_many(domains,apply)
+                    return changes
+                service.state_store.record_mutate_many({**domains,**updater.domains},apply)
             return evidence_service.create_evidence(EvidenceCreate(evidence_type=EvidenceType.ARTIFACT_VERIFICATION,
                 artifact_ids=(artifact.id,),resource_ids=(payload.resource_id,),source=SOURCE,
                 result=EvidenceResult.WARN,summary='Verified storage integrity; semantic Recovery remains unqualified',
