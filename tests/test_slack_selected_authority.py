@@ -81,6 +81,21 @@ class SelectedAuthorityTests(unittest.IsolatedAsyncioTestCase):
                 profile['revision'] = 7
                 f.captured['settings']['model'] = 'restricted-model'
                 definition = definition.model_copy(update={'revision':1})
+            # Top-level messages must not borrow a prior external-thread target.
+            from codex_web.services.bot_bindings import BotBindingLifecycleService
+            f.lifecycle.is_top_level_external_message = BotBindingLifecycleService.is_top_level_external_message
+            f.lifecycle.for_external_target = lambda *args: unrelated
+            raw = payload()
+            raw['event_id'] = 'top-level-route'
+            raw['event']['ts'] = raw['event']['thread_ts'] = '999.1'
+            top = (await f.service.retain_raw('slack',f.connection.id,raw,actor=actor,
+                connection_id=f.connection.id,project_id='fixture'))[0]
+            event = (await f.service.registry.resolve('slack',f.connection.id).normalize_events(
+                raw,connection_id=f.connection.id,project_id='fixture'))[0]
+            routed = await f.service.ingest(event,actor=actor)
+            self.assertEqual(routed.outcome.value,'routed')
+            self.assertEqual(routed.thread_id,selected.thread_id)
+            self.assertEqual(len(f.queue.get(selected.thread_id)),2)
 
 
 class AuthorityRefusalRecoveryTests(unittest.IsolatedAsyncioTestCase):

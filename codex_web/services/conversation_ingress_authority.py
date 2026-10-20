@@ -11,7 +11,7 @@ def capture_conversation_ingress_authority(event, actor, *, connections, routing
     selection = routing.preview(BotRouteTest(
         provider="slack", project_id=event.project_id, connection_id=event.connection_id,
         external_conversation_id=event.message.conversation.conversation_id,
-        external_thread_id=event.message.conversation.thread_id,
+        external_thread_id=event.message.conversation.thread_id, message_id=event.message.message_id,
         text=ConversationChannelService._message_text(event) or " "), inspect_execution=False)
     selected_id = selection.get("bindingId")
     selected = bindings.by_id(selected_id) if selected_id else None
