@@ -494,3 +494,119 @@ class AssignmentRenewalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(texts), len(set(texts)))
         self.assertTrue(set(texts) <= {a.message for a in attempts})
         self.assertTrue(all(a.status in {'started', 'blocked', 'queued', 'retrying'} for a in attempts))
+
+    async def prepare_scratch_fixture(self, *, administrative=False):
+        agent_profile = None
+        profile_id = 'orchestration-only'
+        if administrative:
+            from copy import deepcopy
+            from unittest.mock import patch
+            from codex_web.agent_profiles import AgentProfileCreate
+            from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+            from codex_web.services.execution_role_definitions import install_execution_role_definitions
+            with patch('codex_web.services.execution_role_definitions.install_execution_role_catalog_provider'):
+                roles = install_execution_role_definitions(self.registry)
+            self.profiles.role_resolver = lambda role, actor: roles.reference(
+                organization_id=actor.organization_id,workspace_id=actor.workspace_id)
+            payload = deepcopy(self.payload)
+            payload['profiles'].append(dict(id='orchestration-admin',name='Private scratch administrator',
+                description='Exact-project fixture',workspace_mode='scratch',repository_access='none',
+                required_worker_capabilities=['command_execution'],
+                control_plane_operations=['control_plane.operations.list','repository.issue.create']))
+            for scope in ('global','project'):
+                current = deepcopy(payload)
+                if scope == 'project':
+                    current['profiles'][-1]['administrative_repository_ids'] = [self.f.repository.id]
+                record = self.registry.create_draft(DefinitionDraftCreate(kind='execution-profile-catalog',
+                    definition_id='execution.profiles.default',definition_schema_version='1.2',payload=current,
+                    scope_type=scope,scope_id='home' if scope == 'project' else None,actor='fixture'))
+                self.registry.publish(record.record_id,DefinitionPublishRequest(actor='fixture'))
+            self.profiles.create(AgentProfileCreate(profile_id='scratch-administrator',name='Scratch administrator',
+                role_id='orchestrator',authority_role_id='local-admin',
+                execution_profile_id='orchestration-admin'),actor=self.actor)
+            profile,_ = self.profiles.resolve_for_execution('scratch-administrator',actor=self.actor,
+                project_id='home',revision=1)
+            agent_profile = self.profiles.binding_for(profile)
+            profile_id = 'orchestration-admin'
+        await self.real_manager.complete(self.old.id, succeeded=False, failure_message='private scratch fixture')
+        self.native_thread_id = 'native-scratch'
+        binding = self.f.service.prepare_bootstrap(bootstrap_id='scratch-bootstrap',
+            execution_id='scratch-execution', project_id='home', sandbox='workspace-write',
+            approval_policy='on-request', execution_profile_id=profile_id, agent_profile=agent_profile)
+        self.bindings.bind(bootstrap_id='scratch-bootstrap', thread_id=self.native_thread_id,
+            execution_id=binding.execution_id, assignment_id=binding.assignment_id,
+            execution_workspace_id=binding.workspace_id, actor=self.actor)
+        self.bindings.mark_initial_turn_started(self.native_thread_id,self.actor)
+        session = await self.real_manager.start(binding.assignment_id)
+        assignment = session.validate_current()
+        self.original_session = self.sessions.adopt(provider_id='openai', runtime_id='codex',
+            runtime_type=CodexAgentRuntimeAdapter.runtime_type, provider_native_session_id=self.native_thread_id,
+            capability_snapshot=CodexAgentRuntimeAdapter(session).capabilities,
+            request=AgentRuntimeSessionRequest(project_id='home', assignment_id=assignment.id,
+                execution_id=assignment.execution_id, execution_workspace_id=binding.workspace_id,
+                worker_id=self.f.worker.id, workspace_cwd=str(session.workspace_path), resource_ids=assignment.resource_ids),
+            actor=self.actor)
+        for index in range(64):
+            self.f.workers.record_procedure_discovery(assignment.id,ProcedureDiscovery(
+                actor_identity_id=self.actor.identity_id,organization_id=self.actor.organization_id,
+                workspace_id=self.actor.workspace_id,project_id='home',resource_ids=assignment.resource_ids,
+                operation=None,context_checksum=f'scratch-{index}',evaluated_at=time.time(),outcome='no_match',
+                policy_source='canonical:existing-policy',policy_allows=True),expected_fence=assignment.fence,actor=self.actor)
+        self.old = self.f.workers.store.assignment(assignment.id)
+        self.old_workspace = self.f.workspaces.get(self.old.execution_workspace_id,self.actor)
+        self.native_requests.clear()
+
+    async def test_scratch_renews_once_preserving_files_history_and_native_identity(self):
+        await self.prepare_scratch_fixture(administrative=True)
+        preserved = Path(self.old_workspace.path)/'coordination-notes.txt'
+        preserved.write_text('Do not discard unknown coordination receipts.\n')
+        response = await self.post('New current coordination task', execution_profile_id='orchestration-admin',
+            agent_profile_id='scratch-administrator',agent_profile_revision=1)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertTrue(response.json()['assignmentRenewed'])
+        retired = self.f.workers.store.assignment(self.old.id)
+        self.assertEqual(retired.status,'cancelled')
+        self.assertEqual(retired.fence,self.old.fence+1)
+        self.assertEqual(retired.procedure_discoveries,self.old.procedure_discoveries)
+        self.assertEqual(preserved.read_text(),'Do not discard unknown coordination receipts.\n')
+        current = self.sessions.get(self.original_session.id,self.actor)
+        fresh = self.f.workers.store.assignment(current.assignment_id)
+        self.assertNotEqual(fresh.id,self.old.id)
+        self.assertEqual(current.provider_native_session_id,self.native_thread_id)
+        self.assertEqual(fresh.resource_ids,())
+        self.assertEqual(fresh.repository_scope,self.old.repository_scope)
+        self.assertEqual(fresh.execution_profile_definition,self.old.execution_profile_definition)
+        self.assertEqual(fresh.agent_profile,self.old.agent_profile)
+        self.assertEqual(fresh.limits,self.old.limits)
+        self.assertEqual(len(fresh.procedure_discoveries),1)
+        self.assertEqual([method for method,_ in self.native_requests],['thread/read','thread/resume','turn/start'])
+        self.assertEqual(len(self.native_inputs),1)
+
+    async def test_scratch_busy_and_pending_executor_cannot_renew(self):
+        await self.prepare_scratch_fixture()
+        self.native_status = 'active'
+        response = await self.post('Retain while provider busy',execution_profile_id='orchestration-only')
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(self.f.workers.store.assignment(self.old.id),self.old)
+        self.native_status = 'idle'
+        self.real_manager.get(self.old.id).pending = 1
+        response = await self.post('Retain while executor busy',execution_profile_id='orchestration-only')
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(self.f.workers.store.assignment(self.old.id),self.old)
+        self.assertEqual(self.native_inputs,[])
+
+    async def test_scratch_unknown_resume_stays_held_without_input_or_replay(self):
+        await self.prepare_scratch_fixture()
+        self.resume_outcome = 'unknown'
+        response = await self.post('Preserve scratch unknown resume',execution_profile_id='orchestration-only')
+        self.assertEqual(response.status_code,409,response.text)
+        attempt, = self.turn_service.preflight.for_thread(self.native_thread_id,actor=self.actor)
+        self.assertEqual(attempt.status,'reconciliation_required')
+        self.assertEqual(self.native_inputs,[])
+        before = list(self.native_requests)
+        with self.assertRaises(Exception) as caught:
+            await self.turn_service.retry_preflight(self.native_thread_id,attempt.id,actor=self.actor)
+        self.assertEqual(caught.exception.status_code,409)
+        self.assertEqual(self.native_requests,before)
+        self.assertEqual(self.f.workers.store.assignment(self.old.id).procedure_discoveries,
+            self.old.procedure_discoveries)
