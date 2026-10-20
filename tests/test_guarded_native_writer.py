@@ -254,3 +254,30 @@ class GuardedNativeWriterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(retained.queued_start_correlation)
         self.assertIsNone(retained.queued_start_receipt)
         self.assertEqual(len(written), 1)
+
+    async def test_stop_during_initialized_write_cannot_publish_stale_ready_or_handshake(self):
+        entered, release = threading.Event(), threading.Event()
+        class Pipe(io.StringIO):
+            def flush(self):
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError('fixture initialization flush not released')
+        process = Process(Pipe())
+        runtime = CodexRuntime(_Host(), popen=lambda *a, **k: process)
+        runtime.request = AsyncMock(return_value={'userAgent': 'codex_web_local/0.160.0 linux'})
+        runtime._read_loop = AsyncMock()
+        runtime._stderr_loop = AsyncMock()
+        start = asyncio.create_task(runtime.start())
+        await self.entered(entered)
+        stop = asyncio.create_task(runtime.stop())
+        try:
+            await asyncio.sleep(.01)
+            self.assertIsNone(runtime.proc)
+            self.assertFalse(runtime.ready.is_set())
+        finally:
+            release.set()
+        result = await asyncio.wait_for(asyncio.gather(start, stop, return_exceptions=True), 2)
+        self.assertIsInstance(result[0], RuntimeError)
+        self.assertIsNone(result[1])
+        self.assertFalse(runtime.ready.is_set())
+        self.assertIsNone(runtime.native_runtime_version)

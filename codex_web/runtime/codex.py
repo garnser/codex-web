@@ -323,8 +323,9 @@ class CodexRuntime:
                 command=" ".join(self.command),
             )
             process = self.proc
+            generation = self.generation
             self.reader_task = asyncio.create_task(
-                self._read_loop(process, generation=self.generation),
+                self._read_loop(process, generation=generation),
                 name="codex-app-server-stdout",
             )
             self.stderr_task = asyncio.create_task(
@@ -351,8 +352,14 @@ class CodexRuntime:
                 import re
                 agent = init.get("userAgent") if isinstance(init, dict) else None
                 match = re.match(r"^(?:codex_web_local|codex_cli_rs)/(0\.160\.0)(?:\s|$)", agent) if isinstance(agent, str) else None
-                self.native_runtime_version = match.group(1) if match else None
+                native_runtime_version = match.group(1) if match else None
                 await self.notify("initialized", {})
+                # The settled initialized write can yield while stop fences
+                # this process. Never publish readiness/handshake for that
+                # retired generation when its worker operation completes.
+                if self.proc is not process or self.generation != generation or process.poll() is not None:
+                    raise RuntimeError("Codex app-server retired during initialization")
+                self.native_runtime_version = native_runtime_version
                 self.ready.set()
                 if self.metrics:
                     self.metrics.increment("codex.ready")
