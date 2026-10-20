@@ -9,6 +9,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_content
 
 from fastapi import Request
 
@@ -1023,20 +1024,46 @@ class GitLabService:
                 event_kind=kind,
                 event_id=event_id,
             )
+            provider_payload = dict(fact.provider_payload)
+            target = getattr(self.work_items, 'publication_event_target', None)
+            if target is not None and kind in {'pipeline', 'merge_request'}:
+                try:
+                    provider_payload.update(target.ingress_provenance(payload, project_id=project_id))
+                except ValueError:
+                    # Retain genuine ingestion even when original routing cannot
+                    # be proven. The route resolver below refuses that claim.
+                    pass
+            event_payload = {
+                "project_id": project_id,
+                "provider_event_type": fact.event_kind,
+                "repository_external_id": fact.repository_external_id,
+                "subject_external_id": fact.subject_external_id,
+                "action": fact.action, "state": fact.state, "web_url": fact.web_url,
+                "provider_payload": provider_payload,
+            }
+            source = f"code-host:gitlab:{binding.provider_instance}"
+            key = f"{binding.provider_instance}:{fact.event_id}"
+            # Adapter-only additive normalization compatibility. Retain the
+            # immutable original event/checksum; core semantic differences still
+            # enter the canonical store's strict conflict check. No subscribers
+            # run and no missing historical SHA/identity is retrofitted.
+            bus = getattr(self.canonical_events, 'bus', None)
+            if kind in {'pipeline', 'merge_request'} and bus is not None:
+                existing = await asyncio.to_thread(bus.store.event,
+                    self.canonical_events._event_id(source, key))
+                if existing is not None:
+                    comparable = dict(event_payload)
+                    comparable['provider_payload'] = dict(provider_payload)
+                    old = existing.payload.get('provider_payload') or {}
+                    for field in ('head_revision', 'source_branch', 'merge_request_iid',
+                            'publication_binding_id', 'publication_resource_id', 'publication_provider_instance'):
+                        if field not in old:
+                            comparable['provider_payload'].pop(field, None)
+                    if comparable == existing.payload:
+                        event_payload = existing.payload
             return await self.canonical_events.ingest(
                 event_type=fact.canonical_event_type,
-                source=f"code-host:gitlab:{binding.provider_instance}",
-                idempotency_key=f"{binding.provider_instance}:{fact.event_id}",
-                payload={
-                    "project_id": project_id,
-                    "provider_event_type": fact.event_kind,
-                    "repository_external_id": fact.repository_external_id,
-                    "subject_external_id": fact.subject_external_id,
-                    "action": fact.action,
-                    "state": fact.state,
-                    "web_url": fact.web_url,
-                    "provider_payload": fact.provider_payload,
-                },
+                source=source, idempotency_key=key, payload=event_payload,
                 occurred_at=fact.occurred_at,
                 tenant_id=organization_id,
                 workspace_id=workspace_id,
@@ -1196,6 +1223,28 @@ class GitLabService:
             self._unchanged_workflow_feedback,
             payload, baseline, projected_state, project_id=project_id,
         )
+        # Keep artifact projection separate: a closed pipeline is never an
+        # instruction to close its original issue. Verified publication lineage
+        # selects only the current notification target and execution scope.
+        publication_target = getattr(self.work_items, 'publication_event_target', None)
+        publication_route = None
+        if publication_target is not None and kind in {'pipeline', 'merge_request'}:
+            try:
+                publication_route = await asyncio.to_thread(publication_target, payload,
+                    project_id=project_id, provider_instance=self.operations.api_base_url,
+                    canonical_event=canonical_delivery.event if canonical_delivery else None)
+            except ValueError as error:
+                code = str(error)
+                if re.fullmatch(r'publication_[a-z_]{1,80}', code) is None:
+                    code = 'verified_publication_route_unavailable'
+                self.operations.append_event({'type': 'gitlab_publication_route_refused',
+                    'event_id': event_id, 'project_id': project_id,
+                    'reason': code})
+                return {'ok': True, 'accepted': False, 'reason': code,
+                    'eventId': event_id,
+                    **({'canonicalEventId': canonical_delivery.event.event_id} if canonical_delivery else {})}
+            if publication_route is not None:
+                projected_state = publication_route.state
         agents = self.event_target_agents(
             payload,
             project_settings,
@@ -1251,6 +1300,12 @@ class GitLabService:
                     payload,
                     agent,
                 )
+                if publication_route is not None:
+                    facts = json.dumps(publication_route.provenance(), sort_keys=True)
+                    facts = facts.replace('<', '\\u003c').replace('>', '\\u003e')
+                    prompt += ('\n' + render_untrusted_content(envelope_untrusted(
+                        TrustZone.PROVIDER_CONTENT, 'verified-publication-route', facts))
+                        + '\nPreserve current ownership, independent gates and held native uncertainty.')
                 if deterministic:
                     result = {"ok": True, "queued": False, "deterministic": True,
                               "threadId": binding.thread_id}
@@ -1260,7 +1315,8 @@ class GitLabService:
                 ):
                     notification_kwargs = {}
                     if (canonical_delivery is not None and kind in {"issue","merge_request","pipeline"}
-                            and getattr(projected_state,"handoff",None) is None
+                            and (getattr(projected_state,"handoff",None) is None
+                                 or projected_state.handoff.status != 'pending')
                             and canonical_delivery.event.tenant_id and canonical_delivery.event.workspace_id):
                         from codex_web.notification_provenance import ProviderNotificationPin
                         notification_kwargs["provider_notification_pin"] = ProviderNotificationPin.from_event(
@@ -1367,6 +1423,7 @@ class GitLabService:
                 ),
                 "agents": agents,
                 "targets": results,
+                **({'publication_route': publication_route.provenance()} if publication_route else {}),
                 **({"deterministic": True} if deterministic else {}),
             }
         )
@@ -1377,6 +1434,7 @@ class GitLabService:
                 "kind": kind,
                 "projectId": project_id,
                 "targets": results,
+                **({'publicationRoute': publication_route.provenance()} if publication_route else {}),
                 **({"deterministic": True} if deterministic else {}),
             }
         )
@@ -1387,6 +1445,7 @@ class GitLabService:
             "accepted": True,
             "eventId": event_id,
             "targets": results,
+            **({'publicationRoute': publication_route.provenance()} if publication_route else {}),
             **({"deterministic": True, "reason": "workflow_feedback_recorded" if workflow_feedback else "pipeline_progress_recorded"} if deterministic else {}),
         }
 

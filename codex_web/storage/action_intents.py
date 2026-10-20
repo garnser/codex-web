@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from urllib.parse import urlsplit
 
 from typing import Any, Callable
 from urllib.parse import quote
@@ -123,6 +124,38 @@ class ActionIntentStore:
     records_namespace = "action_intents.records.v1"
     _meta_key = "meta"
     _fields = ("intents", "receipts", "verifications", "inbox")
+    _publication_marker = "publication-index:1.0"
+
+    @staticmethod
+    def publication_instance(value: str) -> str:
+        """Code-host bindings use host[:port], webhook configuration uses URLs."""
+        return urlsplit(value if '://' in value else '//' + value).netloc.casefold()
+
+    @classmethod
+    def publication_prefix(cls, kind: str, *, organization_id: str, workspace_id: str,
+                           project_id: str, resource_id: str, provider_instance: str,
+                           value: str) -> str:
+        scope = [organization_id, workspace_id, project_id, resource_id,
+                 cls.publication_instance(provider_instance), value]
+        return 'publication-' + kind + ':' + hashlib.sha256(
+            json.dumps(scope, separators=(',', ':')).encode()).hexdigest() + ':'
+
+    @classmethod
+    def _publication_indexes(cls, item: ActionIntent) -> dict[str, Any]:
+        if (item.provider_type != 'gitlab' or not item.project_id or not item.work_item_ref
+                or len(item.resource_ids) != 1
+                or item.action_id not in {'code-host.branch.publish', 'code-host.pull-request.upsert'}):
+            return {}
+        branch = item.request.parameters.get('branch' if item.action_id == 'code-host.branch.publish' else 'head')
+        if not isinstance(branch, str) or not branch:
+            return {}
+        scope = dict(organization_id=item.organization_id, workspace_id=item.workspace_id,
+            project_id=item.project_id, resource_id=item.resource_ids[0], provider_instance=item.provider_instance)
+        indexes = {cls.publication_prefix(kind, value=value, **scope) + item.id: {'id': item.id}
+                   for kind, value in (('branch', branch), ('work', item.work_item_ref))}
+        indexes[cls.publication_prefix('project-branch', value=branch,
+            **{**scope, 'resource_id':'', 'provider_instance':''}) + item.id] = {'id':item.id}
+        return indexes
 
     @staticmethod
     def _scope(organization_id: str, workspace_id: str) -> str:
@@ -170,7 +203,7 @@ class ActionIntentStore:
     @classmethod
     def _indexes(cls, item: ActionIntent) -> dict[str, Any]:
         scope = cls._scope(item.organization_id, item.workspace_id)
-        indexes = {}
+        indexes = cls._publication_indexes(item)
         if item.status != ActionIntentStatus.CANCELLED:
             indexes[cls._idempotency_key(item.organization_id, item.workspace_id,
                                         item.binding_id, item.action_id, item.idempotency_key)] = {"id": item.id}
@@ -208,7 +241,7 @@ class ActionIntentStore:
                         raise ValueError("unsupported action intent records schema")
                     return {self._meta_key: {"schema_version": "1.3"}}
                 self.store.record_mutate(self.records_namespace, (self._meta_key,), upgrade)
-            elif meta != {"schema_version": "1.3"}:
+            elif meta not in ({"schema_version": "1.3"}, {"schema_version": "1.4"}):
                 raise ValueError("unsupported action intent records schema")
             return
         # Upgrade both namespaces under the shared transaction lock. The old
@@ -216,13 +249,87 @@ class ActionIntentStore:
         def migrate(documents):
             records = documents[self.records_namespace]
             if self._meta_key not in records:
+                fresh = documents[self.namespace] is None and not records
                 records = self._records(self._decode(documents[self.namespace]))
-                records[self._meta_key] = {"schema_version": "1.3"}
+                records[self._meta_key] = {"schema_version": "1.4" if fresh else "1.3"}
+                if fresh:
+                    records[self._publication_marker] = {'schema_version': '1.0', 'after': None, 'ready': True}
             return {self.records_namespace: records, self.namespace: documents[self.namespace]}
         self.store.update_many(
-            {self.namespace: ActionIntentState().model_dump(mode="json"), self.records_namespace: {}},
+            {self.namespace: None, self.records_namespace: {}},
             migrate,
         )
+
+    def prepare_publication_index(self) -> None:
+        """Explicit pre-admission migration after older writers are drained.
+
+        The metadata barrier fences 1.3 writers before resumable page backfill.
+        Webhook lookups never call this method or initialize missing collections.
+        """
+        self._ensure_records()
+        progress = self.store.record_get(self.records_namespace, self._publication_marker)
+        if progress is not None and not self._valid_publication_progress(progress):
+            raise ValueError('publication_index_metadata_invalid')
+        def fence(current):
+            if current[self._meta_key] not in ({'schema_version': '1.3'}, {'schema_version': '1.4'}):
+                raise ValueError('unsupported action intent records schema')
+            return {self._meta_key: {'schema_version': '1.4'}}
+        self.store.record_mutate(self.records_namespace, (self._meta_key,), fence)
+        while True:
+            progress = self.store.record_get(self.records_namespace, self._publication_marker)
+            if progress is not None and not self._valid_publication_progress(progress):
+                raise ValueError('publication_index_metadata_invalid')
+            if progress and progress['ready']:
+                return
+            page, after = self.store.record_page(self.records_namespace,
+                key_prefix='intents:', after=(progress or {}).get('after'), limit=100)
+            def apply(current):
+                # Re-read every candidate under the canonical transaction lock.
+                if current.get(self._publication_marker) != progress:
+                    return {}
+                changes = {}
+                for key in page:
+                    raw = current.get(key)
+                    if raw is not None:
+                        changes.update(self._publication_indexes(ActionIntent.model_validate(raw)))
+                changes[self._publication_marker] = {'schema_version': '1.0', 'after': after, 'ready': after is None}
+                return changes
+            self.store.record_mutate(self.records_namespace,
+                (*page, self._publication_marker), apply)
+
+    def publication_index_ready(self) -> bool:
+        if not self.store.record_collection_exists(self.records_namespace):
+            return False
+        marker = self.store.record_get(self.records_namespace, self._publication_marker)
+        return (self.store.record_get(self.records_namespace, self._meta_key) == {'schema_version': '1.4'}
+            and self._valid_publication_progress(marker) and marker['ready'] is True)
+
+    @staticmethod
+    def _valid_publication_progress(marker) -> bool:
+        return (isinstance(marker, dict) and set(marker) == {'schema_version', 'after', 'ready'}
+            and marker['schema_version'] == '1.0' and type(marker['ready']) is bool
+            and (marker['after'] is None or (isinstance(marker['after'], str)
+                 and marker['after'].startswith('intents:')))
+            and (not marker['ready'] or marker['after'] is None))
+
+    def publication_candidates(self, kind: str, *, limit: int = 100, **scope) -> list[ActionIntent]:
+        # No _ensure_records: an ingress read cannot upgrade or backfill state.
+        if not self.publication_index_ready():
+            raise ValueError('publication_index_not_ready')
+        prefix = self.publication_prefix(kind, **scope)
+        rows, after = self.store.record_page(self.records_namespace, key_prefix=prefix, limit=limit)
+        if after is not None:
+            raise ValueError('publication_candidates_exceed_bound')
+        result = []
+        for key, alias in rows.items():
+            raw = self.store.record_get(self.records_namespace, 'intents:' + alias['id'])
+            if raw is None:
+                raise ValueError('publication_index_target_missing')
+            item = ActionIntent.model_validate(raw)
+            if key not in self._publication_indexes(item):
+                raise ValueError('publication_index_scope_changed')
+            result.append(item)
+        return result
 
     def _state(self, records: dict[str, Any]) -> ActionIntentState:
         return self._decode({

@@ -2261,6 +2261,7 @@ upgrade_service = UpgradeService(
     ),
 )
 upgrade_service.install_skill_scan_contract()
+upgrade_service.install_publication_event_contract()
 execution_workspace_service.skill_scan_admission = upgrade_service.skill_scan_admission
 execution_worker_service.skill_scan_admission = upgrade_service.skill_scan_admission
 skill_security_service.write_admission = upgrade_service.skill_scan_admission
@@ -4254,6 +4255,8 @@ gitlab_routing_dependencies = GitLabRoutingDependencies(
     ),
     master_binding=bot_binding_selection_service.master,
 )
+from codex_web.services.verified_publication_events import VerifiedPublicationEventRouting
+
 gitlab_work_item_runtime_dependencies = (
     GitLabWorkItemRuntimeDependencies(
         split_brain_findings=(
@@ -4264,6 +4267,11 @@ gitlab_work_item_runtime_dependencies = (
         project_lookup=project_runtime_service.get,
         load_projects=project_repository.load,
         get_state=work_item_state_machine._work_item_state,
+        publication_event_target=VerifiedPublicationEventRouting(action_intent_store,
+            get_state=work_item_dependencies.get_state,
+            project_resources=work_item_dependencies.resource_ids_for_project,
+            project_lookup=project_runtime_service.get,
+            action_registry=action_provider_registry, resources=resource_catalog_service),
     )
 )
 gitlab_event_presentation = GitLabEventPresentationService(

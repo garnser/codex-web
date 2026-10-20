@@ -592,6 +592,16 @@ class GitLabCodeHostProvider:
         state = attrs.get("status") or attrs.get("state") or payload.get("status")
         if str(state or "").casefold() in {"failed", "failure", "error"}:
             canonical = CanonicalEventType.FAILURE
+        provider_payload = {"project_path": project.get("path_with_namespace"), "ref": attrs.get("ref")}
+        commit = attrs.get("last_commit")
+        revision = attrs.get("sha") or (commit.get("id") if isinstance(commit, dict) else None)
+        if isinstance(revision, str) and re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+            provider_payload["head_revision"] = revision.lower()
+        branch = attrs.get("source_branch")
+        if isinstance(branch, str) and 0 < len(branch) <= 1024:
+            provider_payload["source_branch"] = branch
+        if kind == "merge_request" and type(attrs.get("iid")) is int and attrs["iid"] > 0:
+            provider_payload["merge_request_iid"] = attrs["iid"]
         return CodeHostWebhookFact(
             provider_type=self.provider_type,
             provider_instance=binding.provider_instance,
@@ -611,8 +621,5 @@ class GitLabCodeHostProvider:
             action=(str(attrs.get("action")) if attrs.get("action") is not None else None),
             state=(str(state) if state is not None else None),
             web_url=attrs.get("url") or attrs.get("web_url"),
-            provider_payload={
-                "project_path": project.get("path_with_namespace"),
-                "ref": attrs.get("ref"),
-            },
+            provider_payload=provider_payload,
         )

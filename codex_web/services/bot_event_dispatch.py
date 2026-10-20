@@ -372,10 +372,11 @@ class BotEventDispatchService:
                 "dispatchScope": dispatch_scope,
             }
 
-        if owner_routing_pin is not None:
+        if owner_routing_pin is not None or provider_notification_pin is not None:
             # Recipient-pinned inputs need the durable retained claim and the
             # synchronous guarded native transport, including an idle thread.
-            result = await queue_turn('event_turn_queued_owner_routing')
+            result = await queue_turn('event_turn_queued_owner_routing' if owner_routing_pin is not None
+                                      else 'event_turn_queued_provider_notification')
             self.execution.schedule_queue_drain(binding.thread_id)
             return result
 

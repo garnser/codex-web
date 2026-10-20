@@ -78,6 +78,7 @@ from codex_web.upgrades import (
 
 # Code-owned persisted schema boundary; this is not an operational definition.
 SKILL_SCAN_CONTRACT_HANDLER = "skill-scan-contract/1.0"
+PUBLICATION_EVENT_CONTRACT_HANDLER = "action-publication-index/1.0"
 
 
 class UpgradeError(RuntimeError):
@@ -212,6 +213,48 @@ class UpgradeService:
     def install_skill_scan_contract(self):
         self.register_migration_handler(SKILL_SCAN_CONTRACT_HANDLER, self._enable_skill_scan_contract)
 
+    def install_publication_event_contract(self):
+        self.register_migration_handler(PUBLICATION_EVENT_CONTRACT_HANDLER, self._enable_publication_event_contract)
+
+    @staticmethod
+    def _publication_event_boundary(plan):
+        return (plan.irreversible_boundary_crossed and not plan.rollback_available
+                and any(step.handler_id == PUBLICATION_EVENT_CONTRACT_HANDLER
+                        and step.status == UpgradeStepStatus.SUCCEEDED
+                        and step.phase == UpgradePhase.CONTRACT and step.kind == UpgradeStepKind.STATE_SCHEMA
+                        and step.irreversible and step.requires_backup and step.requires_drain
+                        and step.approval_request_id and step.evidence_id
+                        and step.result.get('backup_verification_id') for step in plan.steps))
+
+    @classmethod
+    def _service_contract_boundary(cls, plan):
+        return cls._skill_scan_boundary(plan) or cls._publication_event_boundary(plan)
+
+    def _enable_publication_event_contract(self, plan, step, actor):
+        from codex_web.upgrades import UpgradeDeploymentMode
+        if (plan.compatibility.deployment_mode != UpgradeDeploymentMode.LOCAL
+                or plan.maintenance_scope != UpgradeMaintenanceScope.SERVICE
+                or not plan.maintenance_mode or plan.service_instance_id != self.service_instance_id
+                or not step.irreversible or not step.requires_backup or not step.requires_drain
+                or step.phase != UpgradePhase.CONTRACT or step.kind != UpgradeStepKind.STATE_SCHEMA
+                or len(set(plan.observed_control_plane_versions)) != 1
+                or plan.preflight is None or not plan.preflight.satisfied
+                or plan.preflight.admission_epoch != plan.admission_epoch):
+            raise UpgradeConflictError('Publication index contract requires approved irreversible contract step, current service drain and single local writer version')
+        if self.admission.active_count():
+            raise UpgradeConflictError('Publication index requires all service admissions drained')
+        state = self.workers.store.load()
+        if any(a.status not in {AssignmentStatus.SUCCEEDED, AssignmentStatus.FAILED,
+                AssignmentStatus.CANCELLED, AssignmentStatus.LOST}
+                and not self._held_before_first_claim(a, plan) for a in state.assignments):
+            raise UpgradeConflictError('Publication index requires all worker assignments terminal or held before first claim')
+        verification = self.recovery.verify_restore(plan.pre_upgrade_backup_id, actor=actor)
+        if verification.status != 'pass':
+            raise UpgradeConflictError('Publication index requires verified pre-upgrade snapshot')
+        # The engine records consumed approval + irreversible boundary BEFORE
+        # post-verification can physically activate the old-writer barrier.
+        return {'backup_verification_id': verification.id, 'contract': PUBLICATION_EVENT_CONTRACT_HANDLER}
+
     @staticmethod
     def _skill_scan_boundary(plan):
         return (plan.irreversible_boundary_crossed and not plan.rollback_available
@@ -306,9 +349,9 @@ class UpgradeService:
             if current.status == UpgradeStatus.FAILED and current.completed_at is not None:
                 raise UpgradeConflictError("cancelled upgrade is terminal; create a new plan")
             updated = updater(current)
-            if updated.status == UpgradeStatus.ROLLED_BACK and any(self._skill_scan_boundary(p) for p in state.plans.values()):
+            if updated.status == UpgradeStatus.ROLLED_BACK and any(self._service_contract_boundary(p) for p in state.plans.values()):
                 raise UpgradeConflictError("rollback is unavailable after the service scanner contract boundary")
-            if self._skill_scan_boundary(updated):
+            if self._service_contract_boundary(updated):
                 # One local database is shared by hosted scopes. Invalidate older
                 # plans atomically too, so no stale plan advertises binary rollback.
                 for previous in state.plans.values():
@@ -368,7 +411,7 @@ class UpgradeService:
         def apply(state):
             # Retained incompatible rows cannot regain binary rollback permission
             # through a newer plan. Snapshot + matching binary recovery is separate.
-            if any(self._skill_scan_boundary(previous) for previous in state.plans.values()):
+            if any(self._service_contract_boundary(previous) for previous in state.plans.values()):
                 plan.rollback_available = False
             state.plans[plan.id] = plan
             return state
@@ -1783,6 +1826,17 @@ class UpgradeService:
     ) -> UpgradePlan:
         plan = self._open_plan(plan_id, actor=actor)
         blockers: list[str] = []
+        if self._publication_event_boundary(plan) and not self.action_intents.store.publication_index_ready():
+            try:
+                step = next(s for s in plan.steps if s.handler_id == PUBLICATION_EVENT_CONTRACT_HANDLER)
+                # Revalidate current drain/PID/epoch and actual snapshot before
+                # activation. Failure retains maintenance and the recorded boundary.
+                self._enable_publication_event_contract(plan, step, actor)
+                self.action_intents.store.prepare_publication_index()
+                if not self.action_intents.store.publication_index_ready():
+                    raise UpgradeConflictError('Publication index backfill is incomplete')
+            except Exception:
+                blockers.append('publication_index_activation_unavailable')
         if any(
             item.status not in {
                 UpgradeStepStatus.SUCCEEDED,
