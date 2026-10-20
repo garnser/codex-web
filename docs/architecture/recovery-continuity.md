@@ -104,6 +104,16 @@ checksum/count, checks exact StateStore schema compatibility, validates key
 references and verifies the backed-up autonomy-audit root against the root
 recorded in the manifest.
 
+Publishing a verification commits its RestoreVerification, linked Evidence,
+governance metadata and any successful scheduled-firing settlement in one
+canonical transaction. Recovery retains the prepared Evidence creation's full
+domain set and rechecks current keys, manual operator identity and scheduled
+policy/admission under that transaction. A failed write or cancellation rolls
+back all of these records together. Reconciliation's separate Evidence hook
+continues to inspect locked existing records without creating new Evidence.
+The existing Recovery API and operator result surfaces expose the same linked
+verification; this repair adds no new operator control or schema boundary.
+
 When configured, an invalid live autonomy audit also blocks creation of a new
 "healthy" backup.
 

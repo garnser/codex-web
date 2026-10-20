@@ -181,10 +181,11 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
-    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, _activate_reconciliation=False, mutation_admission=None):
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, evidence_updated=None, _activate_reconciliation=False, mutation_admission=None):
         if self.crypto.store.store is not self.store.store:
             raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
         key_namespace = self.crypto.store.namespace
+        creation = evidence_update if hasattr(evidence_update, 'domains') else None
 
         manual = self._manual_context.get()
         def apply(documents):
@@ -212,9 +213,18 @@ class RecoveryService:
                 self._scheduled_admission.validate_schedule(current, schedules, _firing)
             if evidence_update is not None:
                 evidence_store = self.evidence.store
-                documents[evidence_store.namespace] = evidence_update(
-                    evidence_store._decode(documents[evidence_store.namespace])
-                ).model_dump(mode="json")
+                if creation is not None:
+                    changes = creation.apply({name: {None: documents[name]}
+                                              for name in creation.domains})
+                    documents.update({name: rows[None] for name, rows in changes.items()})
+                else:
+                    # Reconciliation also uses this hook to inspect locked
+                    # Evidence without preparing a governed creation.
+                    documents[evidence_store.namespace] = evidence_update(
+                        evidence_store._decode(documents[evidence_store.namespace])
+                    ).model_dump(mode="json")
+                if evidence_updated is not None:
+                    evidence_updated(evidence_store._decode(documents[evidence_store.namespace]))
             previous_version = current.schema_version
             updated = updater(current, keys)
             if previous_version == "1.2" and updated.schema_version != "1.2" and (
@@ -241,6 +251,11 @@ class RecoveryService:
             if self.evidence.store.store is not self.store.store:
                 raise RecoveryConflictError("Evidence and recovery require the same canonical store")
             defaults[self.evidence.store.namespace] = ArtifactEvidenceState().model_dump(mode="json")
+            if creation is not None:
+                for name, keys in creation.domains.items():
+                    if tuple(keys) != (None,):
+                        raise RecoveryConflictError("Recovery evidence creation requires singleton documents")
+                    defaults.setdefault(name, None)
         if manual is not None:
             identity, _, _ = manual
             if identity.store.store is not self.store.store:
@@ -249,19 +264,21 @@ class RecoveryService:
             # credential or membership change cannot race successful settlement.
             # Its complete payload is returned unchanged, not normalized.
             defaults[identity.store.namespace] = identity.store._empty()
-        if mutation_admission is None:
+        if mutation_admission is None and creation is None:
             result = self.store.store.update_many(defaults, apply)
         else:
             # Existing bounded row transaction takes globally sorted namespace
             # locks once. Guard-only identity/admission rows are NOT rewritten.
-            selected = dict(mutation_admission['guard_rows'])
+            selected = dict(mutation_admission['guard_rows']) if mutation_admission else {}
             selected.update({name: (None,) for name in defaults})
             def guarded(rows):
-                mutation_admission['guard'](rows)
+                if mutation_admission:
+                    mutation_admission['guard'](rows)
                 documents = {name: rows[name][None] if rows[name][None] is not None else default
                              for name, default in defaults.items()}
                 updated = apply(documents)
-                mutation_admission['guard'](rows)
+                if mutation_admission:
+                    mutation_admission['guard'](rows)
                 return {name: {None: value} for name, value in updated.items()}
             changed = self.store.store.record_mutate_many(selected, guarded)
             result = {name: rows[None] for name, rows in changed.items()}
@@ -611,6 +628,10 @@ class RecoveryService:
             verified_at=finished,
         )
 
+        def link_evidence(updated):
+            nonlocal verification
+            verification = verification.model_copy(update={"evidence_id": updated.evidence[-1].id})
+
         def settle(evidence_update=None):
             def persist(current, keys):
                 self._persist_verification(current, verification)
@@ -620,17 +641,14 @@ class RecoveryService:
                 return current
             self._write_key_bound(persist, actor=actor,
                 requirements=tuple(frozen_requirements) if verification.status == RestoreVerificationStatus.PASS else (),
-                _firing=_firing, evidence_update=evidence_update)
+                _firing=_firing, evidence_update=evidence_update,
+                evidence_updated=link_evidence if evidence_update is not None else None)
 
         atomic_evidence = publish_evidence and hasattr(self.evidence, "store")
         def commit_evidence(apply):
-            nonlocal verification
-            def prepare(current):
-                nonlocal verification
-                updated = apply(current)
-                verification = verification.model_copy(update={"evidence_id": updated.evidence[-1].id})
-                return updated
-            settle(prepare)
+            # Preserve the complete prepared transaction, including governance,
+            # rather than turning it into a legacy Evidence-only callback.
+            settle(apply)
 
         if publish_evidence:
             if _firing is not None:
