@@ -38,7 +38,13 @@ Create, use, reveal, rotate, revoke, denial and provider failure paths append me
 - operation and outcome;
 - bounded context such as provider connection/project/action.
 
-Audit records never include secret values.
+Audit records never include secret values. Asynchronous secret use awaits each durable audit
+write through the existing settled executor operation, so storage cannot block
+unrelated runtime event-loop work. Explicit or repeated cancellation joins the
+actual writer before propagating. This changes neither use authorization nor
+credential resolution/provider invocation, result scrubbing, audit ordering or
+synchronous broker behavior. Audit failure still propagates and never retries
+the provider callback.
 
 ## Existing integration migration
 
