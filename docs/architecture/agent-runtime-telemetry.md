@@ -79,6 +79,20 @@ source custody, unknown/resumed original or stale input digest refuses recovery.
 Existing uncertain inputs and historical session/usage records remain unchanged;
 the existing preflight blocker and recovery inspector show the reason and action.
 
+A pending initial native session that belongs to a previous process refuses
+before resume or Turn input. The controller emits its exact
+`initial_bootstrap_process_lost` claim/snapshot proof only after awaiting canonical
+bootstrap cancellation and process cleanup. Explicit administrator bootstrap
+recovery can use that proof even when the source remains an unarchived current
+bot binding. It verifies the exact pending bootstrap, cancelled/fenced assignment
+without a lease, original actor/Profile and repository/execution scope. The
+operator and unchanged source assignment are checked again under the existing
+atomic source-binding, assignment and replacement-graph publication locks.
+Native input is still a separate guarded retry of that same retained original;
+creating custody is not delivery. No archive, binding retarget, whole-queue move,
+historical-unknown replay or automatic revival of cancelled work is implied.
+The existing preflight inspector and recovery action expose this operation.
+
 The current session row and a metadata-only
 `agent_session_execution_reassociated` event in the existing worker audit
 collection commit together through canonical StateStore cross-domain mutation.
