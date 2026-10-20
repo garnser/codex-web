@@ -794,6 +794,9 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.broker.stop()
+        # stop retires transports without cancelling in-flight dispatch/audit.
+        # Settle the existing handlers before deleting their SQLite fixtures.
+        await asyncio.wait_for(asyncio.gather(*self.broker._handler_tasks), 3.0)
         self.temp.cleanup()
 
     def _publish_worker_authority(self, *, operator_grants=True, repository_evidence_read=False) -> None:
