@@ -549,6 +549,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def _assert_stop_refuses_before_dispatch(self, gate_owner, gate_name) -> None:
         entered, release = threading.Event(), threading.Event()
         audited = asyncio.Event()
+        loop = asyncio.get_running_loop()
         validate, audit = getattr(gate_owner, gate_name), self.service._audit
 
         def blocked_validator(*args, **kwargs):
@@ -561,7 +562,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             try:
                 return audit(**kwargs)
             finally:
-                audited.set()
+                loop.call_soon_threadsafe(audited.set)
 
         setattr(gate_owner, gate_name, blocked_validator)
         with (
@@ -1354,6 +1355,109 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 403, denied)
         self.assertEqual(len(calls), 1)
 
+    async def _blocking_refresh(self, *, cancel=False, revoke=False):
+        entered = threading.Event()
+        release = threading.Event()
+        mutations = []
+        current = [True]
+        main_thread = threading.get_ident()
+        observed_threads = []
+
+        class Workspaces:
+            def get(inner, workspace_id, actor):
+                return SimpleNamespace(execution_id=self.assignment.execution_id,
+                    project_id=self.assignment.project_id,
+                    writable_repository_ids=("repository-a",))
+
+            def refresh_revision(inner, workspace_id, revision, **kwargs):
+                observed_threads.append(threading.get_ident())
+                entered.set()
+                release.wait(2)  # Bounded fallback also makes old blocking code fail.
+                kwargs["validate_current"]()
+                mutations.append(revision)
+                return SimpleNamespace(model_dump=lambda mode: {"head_revision": revision})
+
+        self.service.execution_workspaces = Workspaces()
+        self.service._authorize = lambda *a, **k: SimpleNamespace(id="allowed", definition_ref=None)
+        assignment = self.assignment.model_copy(update={
+            "execution_workspace_id":"workspace-a", "execution_profile_id":"repository-write",
+            "repository_scope":RepositoryExecutionScope(organization_id="local",
+                workspace_id="default",project_id=self.assignment.project_id,
+                writable_repository_ids=("repository-a",),source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a")})
+        def validate():
+            if not current[0]:
+                raise ControlPlaneBrokerDeniedError("assignment revoked")
+            return assignment
+        task = asyncio.create_task(self.service.dispatch(assignment=assignment,
+            worker_actor=self.worker_actor,method="POST",raw_target="/api/repository-workspace/refresh",
+            body=json.dumps({"revision":"a"*40}).encode(),assignment_validator=validate))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+            self.assertFalse(task.done(), "blocking refresh must leave the loop responsive")
+            self.assertNotEqual(observed_threads, [main_thread])
+            if cancel:
+                task.cancel()
+                await asyncio.sleep(0)
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done(), "cancel must join this exact mutation")
+            if revoke:
+                current[0] = False
+            release.set()
+            if cancel:
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            elif revoke:
+                with self.assertRaisesRegex(ControlPlaneBrokerDeniedError,"revoked"):
+                    await task
+            else:
+                result = await task
+                self.assertEqual(result[0],200)
+            self.assertEqual(mutations, [] if cancel or revoke else ["a"*40])
+        finally:
+            release.set()
+            with suppress(BaseException):
+                await task
+
+    async def test_blocking_workspace_refresh_keeps_broker_loop_responsive(self):
+        await self._blocking_refresh()
+
+    async def test_cancelled_workspace_refresh_joins_exact_operation_without_mutating(self):
+        await self._blocking_refresh(cancel=True)
+
+    async def test_revoked_workspace_refresh_cannot_mutate_after_wait(self):
+        await self._blocking_refresh(revoke=True)
+
+    async def test_blocking_broker_audit_does_not_block_loop_or_return_early(self):
+        for denied in (False, True):
+            with self.subTest(denied=denied):
+                entered = threading.Event()
+                release = threading.Event()
+                original = self.service._audit
+                main_thread = threading.get_ident()
+                observed_threads = []
+                def audit(**kwargs):
+                    observed_threads.append(threading.get_ident())
+                    entered.set()
+                    release.wait(2)
+                    return original(**kwargs)
+                self.service._audit = audit
+                task = asyncio.create_task(self._request("GET", "/not-allowlisted" if denied
+                    else "/api/control-plane-broker/operations"))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                    self.assertNotEqual(observed_threads,[main_thread])
+                    self.assertFalse(task.done(),"response must await durable audit")
+                    release.set()
+                    status, _, _ = await task
+                    self.assertEqual(status,403 if denied else 200)
+                finally:
+                    release.set()
+                    with suppress(BaseException):
+                        await task
+                    self.service._audit = original
+
     async def test_workspace_refresh_materializes_only_missing_exact_attested_revision(self) -> None:
         revision = "a" * 40
         checkout = Path(self.temp.name) / "workspace-refresh"
@@ -1378,6 +1482,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             def refresh_revision(inner, workspace_id, requested, **kwargs):
+                kwargs["validate_current"]()
                 calls.append((workspace_id, requested, kwargs))
                 if len(calls) == 1:
                     raise ExecutionWorkspaceNotFoundError(
@@ -1432,7 +1537,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["item"]["head_revision"], revision)
         self.assertEqual(payload["materialization"]["outcome"], "materialized")
-        self.assertEqual(validated, [True])
+        self.assertEqual(validated, [True, True, True])
         code_hosts.materialize_default_branch_revision.assert_awaited_once_with(
             "control-plane-read:github-action-binding",
             "repository-a",
