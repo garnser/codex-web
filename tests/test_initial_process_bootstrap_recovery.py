@@ -165,14 +165,56 @@ class InitialProcessBootstrapRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.threads.create.side_effect = revoke_after_creation
         await self.assert_no_publication()
 
-    async def test_operator_assurance_downgrade_during_creation_refuses_publication(self):
-        from codex_web.identity import AuthenticationAssurance
-        async def downgrade_after_creation(**values):
+    def compose_real_identity(self):
+        from codex_web.identity import (AuthenticationAssurance, HumanIdentity, IdentityState,
+            Membership, MembershipRole, Organization, PrincipalKind, TenantScope, Workspace)
+        from codex_web.services.identity import IdentityService
+        from codex_web.storage.identity_state import IdentityStateStore
+        identity = IdentityService(IdentityStateStore(self.service.store.store))
+        identity.store.save(IdentityState(
+            organizations=[Organization(id='org', name='Organization')],
+            workspaces=[Workspace(id='ws', organization_id='org', name='Workspace')],
+            humans=[HumanIdentity(id='admin', display_name='Operator')],
+            memberships=[Membership(identity_id='admin', principal_kind=PrincipalKind.HUMAN,
+                organization_id='org', workspace_id='ws', roles=[MembershipRole.ADMIN])]))
+        scope = TenantScope(organization_id='org', workspace_id='ws')
+        credentials = identity.create_session(identity_id='admin', scope=scope,
+            assurance=AuthenticationAssurance.MFA)
+        self.admin = identity.authenticate_session(credentials.session_token).actor
+        self.assertEqual(self.admin.assurance, AuthenticationAssurance.MFA)
+        self.expected_creation_actor = identity.actor_for_identity('admin', scope=scope)
+        self.assertEqual(self.expected_creation_actor.assurance, AuthenticationAssurance.PRIMARY)
+        self.runtime.identity = identity
+        self.runtime.actor_resolver = lambda identity_id, project: identity.actor_for_identity(identity_id, scope=scope)
+        return identity
+
+    async def test_real_authenticated_mfa_request_accepts_current_primary_membership_projection(self):
+        self.compose_real_identity()
+        result = await self.recover()
+        self.assertTrue(result['bootstrap_created'])
+        self.assertFalse(result['native_turn_started'])
+        self.assertEqual(self.index.replacement_thread_id('archived'), 'fresh')
+
+    async def test_real_disabled_identity_during_creation_cannot_publish(self):
+        identity = self.compose_real_identity()
+        async def disable_after_creation(**values):
             response = await self.create(**values)
-            self.runtime.actor_resolver = lambda identity, project: self.admin.model_copy(update={
-                'assurance': AuthenticationAssurance.PRIMARY})
+            state = identity.store.load()
+            state.humans[0].disabled_at = 102
+            identity.store.save(state)
             return response
-        self.threads.create.side_effect = downgrade_after_creation
+        self.threads.create.side_effect = disable_after_creation
+        await self.assert_no_publication()
+
+    async def test_real_revoked_admin_membership_during_creation_cannot_publish(self):
+        identity = self.compose_real_identity()
+        async def revoke_after_creation(**values):
+            response = await self.create(**values)
+            state = identity.store.load()
+            state.memberships[0].revoked_at = 102
+            identity.store.save(state)
+            return response
+        self.threads.create.side_effect = revoke_after_creation
         await self.assert_no_publication()
 
     async def test_created_receipt_reconciles_without_creating_another_bootstrap(self):

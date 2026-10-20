@@ -295,13 +295,13 @@ class QueuedBootstrapRecoveryService:
         def update(current):
             self.preflight._authorize(current, actor, require_admin=True)
             if guarded_source:
-                fresh = self.actor_resolver(actor.identity_id, project)
+                try:
+                    fresh = self.actor_resolver(actor.identity_id, project)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=403, detail='Recovery operator identity is unavailable.') from exc
+                # This credential-free projection refreshes membership only.
+                # MFA belongs to the authenticated request checked in context.
                 self.preflight._authorize(current, fresh, require_admin=True)
-                if fresh.principal_kind == PrincipalKind.HUMAN:
-                    try:
-                        IdentityService.require_assurance(fresh, AuthenticationAssurance.MFA)
-                    except RuntimeError as exc:
-                        raise HTTPException(status_code=403, detail=str(exc)) from exc
                 if (fresh.identity_id, fresh.organization_id, fresh.workspace_id) != (
                         actor.identity_id, actor.organization_id, actor.workspace_id):
                     raise HTTPException(status_code=403, detail='Recovery operator identity changed.')
