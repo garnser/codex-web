@@ -124,6 +124,57 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated['threadId'], 'fresh')
         self.assertEqual(self.threads.create.await_count, 1)
 
+    def missing_prior_refusal(self):
+        proof = self.custody_refusal()
+        proof.update(code='native_session_prior_assignment_missing', original_resource_ids=[],
+                     original_repository_scope=None)
+        self.attempt = self.service.queued_disposition(self.attempt.id, status='blocked', detail=proof,
+            claim_id='owned-claim', preinput_refusal=True)
+        return proof
+
+    async def test_missing_prior_recovers_only_new_proven_unstarted_request(self):
+        self.missing_prior_refusal()
+        self.assertTrue(self.service.recorded_custody_refusal(self.attempt))
+        before = self.attempt.queued_turn_snapshot
+        result = await self.recover()
+        self.assertEqual(result['threadId'], 'fresh')
+        self.assertFalse(result['native_turn_started'])
+        current = self.service.store.get(self.attempt.id)
+        self.assertEqual(current.queued_turn_snapshot, before)
+        self.assertIsNone(current.queued_start_receipt)
+        self.assertIsNone(self.assignments.get('prior-assignment'))
+        await self.recover()
+        self.assertEqual(self.threads.create.await_count, 1)
+
+    async def test_missing_prior_recovery_rechecks_absence_before_creation_and_commit(self):
+        self.missing_prior_refusal()
+        self.assignments['prior-assignment'] = SimpleNamespace(status='running')
+        with self.assertRaises(HTTPException):
+            await self.recover()
+        self.threads.create.assert_not_called()
+        self.assignments.pop('prior-assignment')
+        real_create = self.create
+        async def racing_create(**values):
+            result = await real_create(**values)
+            self.assignments['prior-assignment'] = SimpleNamespace(status='running')
+            return result
+        self.threads.create.side_effect = racing_create
+        with self.assertRaises(HTTPException):
+            await self.recover()
+        self.assertIsNone(self.index.replacement_thread_id('archived'))
+        self.assertEqual(self.service.store.get(self.attempt.id).bootstrap_recovery.state, 'pending')
+
+    async def test_generic_custody_error_never_authorizes_missing_prior_recovery(self):
+        self.missing_prior_refusal()
+        self.attempt = self.service.queued_disposition(self.attempt.id, status='blocked',
+            detail={'code':'native_session_custody_unavailable',
+                'message':'prior assignment custody is still live or unavailable'},
+            claim_id='owned-claim', preinput_refusal=True)
+        self.assertFalse(self.service.recorded_custody_refusal(self.attempt))
+        with self.assertRaises(HTTPException):
+            await self.recover()
+        self.threads.create.assert_not_called()
+
     async def test_custody_recovery_refuses_live_lease_changed_binding_and_unknown_outcome(self):
         self.custody_refusal()
         assignment = self.assignments['old-assignment']

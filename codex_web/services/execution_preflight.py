@@ -249,7 +249,7 @@ class ExecutionPreflightService:
             blockers = self._blockers(detail) if detail else ()
             history = current.blocker_history
             if (disposition == 'blocked' and preinput_refusal
-                    and (detail or {}).get('code') == 'native_session_scope_incompatible'
+                    and (detail or {}).get('code') in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'}
                     and (not history or history[-1].blockers != blockers)):
                 history = (*history, ExecutionPreflightBlockerSnapshot(blockers=blockers,
                     recorded_at=now, attempt_number=current.attempt_number))[-self.MAX_HISTORY:]
@@ -352,12 +352,15 @@ class ExecutionPreflightService:
                 or not attempt.queued_admission_claim_id):
             return False
         return any(
-            row.get('code') == 'native_session_scope_incompatible'
+            row.get('code') in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'}
             and row.get('phase') == 'before_provider_resume'
             and row.get('preflight_attempt_id') == attempt.id
             and row.get('admission_claim_id') == attempt.queued_admission_claim_id
             and row.get('threadId') == (attempt.replacement_thread_id or attempt.thread_id)
             and row.get('snapshot_sha256') == self.queued_snapshot_digest(snapshot)
+            and (row.get('code') != 'native_session_prior_assignment_missing'
+                 or (row.get('original_resource_ids') == [] and row.get('original_repository_scope') is None
+                     and row.get('previous_assignment_id') != row.get('assignment_id')))
             and isinstance(row.get('original_resource_ids'), list)
             and isinstance(row.get('requested_resource_ids'), list) and bool(row['requested_resource_ids'])
             and 'requested_repository_scope' in row and 'original_repository_scope' in row
