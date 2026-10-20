@@ -153,6 +153,11 @@ these normalization primitives do not widen existing profiles or grants.
 
 The explicit CodeHost capability is `pull_request.merge_requirements.read`.
 GitHub advertises it; GitLab explicitly excludes it and reports unsupported.
+The broker distinguishes an installed adapter's unsupported capability from
+missing or ambiguous provider bindings. Its existing worker/operator denial and
+discovery metadata expose that distinction; adding bindings or broadening grants
+cannot implement a missing adapter capability. Other reads do not substitute for
+unavailable merge-policy evidence.
 The assignment broker exposes `repository.read.merge-requirements` at
 `GET /api/repository-facts/pull-requests/{external_id}/merge-requirements`, using
 the existing canonical repository selector. The authority capability is
