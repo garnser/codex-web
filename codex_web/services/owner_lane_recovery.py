@@ -116,7 +116,8 @@ class OwnerLaneRecoveryService:
                 # an unavailable index never proves independent current work.
                 return state
             if any(original.queued_start_receipt is not None
-                    or original.status == 'reconciliation_required' for original in originals):
+                    or original.status in {'queued', 'admitting', 'retrying', 'reconciliation_required'}
+                    for original in originals):
                 continue
             return state
         return None
@@ -222,6 +223,9 @@ class OwnerLaneRecoveryService:
         if any(original.status == 'reconciliation_required' and original.queued_start_receipt is None
                 for original in originals):
             self.refuse('owner_recovery_original_unresolved', 'Resolve the retained native outcome for this Work Item before automatic continuation. Action owner: ' + context.action_owner)
+        if any(original.status in {'queued', 'admitting', 'retrying'} for original in originals):
+            self.refuse('owner_recovery_current_work_reserved',
+                'Another retained request already owns admission for this Work Item, potentially on another thread. Reconcile its current disposition before automatic continuation. Action owner: ' + context.action_owner)
         if any(original.queued_start_receipt is not None for original in originals):
             # A positive START is a historical delivery fact, not a proof that
             # its later turn completed. Neither lost custody nor generic usage

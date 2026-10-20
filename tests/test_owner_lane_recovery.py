@@ -428,3 +428,17 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['reason'], 'owner_recovery_changed')
         self.assertEqual(self.queue, [self.held])
         self.execution.schedule_queue_drain.assert_not_called()
+
+    async def test_another_thread_fresh_request_already_owns_current_work(self):
+        original = self.held.model_copy(update={'id': 'other-owner-request',
+            'thread_id': 'another-thread', 'work_item_ref': self.state.ref})
+        retained = self.preflight.retain_queued(original, organization_id='org', workspace_id='ws')
+        before = self.preflight.store.get(retained.id).model_dump_json()
+        next_item = self.state.model_copy(update={'ref': 'group/repo!100'})
+        self.assertEqual(self.service.select_current_work(self.binding, [self.state, next_item]).ref, next_item.ref)
+        result = await self.recover()
+        self.assertFalse(result['ok'])
+        blocker = self.preflight.store.get(result['preflightAttemptId']).blockers[0]
+        self.assertEqual(blocker.code, 'owner_recovery_current_work_reserved')
+        self.assertEqual(self.preflight.store.get(retained.id).model_dump_json(), before)
+        self.execution.schedule_queue_drain.assert_not_called()
