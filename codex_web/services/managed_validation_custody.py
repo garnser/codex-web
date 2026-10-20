@@ -8,7 +8,11 @@ from pathlib import Path
 import re
 import stat
 
-from codex_web.artifact_evidence import ArtifactCreate, ArtifactType, EvidenceCreate, EvidenceType, EvidenceResult
+from codex_web.artifact_evidence import (
+    ArtifactCreate, ArtifactLifecycle, ArtifactType, EvidenceCreate, EvidenceLifecycle,
+    EvidenceResult, EvidenceType,
+)
+from codex_web.artifact_content import ArtifactContentState
 from codex_web.runtime.managed_validation_runner import sanitize_report
 from codex_web.storage.state_store import check_operation_budget
 
@@ -49,11 +53,73 @@ class ManagedValidationCustody:
                       'fence':assignment.fence,'managed_output_schema':'1.0','result':'unstarted'}),actor=self.actor)
         self.state = 'registered'
 
+    def _validate_artifact(self, artifact, body, *, require_content=False):
+        """Check retained provenance before attaching any missing content."""
+        assignment = self.assignment
+        expected_scope = (self.actor.organization_id, self.actor.workspace_id,
+            assignment.project_id, assignment.work_item_ref, assignment.execution_id,
+            assignment.execution_workspace_id, tuple(assignment.resource_ids))
+        if ((artifact.organization_id, artifact.workspace_id, artifact.project_id,
+                artifact.work_item_ref, artifact.execution_id, artifact.execution_workspace_id,
+                artifact.resource_ids) != expected_scope
+                or artifact.producer_identity_id != self.actor.identity_id
+                or artifact.source != 'native-validation-capture'
+                or artifact.lifecycle != ArtifactLifecycle.ACTIVE
+                or artifact.metadata.get('registration_artifact_id') != self.registration.id
+                or artifact.metadata.get('assignment_id') != assignment.id
+                or artifact.metadata.get('worker_id') != assignment.assigned_worker_id
+                or artifact.metadata.get('fence') != assignment.fence
+                or (artifact.digest is not None and artifact.digest.value != hashlib.sha256(body).hexdigest())):
+            raise ValueError('managed capture content or provenance differs from registered report')
+        if require_content or artifact.content is not None:
+            if (artifact.content is None or artifact.content.state != ArtifactContentState.AVAILABLE
+                    or artifact.digest is None or artifact.content.size_bytes != len(body)):
+                raise ValueError('managed capture content or provenance differs from registered report')
+        return expected_scope
+
+    def _ensure_evidence(self, artifact, report, body):
+        """Finish partial settlement without duplicating committed legacy Evidence."""
+        assignment = self.assignment
+        expected_scope = self._validate_artifact(artifact, body, require_content=True)
+        candidates = [e for e in self.service.list_evidence(self.actor)
+            if e.provider == self.provider and e.source == 'native-validation-capture'
+            and (artifact.id in e.artifact_ids or e.external_id == artifact.external_id)]
+        if len(candidates) > 1:
+            raise ValueError('managed capture has conflicting Evidence records')
+        if candidates:
+            evidence = candidates[0]
+            if ((evidence.organization_id, evidence.workspace_id, evidence.project_id,
+                    evidence.work_item_ref, evidence.execution_id, evidence.execution_workspace_id,
+                    evidence.resource_ids) != expected_scope
+                    or evidence.producer_identity_id != self.actor.identity_id
+                    or evidence.artifact_ids != (artifact.id,)
+                    or evidence.evidence_type != EvidenceType.TEST_RESULT
+                    or evidence.result != EvidenceResult.INFO
+                    or evidence.lifecycle != EvidenceLifecycle.VALID
+                    or evidence.metadata.get('observed_fence') != assignment.fence
+                    or evidence.metadata.get('run_id') != report['run_id']
+                    or evidence.metadata.get('observed_exit_code') != report['exit_code']
+                    or evidence.metadata.get('result') != 'unknown'):
+                raise ValueError('managed capture Evidence differs from registered observation')
+            return  # Includes unkeyed Evidence committed by an earlier reader.
+        self.service.create_evidence(EvidenceCreate(evidence_type=EvidenceType.TEST_RESULT,
+            artifact_ids=(artifact.id,),project_id=assignment.project_id,work_item_ref=assignment.work_item_ref,
+            execution_id=assignment.execution_id,execution_workspace_id=assignment.execution_workspace_id,
+            resource_ids=assignment.resource_ids,provider=self.provider,source='native-validation-capture',
+            external_id=artifact.external_id,
+            observed_at=report['finished_at'] or report['started_at'],
+            result=EvidenceResult.INFO,summary='Native validation interrupted; outcome unknown' if report['state']=='running'
+                else 'Native command exit observed; validation remains unverified',deny_model_context=True,
+            metadata={'observed_fence':assignment.fence,'run_id':report['run_id'],
+                      'observed_exit_code':report['exit_code'],'result':'unknown'}),actor=self.actor,
+            idempotency_key=artifact.external_id + ':' + artifact.digest.value)
+
     def capture(self):
         """Read only registered bounded JSON. Never discover arbitrary /tmp logs."""
         if self.registration is None or self.service is None or self.service.content is None:
             self.state = 'unavailable'
             return ()
+        self.state = 'unavailable'  # A failed retry cannot retain an earlier completed state.
         descriptor = os.open(self.workspace_path, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
         try:
             for part in self.parts:
@@ -89,9 +155,6 @@ class ManagedValidationCustody:
                 assignment = self.assignment
                 external_id = f"{assignment.id}:{assignment.fence}:{report['run_id']}"
                 artifact = existing.get(external_id)
-                if artifact is not None and artifact.content is not None:
-                    self.artifact_ids.append(artifact.id)
-                    continue
                 if artifact is None:
                     artifact = self.service.create_artifact(ArtifactCreate(artifact_type=ArtifactType.REPORT,
                         name='Native validation observation (unverified)',project_id=assignment.project_id,
@@ -103,16 +166,12 @@ class ManagedValidationCustody:
                             'run_id':report['run_id'],'command_digest':report['command_digest'],
                             'source_manifest_digest':hashlib.sha256(json.dumps(report['sources'],sort_keys=True).encode()).hexdigest(),
                             'result':'unknown','interrupted':report['state']=='running'}),actor=self.actor)
-                self.service.attach_artifact_content(artifact.id,(body,),actor=self.actor,media_type='application/json')
-                self.service.create_evidence(EvidenceCreate(evidence_type=EvidenceType.TEST_RESULT,
-                    artifact_ids=(artifact.id,),project_id=assignment.project_id,work_item_ref=assignment.work_item_ref,
-                    execution_id=assignment.execution_id,execution_workspace_id=assignment.execution_workspace_id,
-                    resource_ids=assignment.resource_ids,provider=self.provider,source='native-validation-capture',
-                    result=EvidenceResult.INFO,summary='Native validation interrupted; outcome unknown' if report['state']=='running'
-                        else 'Native command exit observed; validation remains unverified',deny_model_context=True,
-                    metadata={'observed_fence':assignment.fence,'run_id':report['run_id'],
-                              'observed_exit_code':report['exit_code'],'result':'unknown'}),actor=self.actor)
-                self.artifact_ids.append(artifact.id)
+                self._validate_artifact(artifact, body)
+                if artifact.content is None:
+                    artifact = self.service.attach_artifact_content(artifact.id,(body,),actor=self.actor,media_type='application/json')
+                self._ensure_evidence(artifact, report, body)
+                if artifact.id not in self.artifact_ids:
+                    self.artifact_ids.append(artifact.id)
             self.state = 'captured' if names else 'registered'
             return tuple(self.artifact_ids)
         finally:
