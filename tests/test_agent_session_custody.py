@@ -200,7 +200,7 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.complete(self.capture()), before)
         self.assertEqual(events(), original_events)
 
-    async def exercise_actual_resume_path(self, outcome, *, legacy_adoption=False, prior_changes=None):
+    async def exercise_actual_resume_path(self, outcome, *, legacy_adoption=False, prior_changes=None, prior_missing=False):
         child, _ = await self.create()
         # This is an existing native thread being resumed after rollover, not
         # the special newly-created thread whose first input skips resume.
@@ -215,6 +215,8 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
             previous = self.f.workers.store.assignment(self.old.id)
             self.f.sqlite.record_apply(self.f.workers.store.assignment_namespace,
                 upserts={previous.id:previous.model_copy(update=prior_changes).model_dump(mode='json')})
+        if prior_missing:
+            self.f.sqlite.record_apply(self.f.workers.store.assignment_namespace, upserts={}, deletes=(self.old.id,))
         historical = self.f.workers.store.assignment(self.old.id)
         if legacy_adoption:
             # Legacy discovery is idempotent, even with caller-supplied new
@@ -275,7 +277,7 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
             operation = actual.start_thread_turn_now('native-governor', project=self.f.project,
                 message='bounded governor turn', sandbox='workspace-write', approval_policy='on-request',
                 repository_resource_id=self.f.repository.id, execution_profile_id='project-governor', source='web')
-            if outcome == 'scope_queued':
+            if outcome in {'scope_queued', 'missing_queued'}:
                 operation.close()
                 queued = QueuedTurn(id='retained-custody-original', thread_id='native-governor',
                     project_id='home', message='bounded governor turn', source='web', created_at=time.time(),
@@ -311,7 +313,7 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await operation
         self.assertEqual(self.f.workers.store.assignment(self.old.id), historical)
-        if outcome in {'scope', 'custody', 'scope_queued'}:
+        if outcome in {'scope', 'custody', 'scope_queued', 'missing_queued'}:
             self.assertEqual(manager.completed[0][1]['failure_code'], 'native_session_custody_refused')
             self.assertEqual(observed, [])
             self.assertEqual(requests, [])
@@ -346,6 +348,9 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_queue_drain_retains_claim_bound_custody_proof_without_provider_io(self):
         await self.exercise_actual_resume_path('scope_queued', prior_changes={'resource_ids':('previous-repo',)})
+
+    async def test_missing_prior_assignment_retains_exact_recoverable_proof_before_provider_io(self):
+        await self.exercise_actual_resume_path('missing_queued', prior_missing=True)
 
     async def test_foreign_prior_actor_refuses_before_actual_provider_resume(self):
         await self.exercise_actual_resume_path('custody', prior_changes={'created_by':'another-actor'})

@@ -35,6 +35,24 @@ class AgentSessionCustodyPrestartRefusal(AgentRuntimeError):
         }
 
 
+class AgentSessionPriorAssignmentMissingRefusal(AgentSessionCustodyPrestartRefusal):
+    """The new request is unstarted; the missing prior outcome stays unknown."""
+
+    def __init__(self, session, assignment):
+        AgentRuntimeError.__init__(self, "Native session prior assignment is unavailable; use a fresh bootstrap")
+        self.detail = {
+            "code": "native_session_prior_assignment_missing", "message": str(self),
+            "phase": "before_provider_resume", "agent_session_id": session.id,
+            "previous_assignment_id": session.assignment_id, "assignment_id": assignment.id,
+            "assignment_fence": assignment.fence, "execution_id": assignment.execution_id,
+            "execution_workspace_id": assignment.execution_workspace_id,
+            "original_resource_ids": [], "original_repository_scope": None,
+            "requested_resource_ids": list(assignment.resource_ids),
+            "requested_repository_scope": assignment.repository_scope.model_dump(mode="json") if assignment.repository_scope else None,
+            "remediation": "Fence this refused assignment and inspect exact-request fresh bootstrap recovery. Prior execution outcomes remain unknown.",
+        }
+
+
 class AgentSessionCustodyService:
     def __init__(self, sessions, workers, bindings, workspaces, profiles, *, clock=time.time):
         self.sessions, self.workers, self.bindings = sessions, workers, bindings
@@ -188,6 +206,8 @@ class AgentSessionCustodyService:
             )
             if expected.assignment_id and expected.assignment_id != assignment.id:
                 prior = rows[ws.assignment_namespace].get(expected.assignment_id)
+                if prior is None and prepare_only:
+                    raise AgentSessionPriorAssignmentMissingRefusal(current, assignment)
                 self.require(prior is not None and prior["status"] in {
                     "succeeded", "failed", "cancelled", "lost",
                 }, "prior assignment custody is still live or unavailable")

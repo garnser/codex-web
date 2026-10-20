@@ -78,12 +78,14 @@ class QueuedBootstrapRecoveryService:
         of a provider receipt or the thread's display name.
         """
         proof = next(b.model_dump(mode='json') for b in attempt.blockers
-            if b.code == 'native_session_scope_incompatible')
+            if b.code in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'})
         try:
             binding = self.bootstrap_bindings.get_by_thread(proof['threadId'], actor)
         except ThreadBootstrapBindingNotFoundError:
             self.refused('bootstrap_recovery_source_unverified', 'Native custody binding is unavailable.')
         assignment = self.assignments(proof['assignment_id'])
+        if proof['code'] == 'native_session_prior_assignment_missing' and self.assignments(proof['previous_assignment_id']) is not None:
+            self.refused('bootstrap_recovery_source_unverified', 'Prior assignment custody changed; inspect it before recovery.')
         if (binding.assignment_id != proof['assignment_id'] or binding.bootstrap_id != proof['bootstrap_id']
                 or assignment is None or assignment.status not in {'cancelled', 'failed', 'succeeded', 'lost'}
                 or assignment.lease is not None
@@ -278,8 +280,9 @@ class QueuedBootstrapRecoveryService:
                 if assignment_store.store is not self.preflight.store.store:
                     raise ValueError('Custody recovery requires one canonical store')
                 proof = next(b.model_dump(mode='json') for b in attempt.blockers
-                    if b.code == 'native_session_scope_incompatible')
-                selected[assignment_store.assignment_namespace] = (proof['assignment_id'], binding.assignment_id)
+                    if b.code in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'})
+                selected[assignment_store.assignment_namespace] = tuple(dict.fromkeys((
+                    proof['assignment_id'], binding.assignment_id, proof['previous_assignment_id'])))
         def commit(values):
             if self.ownership is not None:
                 self.ownership.require_fence(fence_name)

@@ -66,6 +66,19 @@ published execution/Profile Definition pins. Compare-and-swap refuses a
 concurrently modified session. Legacy adoption and public session-resume APIs
 do not gain permission to rebind from caller-supplied assignment identifiers.
 
+A missing prior assignment also refuses before provider resume. The controller
+retains a distinct `native_session_prior_assignment_missing` proof for the new
+request, including its exact admission claim, immutable input digest, session,
+source bootstrap and admitted assignment/fence. This does not establish the
+prior execution's outcome or authorize same-session resume. After the refused
+new assignment is terminal and fenced, existing administrator bootstrap recovery
+may create one fresh session at that request's exact scope. Recovery checks that
+the prior assignment remains absent before creation and again under the source
+assignment locks at final route publication. A reappearing prior record, changed
+source custody, unknown/resumed original or stale input digest refuses recovery.
+Existing uncertain inputs and historical session/usage records remain unchanged;
+the existing preflight blocker and recovery inspector show the reason and action.
+
 The current session row and a metadata-only
 `agent_session_execution_reassociated` event in the existing worker audit
 collection commit together through canonical StateStore cross-domain mutation.
