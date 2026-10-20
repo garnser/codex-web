@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ from codex_web.action_providers import (
     ActionVerification,
 )
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.services.code_host_readiness import readiness_checkpoint, readiness_verification_checkpoint
 from codex_web.services.code_host_continuation import continuation_for
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_EVIDENCE,
@@ -33,6 +35,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
@@ -301,6 +305,9 @@ class GitLabActionProvider:
                 "existing_change_request_number": attested.existing_change_request_number,
                 "work_item_issue_number": attested.work_item_issue_number,
             }
+        if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            return {"operation": "pull-request-ready", "repository": project,
+                    **self.contract.pull_request_ready(request)}
         if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             return {
@@ -329,6 +336,44 @@ class GitLabActionProvider:
         if not remaining:
             raise ValueError("ready merge-request title must contain content after its Draft marker")
         return remaining
+
+    async def _ready_snapshot(self, project, parameters, credential, checkpoint):
+        """Read the canonical project, exact open MR and current target tip.
+
+        diff_refs.base_sha is a merge base, not the current target branch head.
+        Every network await is followed by the existing intent admission guard.
+        """
+        await checkpoint()
+        repository = await self.client.project(self.api_base, project, token=credential)
+        await checkpoint()
+        item = await self.client.merge_request(self.api_base, project,
+            parameters["pull_request_number"], token=credential)
+        await checkpoint()
+        target = await self.client.branch(self.api_base, project,
+            parameters["expected_base_ref"], token=credential)
+        await checkpoint()
+        project_id = repository.get("id")
+        if (type(project_id) is not int or project_id < 1
+                or repository.get("path_with_namespace") != project
+                or type(item.get("iid")) is not int
+                or item.get("iid") != parameters["pull_request_number"]
+                or type(item.get("id")) is not int or item["id"] < 1
+                or any(type(item.get(key)) is not int or item[key] != project_id
+                       for key in ("project_id", "source_project_id", "target_project_id"))
+                or item.get("state") != "opened"
+                or item.get("sha") != parameters["expected_head_sha"]
+                or item.get("target_branch") != parameters["expected_base_ref"]
+                or not isinstance(item.get("source_branch"), str) or not item["source_branch"]
+                or item["source_branch"] == item["target_branch"]
+                or target.get("name") != parameters["expected_base_ref"]
+                or (target.get("commit") or {}).get("id") != parameters["expected_base_sha"]
+                or type(item.get("draft")) is not bool
+                or not isinstance(item.get("title"), str) or not item["title"].strip()
+                or item.get("description") is not None and not isinstance(item["description"], str)):
+            raise ActionRequirementError("GitLab readiness requires the exact open same-project MR/head/target tip")
+        return {key: item.get(key) for key in (
+            "id", "iid", "project_id", "source_project_id", "target_project_id", "state",
+            "sha", "source_branch", "target_branch", "draft", "title", "description")}
 
     async def execute(
         self,
@@ -599,6 +644,41 @@ class GitLabActionProvider:
                 }
             )
             summary = "GitLab branch matches the committed execution workspace head."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            parameters = self.contract.pull_request_ready(request)
+            async def checkpoint():
+                await readiness_checkpoint(request, binding.id)
+            try:
+                current = await self._ready_snapshot(project, parameters, credential, checkpoint)
+                title = self._merge_request_title(current["title"], False)
+                repeated = await self._ready_snapshot(project, parameters, credential, checkpoint)
+                if repeated != current:
+                    raise ActionRequirementError("GitLab readiness target metadata changed before mutation")
+                await checkpoint()
+            except ActionRequirementError:
+                raise
+            except Exception as exc:
+                raise ActionRequirementError("GitLab readiness preflight is unavailable") from exc
+            mutated = current["draft"]
+            if mutated:
+                # GitLab's title update has no expected-head/title CAS. From this
+                # point all failures are uncertain; never automatically replay.
+                await self.client.update_merge_request(self.api_base, project,
+                    parameters["pull_request_number"], token=credential, payload={"title": title})
+            try:
+                observed = await self._ready_snapshot(project, parameters, credential, checkpoint)
+                expected = {**current, "draft": False, "title": title}
+                if observed != expected:
+                    raise RuntimeError("GitLab readiness metadata or target changed")
+            except Exception as exc:
+                raise RuntimeError("GitLab readiness outcome requires read-only reconciliation") from exc
+            evidence_type = CODE_HOST_PULL_REQUEST_READY_EVIDENCE
+            external_id = str(parameters["pull_request_number"])
+            url = f"{self.web_base}/{project}/-/merge_requests/{external_id}"
+            output.update({**parameters, "draft": False,
+                "provider_mutation_performed": mutated,
+                "metadata_sha256": hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
+            summary = "Exact open GitLab merge request is ready for review; no approval or merge was performed."
         elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             if payload["merge_method"] == "rebase":
@@ -787,6 +867,20 @@ class GitLabActionProvider:
             verified = str(commit.get("id") or "") == str(
                 result.output["head_revision"]
             )
+        elif result.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            parameters = {key: result.output[key] for key in (
+                "pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref")}
+            async def checkpoint():
+                await readiness_verification_checkpoint(binding.id)
+            try:
+                observed = await self._ready_snapshot(project, parameters, credential, checkpoint)
+                repeated = await self._ready_snapshot(project, parameters, credential, checkpoint)
+                verified = (observed == repeated and observed["draft"] is False
+                    and self._merge_request_title(observed["title"], False) == observed["title"]
+                    and (not result.output.get("metadata_sha256") or
+                        result.output["metadata_sha256"] == hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()))
+            except (ActionRequirementError, KeyError, TypeError, ValueError):
+                verified = False
         elif result.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             item = await self.client.merge_request(
                 self.api_base,

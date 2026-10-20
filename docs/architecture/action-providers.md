@@ -253,11 +253,10 @@ in the UI.
 
 ### Explicit pull-request readiness (`ready/1.0`)
 
-`code-host.pull-request.ready` is a separate, medium-risk GitHub capability,
+`code-host.pull-request.ready` is a separate, medium-risk GitHub and GitLab capability,
 requiring `repository.pull-request.ready`, a canonical repository binding and a
 credential reference. It neither approves nor merges a PR. The upsert draft
-transition guard remains in force. GitLab does not advertise readiness; its
-existing draft-title semantics are unchanged.
+transition guard remains in force. Each provider explicitly implements readiness.
 
 The closed request schema accepts only `pull_request_number`,
 `expected_head_sha`, `expected_base_sha` and `expected_base_ref`. Both hashes are
@@ -289,9 +288,24 @@ non-draft state. Reconciliation attests current readiness, not historical rule
 continuity, CI qualification, approval, merge or installed acceptance. A separate
 expected-head merge gate remains necessary.
 
+GitLab resolves the canonical project's numeric identity, verifies the exact open
+same-project MR, and reads the actual target branch tip (not `diff_refs.base_sha`,
+which is a merge base). Repeated preflight snapshots pin the MR identity, head,
+branches, title and description. The documented
+[MR title update](https://docs.gitlab.com/api/merge_requests/#update-mr) removes
+only supported leading Draft markers through one title-only PUT. Description,
+branches and identities must remain unchanged in the subsequent reads. Fork MRs
+are refused by this initial same-project implementation. GitLab's title update
+has no expected-head or title CAS: concurrent changes after the final read remain
+uncertain, never an atomic fence claim. Admission is rechecked around every read
+and before mutation; post-send admission or metadata changes require read-only
+reconciliation. Reconciliation verifies the current exact MR/head/target and
+non-draft state, not historical metadata continuity or independent acceptance.
+Existing GitLab merge pipeline, approval and protection requirements remain in force.
+
 The ActionIntent is single-attempt, with a 120-second execution deadline. A normal
-successful transition/verification makes at most 21 bounded HTTP calls and one
-GraphQL mutation; a known already-ready PR performs reads only. Durable duplicate
+GitHub transition/verification makes at most 21 bounded HTTP calls and one
+GraphQL mutation; GitLab makes 15 bounded reads and at most one title-only PUT; a known already-ready PR performs reads only. Durable duplicate
 keys retain the original intent/receipts. Lost responses use only read-only
 verification; explicit retry is refused. Provider results and evidence contain
 canonical references, exact target identities and bounded verification metadata,

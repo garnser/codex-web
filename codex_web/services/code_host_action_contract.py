@@ -171,7 +171,7 @@ class CodeHostActionContract:
                 retry_max_attempts=1,
                 network_access=True,
             ),
-            # Readiness is additive and explicitly implemented only by GitHub.
+            # Readiness is additive and implemented by the declared code-host adapters.
             # Registration never grants an execution profile this capability.
             *((ActionDefinition(
                 action_id=CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
@@ -187,7 +187,7 @@ class CodeHostActionContract:
                 timeout_seconds=120.0,
                 retry_max_attempts=1,
                 network_access=True,
-            ),) if self.provider_type == "github" else ()),
+            ),) if self.provider_type in {"github", "gitlab"} else ()),
             ActionDefinition(
                 action_id=CODE_HOST_JOB_RERUN_ACTION_ID,
                 title="Rerun CI job",
