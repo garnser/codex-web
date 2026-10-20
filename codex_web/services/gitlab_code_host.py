@@ -172,7 +172,45 @@ class GitLabCodeHostProvider:
                             revision=str(revision),
                         )
                     )
+        defaults = [item for item in branches
+                    if isinstance(item, dict) and item.get("default") is True]
+        if defaults:
+            if len(defaults) != 1:
+                raise CodeHostError("GitLab default branch response is ambiguous")
+            self._default_branch_ref(defaults[0])
+        else:
+            # Lists remain bounded to their first page. Resolve only the
+            # authoritative default tip, never paginate every repository ref.
+            metadata = await self._get(binding, f"projects/{project}", credential=credential)
+            if not isinstance(metadata, dict):
+                raise CodeHostError("GitLab project response is invalid")
+            default = metadata.get("default_branch")
+            if default is None and not branches:
+                return tuple(facts)  # A genuinely empty repository has no tip.
+            if not isinstance(default, str) or not default or re.search(r"[\x00-\x20\x7f]", default):
+                raise CodeHostError("GitLab project default branch is invalid")
+            data = await self._get(binding,
+                f"projects/{project}/repository/branches/{quote(default, safe='')}",
+                credential=credential)
+            tip = self._default_branch_ref(data, expected_name=default)
+            # An exact current read supersedes an earlier page observation of
+            # the same branch (e.g. a concurrent default-branch change).
+            facts = [item for item in facts if item.kind != "branch" or item.name != default]
+            facts.append(tip)
         return tuple(facts)
+
+    @staticmethod
+    def _default_branch_ref(data, *, expected_name=None) -> CodeHostRefFact:
+        if not isinstance(data, dict) or data.get("default") is not True:
+            raise CodeHostError("GitLab default branch response is invalid")
+        name = data.get("name")
+        commit = data.get("commit")
+        revision = commit.get("id") if isinstance(commit, dict) else None
+        if (not isinstance(name, str) or not name or re.search(r"[\x00-\x20\x7f]", name)
+                or (expected_name is not None and name != expected_name)
+                or not isinstance(revision, str) or re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None):
+            raise CodeHostError("GitLab default branch name or revision is invalid")
+        return CodeHostRefFact(name=name, kind="branch", revision=revision)
 
     async def commit(
         self,
