@@ -242,6 +242,7 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         self.execution = SimpleNamespace(
             find_duplicate_queued_turn=Mock(return_value=None),
             enqueue_turn=Mock(return_value=SimpleNamespace(id="queued-1")),
+            schedule_queue_drain=Mock(),
             publish_queue_status=AsyncMock(),
             thread_is_active=Mock(return_value=True),
             thread_has_live_agent_runtime_session=Mock(return_value=True),

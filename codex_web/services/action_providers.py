@@ -142,16 +142,26 @@ class ActionProviderRegistry:
         *,
         actor: AuthenticationActor | None = None,
     ) -> ActionProvider:
+        return self.provider_configuration(provider_type, provider_instance,
+            scope=actor.tenant if actor is not None else None)
+
+    def provider_configuration(self, provider_type: str, provider_instance: str, *,
+                               scope: TenantScope | None = None) -> ActionProvider:
+        """Read a registered implementation for canonical routing configuration.
+
+        This lookup grants no action authority and resolves no credential.
+        Invocation still uses the existing actor/authority/provider boundary.
+        """
         provider_type, provider_instance = self._provider_key(
             provider_type,
             provider_instance,
         )
         provider = None
-        if actor is not None:
+        if scope is not None:
             provider = self.tenant_providers.get(
                 (
-                    actor.organization_id,
-                    actor.workspace_id,
+                    scope.organization_id,
+                    scope.workspace_id,
                     provider_type,
                     provider_instance,
                 )

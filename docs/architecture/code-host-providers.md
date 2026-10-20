@@ -1,5 +1,41 @@
 # Code-host provider boundary
 
+GitLab artifact events keep their normal MR/pipeline projection. Separately,
+verified publication lineage can route a terminal notification to its original
+Work Item and current validation/action owner without applying a pipeline's
+terminal stage to that original. The authenticated configured Project/repository
+mapping, Resource provenance and unique enabled ActionProvider binding bridge a
+proxy webhook endpoint to the public provider identity; hostname guessing and MR
+body links are not authority. Missing/revoked configuration refuses a claimed
+original. Unpublished/read-only branches retain existing artifact routing and do
+not require a mutation-provider binding. A repair in a new execution can reuse
+an existing MR only when the verified branch publication explicitly attests the
+same MR number and original issue. That newer verified publication may supersede
+an older TaskSource head snapshot without rewriting it; a newer conflicting
+snapshot still refuses routing.
+
+New canonical notifications preserve exact head and publication-binding identity
+in bounded provider metadata. Adapter-only redelivery compatibility ignores
+new optional metadata only when it was absent from an otherwise exactly matching
+immutable historical event. Its original checksum remains unchanged and no
+subscriber runs; changes to previously recorded core facts still conflict.
+Historical events are never rewritten to add an inferred SHA or provider proof.
+
+Pending/running CI remains deterministic with no native turn or implementation
+handback. Terminal success reaches existing exact-head validation; failure does
+not invent a code/runner diagnosis, and existing evidenced owner-disposition
+policy remains required. Accepted historical handoffs are preserved and can carry
+an independent ProviderNotificationPin; an active pending handoff retains its
+separate ownership protocol. Pinned notifications enter the existing durable
+queue even when idle, with ordinary profile/scope/serial-admission checks.
+Global pause and every independent review, security, merge and release gate
+remain effective. No polling or synthetic terminal event is added.
+
+UI impact uses existing Work Item, queue/native, canonical event, ActionIntent
+and Upgrade inspectors: route provenance names the original ref, MR/head and
+actual publication intent IDs; refusal reasons and incomplete contract activation
+remain visible. No new authoritative object or hidden operator action is added.
+
 ## Status
 
 Milestone 3 foundation for issue #373.

@@ -447,3 +447,38 @@ no mixed-writer window or automatic metadata downgrade is supported. Retain a
 consistent pre-upgrade snapshot for a separately qualified restore. Reverting
 only source or metadata after 1.3 writes is not rollback. Deployment/installation
 and any live migration require independent upgrade qualification and approval.
+
+## Verified publication notification lookup
+
+GitLab MR and CI notifications can locate the original Work Item through derived
+publication indexes in `action_intents.records.v1`. Tenant/Workspace/Project and
+branch candidates are bounded; repository/provider/branch and original-Work-Item
+indexes locate exact intent IDs. They are discovery aids, never provider proof.
+Routing re-reads each selected intent's receipt and verification, including
+attempt, idempotency, provider binding, verification time and exact output entity.
+The latest verified branch publication and MR upsert must identify the same
+original, owned execution, branch, repository and exact event head. A newer
+verified publication, ambiguous original, missing head, changed binding, foreign
+scope or unresolved outcome refuses routing. Work Item notes, MR prose and raw
+branch names never confer that linkage. Existing verified TaskSource relations
+for the same MR must agree; unrelated historical relations are preserved.
+
+Keyed metadata **1.4** fences earlier writers before resumable publication-index
+backfill. Public ActionIntent document schema remains **1.6**. Existing 1.3 state
+does not activate this barrier on import or webhook reads. The registered
+`action-publication-index/1.0` Upgrade contract step requires service-wide drain,
+current instance/epoch/preflight, a fresh qualified backup and exact canonical
+ApprovalRequest consumption. Its handler verifies prerequisites without changing
+the metadata. The Upgrade engine records the irreversible boundary and disables
+rollback on all earlier/later plans first. Existing post-upgrade verification
+then activates/backfills the index under that recorded boundary and current
+drain. Partial failure retains maintenance and the boundary; verification cannot
+pass until the exact current index format reports complete. Verification retry
+resumes the derived backfill without changing any original intent/history.
+
+A genuinely new store may atomically initialize an empty complete 1.4 collection
+only when neither a legacy document nor keyed authoritative records exists.
+An existing empty legacy document still requires the governed transition. Old
+1.3 readers/writers reject 1.4; binary rollback or metadata downgrade is invalid
+after the boundary. Use a separately qualified consistent pre-boundary restore.
+Webhook lookup never migrates, backfills or scans the entire ActionIntent state.

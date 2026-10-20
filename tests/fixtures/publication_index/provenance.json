@@ -1,0 +1,6 @@
+{
+  "revision": "78e215da5c726b033f12a348a655153255dd6486",
+  "path": "codex_web/storage/action_intents.py",
+  "sha256": "51053775e940799659b8c4bc0ba6e537edfb14f75822d5580d8e95c66adf4f9a",
+  "description": "Unmodified original keyed-record metadata1.3 reader/writer; public ActionIntentState contract1.6 is separate."
+}

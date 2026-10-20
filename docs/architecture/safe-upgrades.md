@@ -371,6 +371,18 @@ for its service drain, verified snapshot, old-worker exclusion and write gate.
 It disables rollback on earlier plans atomically and on later plans conservatively;
 a new plan cannot make retained incompatible rows safe for an old binary.
 
+The `action-publication-index/1.0` contract follows the same canonical approval,
+backup, service-drain and irreversible-boundary workflow. Install its compatible
+source first while original routing remains unavailable for unprepared indexes.
+On that installed source create the contract plan, capture/verify the fresh
+backup, request/consume exact approval and execute the contract step. The handler
+does not mutate keyed metadata before the engine records the boundary. Existing
+post-upgrade verification activates and resumes the 1.4 index backfill only under
+the succeeded boundary/current service instance, drain and epoch; unready or
+partial activation cannot release maintenance or produce PASS verification.
+Startup and webhook inspection do not perform this irreversible transition.
+See [ActionIntent publication lookup](action-intents.md#verified-publication-notification-lookup).
+
 ## Patched native Goal control dependency
 
 `patches/codex/goal-control-v1/UPSTREAM.json` is a public-source build qualification
