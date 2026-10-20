@@ -1131,6 +1131,7 @@ class TurnService:
                 model=queued.model,
                 reasoning_effort=queued.reasoning_effort,
                 work_item_ref=queued.work_item_ref,
+                handoff_requested_at=queued.handoff_requested_at,
                 repository_resource_id=queued.repository_resource_id,
                 writable_repository_resource_ids=(
                     queued.writable_repository_resource_ids

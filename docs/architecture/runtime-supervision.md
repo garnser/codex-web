@@ -205,7 +205,7 @@ New structured handoffs persist `delivery.status=awaiting_dispatch`. Their
 recipient acknowledgement window begins only after a successful native turn
 start returns its actual turn ID under the admitted recipient profile. The
 existing execution service carries the original handoff `requested_at` through
-durable queue admission, drain, replacement and continuity dispatch. An atomic
+durable queue admission, drain, steering, replacement and continuity dispatch. An atomic
 canonical update matches that nonce, recipient, tenant and Project, rejects
 closed or already acknowledged work, and stores the actual Thread, turn and
 execution IDs with `delivery.status=delivered` and `started_at`. Queue admission,
