@@ -4,7 +4,7 @@ import contextvars
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 from codex_web.models import WorkItemState
 from codex_web.services.bot_delivery import BotDeliveryService
 from codex_web.services.workflow_claims import WorkflowClaimPolicy
@@ -64,6 +64,61 @@ class OutboundClaimsAsyncTests(unittest.IsolatedAsyncioTestCase):
     def message(self):
         return {"method": "item/completed", "params": {"threadId": "t",
             "item": {"type": "agentMessage", "text": "#438 current_owner=quinn"}}}
+
+    async def test_composed_progress_with_bare_iid_does_not_read_canonical_workitems(self):
+        import codex_web.application as application
+        loader = Mock(side_effect=AssertionError('nonclaim full catalog read'))
+        selected = Mock(side_effect=AssertionError('nonclaim selected record read'))
+        with patch.object(application.workflow_claim_policy,'load_states',loader), \
+             patch.object(application.workflow_claim_policy,'get_states',selected):
+            sequence = []
+            service = self.service(application.bot_delivery_service.workflow_claim_findings,sequence)
+            message = self.message()
+            text = 'James: I am inspecting #438 and group/app#439; tests are still running.'
+            message['params']['item']['text'] = text
+            await service.record_outbound(message)
+            service.send_outbound.assert_awaited_once()
+            self.assertEqual(service.send_outbound.await_args.args[1],text)
+            self.assertNotIn('workflow_verification',next(value for name,value in sequence if name=='event'))
+        loader.assert_not_called()
+        selected.assert_not_called()
+
+    async def test_composed_recognized_claims_still_read_canonical_state_and_correct(self):
+        import codex_web.application as application
+        state = WorkItemState(ref='group/app#438',current_owner='james',
+            created_at=1,updated_at=1,last_meaningful_update_at=1)
+        loader = Mock(return_value={state.ref:state})
+        selected = Mock(return_value={state.ref:state})
+        with patch.object(application.workflow_claim_policy,'load_states',loader), \
+             patch.object(application.workflow_claim_policy,'get_states',selected), \
+             patch.object(application.workflow_claim_policy,'ensure_defaults',lambda value:value):
+            for ref,claim,kind in (('#438','current_owner=quinn','owner'),
+                                   ('group/app#438','current_stage=closed','stage'),
+                                   ('#438','handoff was accepted','handoff')):
+                with self.subTest(claim=claim):
+                    loader.reset_mock();selected.reset_mock()
+                    sequence = []
+                    service = self.service(application.bot_delivery_service.workflow_claim_findings,sequence)
+                    message = self.message()
+                    message['params']['item']['text'] = f'{ref} {claim}'
+                    await service.record_outbound(message)
+                    sent = service.send_outbound.await_args.args[1]
+                    self.assertIn('withheld an agent update',sent)
+                    self.assertIn(f'{kind} claim mismatch',sent)
+                    event = next(value for name,value in sequence if name=='event')
+                    self.assertEqual(event['workflow_verification']['refs'],[state.ref])
+                    (selected if '/' in ref else loader).assert_called_once()
+                    (loader if '/' in ref else selected).assert_not_called()
+
+    async def test_composed_recognized_claim_read_failure_prevents_delivery(self):
+        import codex_web.application as application
+        error = RuntimeError('canonical claim read unavailable')
+        with patch.object(application.workflow_claim_policy,'load_states',side_effect=error):
+            service = self.service(application.bot_delivery_service.workflow_claim_findings,[])
+            with self.assertRaises(RuntimeError) as raised:
+                await service.record_outbound(self.message())
+            self.assertIs(raised.exception,error)
+            service.send_outbound.assert_not_awaited()
 
     async def test_blocked_claims_yield_preserve_context_correction_and_consumer_order(self):
         loop = asyncio.get_running_loop();entered = asyncio.Event();release = threading.Event()

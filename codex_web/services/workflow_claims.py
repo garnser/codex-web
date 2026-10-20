@@ -56,15 +56,8 @@ class WorkflowClaimPolicy:
                 mentioned.append(matches[0])
         return mentioned
 
-    def findings(
-        self,
-        text: str,
-    ) -> tuple[list[str], list[WorkItemState]]:
-        mentioned = self.mentioned_states(text)
-        if len(mentioned) != 1:
-            return [], mentioned
-        state = self.ensure_defaults(mentioned[0])
-        findings: list[str] = []
+    def _claim_matches(self, text: str):
+        """Share the exact existing recognizers with the delivery read gate."""
         owner_names = sorted(
             set(self.owner_names)
             | {
@@ -86,12 +79,42 @@ class WorkflowClaimPolicy:
                 rf"?({owners})\b"
             ),
         )
-        claimed_owner: str | None = None
+        owner_match = None
         for pattern in owner_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                claimed_owner = self.coerce_owner(match.group(1))
+                owner_match = match
                 break
+        stage_match = re.search(
+            r"\bcurrent[_ ]stage\s*[=:]\s*?([a-z][a-z0-9 _-]*)",
+            text,
+            re.IGNORECASE,
+        )
+        handoff_match = re.search(
+            r"\bhandoff\s+(?:is\s+|was\s+)?accepted\b",
+            text,
+            re.IGNORECASE,
+        )
+        return owner_match, stage_match, handoff_match
+
+    def outbound_findings(self, text: str) -> tuple[list[str], list[WorkItemState]]:
+        # Delivery does not consume mention discovery when no supported claim
+        # exists. Keep public findings()/mentioned_states() semantics unchanged.
+        if not any(self._claim_matches(text)):
+            return [], []
+        return self.findings(text)
+
+    def findings(
+        self,
+        text: str,
+    ) -> tuple[list[str], list[WorkItemState]]:
+        mentioned = self.mentioned_states(text)
+        if len(mentioned) != 1:
+            return [], mentioned
+        state = self.ensure_defaults(mentioned[0])
+        findings: list[str] = []
+        owner_match, stage_match, handoff_match = self._claim_matches(text)
+        claimed_owner = self.coerce_owner(owner_match.group(1)) if owner_match else None
         canonical_owner = self.coerce_owner(state.current_owner)
         if claimed_owner and claimed_owner != canonical_owner:
             findings.append(
@@ -100,11 +123,6 @@ class WorkflowClaimPolicy:
                 f"canonical={canonical_owner or 'none'}"
             )
 
-        stage_match = re.search(
-            r"\bcurrent[_ ]stage\s*[=:]\s*?([a-z][a-z0-9 _-]*)",
-            text,
-            re.IGNORECASE,
-        )
         if stage_match:
             claimed_stage = (
                 stage_match.group(1)
@@ -120,11 +138,7 @@ class WorkflowClaimPolicy:
                     f"canonical={state.current_stage}"
                 )
 
-        if re.search(
-            r"\bhandoff\s+(?:is\s+|was\s+)?accepted\b",
-            text,
-            re.IGNORECASE,
-        ):
+        if handoff_match:
             handoff_status = (
                 state.handoff.status if state.handoff else None
             )
