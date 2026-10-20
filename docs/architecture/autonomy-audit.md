@@ -135,6 +135,12 @@ inspection/mutation, and integrity-preserving redaction. Human mutations require
 administrator authority and MFA. Service principals require explicit autonomy
 audit/admin scope.
 
+Read-only audit HTTP handlers execute synchronous service/storage work in the
+HTTP framework's worker thread pool so full-history inspection does not block
+the event loop used for worker supervision. Mutating handlers retain their
+existing execution path, including reliability-policy scheduler wakeups. Audit
+integrity, authorization, tenant scope and lease-expiry rules are unchanged.
+
 ## UI and related production domains
 
 The Autonomy Control Center and explain-action UI consume this
