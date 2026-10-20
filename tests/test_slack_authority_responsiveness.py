@@ -73,6 +73,53 @@ class SlackAuthorityResponsivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.acks)
         self.assertFalse(self.first.store.load().receipts)
 
+    async def test_rotation_after_source_read_during_profile_capture_cannot_ack_or_route(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.first.authority_snapshot
+        def snapshot(event, actor):
+            captured_source = original(event, actor)
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('profile capture barrier expired')
+            return captured_source
+        self.first.authority_snapshot = snapshot
+        self.first.source_authority_snapshot = original
+        task = asyncio.create_task(self.retain_and_ack(self.first,self.payload()))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait,3))
+            self.authority_revision = 2
+        finally:
+            release.set()
+        result = (await asyncio.gather(task,return_exceptions=True))[0]
+        self.assertIsInstance(result,ConversationChannelConflictError)
+        self.assertFalse(self.acks)
+        self.assertFalse(self.first.store.load().receipts)
+        self.first.route_handler.assert_not_called()
+
+    async def test_rotation_after_source_read_during_revalidation_refuses_before_routing(self):
+        receipt = await self.retain_and_ack(self.first,self.payload())
+        event = self.first.pending_events(actor=self.actor,connection_id='connection-a',project_id='project-a')[0]
+        entered,release = threading.Event(),threading.Event()
+        original = self.first.authority_snapshot
+        def snapshot(event, actor):
+            captured = original(event,actor)
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('profile revalidation barrier expired')
+            return captured
+        self.first.authority_snapshot = snapshot
+        self.first.source_authority_snapshot = original
+        task = asyncio.create_task(self.first.ingest(event,actor=self.actor))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait,3))
+            self.authority_revision = 2
+        finally:
+            release.set()
+        result = await task
+        self.assertEqual(result.outcome,ConversationProjectionOutcome.REQUIRES_RECONCILIATION)
+        self.assertIn('authenticated_source',result.reason)
+        self.first.route_handler.assert_not_called()
+
     async def test_cancellation_before_capture_finishes_cannot_commit_later(self):
         entered, release, finished, observed, context, token, marker, loop_thread = self.blocked_snapshot()
         task = asyncio.create_task(self.retain_and_ack(self.first, self.payload()))

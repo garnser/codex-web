@@ -336,6 +336,8 @@ class ConversationChannelService:
         if self.authority_snapshot is None or event.message.conversation.provider_type != "slack":
             return None
         snapshot = self.authority_snapshot(event, actor)
+        if self._source_authority_digest(self.source_authority_snapshot(event, actor)) != self._source_authority_digest(snapshot):
+            raise ConversationChannelConflictError("authenticated source changed during authority verification")
         return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     async def _capture_authority_snapshot(self, event, actor):
@@ -347,7 +349,8 @@ class ConversationChannelService:
         # as its new source. Direct callers retain the conservative full fallback.
         expected_source = self._source_authority_digest(self.source_authority_snapshot(event, actor))
         snapshot = await asyncio.to_thread(self.authority_snapshot, event, actor)
-        if self._source_authority_digest(snapshot) != expected_source:
+        if (self._source_authority_digest(snapshot) != expected_source
+            or self._source_authority_digest(self.source_authority_snapshot(event, actor)) != expected_source):
             raise ConversationChannelConflictError("authenticated source changed during authority capture; no acknowledgement")
         return snapshot
 
@@ -905,7 +908,9 @@ class ConversationChannelService:
                 current = await asyncio.to_thread(self._capture_current_authority, event, actor)
                 current_digest = hashlib.sha256(json.dumps(current, sort_keys=True,
                     separators=(",", ":")).encode()).hexdigest() if current is not None else None
-                if current_digest != retained.authority_digest:
+                if self._source_authority_digest(self.source_authority_snapshot(event, actor)) != self._source_authority_digest(current):
+                    refusal_reason = "authority_changed:authenticated_source"
+                elif current_digest != retained.authority_digest:
                     original = content.get("authority_snapshot") or {}
                     changed = [key for key in sorted(set(original) | set(current or {}))
                         if original.get(key) != (current or {}).get(key)]

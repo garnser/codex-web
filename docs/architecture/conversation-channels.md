@@ -418,7 +418,8 @@ resolve an unused auto-binding default. A different role's replacement, settings
 or Profile cannot change this snapshot. Selection changes, selected-role authority,
 repository/tenant authorization and authenticated source/credential rotation still
 fail closed. The source digest excludes route-selection metadata; the source is
-pinned before the awaited full capture. All ingress owners must run the upgraded
+pinned before the awaited full capture and freshly rechecked after its routing
+reads, during revalidation and bounded recovery. All ingress owners must run the upgraded
 selector: older readers conservatively reject the changed routing snapshot.
 
 A failed authority check atomically compares the untouched PENDING receipt before
