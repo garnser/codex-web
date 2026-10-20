@@ -569,6 +569,11 @@ class ControlPlaneBrokerService:
             result["optional_query_parameters"].append("member_path")
         if item.id == 'repository.read.merge-requirements':
             result['requires_explicit_declaration'] = True
+            result['provider_capability'] = CodeHostCapability.MERGE_REQUIREMENTS_READ.value
+            result['unsupported_provider_guidance'] = (
+                'An unsupported adapter capability is an evidence gap, not a binding repair. '
+                'Do not retry unchanged reads or broaden grants; other reads do not replace missing merge-policy evidence.'
+            )
         if item.id == "repository.read.delivery-evidence":
             result["supported_action_ids"] = sorted(_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS)
             result["inspection"] = {
@@ -1238,6 +1243,8 @@ class ControlPlaneBrokerService:
         choose a credential/provider implicitly.
         """
         bindings = []
+        unsupported_provider = False
+        supported_capability_seen = False
         for item in action_registry.list_bindings(actor):
             if (not item.enabled or repository_id not in item.resource_ids
                     or item.project_id not in {None, project_id}):
@@ -1258,13 +1265,20 @@ class ControlPlaneBrokerService:
                 except CodeHostError:
                     continue
                 if capability not in host.capabilities():
+                    unsupported_provider = True
                     continue
+                supported_capability_seen = True
                 if not str(getattr(provider, "api_base", "")).strip():
                     continue
             else:
                 raise ControlPlaneBrokerDeniedError("repository provider capability is required")
             bindings.append(item)
         if len(bindings) != 1:
+            if not bindings and unsupported_provider and not supported_capability_seen:
+                raise ControlPlaneBrokerDeniedError(
+                    f"repository provider does not support code-host capability {capability.value}; "
+                    "another binding cannot implement an unsupported provider operation"
+                )
             raise ControlPlaneBrokerDeniedError(
                 "repository operation requires exactly one eligible enabled provider binding"
             )
