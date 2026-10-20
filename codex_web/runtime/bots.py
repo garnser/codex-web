@@ -8,6 +8,7 @@ import os
 import random
 import time
 from collections import Counter, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,8 @@ from codex_web.services.bot_routing import BotRoutingService
 from codex_web.services.bot_runtime_telemetry import BotRuntimeTelemetry
 from codex_web.services.secrets import SecretBroker
 from codex_web.conversation_channels import ConversationChannelEvent
+from codex_web.conversation_channels import ConversationProjectionOutcome
+from codex_web.services.bot_runtime_gate import BotRuntimeGateClosed
 
 
 @dataclass(slots=True)
@@ -65,6 +68,7 @@ class BotRuntime:
         telegram_client: TelegramClient | None = None,
         secret_broker: SecretBroker | None = None,
         ownership: Any | None = None,
+        gate_reason: Callable[[str], str | None] | None = None,
     ) -> None:
         self.connections = connections
         self.bindings = bindings
@@ -77,6 +81,7 @@ class BotRuntime:
         self.telegram = telegram_client or TelegramClient()
         self.secret_broker = secret_broker
         self.ownership = ownership
+        self.gate_reason = gate_reason or (lambda _project_id: None)
         self.conversation_channels: Any | None = None
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
@@ -108,6 +113,12 @@ class BotRuntime:
             connections = self.connections.load_connections()
             desired: dict[str, tuple[Any, ...]] = {}
             for connection in connections:
+                reason = self.gate_reason(connection.project_id)
+                if reason:
+                    await self._stop_locked(connection.id)
+                    self.telemetry.set_status(connection, "paused", gateReason=reason,
+                                              connectedSince=None, nextRetryAt=None)
+                    continue
                 fingerprint = self._fingerprint(connection)
                 if not fingerprint:
                     continue
@@ -573,6 +584,8 @@ class BotRuntime:
         retained_retry: bool = False,
         retained_event: ConversationChannelEvent | None = None,
     ) -> str:
+        if self.gate_reason(connection.project_id):
+            return "paused"
         self._start_slack_payload_workers(connection)
         dedupe_key = self._slack_payload_dedupe_key(
             envelope_id,
@@ -633,7 +646,8 @@ class BotRuntime:
         return "accepted"
 
     async def _recover_retained_slack(self, connection: BotConnection) -> None:
-        if connection.provider != "slack" or self.conversation_channels is None:
+        if (connection.provider != "slack" or self.conversation_channels is None
+                or self.gate_reason(connection.project_id)):
             return
         try:
             actor = self.connections.runtime_actor(connection.project_id)
@@ -649,6 +663,8 @@ class BotRuntime:
                 ),
             )
             for event in events:
+                if self.gate_reason(connection.project_id):
+                    break
                 # Both live and recovered inputs enter in retained arrival order.
                 # A hot shard cannot exclude the pending sample for other shards.
                 self._admit_slack_payload(
@@ -699,7 +715,9 @@ class BotRuntime:
                 int(stats.get("processingWorkers", 0)) + 1
             )
             self._update_slack_payload_status(connection)
+            deferred_reason = None
             try:
+                self._require_gate(connection)
                 if work.retained_event is not None:
                     self.conversation_channels.registry.resolve(
                         work.retained_event.message.conversation.provider_type,
@@ -709,6 +727,11 @@ class BotRuntime:
                         work.retained_event,
                         actor=self.connections.runtime_actor(connection.project_id),
                     )
+                    if receipt.outcome == ConversationProjectionOutcome.PENDING:
+                        stats = self.slack_payload_stats[connection.id]
+                        stats["deferred"] = int(stats.get("deferred", 0)) + 1
+                        deferred_reason = receipt.reason or "bot_runtime_gate_unavailable"
+                        continue
                     result = self.conversation_channels.legacy_routing_result(receipt)
                     await self._slack_routing_notice(
                         connection, result,
@@ -722,6 +745,12 @@ class BotRuntime:
                 stats["processed"] = (
                     int(stats.get("processed", 0)) + 1
                 )
+            except BotRuntimeGateClosed as exc:
+                # The canonical event remains PENDING. Do not report processing
+                # or consume its original routing claim merely because paused.
+                stats = self.slack_payload_stats[connection.id]
+                stats["deferred"] = int(stats.get("deferred", 0)) + 1
+                deferred_reason = exc.reason_code
             except asyncio.CancelledError:
                 stats = self.slack_payload_stats.get(
                     connection.id,
@@ -758,6 +787,8 @@ class BotRuntime:
                 )
                 queue.task_done()
                 self._update_slack_payload_status(connection)
+                if deferred_reason:
+                    self.telemetry.set_status(connection, "paused", gateReason=deferred_reason)
 
     async def _stop_slack_payload_workers(
         self,
@@ -871,6 +902,11 @@ class BotRuntime:
             )
         return None
 
+    def _require_gate(self, connection: BotConnection) -> None:
+        reason = self.gate_reason(connection.project_id)
+        if reason:
+            raise BotRuntimeGateClosed(reason)
+
     async def _with_credential(
         self,
         connection: BotConnection,
@@ -878,6 +914,12 @@ class BotRuntime:
         operation: str,
         consumer: Any,
     ) -> Any:
+        self._require_gate(connection)
+
+        async def guarded_consumer(value):
+            self._require_gate(connection)
+            return await consumer(value)
+
         secret_id = getattr(connection, f"{field}_secret_id", None)
         if secret_id and self.secret_broker is not None:
             return await self.secret_broker.use_async(
@@ -886,7 +928,7 @@ class BotRuntime:
                     connection.project_id
                 ),
                 operation=operation,
-                consumer=consumer,
+                consumer=guarded_consumer,
                 context={
                     "connection_id": connection.id,
                     "provider": connection.provider,
@@ -894,7 +936,7 @@ class BotRuntime:
             )
         raw = getattr(connection, field, None)
         if raw:
-            return await consumer(raw)
+            return await guarded_consumer(raw)
         raise RuntimeError(f"Bot connection is missing {field}")
 
     @staticmethod
@@ -965,11 +1007,16 @@ class BotRuntime:
             )
 
     async def _run_connection(self, connection: BotConnection) -> None:
+        reason = self.gate_reason(connection.project_id)
+        if reason:
+            self.telemetry.set_status(connection, "paused", gateReason=reason)
+            return
         if connection.provider == "slack":
             self._start_slack_payload_workers(connection)
         try:
             while True:
                 try:
+                    self._require_gate(connection)
                     self.telemetry.set_status(
                         connection,
                         "starting",
@@ -984,6 +1031,10 @@ class BotRuntime:
                         await self._run_telegram(connection)
                     else:
                         return
+                except BotRuntimeGateClosed as exc:
+                    self.telemetry.set_status(connection, "paused", gateReason=exc.reason_code,
+                                              connectedSince=None, nextRetryAt=None)
+                    return
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -1141,6 +1192,7 @@ class BotRuntime:
             "slack.socket_url",
             self.slack.socket_url,
         )
+        self._require_gate(connection)
         async with websockets.connect(
             socket_url,
             ping_interval=self.slack_socket_ping_interval(),
@@ -1148,6 +1200,7 @@ class BotRuntime:
             open_timeout=self.slack_socket_open_timeout(),
             close_timeout=5,
         ) as websocket:
+            self._require_gate(connection)
             connected_at = time.time()
             self.telemetry.set_status(
                 connection,
@@ -1177,6 +1230,7 @@ class BotRuntime:
                 }
             )
             async for raw in websocket:
+                self._require_gate(connection)
                 received_at = time.time()
                 envelope = json.loads(raw)
                 envelope_id = str(
@@ -1263,6 +1317,7 @@ class BotRuntime:
         connection: BotConnection,
         payload: dict[str, Any],
     ) -> None:
+        self._require_gate(connection)
         try:
             if payload.get("type") == "block_actions":
                 await self.delivery.handle_slack_interaction(
@@ -1309,6 +1364,8 @@ class BotRuntime:
                     )
                     if not receipts:
                         return
+                    if receipts[0].outcome == ConversationProjectionOutcome.PENDING:
+                        raise BotRuntimeGateClosed(receipts[0].reason or "bot_runtime_gate_unavailable")
                     result = (
                         self.conversation_channels.legacy_routing_result(
                             receipts[0]
@@ -1358,6 +1415,8 @@ class BotRuntime:
                 connection, result, channel,
                 event.get("thread_ts") or event.get("ts"),
             )
+        except BotRuntimeGateClosed:
+            raise
         except Exception as exc:
             event = payload.get("event") or {}
             channel = (
@@ -1443,6 +1502,7 @@ class BotRuntime:
             }
         )
         while True:
+            self._require_gate(connection)
 
             async def get_updates(token: str):
                 return await self.telegram.get_updates(
@@ -1462,6 +1522,7 @@ class BotRuntime:
                     f"Telegram getUpdates failed: {response}"
                 )
             for update in response.get("result") or []:
+                self._require_gate(connection)
                 self.telemetry.set_status(
                     connection,
                     "polling",
@@ -1535,6 +1596,9 @@ class BotRuntime:
                         ),
                     )
                 )
+            # Do not acknowledge a last update retained during a concurrent
+            # pause: Telegram can redeliver it from the unchanged durable offset.
+            self._require_gate(connection)
             if offset is not None:
                 self.connections.update(
                     connection.id,
@@ -1634,10 +1698,13 @@ def install_bot_runtime(
     slack_client: SlackClient | None = None,
     telegram_client: TelegramClient | None = None,
     ownership: Any | None = None,
+    gate_reason: Callable[[str], str | None] | None = None,
 ) -> BotRuntime:
     existing = getattr(app.state, "bot_runtime", None)
     if isinstance(existing, BotRuntime):
         existing.ownership = ownership or existing.ownership
+        if gate_reason is not None:
+            existing.gate_reason = gate_reason
         host.bot_runtime = existing
         return existing
 
@@ -1653,6 +1720,7 @@ def install_bot_runtime(
         telegram_client=telegram_client,
         secret_broker=getattr(app.state, "secret_broker", None),
         ownership=ownership,
+        gate_reason=gate_reason,
     )
     host.bot_runtime = runtime
     host._is_transient_websocket_disconnect = (

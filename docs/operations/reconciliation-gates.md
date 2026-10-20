@@ -56,6 +56,30 @@ POST /api/projects/{project_id}/reconciliation-gates/slack-backfill/resume
 
 Approval and pause state are durable across restart.
 
+## Live bot runtime
+
+The separate `bot-runtime` gate controls live bot listeners, retained-message
+routing, runtime outbound messages and remote approval interactions for one
+Project. Use the same pause/resume endpoints above with `bot-runtime` in place
+of `slack-backfill`. Its pre-readiness startup declaration does not override an
+operator pause. It does not pause local native work or erase local results.
+
+Pause/resume commits the canonical control before synchronizing listeners. If
+that refresh fails, the API reports `reconciliation_runtime_refresh_failed`
+with the saved control; inspect current status before retrying. Listener status
+exposes `paused` and its gate reason. Other Projects keep their own decisions.
+
+Authenticated messages retained while paused remain pending, without a routing
+claim or fictitious processing receipt. A provider ACK may acknowledge durable
+retention; it does not attest delivery. Resume can route the same retained input
+once through the existing canonical conversation boundary. Remote approval
+interactions do not resolve a pending approval while the runtime is paused.
+
+The gate is rechecked after credential acquisition and before new transport
+calls. A pause does not undo an operation already admitted or a provider request
+already sent; original receipts and uncertain outcomes retain their meaning.
+This control is independent of global autonomy pause and historical backfill.
+
 ### Emergency polling disable
 
 Set:

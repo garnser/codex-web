@@ -306,6 +306,7 @@ class ConversationChannelService:
         crypto=None,
         governance=None,
         authority_snapshot=None,
+        routing_gate=None,
     ) -> None:
         self.store = store
         self.registry = registry
@@ -315,6 +316,7 @@ class ConversationChannelService:
         self.crypto = crypto
         self.governance = governance
         self.authority_snapshot = authority_snapshot
+        self.routing_gate = routing_gate
 
     def _context(self, receipt):
         return EncryptionContext(organization_id=receipt.organization_id,
@@ -803,6 +805,12 @@ class ConversationChannelService:
                     reason=f"retained authority no longer valid: {type(exc).__name__}")
         canonical_id = retained.canonical_event_id
         provider = event.message.conversation.provider_type
+        if retained.outcome == ConversationProjectionOutcome.PENDING and self.routing_gate is not None:
+            reason = self.routing_gate(event.project_id, actor)
+            if reason:
+                # Retention permits the provider ACK. Keep the original durable
+                # receipt pending, without claiming routing or rewriting input.
+                return retained.model_copy(update={"reason": reason})
         receipt, claimed = self._claim(
             canonical_event_id=canonical_id,
             event=event,
@@ -956,6 +964,8 @@ class ConversationChannelService:
         if receipt.outcome == ConversationProjectionOutcome.DUPLICATE:
             result["duplicate"] = True
             result.setdefault("ok", True)
+        elif receipt.outcome == ConversationProjectionOutcome.PENDING:
+            result.update(ok=True, routed=False, pending=True, reason=receipt.reason)
         elif receipt.outcome == ConversationProjectionOutcome.REQUIRES_RECONCILIATION:
             result["ok"] = False
             result["requiresReconciliation"] = True

@@ -239,6 +239,7 @@ from codex_web.services.bot_binding_selection import install_bot_binding_selecti
 from codex_web.services.bot_bindings import install_bot_binding_lifecycle_service
 from codex_web.services.bot_channels import install_bot_channel_discovery_service
 from codex_web.services.bot_connections import install_bot_connection_service
+from codex_web.services.bot_runtime_gate import project_bot_runtime_gate
 from codex_web.services.bot_details import install_bot_detail_service
 from codex_web.services.bot_presentation import install_bot_presentation_service
 from codex_web.services.bot_runtime_telemetry import install_bot_runtime_telemetry
@@ -1513,8 +1514,18 @@ reconciliation_gate_service.register(
     )
 )
 app.state.reconciliation_gate_service = reconciliation_gate_service
+
+
+async def _refresh_reconciliation_runtime(service_id, project_id):
+    if service_id == "bot-runtime":
+        # Resolve at request time, after the explicit service graph is composed.
+        await app.state.bot_runtime.sync()
+
+
 app.include_router(
-    build_reconciliation_gates_router(reconciliation_gate_service)
+    build_reconciliation_gates_router(
+        reconciliation_gate_service, on_control_change=_refresh_reconciliation_runtime
+    )
 )
 
 turn_execution_binding_service = TurnExecutionBindingService(
@@ -3107,6 +3118,9 @@ bot_connection_service = install_bot_connection_service(
     secret_broker=secret_broker,
     identity_service=identity_service,
 )
+bot_runtime_gate_reason = project_bot_runtime_gate(
+    reconciliation_gate_service, bot_connection_service
+)
 bot_binding_selection_service = install_bot_binding_selection_service(
     app,
     core,
@@ -4204,6 +4218,7 @@ bot_delivery_service = install_bot_delivery_service(
     thread_project_id=thread_scope_service.project_id_for_thread,
     slack_client=slack_client,
     telegram_client=telegram_client,
+    gate_reason=bot_runtime_gate_reason,
 )
 from codex_web.services.conversation_details_action_provider import ConversationDetailsActionProvider
 action_provider_registry.register(ConversationDetailsActionProvider(bot_delivery_service,
@@ -4309,6 +4324,7 @@ bot_runtime = install_bot_runtime(
     slack_client=slack_client,
     telegram_client=telegram_client,
     ownership=replicated_ownership_service,
+    gate_reason=bot_runtime_gate_reason,
 )
 
 assert bot_state.reply_targets is not None
@@ -4403,6 +4419,7 @@ conversation_channel_service = ConversationChannelService(
     crypto=crypto_key_service,
     governance=data_governance_service,
     authority_snapshot=_conversation_ingress_authority,
+    routing_gate=bot_runtime_gate_reason,
 )
 data_governance_service.register_action_handler("conversation_ingress", conversation_channel_service.governance_action)
 bot_routing_service.conversation_channels = conversation_channel_service
