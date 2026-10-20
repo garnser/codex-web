@@ -236,7 +236,7 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 setattr(self.local, attr, before)
 
     async def test_retained_index_failure_remains_visible_without_a_native_request(self):
-        self.preflight.store.unresolved_work_item = Mock(side_effect=ValueError('index unavailable'))
+        self.preflight.store.for_work_item = Mock(side_effect=ValueError('index unavailable'))
         result = await self.recover()
         retained = self.preflight.store.get(result['preflightAttemptId'])
         self.assertEqual(retained.status, 'blocked')

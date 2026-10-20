@@ -108,8 +108,13 @@ class OwnerLaneRecoveryService:
                 continue
             if self.preflight.store.get('preflight-queued-' + self.request_id(binding, state)) is not None:
                 continue
-            originals = self.preflight.store.for_work_item(organization_id=state.organization_id,
-                workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref)
+            try:
+                originals = self.preflight.store.for_work_item(organization_id=state.organization_id,
+                    workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref)
+            except (ValueError, LookupError, RuntimeError):
+                # Retain a visible blocker through ordinary admitted recovery;
+                # an unavailable index never proves independent current work.
+                return state
             if any(original.queued_start_receipt is not None
                     or original.status == 'reconciliation_required' for original in originals):
                 continue
@@ -209,17 +214,14 @@ class OwnerLaneRecoveryService:
         # An unresolved delivery for THIS work is not an independent new task.
         # Other historical originals on the thread remain untouched.
         try:
-            unresolved = self.preflight.store.unresolved_work_item(
-                organization_id=state.organization_id, workspace_id=state.workspace_id,
-                project_id=state.project_id, ref=state.ref,
+            originals = self.preflight.store.for_work_item(organization_id=state.organization_id,
+                workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref,
                 excluding_attempt_id='preflight-queued-' + queued.id)
         except (ValueError, LookupError, RuntimeError):
             self.refuse('owner_recovery_retained_index_unavailable', 'The canonical retained-input index cannot establish independent current work; inspect it before recovery.')
-        if unresolved is not None:
+        if any(original.status == 'reconciliation_required' and original.queued_start_receipt is None
+                for original in originals):
             self.refuse('owner_recovery_original_unresolved', 'Resolve the retained native outcome for this Work Item before automatic continuation. Action owner: ' + context.action_owner)
-        originals = self.preflight.store.for_work_item(organization_id=state.organization_id,
-            workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref,
-            excluding_attempt_id='preflight-queued-' + queued.id)
         if any(original.queued_start_receipt is not None for original in originals):
             # A positive START is a historical delivery fact, not a proof that
             # its later turn completed. Neither lost custody nor generic usage
