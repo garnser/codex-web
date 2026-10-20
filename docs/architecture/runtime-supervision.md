@@ -980,3 +980,37 @@ owned; no absence-only or provider-text inference releases custody. Queue
 restoration uses the committed disposition/claim, so a concurrent positive
 start, changed claim or retirement wins over the earlier exception. Original
 snapshot, queue position and retry counter remain unchanged on known refusal.
+
+## Settled native writer and process lifecycle
+
+Native JSON-RPC writes retain the existing serial writer lock while one settled
+worker operation performs final canonical authority/reservation validation and
+writes/flushes the message. The guard is not an asynchronously cached permission:
+its current checks and the actual write remain in the same operation. Slow
+storage or a full native pipe leaves the event loop available for lease
+supervision and reader responses. Repeated caller cancellation joins actual work
+before releasing writer ownership; cancellation never proves that input was not
+written and never requests a resend.
+
+The writer captures the exact process, stdin and runtime generation. It validates
+that capture both before and after the guard, then writes only to the captured
+stdin. Retirement during a slow guard prevents sending to the retired process or
+borrowing a replacement's pipe. An already active partial write can remain
+uncertain after termination; only the existing immutable reader receipt or a
+qualified no-write guard witness establishes its stronger outcome.
+
+Stop immediately fences and terminates the captured process before waiting for
+lifecycle ownership. This also interrupts initialization without deadlocking its
+lifecycle lock. Lifecycle-owned cleanup uses the existing termination/kill
+bounds, then joins the settled writer before completing retirement or publishing
+a replacement. Kill escalation precedes waiting for writer ownership, because a
+full pipe must not prevent termination of an unresponsive native process. Reader
+and pipe-executor cleanup retains its original generation's references. Internal
+startup and timeout paths reuse the lifecycle-owned stop method instead of
+reentering the public lifecycle lock.
+
+The pending-RPC and start/resume capture contracts are unchanged. A real positive
+reader receipt remains authoritative if a caller is cancelled during flush.
+Partial-write errors retain unknown outcome and exact correlation; neither a
+transport exception nor a retired process creates retry authority. UI consumes
+the existing runner, queued-start, refusal and reconciliation projections.

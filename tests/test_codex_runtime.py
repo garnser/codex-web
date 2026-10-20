@@ -414,7 +414,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready.set()
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
-        self.runtime.stop = AsyncMock()
+        self.runtime._stop_locked = AsyncMock()
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
             with self.assertRaises(HTTPException) as caught:
@@ -422,7 +422,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertFalse(self.runtime.ready.is_set())
-        self.runtime.stop.assert_awaited_once()
+        self.runtime._stop_locked.assert_awaited_once()
         self.assertEqual(self.runtime.ensure_started.await_count, 2)
 
     async def test_slow_notification_does_not_block_rpc_response(self) -> None:
@@ -461,7 +461,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready.set()
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
-        self.runtime.stop = AsyncMock()
+        self.runtime._stop_locked = AsyncMock()
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
             with self.assertRaises(HTTPException) as caught:
@@ -469,7 +469,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertTrue(self.runtime.ready.is_set())
-        self.runtime.stop.assert_not_awaited()
+        self.runtime._stop_locked.assert_not_awaited()
         self.assertEqual(self.runtime.ensure_started.await_count, 1)
 
     async def test_rpc_timeout_preserves_nonrestartable_process_generation(self) -> None:
@@ -478,7 +478,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         runtime.ready.set()
         runtime.ensure_started = AsyncMock()
         runtime._send = AsyncMock()
-        runtime.stop = AsyncMock()
+        runtime._stop_locked = AsyncMock()
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
             with self.assertRaises(HTTPException) as caught:
@@ -486,7 +486,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertTrue(runtime.ready.is_set())
-        runtime.stop.assert_not_awaited()
+        runtime._stop_locked.assert_not_awaited()
 
     async def test_stdout_reader_uses_process_generation_during_shutdown(self) -> None:
         runtime = CodexRuntime(self.host)
@@ -552,7 +552,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready.set()
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
-        self.runtime.stop = AsyncMock()
+        self.runtime._stop_locked = AsyncMock()
         self.host.handoff_threads.add("thread-1")
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
@@ -564,7 +564,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertTrue(self.runtime.ready.is_set())
-        self.runtime.stop.assert_not_awaited()
+        self.runtime._stop_locked.assert_not_awaited()
         self.assertEqual(
             self.host.bot_events[-1]["type"],
             "thread_read_timeout_handoff_preserved",
@@ -576,7 +576,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready.set()
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
-        self.runtime.stop = AsyncMock()
+        self.runtime._stop_locked = AsyncMock()
         self.host.active_threads.add("thread-1")
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
@@ -588,7 +588,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertTrue(self.runtime.ready.is_set())
-        self.runtime.stop.assert_not_awaited()
+        self.runtime._stop_locked.assert_not_awaited()
         self.assertEqual(
             self.host.bot_events[-1]["type"],
             "thread_read_timeout_handoff_preserved",
@@ -600,7 +600,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready.set()
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
-        self.runtime.stop = AsyncMock()
+        self.runtime._stop_locked = AsyncMock()
         self.host._thread_is_active = lambda thread_id: thread_id == "thread-1"
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
@@ -612,7 +612,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertTrue(self.runtime.ready.is_set())
-        self.runtime.stop.assert_not_awaited()
+        self.runtime._stop_locked.assert_not_awaited()
 
     async def test_dead_reader_restarts_even_if_stale_ready_flag_is_set(self) -> None:
         async def complete():
@@ -807,7 +807,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready.set()
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
-        self.runtime.stop = AsyncMock()
+        self.runtime._stop_locked = AsyncMock()
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
             with self.assertRaises(HTTPException) as caught:
@@ -815,7 +815,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(caught.exception.status_code, 504)
         self.assertFalse(self.runtime.ready.is_set())
-        self.runtime.stop.assert_awaited_once()
+        self.runtime._stop_locked.assert_awaited_once()
 
 
 
