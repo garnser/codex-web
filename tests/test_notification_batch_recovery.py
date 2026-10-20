@@ -224,7 +224,7 @@ class NotificationBatchRecoveryTests(unittest.TestCase):
             update={
                 "id": "priority",
                 "thread_id": "replacement-thread",
-                "source": "slack",
+                "source": "web",
             }
         )
         self.queues.put("replacement-thread", [priority])

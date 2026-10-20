@@ -49,29 +49,30 @@ test('conversation status shows paused automation while preserving active and ap
   await expect(page.locator('#queue-admission-status')).toBeHidden();
 });
 
-test('Slack priority notice is scoped to the selected thread and coexists with automation pause', async ({page}) => {
+test('Equal human priority notice is scoped to the selected thread and coexists with automation pause', async ({page}) => {
   await page.setContent('<p id="queue-admission-status" role="status" hidden></p>');
   await page.evaluate(async source => {
     window.queueUi = await import('data:text/javascript;base64,' + btoa(source));
     window.queueState = {threadId:'selected', queueAdmissionMessageByThread:new Map()};
   }, queueUi);
   await page.evaluate(() => {
-    queueUi.applyQueueAdmissionStatus(queueState, {threadId:'other',humanSlackPriorityCount:1,
-      humanSlackPriorityReason:'Human Slack messages have priority when this thread is ready.'});
+    queueUi.applyQueueAdmissionStatus(queueState, {threadId:'other',humanPriorityCount:1,
+      humanPriorityReason:'Human messages have priority over automated work when this thread is ready.'});
     queueUi.renderQueueAdmissionStatus(queueState);
   });
   await expect(page.locator('#queue-admission-status')).toBeHidden();
   await page.evaluate(() => {
-    queueUi.applyQueueAdmissionStatus(queueState, {threadId:'selected',humanSlackPriorityCount:2,
-      humanSlackPriorityReason:'Human Slack messages have priority when this thread is ready.',
+    queueUi.applyQueueAdmissionStatus(queueState, {threadId:'selected',humanPriorityCount:3,humanSlackPriorityCount:1,
+      humanPriorityReason:'Human messages have priority over automated work when this thread is ready.',
+      humanSlackPriorityReason:'Informational Slack-only count',
       automationWaitReason:{message:'Automated work is waiting for autonomy to be enabled and resumed'}});
     queueUi.renderQueueAdmissionStatus(queueState);
   });
   await expect(page.locator('#queue-admission-status')).toBeVisible();
   await expect(page.locator('#queue-admission-status')).toHaveText(
-    'Human Slack messages have priority when this thread is ready. Automated work is waiting for autonomy to be enabled and resumed');
+    'Human messages have priority over automated work when this thread is ready. Automated work is waiting for autonomy to be enabled and resumed');
   await page.evaluate(() => {
-    queueUi.applyQueueAdmissionStatus(queueState, {threadId:'selected',humanSlackPriorityCount:0,automationWaitReason:null});
+    queueUi.applyQueueAdmissionStatus(queueState, {threadId:'selected',humanPriorityCount:0,humanSlackPriorityCount:0,automationWaitReason:null});
     queueUi.renderQueueAdmissionStatus(queueState);
   });
   await expect(page.locator('#queue-admission-status')).toBeHidden();

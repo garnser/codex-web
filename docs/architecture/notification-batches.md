@@ -401,7 +401,7 @@ recovery reservation. That reservation fences ordinary release and native gate
 consumption. Queue ownership, current administrator/Role authority, repository
 bindings, canonical replacement route and the reserved descriptor are rechecked
 inside guarded mutations. Exact restoration preserves concurrent arrivals and
-human Slack priority. Changed queue copies refuse overwrite. Verified replacement
+equal human priority regardless of origin. Changed queue copies refuse overwrite. Verified replacement
 routing changes only internal thread/reply-thread pointers; original request
 snapshots, IDs, bodies, timestamps and scope stay unchanged.
 

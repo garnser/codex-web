@@ -153,22 +153,30 @@ class MaintenanceQueueOrderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_candidate_arriving_between_queue_reads_uses_atomic_removal_order(self):
         self.runtime.queued_preflight = None
-        self.queue.put('thread-fixture', [self.ready])
-        reads = 0
-        def queue_with_arrival(thread):
-            nonlocal reads
-            current = self.queue.get(thread)
-            reads += 1
-            if reads == 1:
-                self.arrival = self.runtime.enqueue_turn(thread_id=thread, project_id=self.project.id,
-                    message='Authenticated Slack fixture arrival', source='slack')
-            return current
-        self.host._thread_queue = queue_with_arrival
-        async def refused(*args, **kwargs):
-            self.assertEqual(kwargs['message'], self.arrival.message)
-            raise HTTPException(status_code=409, detail={'code':'upgrade_maintenance',
-                'threadId':'thread-fixture', 'message':'Canonical pre-start refusal'})
-        self.runtime.start_thread_turn_now = refused
-        await self.runtime.drain_thread_queue('thread-fixture')
-        self.assertEqual([q.model_dump(mode='json') for q in self.reopened_queue()],
-            [self.ready.model_dump(mode='json'), self.arrival.model_dump(mode='json')])
+        for source in ('web', 'gitlab'):
+            with self.subTest(earlier_source=source):
+                earlier = self.ready.model_copy(update={'source': source})
+                self.queue.put('thread-fixture', [earlier])
+                reads = 0
+                def queue_with_arrival(thread):
+                    nonlocal reads
+                    current = self.queue.get(thread)
+                    reads += 1
+                    if reads == 1:
+                        self.arrival = self.runtime.enqueue_turn(thread_id=thread, project_id=self.project.id,
+                            message='Authenticated Slack fixture arrival', source='slack')
+                    return current
+                self.host._thread_queue = queue_with_arrival
+                async def refused(*args, **kwargs):
+                    # Equal-priority humans retain FIFO; a new human still
+                    # overtakes automation between the initial and removal reads.
+                    selected = earlier if source == 'web' else self.arrival
+                    remaining = self.arrival if source == 'web' else earlier
+                    self.assertEqual(kwargs['message'], selected.message)
+                    self.assertEqual([q.id for q in self.queue.get('thread-fixture')], [remaining.id])
+                    raise HTTPException(status_code=409, detail={'code':'upgrade_maintenance',
+                        'threadId':'thread-fixture', 'message':'Canonical pre-start refusal'})
+                self.runtime.start_thread_turn_now = refused
+                await self.runtime.drain_thread_queue('thread-fixture')
+                self.assertEqual([q.model_dump(mode='json') for q in self.reopened_queue()],
+                    [earlier.model_dump(mode='json'), self.arrival.model_dump(mode='json')])

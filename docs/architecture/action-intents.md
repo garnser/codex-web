@@ -457,7 +457,13 @@ indexes locate exact intent IDs. They are discovery aids, never provider proof.
 Routing re-reads each selected intent's receipt and verification, including
 attempt, idempotency, provider binding, verification time and exact output entity.
 The latest verified branch publication and MR upsert must identify the same
-original, owned execution, branch, repository and exact event head. A newer
+original, owned execution, branch, repository and exact event head. If no verified
+MR upsert exists, a typed existing-MR branch publication can independently prove
+the linkage through its matching positive MR number and original issue number
+in the provider-verified output. This reuses the publisher’s prior provider
+attestation of the open MR, source repository/branch/head, related issue and
+expected-head CAS; it does not adopt or alter that MR. Provenance truthfully
+records no request-intent ID, and historical failed/unknown intents stay intact. A newer
 verified publication, ambiguous original, missing head, changed binding, foreign
 scope or unresolved outcome refuses routing. Work Item notes, MR prose and raw
 branch names never confer that linkage. Existing verified TaskSource relations

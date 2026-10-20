@@ -265,9 +265,10 @@ server-assigned protocol provenance, including `queued:`/`steer:` wrappers;
 message text and provider identity claims cannot select a priority or grant
 execution authority.
 
-At a thread's scheduling selection, human Slack requests precede authenticated
-web, Telegram and operator requests, and all precede automated origins.
-FIFO is preserved within each group. This is a stable scheduling projection over
+At a thread's scheduling selection, all recognized human requests share equal
+priority ahead of automated origins. FIFO is preserved among human requests
+regardless of Slack, authenticated web, Telegram or operator origin, and among
+automated requests. This is a stable scheduling projection over
 the existing durable queue, not a rewrite of physical order or immutable request
 snapshots. Active and already-admitting turns are not interrupted. The preference
 is scoped to the existing destination thread/agent and retains reply targets,

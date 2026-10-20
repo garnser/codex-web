@@ -105,6 +105,52 @@ class QueuedBootstrapRecoveryService:
             self.refused('bootstrap_recovery_source_unverified', 'Refused native custody is not terminal, fenced and unchanged.')
         return proof
 
+    def verify_initial_process_source(self, attempt, queued, actor):
+        """Validate the controller's exact post-stop, before-input refusal.
+
+        The refusal is emitted only after awaited bootstrap cancellation and
+        process cleanup. This explicit operator path does not infer process
+        loss from a missing handle or authorize automatic owner recovery.
+        """
+        if not self.preflight.recorded_initial_process_refusal(attempt):
+            self.refused('bootstrap_recovery_source_unverified', 'No exact initial-process controller refusal is retained.')
+        proof = next(b.model_dump(mode='json') for b in attempt.blockers
+            if b.code == 'initial_bootstrap_process_lost')
+        try:
+            binding = self.bootstrap_bindings.get_by_thread(proof['threadId'], actor)
+        except ThreadBootstrapBindingNotFoundError:
+            self.refused('bootstrap_recovery_source_unverified', 'Initial bootstrap custody is unavailable.')
+        assignment = self.assignments(proof['assignment_id'])
+        profile = getattr(assignment, 'agent_profile', None)
+        scope = getattr(assignment, 'repository_scope', None)
+        target = getattr(assignment, 'repository_target', None)
+        expected_resources = set(queued.writable_repository_resource_ids) | set(queued.read_only_repository_resource_ids)
+        if queued.repository_resource_id:
+            expected_resources.add(queued.repository_resource_id)
+        if queued.resource_context:
+            expected_resources.update(queued.resource_context.read_only_resource_ids)
+        if (not binding.initial_turn_pending or binding.bootstrap_id != proof['bootstrap_id']
+                or binding.assignment_id != proof['assignment_id'] or assignment is None
+                or assignment.status != 'cancelled' or assignment.lease is not None
+                or assignment.fence < 1 or assignment.failure_code != 'thread_bootstrap_cancelled'
+                or assignment.execution_id != binding.execution_id
+                or assignment.execution_workspace_id != binding.execution_workspace_id
+                or assignment.subject.kind != 'thread_bootstrap' or assignment.subject.ref != binding.bootstrap_id
+                or (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.created_by)
+                    != (attempt.organization_id, attempt.workspace_id, attempt.project_id, queued.agent_profile_actor_id)
+                or profile is None or (profile.profile_id, profile.profile_revision)
+                    != (queued.agent_profile_id, queued.agent_profile_revision)
+                or assignment.execution_profile_id != queued.execution_profile_id
+                or assignment.sandbox != queued.sandbox or assignment.approval_policy != queued.approval_policy
+                or scope is None or set(scope.writable_repository_ids) != set(queued.writable_repository_resource_ids)
+                or set(scope.read_only_repository_ids) != set(queued.read_only_repository_resource_ids)
+                or target is None or target.mutable_repository_id != queued.repository_resource_id
+                or set(assignment.resource_ids) != expected_resources
+                or getattr(assignment, 'resource_context', None) != queued.resource_context
+                or self.thread_is_active(proof['threadId'])):
+            self.refused('bootstrap_recovery_source_unverified', 'Refused initial custody is not cancelled, fenced and unchanged in its original scope.')
+        return proof
+
     def context(self, attempt_id, *, project, actor, thread_id=None):
         attempt = self.preflight.get(attempt_id, actor=actor)
         if thread_id is not None and thread_id not in {attempt.thread_id, attempt.replacement_thread_id}:
@@ -135,12 +181,16 @@ class QueuedBootstrapRecoveryService:
             self.refused('bootstrap_recovery_provenance_missing', 'Exact original actor, profile and execution settings are required.')
         original = self.thread_index.get(attempt.thread_id)
         custody_refusal = self.preflight.recorded_custody_refusal(attempt)
+        initial_refusal = self.preflight.recorded_initial_process_refusal(attempt)
         custody_recovered = (recovery is not None and recovery.state == 'created'
             and recovery.destination_thread_id == attempt.replacement_thread_id)
-        if original is None or (not original.archived and not custody_refusal and not custody_recovered) or original.project_id != project.id:
+        if original is None or (not original.archived and not custody_refusal and not custody_recovered
+                and not initial_refusal) or original.project_id != project.id:
             self.refused('bootstrap_recovery_source_unverified', 'Fresh recovery requires the canonical archived original thread.')
         if custody_refusal:
             self.verify_custody_source(attempt, queued, actor)
+        if initial_refusal and not original.archived:
+            self.verify_initial_process_source(attempt, queued, actor)
         target = attempt.replacement_thread_id or attempt.thread_id
         if self.thread_is_active(attempt.thread_id) or self.thread_is_active(target):
             self.refused('bootstrap_recovery_thread_active', 'Original or scheduling thread has active work.')
@@ -217,13 +267,16 @@ class QueuedBootstrapRecoveryService:
             self.refused('bootstrap_recovery_binding_mismatch', 'Correlated bootstrap does not match the exact original scope.')
         return binding
 
-    def complete(self, attempt, queued, binding, *, actor, project, fence_name, source_fence_name=None):
+    def complete(self, attempt, queued, binding, *, actor, project, fence_name, source_fence_name=None,
+                 expected_initial_source=None):
         if self.ownership is not None:
             self.ownership.require_fence(fence_name)
             if source_fence_name:
                 self.ownership.require_fence(source_fence_name)
         recovery = attempt.bootstrap_recovery
         custody_refusal = self.preflight.recorded_custody_refusal(attempt)
+        initial_refusal = expected_initial_source is not None
+        guarded_source = custody_refusal or initial_refusal
         # This is an observed fresh bootstrap edge, never reconstructed history.
         graph_updater = self.thread_index.replacement_updater(attempt.replacement_thread_id or attempt.thread_id, binding.thread_id,
             project_id=attempt.project_id, provenance={
@@ -241,18 +294,28 @@ class QueuedBootstrapRecoveryService:
                 'preflight_attempt_id':attempt.id, 'requested_by':recovery.requested_by})
         def update(current):
             self.preflight._authorize(current, actor, require_admin=True)
-            if custody_refusal:
-                fresh = self.actor_resolver(actor.identity_id, project)
+            if guarded_source:
+                try:
+                    fresh = self.actor_resolver(actor.identity_id, project)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=403, detail='Recovery operator identity is unavailable.') from exc
+                # This credential-free projection refreshes membership only.
+                # MFA belongs to the authenticated request checked in context.
                 self.preflight._authorize(current, fresh, require_admin=True)
                 if (fresh.identity_id, fresh.organization_id, fresh.workspace_id) != (
                         actor.identity_id, actor.organization_id, actor.workspace_id):
                     raise HTTPException(status_code=403, detail='Recovery operator identity changed.')
-            if custody_refusal and (not self.preflight.recorded_custody_refusal(current)
+            if guarded_source and ((custody_refusal and not self.preflight.recorded_custody_refusal(current))
+                    or (initial_refusal and not self.preflight.recorded_initial_process_refusal(current))
                     or current.blockers != attempt.blockers
                     or current.queued_admission_claim_id != attempt.queued_admission_claim_id):
                 self.refused('bootstrap_recovery_changed', 'Controller custody proof changed during bootstrap creation.')
             if self.preflight.recorded_custody_refusal(current):
                 self.verify_custody_source(current, queued, actor)
+            if initial_refusal:
+                proof = self.verify_initial_process_source(current, queued, actor)
+                if self.assignments(proof['assignment_id']).model_dump(mode='json') != expected_initial_source:
+                    self.refused('bootstrap_recovery_source_changed', 'Initial source custody changed during bootstrap creation.')
             if (current.status != 'blocked' or current.bootstrap_recovery != recovery
                     or current.queued_turn_snapshot != attempt.queued_turn_snapshot
                     or current.replacement_thread_id != attempt.replacement_thread_id
@@ -267,7 +330,7 @@ class QueuedBootstrapRecoveryService:
         attempt_ns = self.preflight.store.NAMESPACE
         graph_ns = self.thread_index.REPLACEMENTS_NAMESPACE
         selected = {attempt_ns:(attempt_key,), graph_ns:(None,)}
-        if self.preflight.recorded_custody_refusal(attempt):
+        if guarded_source:
             # Hold the canonical source binding and assignment against a
             # concurrent rebind/reclaim through final route publication.
             selected[self.bootstrap_bindings.store.namespace] = (None,)
@@ -280,16 +343,18 @@ class QueuedBootstrapRecoveryService:
                 if assignment_store.store is not self.preflight.store.store:
                     raise ValueError('Custody recovery requires one canonical store')
                 proof = next(b.model_dump(mode='json') for b in attempt.blockers
-                    if b.code in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'})
+                    if b.code in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing',
+                                  'initial_bootstrap_process_lost'})
                 selected[assignment_store.assignment_namespace] = tuple(dict.fromkeys((
-                    proof['assignment_id'], binding.assignment_id, proof['previous_assignment_id'])))
+                    proof['assignment_id'], binding.assignment_id,
+                    *([proof['previous_assignment_id']] if custody_refusal else []))))
         def commit(values):
             if self.ownership is not None:
                 self.ownership.require_fence(fence_name)
                 if source_fence_name:
                     self.ownership.require_fence(source_fence_name)
             current = ExecutionPreflightAttempt.model_validate(values[attempt_ns][attempt_key])
-            if self.preflight.recorded_custody_refusal(current):
+            if guarded_source:
                 self.verify_binding(current, queued, actor, expected_thread=binding.thread_id)
                 if self.assignments(binding.assignment_id).created_by != queued.agent_profile_actor_id:
                     self.refused('bootstrap_recovery_binding_mismatch', 'Fresh custody changed the original actor.')
@@ -345,6 +410,11 @@ class QueuedBootstrapRecoveryService:
                     async with self.queue_lock(source):
                         return await own_source()
                 return await own_source()
+            initial_source = None
+            if (self.preflight.recorded_initial_process_refusal(attempt)
+                    and not self.thread_index.get(attempt.thread_id).archived):
+                proof = self.verify_initial_process_source(attempt, queued, actor)
+                initial_source = self.assignments(proof['assignment_id']).model_dump(mode='json')
             fresh = (attempt.bootstrap_recovery is None or attempt.bootstrap_recovery.state == 'refused'
                 or (attempt.bootstrap_recovery.state == 'created' and self.preflight.recorded_initial_process_refusal(attempt)))
             if ((fresh and source != attempt.thread_id and expected_source_thread_id != source)
@@ -372,7 +442,8 @@ class QueuedBootstrapRecoveryService:
                     self.refused('bootstrap_recovery_route_changed', 'The reserved recovery source changed during creation.')
                 attempt = await asyncio.to_thread(self.complete, attempt, queued, binding,
                     actor=actor, project=project, fence_name=name,
-                    source_fence_name='thread-queue:' + owned_source if owned_source else None)
+                    source_fence_name='thread-queue:' + owned_source if owned_source else None,
+                    expected_initial_source=initial_source)
             return {'ok':True, 'threadId':binding.thread_id,
                 'bootstrap_created':True, 'native_turn_started':False,
                 'attempt':self.preflight.public(attempt, actor=actor)}

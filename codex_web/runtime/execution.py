@@ -848,7 +848,7 @@ class TurnExecutionService:
                     str(v.get("message", "Admission blocked"))[:500] for v in values)}
         priority_count = sum(TurnQueuePolicy.admission_priority(item.source) != "standard"
                              for item in items)
-        slack_count = sum(TurnQueuePolicy.admission_priority(item.source) == "human_slack"
+        slack_count = sum(TurnQueuePolicy.source_origin(item.source) == "slack"
                           for item in items)
         return {"automationWaiting": waiting,
                 "automationWaitReason": actual_reason,
@@ -858,7 +858,7 @@ class TurnExecutionService:
                     if priority_count else None),
                 "humanSlackPriorityCount": slack_count,
                 "humanSlackPriorityReason": (
-                    "Human Slack messages have priority when this thread is ready."
+                    "Human messages have priority over automated work when this thread is ready."
                     if slack_count else None)}
 
     async def publish_queue_status(self, thread_id: str) -> None:

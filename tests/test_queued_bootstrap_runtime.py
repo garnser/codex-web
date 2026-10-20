@@ -40,7 +40,9 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def create(self, **values):
         recovery = self.service.store.get(self.attempt.id).bootstrap_recovery
         self.assertIsNotNone(recovery, 'Reservation must exist before runtime I/O')
-        self.assertEqual(values['actor'], self.admin)
+        expected_actor = getattr(self, 'expected_creation_actor', self.admin)
+        self.assertEqual(values['actor'].model_dump(exclude={'authenticated_at'}),
+                         expected_actor.model_dump(exclude={'authenticated_at'}))
         self.assertEqual(values['agent_profile_revision'], 6)
         self.assertEqual(values['writable_repository_resource_ids'], ('repo',))
         self.assertEqual(values['read_only_repository_resource_ids'], ('reference',))
