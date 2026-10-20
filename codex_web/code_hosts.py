@@ -33,6 +33,17 @@ class CodeHostUnsupportedCapabilityError(CodeHostError):
     pass
 
 
+# Provider-neutral query protocol, not a mutable operational definition.
+PULL_REQUEST_QUERY_STATES = ("open", "closed", "all")
+
+
+def normalize_pull_request_state(state: str | None) -> str:
+    normalized = str(state or "open").strip().casefold()
+    if normalized not in PULL_REQUEST_QUERY_STATES:
+        raise CodeHostError("pull-request state must be open, closed, or all")
+    return normalized
+
+
 def validate_artifact_member_path(path: str) -> str:
     # Provider paths are data, never URLs or filesystem destinations.
     if (
