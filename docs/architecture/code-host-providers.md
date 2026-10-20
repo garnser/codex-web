@@ -72,6 +72,17 @@ A binding cannot declare a capability the adapter does not implement. Calling an
 
 Provider-specific SDK objects and terminology remain inside adapters. Callers receive canonical fact models such as `CodeHostRepositoryFact`, `CodeHostPullRequestFact`, and `CodeHostCheckFact`.
 
+GitLab ref discovery reads at most the first 100 branches and 100 tags; it does
+not claim complete repository enumeration. A valid default-marked branch on that
+page supplies the default tip without additional reads. Otherwise the adapter
+reads repository metadata and exactly that named branch, with the same binding,
+Resource and credential. The exact response must identify the requested default
+branch and a full commit SHA. Malformed, missing or changed default facts refuse
+rather than guessing a tip. Workspace materialization retains its independent
+current-tip, provider/resource/credential and post-transfer freshness checks.
+Existing repository facts and refusal surfaces expose the result; no new UI
+operation, authority or persisted contract is introduced.
+
 Pull-request discovery accepts the provider-neutral `state` filters `open`,
 `closed`, and `all`, defaulting to `open`. CodeHost service and assignment broker
 share normalization; native terms such as GitLab `opened` stay inside the adapter.
