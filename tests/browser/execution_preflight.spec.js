@@ -246,3 +246,15 @@ test('custody refusal shows previous and requested scope and explicit bootstrap 
   expect(await page.evaluate(() => window.__custodyRecoveryBody)).toEqual({
     expected_snapshot_sha256:'d'.repeat(64),reason:'Recover this exact retained original',expected_source_thread_id:'thread-1'});
 });
+
+
+test('owner recovery exposes exact failed custody, Goal and reconciliation action owner', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?ownerRecovery');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const card = page.locator('.message.tool');
+  await expect(card).toContainText('Owner recovery: lost-owner-assignment · fence 9 · action owner recovery-operator');
+  await expect(card).toContainText('Goal: current-goal');
+  await expect(card).toContainText('owner_recovery_prior_turn_unresolved');
+  await expect(card).toContainText('Prior native turn requires explicit reconciliation.');
+  expect(await page.evaluate(() => window.__apiCalls.filter(item => item.method === 'POST'))).toEqual([]);
+});
