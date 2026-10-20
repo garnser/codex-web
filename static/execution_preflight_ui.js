@@ -69,7 +69,10 @@ export function createExecutionPreflightUi({
           );
         }
 
+        const recovery = attempt?.queued_turn_snapshot?.owner_lane_recovery;
         const context = [
+          recovery ? `Owner recovery: ${recovery.failed_assignment_id} · fence ${recovery.failed_fence} · action owner ${recovery.action_owner}` : "",
+          recovery?.goal_id ? `Goal: ${recovery.goal_id}` : "",
           attempt?.queued_turn_snapshot?.id
             ? `Original queued request: ${attempt.queued_turn_snapshot.id}`
             : "",

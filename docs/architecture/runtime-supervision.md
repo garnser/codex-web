@@ -1014,3 +1014,66 @@ reader receipt remains authoritative if a caller is cancelled during flush.
 Partial-write errors retain unknown outcome and exact correlation; neither a
 transport exception nor a retired process creates retry authority. UI consumes
 the existing runner, queued-start, refusal and reconciliation projections.
+
+## Bounded current-owner continuation after runner loss
+
+An actionable canonical Work Item with a terminal, unleased native assignment
+can receive one **new** current-work request through the existing autonomy
+controller and retained-turn admission domain. This is distinct from retrying an
+old native input or reviving its lease. The request retains the current Goal,
+responsible bot binding, exact Agent Profile/actor, execution profile, repository
+scope, failed assignment/fence and an affirmative stopped-process/settled-executor
+observation. A missing process handle without that earlier observation is a
+visible reconciliation blocker, not proof of teardown.
+
+The deterministic request identity binds tenant, logical bot binding, Work Item
+and its current business intent. Changed ownership, stage, repository scope,
+provider revision, handoff or next action changes that intent;
+runtime delivery, usage, workspace and timestamp bookkeeping do not. A committed
+preflight reservation survives restart, uncertain native start and repeated
+failure observations. There is no cooldown-based replay or automatic reset of
+this budget. Reservation or queue-append interruption requires inspection of
+that retained original rather than constructing another request.
+
+Fresh queued/in-flight inputs keep ownership of the lane. Recovery appends at
+the durable queue tail and uses the existing admission priority policy; it never
+steers an active human turn. Historical uncertain inputs for unrelated Work Items
+remain byte-for-byte retained. An unresolved native outcome for the **same** Work
+Item blocks automatic continuation. A positive START receipt also does not prove
+that its later native turn completed. This recovery path has no qualified
+generation-bound terminal witness for such prior same-item turns, so it exposes
+`owner_recovery_prior_turn_unresolved` for explicit reconciliation and can select
+another independent owned item. It never derives completion from usage, model
+text, stopped custody or synthetic transcript recovery. Existing preflight and queue surfaces expose
+the recovery provenance, exact blocker and recovery action owner.
+
+Worker admission, native history resume and actual input still cross canonical
+current authority, Profile, resource, maintenance, fenced lease and guarded
+start/resume capture checks. Current Work Item intent, binding, Goal and scoped
+autonomy controls are revalidated before native input. A stopped historical turn
+or a transient `reconciliation_required` admission is never classified as a
+successful or failed business execution from display state alone.
+
+Compatible native custody can acquire a fresh worker through ordinary admission.
+An initial-process, incompatible-scope or missing-prior-custody refusal remains
+in the existing preflight domain with its qualified fresh-bootstrap operator
+action; this continuation path creates no replacement threads and transfers no
+old queue. No new model-visible administrative recovery capability is granted.
+The deterministic watchdog has zero model calls for duplicate observations,
+blocked recovery or genuinely idle lanes. A useful continuation still uses the
+existing Goal/Work Item model accounting and execution budgets.
+
+
+The current thread is resolved through the complete tenant-scoped durable
+replacement graph, without retargeting bindings or moving predecessor queues.
+A subsequent graph change revokes the retained request at guarded admission.
+Explicitly cancelled custody produces one retained operator-owned blocker;
+automatic continuation cannot undo an intentional resource release.
+
+Native project-delegation Goals without a qualified independent current Work
+Item receive a deduplicated exact-snapshot blocker and canonical event on the
+existing Goal execution projection. This observer never invokes application-mode
+Goal continuation or a model. It preserves Goal status, delegation authorization,
+leases, recovery budgets and all provider outcome fields, and names the existing
+execution owner responsible for reconciliation. A stale observation cannot
+replace a newer binding or an existing unrelated stop reason.

@@ -66,6 +66,13 @@
       updated_at: 1800000010,
       blockers: [blocker],
     }];
+    if (new URLSearchParams(location.search).has('ownerRecovery')) {
+      attempts[0].queued_turn_snapshot = {id: 'owner-recovery-retained',
+        owner_lane_recovery: {failed_assignment_id: 'lost-owner-assignment',
+          failed_fence: 9, action_owner: 'recovery-operator', goal_id: 'current-goal'}};
+      attempts[0].blockers = [{code: 'owner_recovery_prior_turn_unresolved',
+        message: 'Prior native turn requires explicit reconciliation. Action owner: recovery-operator'}];
+    }
     const disposition = new URLSearchParams(location.search).get('disposition');
     if (disposition) {
       attempts[0].status = disposition;

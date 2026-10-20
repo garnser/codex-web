@@ -773,6 +773,11 @@ class TurnExecutionService:
             raise AutomatedAdmissionPaused(status_code=409, detail=reason)
 
     def _project_dispatch_validator(self, queued):
+        if getattr(queued, "owner_lane_recovery", None) is not None:
+            recovery = getattr(self, "owner_lane_recovery", None)
+            if recovery is None:
+                raise HTTPException(status_code=409, detail={"code": "owner_recovery_unavailable"})
+            return lambda: recovery.validate_queued(queued)
         if queued.project_coordination_dispatch is None:
             return None
         if (queued.source != "project-coordination"
@@ -801,7 +806,9 @@ class TurnExecutionService:
                 return None
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
-            return {"code": "project_delegation_blocked", "message": str(detail.get("message") or
+            return {"code": str(detail.get("code") or "owner_recovery_blocked")
+                    if getattr(queued, "owner_lane_recovery", None) is not None else "project_delegation_blocked",
+                "message": str(detail.get("message") or
                 "Project delegation blocked: its canonical admission service is unavailable")[:500]}
         return self.automation_wait_reason(queued.source)
 
@@ -825,7 +832,7 @@ class TurnExecutionService:
         blockers = {}
         for item in items:
             blocker = (self._queued_automation_wait_reason(item)
-                       if item.project_coordination_dispatch is not None
+                       if item.project_coordination_dispatch is not None or item.owner_lane_recovery is not None
                        else reason if not self._human_turn_source(item.source) else None)
             if blocker is not None:
                 waiting += 1
@@ -2021,7 +2028,7 @@ class TurnExecutionService:
         notification_batch_control_current=None,
         operator_admission_validator=None,
     ) -> dict[str, Any]:
-        self._require_automated_admission(source, operator_admission_validator)
+        await asyncio.to_thread(self._require_automated_admission, source, operator_admission_validator)
         scope = (project.organization_id, project.workspace_id)
         if (
             self.maintenance_admission is not None
@@ -3338,7 +3345,7 @@ class TurnExecutionService:
                 memory_preview, memory_actor = context_service.prepare(memory_context_binding, project=project)
                 native_message = message + "\n\nSelected UX knowledge (task data):\n" + memory_preview["context"]
 
-            self._require_automated_admission(source, operator_admission_validator)
+            await asyncio.to_thread(self._require_automated_admission, source, operator_admission_validator)
             if notification_batch_admission_id and len(native_message.encode()) > batch.plan.max_context_bytes:
                 raise ValueError('notification input including selected context exceeds its byte bound')
             if not preserve_active_handoff:
@@ -3463,7 +3470,7 @@ class TurnExecutionService:
                 if operator_admission_validator is not None:
                     try:
                         await asyncio.to_thread(operator_admission_validator)
-                    except AutomatedAdmissionPaused:
+                    except (AutomatedAdmissionPaused, ExecutionPrestartRefusal):
                         preinput_admission_refused = True
                         raise
                 try:
@@ -3939,7 +3946,7 @@ class TurnExecutionService:
             refused_count = 0
             refused_sample = []
             for candidate in TurnQueuePolicy.admission_candidates(items):
-                if self._queued_automation_wait_reason(candidate) is not None:
+                if await asyncio.to_thread(self._queued_automation_wait_reason, candidate) is not None:
                     continue
                 try:
                     candidate_project = h._project(candidate.project_id)
@@ -3977,7 +3984,7 @@ class TurnExecutionService:
                     if handled:
                         await self.publish_queue_status(thread_id)
                         return
-                if self._queued_automation_wait_reason(candidate) is not None:
+                if await asyncio.to_thread(self._queued_automation_wait_reason, candidate) is not None:
                     continue
                 # Diagnostics run before claiming/removing fresh work. Even
                 # cancellation here must leave it durably queued and unclaimed.
@@ -3987,7 +3994,7 @@ class TurnExecutionService:
                     self.queued_preflight.claim_queued_admission, attempt.id)
                 if claim_id is None:
                     continue
-                if self._queued_automation_wait_reason(candidate) is not None:
+                if await asyncio.to_thread(self._queued_automation_wait_reason, candidate) is not None:
                     await asyncio.to_thread(self.queued_preflight.queued_disposition,
                         attempt.id, status="queued", claim_id=claim_id)
                     continue
@@ -4043,7 +4050,7 @@ class TurnExecutionService:
         queued.attempts += 1
         reschedule_queue = operator_original is None
         try:
-            self._require_automated_admission(queued.source, operator_admission_validator)
+            await asyncio.to_thread(self._require_automated_admission, queued.source, operator_admission_validator)
             if retained_attempt is not None:
                 # This durable gate commits before any native start. A crash
                 # afterwards is explicitly unknown, never an automatic replay.

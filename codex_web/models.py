@@ -850,7 +850,22 @@ class ProjectCoordinationDispatch(BaseModel):
     fence: int = Field(ge=1)
 
 
+class OwnerLaneRecoveryContext(BaseModel):
+    """Current-work intent for one new request; never authority to replay an input."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    bot_binding_id: str = Field(min_length=1)
+    failed_assignment_id: str = Field(min_length=1)
+    failed_fence: int = Field(ge=0)
+    teardown_observed_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    observed_process_fence: int | None = Field(default=None, ge=0)
+    work_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    action_owner: str = Field(min_length=1)
+    goal_id: str | None = None
+
+
 class QueuedTurn(BaseModel):
+    owner_lane_recovery: OwnerLaneRecoveryContext | None = None
     resource_context: ReadOnlyResourceContext | None = None
     canonical_ingress_id: str | None = None
     ingress_execution_profile_definition: DefinitionReference | None = None
@@ -885,6 +900,8 @@ class QueuedTurn(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
+        if self.owner_lane_recovery is None:
+            result.pop("owner_lane_recovery", None)
         if getattr(self, "resource_context", None) is None:
             result.pop("resource_context", None)
         if self.memory_context_binding is None:

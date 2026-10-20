@@ -272,6 +272,38 @@ class GoalExecutionBindingService:
         assert result is not None
         return result
 
+    def note_native_runner_blocker(self, expected: GoalExecutionBinding, *,
+                                   scope: TenantScope, reason: str) -> bool:
+        """Record an observation without changing delegation or provider outcomes."""
+        changed = False
+        audit = self._audit_context()
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal changed
+            current = self._binding(state, expected.id, scope)
+            if (current != expected
+                    or current.execution_mode != GoalExecutionMode.PROJECT_DELEGATION
+                    or current.stop_reason == reason
+                    or (current.stop_reason and not current.stop_reason.startswith('native_runner_recovery:'))):
+                return state
+            updated = current.model_copy(update={
+                'stop_reason': reason, 'updated_at': time.time(),
+                'updated_by': 'goal-continuation-recovery',
+                'change_reason': 'native runner requires current-work reconciliation',
+                'updated_correlation_id': audit['correlation_id'],
+                'updated_causation_id': audit['causation_id'],
+            })
+            state.bindings = [updated if item.id == current.id else item for item in state.bindings]
+            state.events.append(GoalExecutionBindingEvent(binding_id=current.id,
+                goal_id=current.goal_id, event_type='binding_native_runner_recovery_blocked',
+                actor_id='goal-continuation-recovery', reason=reason,
+                correlation_id=audit['correlation_id'], causation_id=audit['causation_id']))
+            changed = True
+            return state
+
+        self.store.update(apply)
+        return changed
+
     def operator_stop(
         self,
         binding_id: str,

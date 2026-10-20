@@ -583,5 +583,30 @@ class GoalExecutionBindingTests(unittest.TestCase):
             )
 
 
+    def test_native_runner_observation_is_exact_deduplicated_and_preserves_authority(self):
+        from codex_web.goal_execution_bindings import GoalExecutionMode, ProjectDelegationAuthorization
+        item = self.service.create('goal-a', self.payload(), scope=self.scope, actor_id='admin')
+        native = item.model_copy(update={'execution_mode': GoalExecutionMode.PROJECT_DELEGATION,
+            'delegation_authorization': ProjectDelegationAuthorization.AUTHORIZED,
+            'delegation_revision': 7, 'status': GoalExecutionBindingStatus.ACTIVE,
+            'recovery_attempts': 2, 'lease_owner_id': 'owner', 'lease_expires_at': 1234})
+        self.service.store.update(lambda state: state.model_copy(update={'bindings': [native]}))
+        reason = 'native_runner_recovery: terminal assignment; Action owner: validator'
+        self.assertTrue(self.service.note_native_runner_blocker(native, scope=self.scope, reason=reason))
+        updated = self.service.get(native.id, scope=self.scope)
+        changed_fields = {'stop_reason', 'updated_at', 'updated_by', 'change_reason',
+            'updated_correlation_id', 'updated_causation_id'}
+        self.assertEqual(native.model_dump(exclude=changed_fields), updated.model_dump(exclude=changed_fields))
+        self.assertEqual(updated.stop_reason, reason)
+        before = len(self.service.events('goal-a', scope=self.scope))
+        self.assertFalse(self.service.note_native_runner_blocker(updated, scope=self.scope, reason=reason))
+        # A stale observation cannot overwrite newer custody/checkpoint state.
+        self.assertFalse(self.service.note_native_runner_blocker(native, scope=self.scope,
+            reason=reason + ' stale'))
+        self.assertEqual(len(self.service.events('goal-a', scope=self.scope)), before)
+        self.assertEqual(self.service.events('goal-a', scope=self.scope)[-1].event_type,
+            'binding_native_runner_recovery_blocked')
+
+
 if __name__ == "__main__":
     unittest.main()
