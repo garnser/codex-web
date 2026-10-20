@@ -18,6 +18,7 @@ from codex_web.services.bot_connections import BotConnectionService
 from codex_web.services.bot_details import BotDetailService
 from codex_web.services.bot_presentation import BotPresentationService
 from codex_web.services.bot_runtime_telemetry import BotRuntimeTelemetry
+from codex_web.services.bot_runtime_gate import BotRuntimeGateClosed
 from codex_web.services.bot_targets import BotTargetService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.thread_bot_collaboration import (
@@ -47,6 +48,7 @@ class BotDeliveryService:
         slack_client: SlackClient | None = None,
         telegram_client: TelegramClient | None = None,
         secret_broker: SecretBroker | None = None,
+        gate_reason: Callable[[str], str | None] | None = None,
     ) -> None:
         async def _publish_noop(_event: dict[str, Any]) -> None:
             return None
@@ -108,6 +110,7 @@ class BotDeliveryService:
         self.slack = slack_client or SlackClient()
         self.telegram = telegram_client or TelegramClient()
         self.secret_broker = secret_broker
+        self.gate_reason = gate_reason or (lambda _project_id: None)
 
     def _scope_rejection(
         self,
@@ -141,13 +144,25 @@ class BotDeliveryService:
         operation: str,
         consumer: Any,
     ) -> Any:
+        reason = self.gate_reason(connection.project_id)
+        if reason:
+            return {"sent": False, "reason": reason}
+
+        async def guarded_consumer(value):
+            # Credential lookup may await; a pause during it must prevent a new
+            # transport call, without pretending to undo an already sent one.
+            reason = self.gate_reason(connection.project_id)
+            if reason:
+                return {"sent": False, "reason": reason}
+            return await consumer(value)
+
         secret_id = getattr(connection, f"{field}_secret_id", None)
         if secret_id and self.secret_broker is not None:
             return await self.secret_broker.use_async(
                 secret_id,
                 actor=self.connections.runtime_actor(connection.project_id),
                 operation=operation,
-                consumer=consumer,
+                consumer=guarded_consumer,
                 context={
                     "connection_id": connection.id,
                     "provider": connection.provider,
@@ -155,7 +170,7 @@ class BotDeliveryService:
             )
         raw = getattr(connection, field, None)
         if raw:
-            return await consumer(raw)
+            return await guarded_consumer(raw)
         raise RuntimeError(f"Bot connection is missing {field}")
 
     async def send_outbound(
@@ -176,6 +191,9 @@ class BotDeliveryService:
         _project_id, rejection = self._scope_rejection(binding, connection)
         if rejection:
             return {"sent": False, "reason": rejection}
+        reason = self.gate_reason(_project_id)
+        if reason:
+            return {"sent": False, "reason": reason}
         if (
             connection is None
             or not self._credential_identity(connection, "bot_token")
@@ -194,6 +212,9 @@ class BotDeliveryService:
                 )
 
                 async def send_slack(token: str):
+                    reason = self.gate_reason(connection.project_id)
+                    if reason:
+                        return {"sent": False, "reason": reason}
                     return await self.slack.post_message(
                         token,
                         binding.external_conversation_id,
@@ -220,6 +241,9 @@ class BotDeliveryService:
             if binding.provider == "telegram":
 
                 async def send_telegram(token: str):
+                    reason = self.gate_reason(connection.project_id)
+                    if reason:
+                        return {"sent": False, "reason": reason}
                     return await self.telegram.send_message(
                         token,
                         binding.external_conversation_id,
@@ -309,6 +333,11 @@ class BotDeliveryService:
                     "reason": "thread_project_unresolved",
                 }
             )
+            return
+        reason = self.gate_reason(project_id)
+        if reason:
+            self.telemetry.append({"type": "outbound_paused", "thread_id": thread_id,
+                                   "project_id": project_id, "reason": reason})
             return
         scoped_bindings = [
             binding for binding in bindings if binding.project_id == project_id
@@ -409,6 +438,8 @@ class BotDeliveryService:
                 }
             )
             return
+        if self.gate_reason(project_id):
+            return
         bindings = self.bindings.for_thread(thread_id)
         foreign_bindings = [
             binding for binding in bindings if binding.project_id != project_id
@@ -500,7 +531,7 @@ class BotDeliveryService:
                 )
             self.telemetry.append(
                 {
-                    "type": "approval_request_sent",
+                    "type": "approval_request_sent" if delivery.get("sent") else "approval_request_not_sent",
                     "provider": "slack",
                     "external_conversation_id": (
                         binding.external_conversation_id
@@ -526,6 +557,7 @@ class BotDeliveryService:
             [],
         )
         status = f"{actor} selected `{decision}`."
+        deferred = False
         for message in messages:
             with contextlib.suppress(Exception):
                 connection = self.connections.get(message.connection_id)
@@ -550,6 +582,9 @@ class BotDeliveryService:
                         }
                     )
                     continue
+                if self.gate_reason(project_id):
+                    deferred = True
+                    continue
                 if not self._credential_identity(connection, "bot_token"):
                     continue
 
@@ -569,13 +604,16 @@ class BotDeliveryService:
                         ),
                     )
 
-                await self._with_credential(
+                delivery = await self._with_credential(
                     connection,
                     "bot_token",
                     "slack.approval_update",
                     update_message,
                 )
-        self.approvals.forget_messages(request_id)
+                if delivery.get("sent") is False and delivery.get("reason"):
+                    deferred = True
+        if not deferred:
+            self.approvals.forget_messages(request_id)
 
     async def resolve_approval_request(
         self,
@@ -623,6 +661,11 @@ class BotDeliveryService:
         connection: BotConnection,
         payload: dict[str, Any],
     ) -> None:
+        reason = self.gate_reason(connection.project_id)
+        if reason:
+            # The interaction has not resolved its canonical approval and must
+            # not be acknowledged as processed by the socket/webhook caller.
+            raise BotRuntimeGateClosed(reason)
         actions = payload.get("actions") or []
         for action in actions:
             if not str(action.get("action_id") or "").startswith(
@@ -718,6 +761,7 @@ def install_bot_delivery_service(
     thread_project_id=None,
     slack_client: SlackClient | None = None,
     telegram_client: TelegramClient | None = None,
+    gate_reason: Callable[[str], str | None] | None = None,
 ) -> BotDeliveryService:
     if (
         connections is None
@@ -729,6 +773,7 @@ def install_bot_delivery_service(
             slack_client=slack_client,
             telegram_client=telegram_client,
             secret_broker=getattr(app.state, "secret_broker", None),
+            gate_reason=gate_reason,
         )
     else:
         service = BotDeliveryService(
@@ -758,6 +803,7 @@ def install_bot_delivery_service(
             slack_client=slack_client,
             telegram_client=telegram_client,
             secret_broker=getattr(app.state, "secret_broker", None),
+            gate_reason=gate_reason,
         )
     app.state.bot_delivery_service = service
 
@@ -776,6 +822,7 @@ def install_bot_delivery_service(
             slack_client=service.slack,
             telegram_client=service.telegram,
             secret_broker=service.secret_broker,
+            gate_reason=service.gate_reason,
         )
         return await compatibility.send_outbound(
             binding,

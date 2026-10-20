@@ -306,6 +306,7 @@ class ConversationChannelService:
         crypto=None,
         governance=None,
         authority_snapshot=None,
+        routing_gate=None,
     ) -> None:
         self.store = store
         self.registry = registry
@@ -315,6 +316,7 @@ class ConversationChannelService:
         self.crypto = crypto
         self.governance = governance
         self.authority_snapshot = authority_snapshot
+        self.routing_gate = routing_gate
 
     def _context(self, receipt):
         return EncryptionContext(organization_id=receipt.organization_id,
@@ -456,6 +458,18 @@ class ConversationChannelService:
         return "\n\n".join(parts).strip()
 
     @staticmethod
+    def _bounded_routing_prefixes(value: object) -> list[str]:
+        if not isinstance(value, list) or len(value) > 256:
+            return []
+        if any(not isinstance(item, str) or not item or len(item) > 512 for item in value):
+            return []
+        try:
+            encoded = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return []
+        return value if len(encoded.encode("utf-8")) <= 65536 else []
+
+    @staticmethod
     def _routing_projection(result: dict[str, Any]) -> dict[str, str | int | float | bool | None]:
         allowed = (
             "ok",
@@ -471,12 +485,19 @@ class ConversationChannelService:
             "queuedId",
             "queueDepth",
         )
-        return {
+        projection = {
             key: value
             for key in allowed
             if (value := result.get(key)) is None
             or isinstance(value, (str, int, float, bool))
         }
+        if result.get("ambiguous") is True:
+            # Keep the persisted scalar-map contract readable by 3.0 readers.
+            # Never trust an incoming value for this reserved internal key.
+            projection["availablePrefixesJson"] = json.dumps(
+                ConversationChannelService._bounded_routing_prefixes(result.get("availablePrefixes")),
+                ensure_ascii=True, separators=(",", ":"))
+        return projection
 
     @staticmethod
     def _is_stale(
@@ -803,6 +824,12 @@ class ConversationChannelService:
                     reason=f"retained authority no longer valid: {type(exc).__name__}")
         canonical_id = retained.canonical_event_id
         provider = event.message.conversation.provider_type
+        if retained.outcome == ConversationProjectionOutcome.PENDING and self.routing_gate is not None:
+            reason = self.routing_gate(event.project_id, actor)
+            if reason:
+                # Retention permits the provider ACK. Keep the original durable
+                # receipt pending, without claiming routing or rewriting input.
+                return retained.model_copy(update={"reason": reason})
         receipt, claimed = self._claim(
             canonical_event_id=canonical_id,
             event=event,
@@ -947,6 +974,15 @@ class ConversationChannelService:
         receipt: ConversationProjectionReceipt,
     ) -> dict[str, Any]:
         result: dict[str, Any] = dict(receipt.routing_result)
+        encoded = result.pop("availablePrefixesJson", None)
+        if result.get("ambiguous") is True:
+            prefixes = []
+            if isinstance(encoded, str) and len(encoded) <= 65536:
+                try:
+                    prefixes = ConversationChannelService._bounded_routing_prefixes(json.loads(encoded))
+                except (ValueError, RecursionError):
+                    pass
+            result["availablePrefixes"] = prefixes
         result["conversationOutcome"] = receipt.outcome.value
         result["canonicalEventId"] = receipt.canonical_event_id
         if receipt.thread_id is not None:
@@ -956,6 +992,8 @@ class ConversationChannelService:
         if receipt.outcome == ConversationProjectionOutcome.DUPLICATE:
             result["duplicate"] = True
             result.setdefault("ok", True)
+        elif receipt.outcome == ConversationProjectionOutcome.PENDING:
+            result.update(ok=True, routed=False, pending=True, reason=receipt.reason)
         elif receipt.outcome == ConversationProjectionOutcome.REQUIRES_RECONCILIATION:
             result["ok"] = False
             result["requiresReconciliation"] = True

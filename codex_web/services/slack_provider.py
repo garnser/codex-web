@@ -43,6 +43,7 @@ class SlackProviderService:
         conversation_channels: ConversationChannelService | None = None,
         reconciliation_gates: Any | None = None,
         backfill_store: SlackBackfillStore | None = None,
+        gate_reason=None,
     ) -> None:
         self.slack = slack_client
         self.routing = routing_service
@@ -56,6 +57,7 @@ class SlackProviderService:
         self.conversation_channels = conversation_channels
         self.reconciliation_gates = reconciliation_gates
         self.backfill_store = backfill_store
+        self.gate_reason = gate_reason
         self.backfill_lock = asyncio.Lock()
         self.gate_states: dict[str, dict[str, Any]] = {}
         self.task: asyncio.Task[None] | None = None
@@ -110,6 +112,21 @@ class SlackProviderService:
         if raw:
             return await consumer(raw)
         raise RuntimeError(f"Bot connection is missing {field}")
+
+    async def _with_outbound_credential(self, connection, operation, consumer):
+        # History and replies retain their independent slack-backfill controls.
+        def paused():
+            return self.gate_reason(connection.project_id) if self.gate_reason else None
+
+        if reason := paused():
+            return {"sent": False, "reason": reason}
+
+        async def guarded(token):
+            if reason := paused():
+                return {"sent": False, "reason": reason}
+            return await consumer(token)
+
+        return await self._with_credential(connection, "bot_token", operation, guarded)
 
     def interval_seconds(self) -> float:
         try:
@@ -1182,6 +1199,8 @@ class SlackProviderService:
             if fallback_thread_ts
             else "slack_backfill_dispatched"
         )
+        if result.get("pending"):
+            event_type = event_type.replace("_dispatched", "_deferred")
         payload: dict[str, Any] = {
             "type": event_type,
             "provider": "slack",
@@ -1191,6 +1210,8 @@ class SlackProviderService:
             "thread_id": result.get("threadId"),
             "queued": result.get("queued", False),
             "ok": result.get("ok", False),
+            "pending": result.get("pending", False),
+            "reason": result.get("reason"),
         }
         if fallback_thread_ts:
             payload["external_thread_id"] = fallback_thread_ts
@@ -1336,6 +1357,7 @@ class SlackProviderService:
                 )
             )
         if result.get("ambiguous"):
+            notice = None
             binding = self.bindings.first_for_connection(
                 "slack",
                 channel,
@@ -1376,9 +1398,8 @@ class SlackProviderService:
                         ),
                     )
 
-                await self._with_credential(
+                notice = await self._with_outbound_credential(
                     connection,
-                    "bot_token",
                     "slack.post_ambiguous_route",
                     notify,
                 )
@@ -1387,6 +1408,7 @@ class SlackProviderService:
                 "accepted": False,
                 "ambiguous": True,
                 "availablePrefixes": result["availablePrefixes"],
+                **({"notice": notice} if isinstance(notice, dict) and notice.get("sent") is False else {}),
             }
         if result.get("timedOut"):
             return {
@@ -1415,6 +1437,7 @@ def install_slack_provider_service(
     telemetry=None,
     webhook_security=None,
     reconciliation_gates=None,
+    gate_reason=None,
 ) -> SlackProviderService:
     backfill_store = getattr(
         app.state,
@@ -1428,6 +1451,7 @@ def install_slack_provider_service(
     existing = getattr(app.state, "slack_provider_service", None)
     if isinstance(existing, SlackProviderService):
         service = existing
+        service.gate_reason = gate_reason
         if service.backfill_store is None:
             service.backfill_store = backfill_store
             if backfill_store is not None:
@@ -1477,6 +1501,7 @@ def install_slack_provider_service(
                 or getattr(app.state, "reconciliation_gate_service", None)
             ),
             backfill_store=backfill_store,
+            gate_reason=gate_reason,
         )
         app.state.slack_provider_service = service
 
@@ -1507,6 +1532,7 @@ def install_slack_provider_service(
             secret_broker=service.secret_broker,
             conversation_channels=service.conversation_channels,
             backfill_store=service.backfill_store,
+            gate_reason=service.gate_reason,
         )
         return compatibility._thread_targets()
 

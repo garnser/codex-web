@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.thread_index import ThreadIndexRepository
 import unittest
@@ -10,6 +11,10 @@ from unittest.mock import AsyncMock, patch
 
 import server
 from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Project, ThreadRunSettings
+from codex_web.reconciliation_gates import ReconcilerDeclaration, ReconcilerStartupClass
+from codex_web.services.reconciliation_gates import ReconciliationGateService
+from codex_web.services.bot_runtime_gate import project_bot_runtime_gate
+from tests.test_reconciliation_gates import _actor
 
 
 class BotThreadReplacementTests(unittest.TestCase):
@@ -220,8 +225,21 @@ class BotThreadReplacementTests(unittest.TestCase):
             return_value={"sent": True, "providerResponse": {"ok": True, "ts": "1"}}
         )
         delivery_service = server.app.state.bot_delivery_service
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        actor = _actor()
+        gates = ReconciliationGateService(
+            SQLiteStateStore(Path(temporary.name) / "gate.sqlite3"),
+            readiness=lambda *_: {"execution_ready": False, "checks": []}, identity=object())
+        gates.register(ReconcilerDeclaration(service_id="bot-runtime",
+            startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED))
+        scoped_connections = SimpleNamespace(runtime_actor=lambda _: actor,
+            projects=SimpleNamespace(get=lambda _: SimpleNamespace(
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id)))
+        gate = project_bot_runtime_gate(gates, scoped_connections)
 
         with (
+            patch.object(delivery_service, "gate_reason", gate),
             patch.object(
                 server,
                 "_bot_connection",
@@ -244,9 +262,13 @@ class BotThreadReplacementTests(unittest.TestCase):
             patch.object(server, "_slack_reply_icon", return_value=":large_orange_diamond:"),
             patch.object(delivery_service.slack, "post_message", post_message),
         ):
-            asyncio.run(server._send_bot_outbound(binding, "status"))
-
-        self.assertEqual(post_message.await_args.kwargs["thread_ts"], "known-thread")
+            result = asyncio.run(server._send_bot_outbound(binding, "status"))
+            self.assertTrue(result["sent"])
+            self.assertEqual(post_message.await_args.kwargs["thread_ts"], "known-thread")
+            gates.pause("bot-runtime", binding.project_id, actor=actor, reason="Fixture operator pause")
+            paused = asyncio.run(server._send_bot_outbound(binding, "paused status"))
+            self.assertEqual(paused, {"sent": False, "reason": "operator_paused"})
+            post_message.assert_awaited_once()
 
 
 if __name__ == "__main__":
