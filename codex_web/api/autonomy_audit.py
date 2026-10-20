@@ -57,8 +57,11 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return actor
 
+    # Read services use synchronous storage and may inspect full audit history.
+    # Regular handlers run in FastAPI's worker pool, leaving the event loop
+    # available for worker supervision and unrelated requests.
     @router.get("")
-    async def list_records(
+    def list_records(
         request: Request,
         limit: int = Query(default=200, ge=1, le=1000),
     ) -> dict[str, Any]:
@@ -74,7 +77,7 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
         }
 
     @router.get("/metrics")
-    async def metrics(request: Request) -> dict[str, Any]:
+    def metrics(request: Request) -> dict[str, Any]:
         actor = reader(request)
         return service.metrics(
             organization_id=actor.organization_id,
@@ -82,7 +85,7 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
         ).model_dump(mode="json")
 
     @router.get("/checkpoints")
-    async def checkpoints(
+    def checkpoints(
         request: Request,
         limit: int = Query(default=100, ge=1, le=500),
     ) -> dict[str, Any]:
@@ -98,7 +101,7 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
         }
 
     @router.get("/signals")
-    async def signals(
+    def signals(
         request: Request,
         active_only: bool = Query(default=False),
     ) -> dict[str, Any]:
@@ -114,7 +117,7 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
         }
 
     @router.get("/{record_id}")
-    async def get_record(record_id: str, request: Request) -> dict[str, Any]:
+    def get_record(record_id: str, request: Request) -> dict[str, Any]:
         actor = reader(request)
         try:
             item = service.get(
