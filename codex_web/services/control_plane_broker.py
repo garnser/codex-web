@@ -537,6 +537,13 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        work_item_model = {
+            "work_item.handoff": WorkItemHandoffCreate,
+            "work_item.acknowledge": WorkItemAckCreate,
+            "work_item.progress": WorkItemProgressUpdate,
+        }.get(item.id)
+        if work_item_model is not None:
+            result["request_body"] = work_item_model.model_json_schema()
         if item.id.startswith("verification."):
             result["scope"] = "Current assignment Work Item and exact admitted Resources; writable repository remains required"
             result["authorizer"] = "Current assignment requester, exact API capability"

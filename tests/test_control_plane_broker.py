@@ -2035,6 +2035,45 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.service.public_assignment_capability(legacy)
                           ['assignment_context']['execution_profile_definition'])
 
+    async def test_catalog_guided_work_item_ack_reaches_existing_service(self):
+        status, _, catalog = await self._request("GET", "/api/control-plane-broker/operations")
+        self.assertEqual(status, 200)
+        operations = {item["id"]: item for item in catalog["operations"]}
+        for operation, required in (("work_item.handoff", {"from_agent", "to_agent"}),
+                                    ("work_item.acknowledge", {"actor"}),
+                                    ("work_item.progress", set())):
+            schema = operations[operation]["request_body"]
+            self.assertEqual(set(schema.get("required", [])), required)
+            self.assertIn("current_stage", schema["properties"])
+        schema = operations["work_item.acknowledge"]["request_body"]
+        self.assertIn("expected_handoff_requested_at", schema["properties"])
+        self.assertTrue(schema["properties"]["accepted"]["default"])
+        stages = next(item["enum"] for item in schema["properties"]["current_stage"]["anyOf"]
+                      if "enum" in item)
+        self.assertIn("validation_running", stages)
+        self.assertNotIn("validation_active", stages)
+        request = {"actor": "quinn", "accepted": True,
+                   "expected_handoff_requested_at": 123.0, "current_stage": "validation_running"}
+        with patch.object(self.work_items, "acknowledge", wraps=self.work_items.acknowledge) as ack:
+            status, _, response = await self._request(
+                "POST", f"/api/work-items/{quote(self.ref, safe='')}/ack", payload=request)
+        self.assertEqual(status, 200, response)
+        ack.assert_awaited_once()
+        actual = ack.call_args.args[1]
+        self.assertEqual(actual.actor, "quinn")
+        self.assertEqual(actual.expected_handoff_requested_at, 123.0)
+        self.assertEqual(actual.current_stage, "validation_running")
+
+    async def test_work_item_schema_errors_still_refuse_before_service(self):
+        with patch.object(self.work_items, "acknowledge", new=AsyncMock()) as ack:
+            for request in ({"agent": "quinn", "handoff_requested_at": 123.0},
+                            {"actor": "quinn", "current_stage": "validation_active"}):
+                with self.subTest(request=request):
+                    status, _, _ = await self._request(
+                        "POST", f"/api/work-items/{quote(self.ref, safe='')}/ack", payload=request)
+                    self.assertEqual(status, 422)
+            ack.assert_not_awaited()
+
     async def test_operator_and_worker_catalogs_share_repository_request_metadata(self):
         from fastapi import FastAPI
         from codex_web.api.control_plane_broker import build_control_plane_broker_router
