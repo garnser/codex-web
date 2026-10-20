@@ -316,6 +316,12 @@ metadata and scope, never credentials or lease material. Catalog discovery and
 repository actions evaluate the assignment requester through canonical Role
 authority; the fenced worker service identity remains the executing principal.
 
+Work Item handoff, acknowledgement and progress operations expose `request_body`
+JSON schemas derived from their canonical request models, including required
+fields, stage enums and defaults. Worker discovery and operator inspection use
+the same metadata. Discovery grants no additional authority; mutation-time
+assignment, actor, tenant, resource and handoff checks still apply.
+
 The caller's catalog includes an additive `assignment_context` with only
 assignment/execution/workspace IDs, the execution profile and its pinned
 `execution_profile_definition` reference (ID, kind, schema version, record ID,
