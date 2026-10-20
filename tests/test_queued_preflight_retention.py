@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -13,6 +14,123 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_diagnostic_leaves_fresh_request_queued_and_unclaimed(self):
+        from codex_web.models import Project
+        from codex_web.runtime.execution import TurnExecutionService
+        from tests.test_turn_execution import _Host
+        with tempfile.TemporaryDirectory() as directory:
+            host = _Host()
+            host._project = lambda _id: Project(id='project', name='Project', path='/workspace')
+            runtime = TurnExecutionService(host)
+            preflight = ExecutionPreflightService(ExecutionPreflightStore(
+                SQLiteStateStore(Path(directory)/'state.sqlite')),
+                replacement_resolver=lambda *_args, **_kwargs: None)
+            old = runtime.enqueue_turn(thread_id='old', project_id='project', message='original')
+            retained = preflight.retain_queued(old, organization_id='local', workspace_id='default')
+            before = preflight.store.get(retained.id).model_dump(mode='json')
+            host.queues.clear()
+            host.queues['new'] = [old.model_copy(update={'thread_id':'new'})]
+            fresh = runtime.enqueue_turn(thread_id='new', project_id='project', message='fresh')
+            queued_before = [q.model_dump(mode='json') for q in host.queues['new']]
+            runtime.queued_preflight = preflight
+            runtime.start_thread_turn_now = AsyncMock()
+            runtime.schedule_queue_drain = Mock()
+            entered = asyncio.Event()
+            async def blocked_publish(event):
+                if event['type']=='queue.error':
+                    entered.set()
+                    await asyncio.Event().wait()
+            host.hub.publish = blocked_publish
+            task = asyncio.create_task(runtime.drain_thread_queue('new'))
+            await asyncio.wait_for(entered.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            runtime.start_thread_turn_now.assert_not_awaited()
+            self.assertEqual([q.model_dump(mode='json') for q in host.queues['new']], queued_before)
+            self.assertEqual(preflight.store.get(retained.id).model_dump(mode='json'), before)
+            new_attempt = preflight.store.get('preflight-queued-'+fresh.id)
+            self.assertEqual(new_attempt.status, 'queued')
+            self.assertIsNone(new_attempt.queued_admission_claim_id)
+
+    async def test_refused_replacement_preserves_unknown_and_admits_independent_work(self):
+        from codex_web.models import Project
+        from codex_web.runtime.execution import TurnExecutionService
+        from tests.test_turn_execution import _Host
+        for refusal in ('unverified', 'identity', 'snapshot', 'admitting'):
+            with self.subTest(refusal=refusal), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'state.sqlite'
+                host = _Host()
+                host._project = lambda _id: Project(id='project', name='Project', path='/workspace')
+                runtime = TurnExecutionService(host)
+                service = ExecutionPreflightService(ExecutionPreflightStore(SQLiteStateStore(path)),
+                    replacement_resolver=lambda *_args, **_kwargs: None if refusal == 'unverified' else 'new')
+                original = runtime.enqueue_turn(thread_id='old', project_id='project', message='unknown original')
+                attempt = service.retain_queued(original, organization_id='local', workspace_id='default')
+                _, claim = service.claim_queued_admission(attempt.id)
+                if refusal != 'admitting':
+                    service.begin_queued_start(attempt.id, claim_id=claim)
+                if refusal == 'identity':
+                    service.store.update(attempt.id, lambda value: value.model_copy(update={'organization_id':'other'}))
+                before = service.store.get(attempt.id).model_dump(mode='json')
+                host.queues.clear()
+                moved = original.model_copy(update={'thread_id':'new',
+                    **({'message':'changed'} if refusal == 'snapshot' else {})})
+                host.queues['new'] = [moved]
+                fresh = runtime.enqueue_turn(thread_id='new', project_id='project', message='eligible fresh')
+                runtime.queued_preflight = service
+                runtime.start_thread_turn_now = AsyncMock(return_value={'turn':{'id':'actual-fresh'}})
+                runtime.schedule_queue_drain = Mock()
+                await runtime.drain_thread_queue('new')
+                runtime.start_thread_turn_now.assert_awaited_once()
+                self.assertEqual(runtime.start_thread_turn_now.await_args.kwargs['message'], fresh.message)
+                self.assertEqual([q.model_dump(mode='json') for q in host._thread_queue('new')],
+                    [moved.model_dump(mode='json')])
+                reopened = ExecutionPreflightStore(SQLiteStateStore(path))
+                self.assertEqual(reopened.get(attempt.id).model_dump(mode='json'), before)
+                notices = [e for e in host.events if e['type']=='queued_retention_refused']
+                self.assertEqual(len(notices), 1)
+                self.assertEqual(notices[0]['code'], 'retained_queued_route_unverified')
+                self.assertFalse(notices[0]['retryable'])
+
+    async def test_all_refused_queues_do_not_spin_and_diagnostics_are_bounded(self):
+        from codex_web.models import Project
+        from codex_web.runtime.execution import TurnExecutionService
+        from tests.test_turn_execution import _Host
+        with tempfile.TemporaryDirectory() as directory:
+            host = _Host()
+            host._project = lambda _id: Project(id='project', name='Project', path='/workspace')
+            runtime = TurnExecutionService(host)
+            service = ExecutionPreflightService(ExecutionPreflightStore(
+                SQLiteStateStore(Path(directory)/'state.sqlite')),
+                replacement_resolver=lambda *_args, **_kwargs: None)
+            originals = []
+            for index in range(15):
+                original = runtime.enqueue_turn(thread_id='old', project_id='project', message=f'original {index}')
+                attempt = service.retain_queued(original, organization_id='local', workspace_id='default')
+                originals.append((original, attempt))
+            before = {a.id: service.store.get(a.id).model_dump(mode='json') for _,a in originals}
+            host.queues.clear()
+            host.queues['new'] = [q.model_copy(update={'thread_id':'new'}) for q,_ in originals]
+            queued_before = [q.model_dump(mode='json') for q in host.queues['new']]
+            runtime.queued_preflight = service
+            runtime.start_thread_turn_now = AsyncMock()
+            runtime.schedule_queue_drain = Mock()
+            for _ in range(3):
+                await runtime.drain_thread_queue('new')
+            runtime.start_thread_turn_now.assert_not_awaited()
+            runtime.schedule_queue_drain.assert_not_called()
+            self.assertEqual([q.model_dump(mode='json') for q in host.queues['new']], queued_before)
+            self.assertEqual({a.id:service.store.get(a.id).model_dump(mode='json') for _,a in originals}, before)
+            notices = [e for e in host.events if e['type']=='queued_retention_refused']
+            self.assertEqual(len(notices), 1)
+            self.assertEqual(notices[0]['count'], 15)
+            self.assertEqual(len(notices[0]['queued_ids']), 10)
+            # The throttle is bounded telemetry, never a cached admission decision.
+            for index in range(300):
+                await runtime._publish_queued_retention_refusals(str(index), 1, ['sample'])
+            self.assertLessEqual(len(runtime._queued_retention_notice_at), 256)
+
     async def test_verified_replacement_skips_unknown_and_starts_later_request(self):
         from codex_web.models import Project
         from codex_web.runtime.execution import TurnExecutionService

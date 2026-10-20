@@ -45,6 +45,7 @@ from codex_web.services.provider_capacity import (
 )
 from codex_web.services.project_runtime import assignment_sandbox_policy
 from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
+from codex_web.services.execution_preflight import QueuedRetentionRefused
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.turn_queue_policy import TurnQueuePolicy
 from codex_web.services.agent_worker_session import (
@@ -216,6 +217,8 @@ class TurnExecutionService:
         self.host = host
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
         self.queued_preflight = None
+        # Diagnostic throttle only: canonical routes are revalidated on every wake.
+        self._queued_retention_notice_at: dict[str, float] = {}
         self.owner_routing_validator = None
         self.procedure_admission = None
         self.session_custody = None
@@ -858,6 +861,26 @@ class TurnExecutionService:
                 "active": self.thread_is_active(thread_id),
             }
         )
+
+    async def _publish_queued_retention_refusals(self, thread_id, count, sample):
+        if not count:
+            return
+        now = time.monotonic()
+        previous = self._queued_retention_notice_at.get(thread_id)
+        if previous is not None and now - previous < 60.0:
+            return
+        if thread_id not in self._queued_retention_notice_at and len(self._queued_retention_notice_at) >= 256:
+            self._queued_retention_notice_at.pop(next(iter(self._queued_retention_notice_at)))
+        self._queued_retention_notice_at[thread_id] = now
+        code = 'retained_queued_route_unverified'
+        message = (f'{count} retained request(s) need verified replacement provenance. '
+                   'Original requests remain held; operator reconciliation is required.')
+        self.host._append_bot_event({'type': 'queued_retention_refused',
+            'thread_id': thread_id, 'code': code, 'count': count,
+            'queued_ids': sample[:10], 'retryable': False})
+        await asyncio.wait_for(self.host.hub.publish({'type': 'queue.error', 'threadId': thread_id,
+            'queueDepth': self.host._thread_queue_depth(thread_id),
+            'code': code, 'error': message, 'retryable': False}), timeout=1.0)
 
     def enqueue_turn(
         self,
@@ -3907,6 +3930,8 @@ class TurnExecutionService:
                 await self.publish_queue_status(thread_id)
                 return
             queued = None
+            refused_count = 0
+            refused_sample = []
             for candidate in TurnQueuePolicy.admission_candidates(items):
                 if self._queued_automation_wait_reason(candidate) is not None:
                     continue
@@ -3916,11 +3941,19 @@ class TurnExecutionService:
                     # Without canonical tenant provenance, keep this request
                     # in its original queue rather than inventing a tenant.
                     continue
-                attempt = await asyncio.to_thread(
-                    self.queued_preflight.retain_queued, candidate,
-                    organization_id=candidate_project.organization_id,
-                    workspace_id=candidate_project.workspace_id,
-                )
+                try:
+                    attempt = await asyncio.to_thread(
+                        self.queued_preflight.retain_queued, candidate,
+                        organization_id=candidate_project.organization_id,
+                        workspace_id=candidate_project.workspace_id,
+                    )
+                except QueuedRetentionRefused:
+                    # Do not modify, pop, claim or retry this original. Its
+                    # unknown outcome cannot starve independent eligible work.
+                    refused_count += 1
+                    if len(refused_sample) < 10:
+                        refused_sample.append(candidate.id)
+                    continue
                 if attempt.status == 'started' and attempt.queued_start_receipt is not None:
                     # A restored queue copy is redundant only when the original
                     # retained admission has its actual immutable start receipt.
@@ -3940,6 +3973,10 @@ class TurnExecutionService:
                         return
                 if self._queued_automation_wait_reason(candidate) is not None:
                     continue
+                # Diagnostics run before claiming/removing fresh work. Even
+                # cancellation here must leave it durably queued and unclaimed.
+                with contextlib.suppress(Exception):
+                    await self._publish_queued_retention_refusals(thread_id, refused_count, refused_sample)
                 attempt, claim_id = await asyncio.to_thread(
                     self.queued_preflight.claim_queued_admission, attempt.id)
                 if claim_id is None:
@@ -3956,6 +3993,8 @@ class TurnExecutionService:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     attempt.id, status='queued', claim_id=claim_id)
             if queued is None:
+                with contextlib.suppress(Exception):
+                    await self._publish_queued_retention_refusals(thread_id, refused_count, refused_sample)
                 await self.publish_queue_status(thread_id)
                 return
         else:

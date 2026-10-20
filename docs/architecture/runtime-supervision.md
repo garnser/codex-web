@@ -826,6 +826,18 @@ thread names and latest role bindings cannot establish them. An archived-session
 refusal remains retained until its original preflight outcome is explicitly
 reconciled; persistence does not authorize replay of an uncertain start.
 
+An expected refusal to restore a retained route leaves that queue copy and its
+preflight unchanged. Queue draining considers later independent eligible
+requests instead of aborting the whole thread. Refused candidates alone do not
+schedule another drain. Each external wake checks current canonical provenance
+again; a diagnostic throttle never caches admission decisions. Existing bot
+event history and the Queue error display expose a fixed refusal code and count,
+with at most ten queue IDs in the event. Emission is limited to once per minute
+per thread using a process-local cache of at most 256 threads. These diagnostics
+do not assert native non-start, add retry authority, or change GET queue status.
+Unexpected storage failures still stop admission rather than being classified
+as an expected route refusal.
+
 The additive recovery document is ignored by older readers and does not mutate
 existing queue or preflight schemas. Downgrading loses durable routing capability
 and cannot be treated as a repair for retained work. Deployment and recovery
