@@ -179,6 +179,108 @@ class VerifiedPublicationEventTests(unittest.IsolatedAsyncioTestCase):
             update={'verified_artifact_relations':[newer]}).model_dump(mode='json')})
         with self.assertRaisesRegex(ValueError,'ambiguous_or_stale'):self.resolve(self.payload(revision='b'*40))
 
+    def existing_mr_publication_without_creation(self):
+        records = self.store.load()
+        for i, intent in enumerate(records.intents):
+            if intent.action_id == 'code-host.pull-request.upsert':
+                # Retain historical failed/uncertain MR updates; never promote
+                # them into successful creation proof or rewrite their receipts.
+                records.intents[i] = intent.model_copy(update={'status': 'cancelled', 'work_item_ref': None})
+                continue
+            records.intents[i] = intent.model_copy(update={'request': intent.request.model_copy(update={
+                'parameters': {**intent.request.parameters, 'existing_change_request_number': 291,
+                               'expected_remote_revision': 'b' * 40}})})
+            index = next(n for n, r in enumerate(records.receipts) if r.id == intent.last_receipt_id)
+            receipt = records.receipts[index]
+            records.receipts[index] = receipt.model_copy(update={'result': receipt.result.model_copy(update={
+                'output': {**receipt.result.output, 'existing_change_request_number': 291,
+                           'work_item_issue_number': 326}})})
+        self.store.update(lambda _: records)
+        return records
+
+    async def test_verified_existing_mr_publication_needs_no_successful_creation_intent(self):
+        records = self.existing_mr_publication_without_creation()
+        before = records.model_dump(mode='json')
+        route = self.resolve()
+        self.assertEqual((route.state.ref, route.mr_ref, route.head_revision),
+                         (self.original.ref, 'group/project!291', HEAD))
+        self.assertIsNone(route.request_intent_id)
+        self.assertIsNone(route.provenance()['request_intent_id'])
+        self.assertEqual(self.store.load().model_dump(mode='json'), before)
+        original_load = self.store.load
+        with patch.object(self.store, 'load', side_effect=lambda *, intent_id=None:
+                original_load(intent_id=intent_id) if intent_id else self.fail('full history scan')):
+            self.assertEqual(self.resolve().branch_intent_id, route.branch_intent_id)
+
+    async def test_existing_mr_only_terminal_ingress_retains_original_validator_and_exact_pin(self):
+        self.existing_mr_publication_without_creation()
+        for status in ('pending', 'running', 'success', 'failed'):
+            _, dispatch, events, result, _, _ = await self.ingress(self.payload(status=status))
+            self.assertTrue(result['accepted'])
+            if status in ('pending', 'running'):
+                self.assertTrue(result['deterministic']); dispatch.assert_not_awaited()
+            else:
+                dispatch.assert_awaited_once()
+                self.assertEqual(dispatch.await_args.args[0].agent, 'quinn')
+                self.assertEqual(dispatch.await_args.kwargs['work_item_ref'], self.original.ref)
+                self.assertEqual(dispatch.await_args.kwargs['provider_notification_pin'].work_item_ref,
+                                 self.original.ref)
+                self.assertIsNone(events[-1]['publication_route']['request_intent_id'])
+        saved = self.backend.record_get('work_item_states', self.original.ref)
+        self.assertEqual((saved['current_owner'], saved['current_stage']), ('quinn', 'validation_running'))
+        _, dispatch, _, result, _, _ = await self.ingress(self.payload(status='canceled'), paused=True)
+        self.assertFalse(result['accepted']); dispatch.assert_not_awaited()
+
+    async def test_existing_mr_only_refuses_incomplete_or_conflicting_typed_provider_attestation(self):
+        baseline = self.existing_mr_publication_without_creation()
+        for field, value in [('existing_change_request_number', None),
+                             ('existing_change_request_number', '291'),
+                             ('existing_change_request_number', True),
+                             ('existing_change_request_number', 292),
+                             ('work_item_issue_number', 327),
+                             ('work_item_issue_number', '326'),
+                             ('head_revision', 'b' * 40), ('repository', 'foreign/project'),
+                             ('resource_id', 'foreign-repo')]:
+            with self.subTest(field=field, value=value):
+                records = baseline.model_copy(deep=True)
+                index = next(n for n, r in enumerate(records.receipts) if r.action_id == 'code-host.branch.publish')
+                receipt = records.receipts[index]
+                records.receipts[index] = receipt.model_copy(update={'result': receipt.result.model_copy(update={
+                    'output': {**receipt.result.output, field: value}})})
+                self.store.update(lambda _: records)
+                with self.assertRaisesRegex(ValueError, 'ambiguous_or_stale'): self.resolve()
+        self.store.update(lambda _: baseline)
+        payload = self.payload(kind='merge_request'); payload['object_attributes']['iid'] = 292
+        with self.assertRaisesRegex(ValueError, 'ambiguous_or_stale'): self.resolve(payload)
+        newer = WorkItemArtifactRelation(source_type='gitlab', source_instance='https://gitlab.example/api/v4',
+            ref='group/project!291', head_revision='b' * 40, source_revision='2099-01-01T00:00:00Z', state='opened')
+        self.backend.record_apply('work_item_states', upserts={self.original.ref:
+            self.original.model_copy(update={'verified_artifact_relations': [newer]}).model_dump(mode='json')})
+        with self.assertRaisesRegex(ValueError, 'ambiguous_or_stale'): self.resolve()
+
+    async def test_existing_mr_only_still_requires_settled_exact_publication_proof(self):
+        baseline = self.existing_mr_publication_without_creation()
+        for change in ('unknown_intent', 'unknown_receipt', 'unverified', 'no_execution', 'untyped_request'):
+            with self.subTest(change=change):
+                records = baseline.model_copy(deep=True)
+                index = next(n for n, i in enumerate(records.intents) if i.action_id == 'code-host.branch.publish')
+                intent = records.intents[index]
+                if change == 'unknown_intent':
+                    records.intents[index] = intent.model_copy(update={'status': 'uncertain'})
+                elif change == 'no_execution':
+                    records.intents[index] = intent.model_copy(update={'execution_id': None})
+                elif change == 'untyped_request':
+                    records.intents[index] = intent.model_copy(update={'request': intent.request.model_copy(update={
+                        'parameters': {**intent.request.parameters, 'existing_change_request_number': '291'}})})
+                elif change == 'unknown_receipt':
+                    n = next(n for n, r in enumerate(records.receipts) if r.id == intent.last_receipt_id)
+                    records.receipts[n] = records.receipts[n].model_copy(update={'outcome': 'unknown'})
+                else:
+                    n = next(n for n, v in enumerate(records.verifications) if v.id == intent.last_verification_id)
+                    records.verifications[n] = records.verifications[n].model_copy(update={'verified': False})
+                self.store.update(lambda _: records)
+                with self.assertRaisesRegex(ValueError, 'ambiguous_or_stale'): self.resolve()
+
     async def test_unverified_unknown_and_wrong_receipt_cannot_prove_lineage(self):
         records = self.store.load()
         records.verifications[0] = records.verifications[0].model_copy(update={'verified':False})
