@@ -165,6 +165,16 @@ class InitialProcessBootstrapRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.threads.create.side_effect = revoke_after_creation
         await self.assert_no_publication()
 
+    async def test_operator_assurance_downgrade_during_creation_refuses_publication(self):
+        from codex_web.identity import AuthenticationAssurance
+        async def downgrade_after_creation(**values):
+            response = await self.create(**values)
+            self.runtime.actor_resolver = lambda identity, project: self.admin.model_copy(update={
+                'assurance': AuthenticationAssurance.PRIMARY})
+            return response
+        self.threads.create.side_effect = downgrade_after_creation
+        await self.assert_no_publication()
+
     async def test_created_receipt_reconciles_without_creating_another_bootstrap(self):
         await self.recover()
         await self.recover()
