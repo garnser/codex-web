@@ -25,6 +25,10 @@ from codex_web.services.identity import IdentityService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
 
 
+class QueuedRetentionRefused(ValueError):
+    """Expected fail-closed route refusal; never evidence of native non-start."""
+
+
 class ExecutionPreflightService:
     """Persist and retry execution attempts blocked before active execution."""
 
@@ -99,13 +103,13 @@ class ExecutionPreflightService:
                 or current.workspace_id != incoming.workspace_id
                 or current.project_id != incoming.project_id
                 or self.replacement_resolver is None):
-            raise ValueError("retained queued request identity changed")
+            raise QueuedRetentionRefused("retained queued request identity changed")
         target = self.replacement_resolver(
             current.thread_id, project_id=current.project_id,
             organization_id=current.organization_id, workspace_id=current.workspace_id,
         )
         if target != incoming.thread_id:
-            raise ValueError("retained queued request replacement is unverified")
+            raise QueuedRetentionRefused("retained queued request replacement is unverified")
         prior_target = current.replacement_thread_id or current.thread_id
         changed = False
         def update(value: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
@@ -125,7 +129,7 @@ class ExecutionPreflightService:
                     or (value.replacement_thread_id or value.thread_id)
                        not in {prior_target, target}
                     or value.status in {"admitting", "retrying"}):
-                raise ValueError("retained queued request identity changed")
+                raise QueuedRetentionRefused("retained queued request identity changed")
             if value.replacement_thread_id == target:
                 return value
             changed = True
