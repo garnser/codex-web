@@ -19,6 +19,21 @@ Artifacts may carry:
 
 Supersession keeps both identities: the previous artifact becomes `superseded` and points to its replacement. Evidence dependent on the previous artifact is invalidated immediately.
 
+Artifact and Evidence creation commit their metadata and mandatory governance
+record/audit event in one shared canonical StateStore transaction. Cancellation,
+failed writes and late composed guards roll back both. Concurrent idempotent
+Evidence creation resolves the existing object before registering new metadata.
+Internal composed writers include the prepared creation's complete transaction
+domains and apply it under their existing guards; an incomplete legacy callback
+fails before registration. Different governance/domain backends are refused.
+No persisted contract version or external content action changes.
+
+Existing governed deletion can reconcile an already absent local object with an
+`already_absent` adapter receipt. It preserves the governance record and audit
+history, does not invent missing Artifact fields, settle an unknown provider
+intent, or claim deletion of external content. The exact current absence and
+original protected custody must be checked before an operator uses this path.
+
 ## Evidence
 
 Optional product acceptance observations use the distinct `user_outcome` Evidence
