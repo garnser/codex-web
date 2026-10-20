@@ -36,6 +36,13 @@ A binding cannot declare a capability the adapter does not implement. Calling an
 
 Provider-specific SDK objects and terminology remain inside adapters. Callers receive canonical fact models such as `CodeHostRepositoryFact`, `CodeHostPullRequestFact`, and `CodeHostCheckFact`.
 
+Pull-request discovery accepts the provider-neutral `state` filters `open`,
+`closed`, and `all`, defaulting to `open`. CodeHost service and assignment broker
+share normalization; native terms such as GitLab `opened` stay inside the adapter.
+The broker catalog advertises the enum and default. Unsupported filters receive
+an audited HTTP400 `invalid_pull_request_state` before credential/provider use;
+genuine provider failures retain their separate error and redaction handling.
+
 The internal `GitHubClient.read_json_bounded` transport supports fixed-provider
 REST reads and engine-owned GraphQL queries with a maximum 512 KiB JSON body and
 64 container levels. It requests identity encoding, rejects unrequested compressed

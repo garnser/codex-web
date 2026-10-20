@@ -46,6 +46,8 @@ from codex_web.control_plane_broker import (
     WorkItemOwnerDispatchRequest,
 )
 from codex_web.code_hosts import (
+    PULL_REQUEST_QUERY_STATES,
+    normalize_pull_request_state,
     CodeHostCapability,
     CodeHostError,
     CodeHostProviderBinding,
@@ -551,6 +553,10 @@ class ControlPlaneBrokerService:
                 result["required_query_parameters"] = ["work_item_ref", "source"]
         if item.id.startswith("repository.read."):
             result["optional_query_parameters"] = ["repository_resource_id"]
+        if item.id == "repository.read.pull-requests":
+            result["optional_query_parameters"].append("state")
+            result["query_parameters"] = {"state": {
+                "type": "string", "enum": list(PULL_REQUEST_QUERY_STATES), "default": "open"}}
         if item.id == "repository.read.artifact-download":
             result["optional_query_parameters"].append("member_path")
         if item.id == 'repository.read.merge-requirements':
@@ -1537,7 +1543,10 @@ class ControlPlaneBrokerService:
             )
             return {"item": item.model_dump(mode="json")}
         if operation.id == "repository.read.pull-requests":
-            state = (query.get("state") or ["open"])[0].strip().casefold()
+            try:
+                state = normalize_pull_request_state((query.get("state") or ["open"])[0])
+            except CodeHostError as exc:
+                raise ControlPlaneBrokerRequestError(str(exc), code="invalid_pull_request_state") from None
             items = await self.code_hosts.pull_requests(
                 binding_id,
                 repository_id,

@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from codex_web.code_hosts import (
     validate_artifact_member_path,
+    normalize_pull_request_state,
     CodeHostArtifactDownloadFact,
     CodeHostArtifactFact,
     CodeHostCapability,
@@ -859,9 +860,7 @@ class CodeHostService:
         binding, provider = self.registry.resolve(binding_id, actor=actor)
         self._require_capability(binding, provider, CodeHostCapability.PULL_REQUEST_READ)
         resource = self._resource(resource_id, actor=actor, binding=binding)
-        normalized_state = str(state or "open").strip().casefold()
-        if normalized_state not in {"open", "closed", "all"}:
-            raise CodeHostError("pull-request state must be open, closed, or all")
+        normalized_state = normalize_pull_request_state(state)
         return await self._with_credential(
             binding,
             actor=actor,
