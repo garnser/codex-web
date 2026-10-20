@@ -382,3 +382,21 @@ does not grant the Slack service workspace administration or relax procedure
 requirements. Project reconciliation readiness similarly validates tenant scope
 before using an internal principal with the worker and secret-metadata inspection scopes required by
 the readiness service; caller permissions and backfill approval remain unchanged.
+
+### Ambiguous routing choices
+
+Routing receipts keep the persisted scalar-map contract. Valid routing choices
+are stored as an internal `availablePrefixesJson` string, containing at most 256
+nonempty strings of at most 512 characters and 64 KiB of encoded JSON. The
+canonical compatibility mapper returns the decoded `availablePrefixes` list and
+removes the internal key. Invalid metadata or older receipts without this value
+return an empty list; receipt identity, retained input and uncertain outcomes
+remain unchanged, and reading a receipt never reruns routing. Provider-supplied
+values cannot override the reserved encoded key.
+
+This additive scalar remains readable by the frozen 3.0 state reader and needs
+no state migration. Older binaries still omit these choices from responses;
+upgrade all ingress owners to obtain the corrected behavior. Bot ingress uses
+the same mapper as direct conversation ingress, including truthful pending
+results. Historical backfill reports retained pending inputs as deferred rather
+than dispatched; its independent polling control is unchanged.

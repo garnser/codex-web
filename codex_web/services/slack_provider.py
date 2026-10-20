@@ -1199,6 +1199,8 @@ class SlackProviderService:
             if fallback_thread_ts
             else "slack_backfill_dispatched"
         )
+        if result.get("pending"):
+            event_type = event_type.replace("_dispatched", "_deferred")
         payload: dict[str, Any] = {
             "type": event_type,
             "provider": "slack",
@@ -1208,6 +1210,8 @@ class SlackProviderService:
             "thread_id": result.get("threadId"),
             "queued": result.get("queued", False),
             "ok": result.get("ok", False),
+            "pending": result.get("pending", False),
+            "reason": result.get("reason"),
         }
         if fallback_thread_ts:
             payload["external_thread_id"] = fallback_thread_ts

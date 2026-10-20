@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
 
-from codex_web.conversation_channels import ConversationProjectionOutcome
 from codex_web.services.conversation_channels import ConversationChannelReconciliationError
 from codex_web.models import BotInboundMessage, BotRouteTest, ThreadRunSettings
 from codex_web.paths import SLACK_RELAY_NOTICE
@@ -328,33 +327,7 @@ class BotRoutingService:
                 message.connection_id or f"{provider}:default"
             ),
         )
-        result: dict[str, Any] = dict(receipt.routing_result)
-        result["conversationOutcome"] = receipt.outcome.value
-        result["canonicalEventId"] = receipt.canonical_event_id
-        if receipt.thread_id is not None:
-            result.setdefault("threadId", receipt.thread_id)
-        if receipt.queued_id is not None:
-            result.setdefault("queuedId", receipt.queued_id)
-        if receipt.outcome == ConversationProjectionOutcome.DUPLICATE:
-            result["duplicate"] = True
-            result.setdefault("ok", True)
-        elif (
-            receipt.outcome
-            == ConversationProjectionOutcome.REQUIRES_RECONCILIATION
-        ):
-            result["ok"] = False
-            result["requiresReconciliation"] = True
-            result["error"] = receipt.reason
-        elif receipt.outcome in {
-            ConversationProjectionOutcome.STALE,
-            ConversationProjectionOutcome.UPDATED,
-            ConversationProjectionOutcome.DELETED,
-            ConversationProjectionOutcome.REACTION,
-            ConversationProjectionOutcome.IGNORED,
-        }:
-            result.setdefault("ok", True)
-            result["routed"] = False
-        return result
+        return self.conversation_channels.legacy_routing_result(receipt)
 
     async def route_normalized(
         self,
