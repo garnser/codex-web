@@ -371,6 +371,7 @@ class FrontendBoundaryTests(unittest.TestCase):
             "secret_reference_ui.js": 6_000,
             "task_source_credentials.js": 2_000,
             "task_source_editor.js": 12_000,
+            "work_item_source_actions.js": 3_000,
             "task_source_provider_fields.js": 4_000,
             "page_editor.js": 5_000,
             "key_usage_ui.js": 5_000,

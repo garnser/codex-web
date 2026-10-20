@@ -1,3 +1,4 @@
+import { createWorkItemSourceActions } from './work_item_source_actions.js';
 import { requestedReference, rememberReference, projectPath } from './reference_navigation.js';
 import { installWorkItemCommands } from "./object_commands.js";
 import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
@@ -44,6 +45,7 @@ const { resetPaging, captureScope, scopedPath } = createWorkItemViewScope(state,
 const openCommand = installWorkItemCommands(state, loadDetail);
 const sourceEditor = createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtTime });
 const renderSourceConfig = () => sourceEditor.render();
+const { syncSource, fetchSourceRecord } = createWorkItemSourceActions(state, { sourceEditor, refreshAll, setStatus });
 let catalogGeneration = 0;
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
@@ -183,44 +185,6 @@ function renderProjectSelect() {
       `<option value="${esc(project.id)}" ${project.id === state.projectId ? 'selected' : ''}>${esc(project.name)}</option>`
     )),
   ].join('');
-}
-async function syncSource() {
-  if (!state.projectId || !sourceEditor.canLeave()) return;
-  const op = sourceEditor.capture();
-  setStatus('Reconciling authoritative source…');
-  try {
-    const result = await request(`/api/work-items/sync/${encodeURIComponent(op.projectId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: 'operator', reason: 'operator requested source resync' }),
-    });
-    if (!op.current()) return;
-    await refreshAll();
-    if (op.current()) setStatus(`Synced ${result.synced ?? 0} work items`);
-  } catch (error) {
-    if (op.current()) setStatus(error.message || 'Source sync failed', true);
-  }
-}
-async function fetchSourceRecord() {
-  if (!state.projectId || !sourceEditor.canLeave()) return;
-  const reference = document.querySelector('.work-items-source-reference').value.trim();
-  if (!reference) {
-    setStatus('Enter the exact existing source reference', true);
-    return;
-  }
-  const op = sourceEditor.capture();
-  setStatus('Fetching the existing source record…');
-  try {
-    // No fallback: old servers must refuse this action, never resync all items.
-    const result = await request(`/api/work-items/sync-source-record-v1/${encodeURIComponent(op.projectId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ reference, reason: 'operator requested one existing source record' }),
-    });
-    if (!op.current()) return;
-    await refreshAll();
-    if (op.current()) setStatus(`Fetched ${result.synced ?? 0} existing source record`);
-  } catch (error) {
-    if (op.current()) setStatus(error.message || 'Source record could not be fetched', true);
-  }
 }
 function renderItemList() {
   const startedAt = performance.now();
