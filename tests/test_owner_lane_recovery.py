@@ -419,3 +419,12 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.preflight.store.get(retained.id).model_dump_json(), before)
         self.assertEqual(self.queue, [self.held])
         self.execution.schedule_queue_drain.assert_not_called()
+
+    async def test_new_business_intent_cannot_authorize_an_older_rendered_prompt(self):
+        rendered_from = self.state.model_copy(deep=True)
+        self.state.next_action = 'new task in changed repository scope'
+        self.state.resource_ids = ['new-repo']
+        result = await self.service.recover(self.binding, rendered_from, 'old task rendered for old repository')
+        self.assertEqual(result['reason'], 'owner_recovery_changed')
+        self.assertEqual(self.queue, [self.held])
+        self.execution.schedule_queue_drain.assert_not_called()

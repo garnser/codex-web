@@ -267,7 +267,10 @@ class OwnerLaneRecoveryService:
         binding = await asyncio.to_thread(self.resolve_binding, binding)
         current = await asyncio.to_thread(self.get_state, state.ref)
         assignment = await asyncio.to_thread(self.terminal, binding)
-        if assignment is None or not self.owns(binding, current):
+        if (assignment is None or not self.owns(binding, current)
+                or self.revision(current) != self.revision(state)):
+            # The caller rendered its prompt from this exact business intent;
+            # a fresher scope/owner/action cannot authorize the older text.
             return {'ok': True, 'ignored': True, 'reason': 'owner_recovery_changed', 'threadId': binding.thread_id}
         revision = self.revision(current)
         # One request per logical binding/current work revision, even if its
