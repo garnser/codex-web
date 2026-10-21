@@ -269,6 +269,67 @@ scoped upgrade service authority and the complete-hosted-scope checks. A CLI
 guard must perform this request under the deployment lock at the one-shot
 verification boundary; a previously saved response is not an install grant.
 
+## Offline pre-install backup capture
+
+When the installed backup implementation needs a reviewed source correction
+before installation can qualify, `python -m codex_web.preinstall_backup_cli`
+provides a narrowly scoped, single-capture path. It composes canonical Identity,
+Crypto, Evidence, Audit, Recovery and Upgrade services without application startup,
+identity/definition bootstrap, worker admission, provider actions or migration of
+missing worker/action/audit records. It consumes an **existing** authorized MFA
+session or service credential through a file descriptor; credentials and exception
+bodies are never written to the journal. Both `upgrade:admin` and `recovery:admin`
+apply to service credentials, in addition to existing key and hosted-scope guards.
+
+The operator first completes a reviewed whole-service drain and preserves all
+unknown inputs and origins. The helper runs under the existing deploy lock and
+the operator qualification lock, with exact clean installed/producer revisions,
+service instance, PID and invocation pins. A separately supervised cgroup must
+actually cap this helper at no more than 6 GiB with zero swap; claimed arguments
+are insufficient. Canonical Recovery headroom admission remains independently
+required and can refuse even under that cap.
+The runtime data directory and its database, key and backup paths are frozen
+from the pinned installation's `data` layout and rechecked at both boundaries.
+An alternate destination cannot register a `local` manifest which only the
+helper, rather than the installed service, can read. Retargeted data/backend
+symlinks refuse capture or association.
+
+The helper obtains authenticated observations from the **running** installed API:
+its version, actual Recovery executor idle status, and a fresh canonical Upgrade
+preflight with zero action/assignment/native/fenced counts. Capture alone may
+proceed despite the exact stale RPO/restore-freshness/RTO qualification blockers;
+other compatibility, authority, scheduled-owner or recovery failures still refuse.
+It durably writes `pre-stop-qualified.json`. Only then may the reviewed operator
+procedure stop the positively drained service. The helper waits at most 30
+seconds for that same invocation to exit cleanly, and refuses a replacement,
+crash, failed stop or expired pre-stop observation. The helper itself never stops,
+starts, installs or rolls back a service. The operator procedure must independently
+own service restoration, including helper interruption or an unknown result.
+
+During the separate offline window of at most 600 seconds, the pre-stop preflight
+is explicitly **historical admission evidence**, not a newly refreshed observation.
+Before capture and before association the helper checks the current cleanly
+stopped service, sources, locks, canonical hosted scopes, durable zero-work counts,
+Release, Recovery policy/scheduled custody, Evidence validity and current actor.
+Credential/Evidence expiry is checked against actual current time. Capture uses
+the existing owned Recovery executor; cancellation waits for its real writer.
+The same finite window supplies cooperative storage deadlines. Expiry refuses
+further guarded writes or association; it does not claim that a synchronous
+writer has stopped or detach an in-flight operation. Restoration must inspect
+the actual helper/writer outcome rather than infer completion from elapsed time.
+The created manifest is journaled before post-capture checks. Association uses
+canonical Upgrade storage with identity-locked reauthentication and plan-context
+CAS; a changed plan or actor retains the backup without falsely associating it.
+
+A disconnected, timed-out, crashed or refused capture must be inspected through
+its journal, canonical Recovery manifests and destination state. It is not
+permission to invoke capture again, change an unknown outcome, or reuse another
+plan's backup. A successful capture does not qualify restore or deployment.
+The normal production-sized isolated restore, current service-instance drain
+rebinding after restart, fresh full preflight and qualified installer remain
+mandatory. Existing Recovery/Upgrade inspectors display the canonical results;
+no parallel recovery domain or separate success receipt is introduced.
+
 ## Migration phases
 
 Steps are declared before execution and must be ordered:

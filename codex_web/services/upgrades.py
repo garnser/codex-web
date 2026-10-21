@@ -153,6 +153,17 @@ class UpgradeAdmissionCoordinator:
 
 
 class UpgradeService:
+    @staticmethod
+    def require_operator(actor):
+        """Canonical Upgrade API authority, shared with explicit local tools."""
+        from codex_web.services.identity import AuthorizationError, IdentityService
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if 'upgrade:admin' not in actor.service_scopes:
+                raise AuthorizationError('upgrade:admin service scope required')
+        else:
+            IdentityService.require_admin(actor)
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+
     def __init__(
         self,
         store: UpgradeStore,
@@ -339,7 +350,7 @@ class UpgradeService:
             raise UpgradeConflictError("cancelled upgrade is terminal; create a new plan")
         return item
 
-    def _update(self, plan_id: str, actor: AuthenticationActor, updater) -> UpgradePlan:
+    def _update(self, plan_id: str, actor: AuthenticationActor, updater, *, identity_guard=None) -> UpgradePlan:
         result: list[UpgradePlan] = []
 
         def apply(state):
@@ -360,7 +371,23 @@ class UpgradeService:
             result.append(updated)
             return state
 
-        self.store.update(apply)
+        if identity_guard is None:
+            self.store.update(apply)
+        else:
+            identity, authenticate = identity_guard
+            if identity.store.store is not self.store.store:
+                raise UpgradeConflictError('Upgrade and identity require one canonical transactional store')
+            def guarded(rows):
+                current_actor = authenticate()
+                self.require_operator(current_actor)
+                from codex_web.services.recovery_reconciliation import require_operator
+                require_operator(current_actor)
+                if current_actor != actor:
+                    raise UpgradeConflictError('Authenticated operator changed before backup association')
+                updated = apply(self.store._decode(rows[self.store.namespace][None]))
+                return {self.store.namespace: {None: updated.model_dump(mode='json')}}
+            self.store.store.record_mutate_many({self.store.namespace: (None,),
+                identity.store.namespace: (None,)}, guarded)
         return result[0]
 
     def create(
@@ -1395,18 +1422,28 @@ class UpgradeService:
         plan_id: str,
         *,
         actor: AuthenticationActor,
+        capture_context=None,
+        after_capture=None,
+        identity_guard=None,
     ) -> UpgradePlan:
         plan = self._open_plan(plan_id, actor=actor)
+        if capture_context is not None:
+            capture_context.validate(plan)
         manifest = self.recovery.create_backup(actor=actor)
+        if after_capture is not None:
+            after_capture(manifest)
+        def associate(current):
+            if capture_context is not None:
+                capture_context.validate(current)
+            return current.model_copy(update={
+                "pre_upgrade_backup_id": manifest.id,
+                "updated_at": float(self.clock()),
+            })
         return self._update(
             plan.id,
             actor,
-            lambda current: current.model_copy(
-                update={
-                    "pre_upgrade_backup_id": manifest.id,
-                    "updated_at": float(self.clock()),
-                }
-            ),
+            associate,
+            identity_guard=identity_guard,
         )
 
     def _approval_target(

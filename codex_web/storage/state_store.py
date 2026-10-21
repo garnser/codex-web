@@ -341,12 +341,13 @@ def build_state_store(
     sqlite_path: Path,
     backend: str,
     postgres_dsn: str | None = None,
+    initialize: bool = True,
 ) -> StateStore:
     normalized = str(backend or "sqlite").strip().casefold()
     if normalized in {"sqlite", "local"}:
         from codex_web.storage.sqlite_state import SQLiteStateStore
 
-        return SQLiteStateStore(sqlite_path)
+        return SQLiteStateStore(sqlite_path, initialize=initialize)
     if normalized in {"postgres", "postgresql"}:
         if not postgres_dsn:
             raise RuntimeError(
@@ -354,5 +355,5 @@ def build_state_store(
             )
         from codex_web.storage.postgres_state import PostgresStateStore
 
-        return PostgresStateStore(postgres_dsn)
+        return PostgresStateStore(postgres_dsn, initialize=initialize)
     raise RuntimeError(f"unsupported state-store backend: {backend}")

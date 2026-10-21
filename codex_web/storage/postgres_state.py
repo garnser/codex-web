@@ -72,6 +72,7 @@ class PostgresStateStore:
         connection_pool: Any | None = None,
         pool_max_size: int = 16,
         pool_timeout_seconds: float = 5.0,
+        initialize: bool = True,
     ) -> None:
         self.dsn = str(dsn or "").strip()
         if not self.dsn:
@@ -99,7 +100,16 @@ class PostgresStateStore:
         self._connect_factory = connect
         self._keyed_mutation_metrics = OperationTimingMetrics()
         try:
-            self._initialize()
+            if initialize:
+                self._initialize()
+            else:
+                with self._connection(read_only_snapshot=True) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute('SELECT value FROM codex_state_metadata WHERE key=%s', ('schema_version',))
+                        row = cursor.fetchone()
+                        cursor.execute('SELECT namespace FROM codex_state_documents LIMIT 0')
+                if row is None or int(row[0]) != self.SCHEMA_VERSION:
+                    raise RuntimeError('Existing canonical state schema is unsupported')
         except BaseException:
             self.close()
             raise
