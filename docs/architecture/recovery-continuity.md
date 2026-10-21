@@ -46,6 +46,15 @@ plaintext; key context, backup format and persisted checksums are unchanged.
 This is an encoding implementation change, not a new recovery schema or a
 different integrity algorithm.
 
+Capture serializes snapshot metadata separately from the already JSON-compatible
+StateStore documents, avoiding a recursive Pydantic serialization copy of the
+catalog. Decoded documents are released before encryption; restore likewise
+releases envelope/plaintext buffers before subsequent decoding and validation.
+Isolated restore sanitizes and writes one namespace at a time instead of copying
+the whole decoded catalog. These reduce overlapping representations; they do not
+make capture constant-memory or remove the need to size the service for the
+decoded state and complete authenticated encryption payload.
+
 Transport/broker queues are not backed up as business truth. After restore they
 are reconstructed from canonical state/outbox semantics.
 

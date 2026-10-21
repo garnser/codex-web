@@ -359,6 +359,8 @@ class RecoveryService:
         if _firing is not None:
             backup_id = _firing.effect_id
         key_manifest = self._snapshot_key_manifest(documents, actor)
+        document_count = len(documents)
+        namespaces = tuple(sorted(documents))
         snapshot = BackupSnapshot(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -377,12 +379,22 @@ class RecoveryService:
             object_type="recovery_backup",
             object_id=backup_id,
         )
+        # Documents are already JSON StateStore values. Serializing the whole
+        # Pydantic model first recursively duplicates the entire catalog while
+        # the original, plaintext and encryption buffers are all still live.
+        snapshot_payload = snapshot.model_dump(mode="json", exclude={"documents"})
+        snapshot_payload["documents"] = documents
+        plaintext = self._canonical_bytes(snapshot_payload)
+        state_backend = snapshot.state_backend
+        state_schema_version = snapshot.state_schema_version
+        del snapshot_payload, snapshot, documents
         envelope = self.crypto.encrypt(
             policy.backup_key_id,
-            self._canonical_bytes(snapshot.model_dump(mode="json")),
+            plaintext,
             context,
             actor=actor,
         )
+        del plaintext
         encrypted_bytes = self._canonical_bytes(
             envelope.model_dump(mode="json")
         )
@@ -397,14 +409,14 @@ class RecoveryService:
             policy_version=policy.version,
             policy_fingerprint=policy.fingerprint(),
             deployment_mode=policy.deployment_mode,
-            state_backend=snapshot.state_backend,
-            state_schema_version=snapshot.state_schema_version,
+            state_backend=state_backend,
+            state_schema_version=state_schema_version,
             destination_id=policy.destination_id,
             destination_ref=destination_ref,
             envelope_sha256=hashlib.sha256(encrypted_bytes).hexdigest(),
             plaintext_checksum=checksum,
-            document_count=len(documents),
-            namespaces=tuple(sorted(documents)),
+            document_count=document_count,
+            namespaces=namespaces,
             key_id=envelope.key_id,
             key_version=envelope.key_version,
             key_manifest=key_manifest,
@@ -491,6 +503,7 @@ class RecoveryService:
         if hashlib.sha256(encrypted).hexdigest() != manifest.envelope_sha256:
             raise RecoveryConflictError("encrypted backup checksum mismatch")
         envelope = EncryptedEnvelope.model_validate(json.loads(encrypted))
+        del encrypted
         if _requirements is not None:
             _requirements.append(KeyManifestEntry(key_id=envelope.key_id, versions=(envelope.key_version,)))
         context = EncryptionContext(
@@ -504,7 +517,10 @@ class RecoveryService:
             context,
             actor=actor,
         )
-        snapshot = BackupSnapshot.model_validate(json.loads(plaintext))
+        del envelope
+        decoded = json.loads(plaintext)
+        del plaintext
+        snapshot = BackupSnapshot.model_validate(decoded)
         if (
             snapshot.organization_id != actor.organization_id
             or snapshot.workspace_id != actor.workspace_id
@@ -627,6 +643,8 @@ class RecoveryService:
             side_effects_enabled=False,
             verified_at=finished,
         )
+        # Publication needs the verification metadata, not the decoded catalog.
+        del snapshot
 
         def link_evidence(updated):
             nonlocal verification
@@ -771,9 +789,14 @@ class RecoveryService:
             )
         manifest = self.store.load().backups[backup_id]
         snapshot = self._snapshot_from_backup(manifest, actor=actor)
-        documents = self._sanitize_restored_documents(snapshot.documents)
-        for namespace, payload in documents.items():
-            target.put(namespace, payload)
+        # Preserve the sanitizer's independent-copy semantics without a second
+        # whole-catalog JSON roundtrip. Consume this private decoded snapshot one
+        # namespace at a time, releasing each source and sanitized copy promptly.
+        for namespace in list(snapshot.documents):
+            payload = snapshot.documents.pop(namespace)
+            restored = self._sanitize_restored_documents({namespace: payload})
+            target.put(namespace, restored[namespace])
+            del payload, restored
         if state_documents_checksum(
             {
                 key: value
