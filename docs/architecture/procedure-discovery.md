@@ -286,8 +286,10 @@ performing backfill writes and refuse retirement while an attempted READY needs
 that origin. The typed conflict exposes the owning ActionIntent IDs through the
 existing assignment API and preflight inspector; native input has not begun.
 Preparation reads at most 1,024 retained intent rows per call. A valid incomplete
-page produces `readiness_origin_index_progressing` with its persisted cursor and
-reader epoch, preserving the assignment and permitting bounded preparation to
+page produces `readiness_origin_index_progressing` with its persisted cursor for
+internal continuation; public conflicts expose only its SHA-256 digest and reader
+epoch, keeping other tenants' retained intent keys private. This preserves the
+assignment and permits bounded preparation to
 continue before any retirement effect. Invalid or unavailable evidence remains a
 non-retryable conflict. The retirement writer itself never migrates the index.
 

@@ -90,7 +90,8 @@ class AssignmentReadinessIndexProgressing(AssignmentReadinessOriginError):
 
     def detail(self):
         return {**super().detail(), 'retryable': True,
-                'cursor': self.cursor, 'epoch': self.epoch}
+                'cursor_sha256': hashlib.sha256(self.cursor.encode()).hexdigest(),
+                'epoch': self.epoch}
 
 
 class WorkerLeaseError(ExecutionWorkerError):

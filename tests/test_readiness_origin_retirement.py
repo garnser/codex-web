@@ -1,5 +1,7 @@
 """Actual canonical writer interleavings, without provider mutation/replay."""
 import asyncio
+import hashlib
+import json
 import threading
 import time
 import unittest
@@ -216,6 +218,7 @@ class ReadinessOriginRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         current = self.intents.store.get(response.json()['item']['id'])
         terminal = current.model_copy(update={'status': ActionIntentStatus.SUCCEEDED,
+            'organization_id': 'foreign-organization', 'workspace_id': 'foreign-workspace',
             'readiness_origin': None}).model_dump(mode='json')
         self.sqlite.record_apply(self.intents.store.records_namespace, upserts={
             'intents:terminal-%04d' % index: {**terminal, 'id': 'terminal-%04d' % index}
@@ -230,7 +233,12 @@ class ReadinessOriginRetirementTests(unittest.IsolatedAsyncioTestCase):
                 detail = progressing.exception.detail()
                 self.assertEqual(detail['code'], 'readiness_origin_index_progressing')
                 self.assertTrue(detail['retryable'])
-                self.assertTrue(detail['cursor'])
+                self.assertNotIn('cursor', detail)
+                self.assertEqual(detail['cursor_sha256'], hashlib.sha256(
+                    progressing.exception.cursor.encode()).hexdigest())
+                # The global migration cursor can identify a different tenant's
+                # retained intent. Public conflicts expose only a progress hash.
+                self.assertNotIn(progressing.exception.cursor, json.dumps(detail))
                 self.assertEqual(detail['epoch'], 'e' * 32)
                 # A distinct bounded preparation resumes the persisted cursor;
                 # it performs no native/provider retry and no retirement yet.
