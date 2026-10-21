@@ -3970,6 +3970,8 @@ owner_routing_service = OwnerRoutingService(
     binding_prefix=bot_presentation_service.binding_prefix,
     bootstraps=thread_bootstrap_binding_service,
     assignments=execution_worker_service.store.assignment, profiles=agent_profile_service,
+    workers=execution_worker_service.store.worker,
+    execution_profiles=execution_profile_definition_service,
     control_actor=identity_service.local_trusted_actor,
     actor_resolver=turn_execution_service.actor_resolver,
     replacement_resolver=thread_index_repository.replacement_thread_id,

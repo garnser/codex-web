@@ -349,7 +349,16 @@ class WorkItemContinuityService:
                         != (organization_id, workspace_id, project_id)):
                     return current
             elif owner_routing_pin is not None:
-                return current
+                pin = owner_routing_pin
+                if (pin.schema_version != '1.1' or pin.recipient is None
+                        or pin.binding.schema_version != '1.1'
+                        or pin.binding.configured_owner != self.coerce_owner(handoff.to_agent)
+                        or pin.binding.canonical_owner != self.coerce_owner(recipient)
+                        or pin.work_item_ref != ref or pin.handoff_requested_at != expected_requested_at
+                        or pin.recipient.thread_id != thread_id or pin.recipient.execution_id != execution_id
+                        or (pin.binding.organization_id, pin.binding.workspace_id, pin.binding.project_id)
+                           != (organization_id, workspace_id, project_id)):
+                    return current
             expected_primary, expected_writable = self._dispatch_repository_scope(current)
             if execution_profile_id in {"orchestration-only", "orchestration-admin"}:
                 # The broker's coordination profile grants no repository scope.
@@ -469,10 +478,14 @@ class WorkItemContinuityService:
                 }
             )
             return
-        pin = self.owner_routing.pin(state, binding, handoff.to_agent) if intent is not None else None
-        binding = await self.replace_nonperforming_thread(binding, source)
+        repository_resource_id, writable_repository_resource_ids = self._dispatch_repository_scope(state)
+        pin = (await asyncio.to_thread(self.owner_routing.compatible_pin, state, binding, handoff.to_agent,
+            writable_repository_ids=writable_repository_resource_ids)
+            if self.owner_routing is not None else None)
+        if pin is None or pin.recipient is None:
+            binding = await self.replace_nonperforming_thread(binding, source)
         if pin is not None:
-            self.owner_routing.context_for_pin(pin, binding)
+            await asyncio.to_thread(self.owner_routing.context_for_pin, pin, binding)
         if self.revalidate_after_thread_replacement or pin is not None:
             try:
                 latest = self.get_state(state.ref)
@@ -492,8 +505,9 @@ class WorkItemContinuityService:
             ):
                 return
             state = latest
+        recipient_thread_id = pin.recipient.thread_id if pin is not None and pin.recipient is not None else binding.thread_id
         dispatch_key = (
-            f"handoff-dispatch:{state.ref}:{binding.thread_id}:"
+            f"handoff-dispatch:{state.ref}:{recipient_thread_id}:"
             f"{recipient}:{handoff.requested_at}"
         )
         if not self.watchdog_dispatch_allowed(dispatch_key):
@@ -518,7 +532,7 @@ class WorkItemContinuityService:
             {
                 "type": "work_item_handoff_dispatched",
                 "ref": state.ref,
-                "thread_id": binding.thread_id,
+                "thread_id": recipient_thread_id,
                 "agent": recipient,
                 "source": source,
                 "result": result,

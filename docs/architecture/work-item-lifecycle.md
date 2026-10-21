@@ -107,6 +107,29 @@ native outcomes retain their existing reconciliation semantics and never
 authorize replay. Actual start recording uses the original bound recipient,
 not the mapping effective after the native input was sent.
 
+Repository handoffs may retain an explicit owner-routing pin `1.1` when the
+conversation-bound lane has incompatible native repository custody. Selection
+uses the existing tenant-scoped bootstrap bindings, indexed assignments,
+current AgentProfile/role and worker lease: exactly one live compatible lane
+created by the same requester must qualify. Missing, ambiguous, stale, revoked
+or quarantined recipients produce the existing visible Work Item routing blocker
+before any source-lane retirement. Scratch-only coordination profiles retain
+their existing no-repository route. Selection performs storage work off the
+async event loop; it neither creates threads/bindings nor grants access.
+
+The `1.1` recipient witness identifies actual bootstrap, assignment, execution,
+worker/fence and a checksum of immutable authority fields. The original bot
+binding/thread and reply target remain conversation provenance, including for
+an execution recipient without its own Slack binding. Queue status and native
+delivery identify the actual recipient thread. Current Work Item repository
+scope, original source binding eligibility, actor/Profile/Definition authority
+and current recipient custody are rechecked before native input. Lease renewal
+clocks and append-only procedure discovery are not custody changes. A change
+requires a new governed intent; uncertain originals cannot be redirected.
+Legacy `1.0` pins serialize exactly their original shape without a recipient
+field, preserving retained snapshot comparison. Actual matching native delivery
+is still required before ordinary recipient ACK; routing itself never ACKs.
+
 A committed native-start observer also projects exact late positive delivery
 after a waiter times out or an earlier metadata projection fails. It reuses the
 canonical snapshot-digest/correlation checks, exact response evidence and
