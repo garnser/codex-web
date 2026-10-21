@@ -3,7 +3,7 @@ import { requestedReference, rememberReference, projectPath } from './reference_
 import { installWorkItemCommands } from "./object_commands.js";
 import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
-import { workItemSummaryHtml } from "./work_item_summary_ui.js";
+import { ownerDispatchRows, workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { createTaskSourceEditor } from './task_source_editor.js';
 import { observeRender } from './frontend_perf.js';
@@ -412,9 +412,7 @@ function renderDetail(payload) {
           next_owner: item.next_owner,
           artifact: item.artifact_state,
           blocker: item.blocker,
-          owner_request_queue: state.detailPayload?.owner_dispatch?.queue_status === 'already_queued' ? 'Matching request retained; delivery unproven' : state.detailPayload?.owner_dispatch?.queue_status,
-          owner_dispatch_blocker: state.detailPayload?.owner_dispatch?.blocked_reason,
-          owner_dispatch_next_action: state.detailPayload?.owner_dispatch?.next_action,
+          ...ownerDispatchRows(payload.owner_dispatch),
           release_gate: item.release_gate,
           handoff: item.handoff ? `${item.handoff.from_agent} → ${item.handoff.to_agent} (${item.handoff.status})` : '—',
           handoff_delivery: item.handoff?.delivery?.status || (item.handoff ? 'untracked historical delivery' : '—'),

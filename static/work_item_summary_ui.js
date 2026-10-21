@@ -82,3 +82,12 @@ export function workItemSummaryHtml({ item = {}, diagnostics = [], esc }) {
       </section>
     </div>`;
 }
+
+export function ownerDispatchRows(dispatch = {}) {
+  return {
+    owner_request_queue: dispatch?.queue_status === 'already_queued'
+      ? 'Matching request retained; delivery unproven' : dispatch?.queue_status,
+    owner_dispatch_blocker: dispatch?.blocked_reason,
+    owner_dispatch_next_action: dispatch?.next_action,
+  };
+}
