@@ -22,6 +22,31 @@ from codex_web.thread_bootstrap import (
 
 
 class ThreadBootstrapBindingTests(unittest.TestCase):
+    def test_lost_source_requires_explicit_recovery_cas_and_keeps_original_unchanged(self):
+        from codex_web.execution_workers import ExecutionAssignment, NetworkPolicy, WorkerResourceLimits
+        from codex_web.storage.execution_workers import ExecutionWorkerStore
+        original = self._bind()
+        source = ExecutionAssignment(id=original.assignment_id, organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id, project_id='project', execution_id=original.execution_id,
+            subject={'kind':'thread_bootstrap','ref':original.bootstrap_id},
+            execution_workspace_id=original.execution_workspace_id, resource_ids=('repo',),
+            execution_contract_version='thread-bootstrap/1.0', required_capabilities=(),
+            sandbox='workspace-write', approval_policy='never', network=NetworkPolicy(), limits=WorkerResourceLimits(),
+            created_by=self.actor.identity_id, status='lost', fence=3)
+        assignments = ExecutionWorkerStore(self.sqlite)
+        assignments.update_assignment('fixture-worker', source.id,
+            lambda state: state.model_copy(update={'assignments':[source]}))
+        self.service.assignment_store = assignments
+        args = dict(bootstrap_id='next', thread_id=original.thread_id, execution_id='next-execution',
+            assignment_id='next-assignment', execution_workspace_id='next-workspace', actor=self.actor,
+            expected_assignment_id=source.id, expected_assignment_fence=3)
+        with self.assertRaises(ValueError): self.service.rebind(**args)
+        self.assertEqual(self.service.get_by_thread(original.thread_id, self.actor), original)
+        with self.assertRaises(ValueError): self.service.rebind(**{**args, 'expected_assignment_fence':4}, allow_lost_assignment=True)
+        rebound = self.service.rebind(**args, allow_lost_assignment=True)
+        self.assertEqual(rebound.assignment_id, 'next-assignment')
+        self.assertEqual(assignments.assignment(source.id), source)
+
     def test_competing_assignment_renewals_compare_the_original_binding_atomically(self):
         from concurrent.futures import ThreadPoolExecutor
         import threading

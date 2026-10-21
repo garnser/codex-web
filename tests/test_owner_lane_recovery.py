@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,9 @@ from fastapi import HTTPException
 
 from codex_web.autonomy import AutonomyControl
 from codex_web.models import Project, QueuedTurn, WorkItemState
+from codex_web.execution_workers import ExecutionAssignment, AssignmentStatus, AssignmentLease, NetworkPolicy, WorkerResourceLimits, ExecutionRuntimeBinding
+from codex_web.agent_profiles import AgentProfileExecutionBinding
+from codex_web.runtime.execution import TurnExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.owner_lane_recovery import OwnerLaneRecoveryService
@@ -45,7 +50,7 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.queue = [self.held]
         retained = self.preflight.retain_queued(self.held, organization_id='org', workspace_id='ws')
         self.preflight.queued_disposition(retained.id, status='reconciliation_required')
-        self.execution = NS(_bootstrap_binding_for_thread=lambda _: self.bootstrap,
+        self.execution = NS(control_actor=self.actor, _bootstrap_binding_for_thread=lambda _: self.bootstrap,
             _assignment_record=lambda _: self.failed,
             thread_has_inflight_agent_runtime_assignment=lambda _: False,
             _session_for_assignment=lambda _: (None, NS(status=lambda: self.local)),
@@ -68,6 +73,103 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def recover(self):
         return await self.service.recover(self.binding, self.state, 'current MR repair')
+
+    async def rollover(self):
+        await self.recover()
+        queued = self.queue.pop()
+        attempt, claim = self.preflight.claim_queued_admission('preflight-queued-' + queued.id)
+        self.assertTrue(self.preflight.begin_queued_start(attempt.id, claim_id=claim))
+        validator = self.service.admission_validator(queued)
+        records = {'failed': self.failed}
+        self.execution._assignment_record = records.get
+        original = copy.deepcopy(self.failed)
+        manager = NS(get=lambda _: object(), stop=AsyncMock())
+        async def wrongly_cancel(*args, **kwargs):
+            self.failed.status = 'cancelled'
+            self.failed.fence += 1
+        manager.complete = AsyncMock(side_effect=wrongly_cancel)
+        successor = ExecutionAssignment(id='successor', organization_id='org', workspace_id='ws',
+            project_id='project', execution_id='successor-execution', execution_workspace_id='successor-workspace',
+            subject={'kind': 'thread_bootstrap', 'ref': 'successor-bootstrap'}, resource_ids=('repo',),
+            execution_contract_version='thread-bootstrap/1.0', required_capabilities=(),
+            sandbox='workspace-write', approval_policy='never', network=NetworkPolicy(), limits=WorkerResourceLimits(),
+            created_by='actor', execution_profile_id='repository',
+            agent_profile=AgentProfileExecutionBinding(profile_id='james', profile_revision=6, profile_record_id='profile6'))
+        def prepare(**kwargs):
+            records[successor.id] = successor
+            return NS(assignment_id=successor.id, execution_id=successor.execution_id, workspace_id=successor.execution_workspace_id)
+        rebind = Mock()
+        def bind(**kwargs):
+            rebind(**kwargs)
+            self.bootstrap = NS(assignment_id=kwargs['assignment_id'], execution_id=kwargs['execution_id'],
+                execution_workspace_id=kwargs['execution_workspace_id'])
+        runtime = TurnExecutionService(NS(_append_bot_event=Mock()),
+            binding_service=NS(prepare_bootstrap=prepare), bootstrap_bindings=NS(rebind=bind),
+            session_managers={('openai', 'codex'): manager})
+        runtime._bootstrap_binding_for_thread = self.execution._bootstrap_binding_for_thread
+        runtime._assignment_record = records.get
+        await runtime._supersede_thread_bootstrap(thread_id='thread', project=self.project,
+            runtime_binding=ExecutionRuntimeBinding(provider_id='openai', runtime_id='codex', capability_revision=1),
+            sandbox='workspace-write', approval_policy='never', execution_profile_id='repository',
+            agent_profile=self.profile, explicit_repository_id='repo', writable_repository_ids=('repo',),
+            previous_assignment_id='failed', recovery_admission=validator)
+        self.assertEqual(self.failed, original)
+        manager.stop.assert_awaited_once_with('failed')
+        manager.complete.assert_not_awaited()
+        self.assertEqual(rebind.call_args.kwargs['expected_assignment_id'], 'failed')
+        self.assertEqual(rebind.call_args.kwargs['expected_assignment_fence'], 3)
+        records['successor'] = successor.model_copy(update={'status': AssignmentStatus.RUNNING, 'fence': 1,
+            'assigned_worker_id': 'new-worker', 'lease': AssignmentLease(worker_id='new-worker', fence=1,
+                lease_token='synthetic-fixture-lease-token', acquired_at=time.time(), expires_at=time.time()+60)})
+        return validator, records, queued
+
+    async def test_actual_recovery_rollover_preserves_lost_source_and_passes_final_native_guard(self):
+        validator, records, queued = await self.rollover()
+        validator()
+        validator()  # Resume and turn input must both freshly qualify.
+        self.assertEqual(records['failed'].status, 'lost')
+        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(self.preflight.store.get('preflight-queued-uncertain').status, 'reconciliation_required')
+
+    async def test_rollover_final_guard_refuses_changed_custody_claim_authority_and_human(self):
+        validator, records, queued = await self.rollover()
+        validator()
+        old = records['successor']
+        for change in ({'fence': 2}, {'created_by': 'other'}, {'resource_ids': ('foreign',)},
+                       {'assigned_worker_id': 'other-worker'}, {'status': AssignmentStatus.CANCELLED}):
+            with self.subTest(change=change):
+                records['successor'] = old.model_copy(update=change)
+                with self.assertRaises(HTTPException): validator()
+        records['successor'] = old
+        self.failed.status='cancelled'; self.failed.fence=4
+        with self.assertRaises(HTTPException) as caught: validator()
+        self.assertEqual(caught.exception.detail['code'], 'owner_recovery_custody_changed')
+        self.failed.status='lost'; self.failed.fence=3
+        previous = self.bootstrap
+        self.bootstrap=NS(assignment_id='unrelated', execution_id='x', execution_workspace_id='x')
+        with self.assertRaises(HTTPException): validator()
+        self.bootstrap=previous
+        self.state.next_action='new authority intent'
+        with self.assertRaises(HTTPException): validator()
+        self.state.next_action='repair existing MR'
+        self.controller.store.set_control(AutonomyControl(mode='paused'), actor_id='operator')
+        with self.assertRaises(HTTPException): validator()
+        self.controller.store.set_control(AutonomyControl(mode='active'), actor_id='operator')
+        human=self.held.model_copy(update={'id':'new-human', 'source':'web'})
+        self.queue.append(human)
+        with self.assertRaises(HTTPException) as caught: validator()
+        self.assertEqual(caught.exception.detail['code'], 'owner_recovery_human_waiting')
+        self.queue.pop()
+        aid='preflight-queued-'+queued.id
+        self.preflight.store.update(aid, lambda a:a.model_copy(update={'queued_admission_claim_id':'foreign'}))
+        with self.assertRaises(HTTPException): validator()
+
+    async def test_external_cancellation_before_rollover_and_duplicate_rollover_are_refused(self):
+        validator, records, queued = await self.rollover()
+        with self.assertRaises(HTTPException): validator.begin_rollover('failed')
+        fresh=self.service.admission_validator(queued)
+        self.failed.status='cancelled';self.failed.fence=4
+        with self.assertRaises(HTTPException): fresh.begin_rollover('failed')
 
     async def test_new_exact_scoped_request_keeps_historical_unknown_bytes_and_budgets(self):
         old = self.preflight.retain_queued(self.held, organization_id='org', workspace_id='ws')

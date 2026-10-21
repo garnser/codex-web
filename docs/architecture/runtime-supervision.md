@@ -1077,3 +1077,19 @@ Goal continuation or a model. It preserves Goal status, delegation authorization
 leases, recovery budgets and all provider outcome fields, and names the existing
 execution owner responsible for reconciliation. A stale observation cannot
 replace a newer binding or an existing unrelated stop reason.
+
+
+A recovery admission may roll the thread onto a fresh canonical bootstrap. Its
+already terminal, unleased, positively stopped source assignment remains
+unchanged: only its local process handle is settled and unregistered. Ordinary
+runtime switching retains its existing retirement behavior. The recovery's
+source assignment and fence participate in the atomic bootstrap rebind compare
+and swap. An admission-local witness links only that invocation's retained
+claim, unchanged failed source and newly created successor. It rechecks the
+current bootstrap, successor identity, Profile, actor, resources, worker, fresh
+lease and fence at the native resume/input boundary. Current Work Item, Goal,
+authority and pauses are still read on every validation; a new pending human
+input takes precedence. The witness is never restart authority: a later drain
+cannot recreate it to accept a cancelled or unrelated successor. External
+source cancellation, changed custody, revoked claims or scope leave the exact
+retained original blocked on the existing operator surfaces, without replay.

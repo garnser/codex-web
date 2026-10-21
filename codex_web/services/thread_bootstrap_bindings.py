@@ -57,6 +57,7 @@ class ThreadBootstrapBindingService:
         actor: AuthenticationActor,
         expected_assignment_id: str | None = None,
         expected_assignment_fence: int | None = None,
+        allow_lost_assignment: bool = False,
     ) -> ThreadBootstrapBinding:
         """Bind a thread to a new bootstrap, superseding any prior binding.
 
@@ -162,7 +163,7 @@ class ThreadBootstrapBindingService:
             if expected_assignment_id is None or self.assignment_store is None:
                 raise ThreadBootstrapBindingConflictError('Canonical retired assignment/fence CAS unavailable')
             self.store.update_with_assignment_fence(apply,self.assignment_store,
-                expected_assignment_id,expected_assignment_fence)
+                expected_assignment_id,expected_assignment_fence, allow_lost=allow_lost_assignment)
         else:
             self.store.update(apply)
         return next(

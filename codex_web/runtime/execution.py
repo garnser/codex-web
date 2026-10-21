@@ -777,7 +777,7 @@ class TurnExecutionService:
             recovery = getattr(self, "owner_lane_recovery", None)
             if recovery is None:
                 raise HTTPException(status_code=409, detail={"code": "owner_recovery_unavailable"})
-            return lambda: recovery.validate_queued(queued)
+            return recovery.admission_validator(queued)
         if queued.project_coordination_dispatch is None:
             return None
         if (queued.source != "project-coordination"
@@ -2624,6 +2624,7 @@ class TurnExecutionService:
                         read_only_repository_ids=effective_read_only_repositories,
                         **({"resource_context":resource_context} if resource_context is not None else {}),
                         previous_assignment_id=bootstrap.assignment_id,
+                        recovery_admission=operator_admission_validator if getattr(operator_admission_validator, "begin_rollover", None) else None,
                     )
                     if not (
                         recovered_profile is not None and runtime_binding is not None
@@ -2719,6 +2720,7 @@ class TurnExecutionService:
                         read_only_repository_ids=effective_read_only_repositories,
                         **({"resource_context":resource_context} if resource_context is not None else {}),
                         previous_assignment_id=bootstrap.assignment_id,
+                        recovery_admission=operator_admission_validator if getattr(operator_admission_validator, "begin_rollover", None) else None,
                     )
                     session_manager = self._manager_for_binding(
                         runtime_binding
@@ -4691,6 +4693,7 @@ class TurnExecutionService:
         previous_assignment_id: str | None,
         retirement_reason: str | None = None,
         renewal_limits=None,
+        recovery_admission=None,
     ):
         """Replace a thread's bootstrap through canonical retirement/admission.
 
@@ -4702,10 +4705,20 @@ class TurnExecutionService:
         """
 
         h = self.host
+        recovery_fence = None
+        if recovery_admission is not None:
+            recovery_fence = await asyncio.to_thread(recovery_admission.begin_rollover, previous_assignment_id)
         if previous_assignment_id:
             released = False
             for manager in dict(self.session_managers or {}).values():
                 if manager.get(previous_assignment_id) is not None:
+                    if recovery_admission is not None:
+                        # Its canonical LOST/FAILED record already released its
+                        # lease. Settle/unregister only the positively stopped
+                        # local handle; never rewrite loss into cancellation.
+                        await manager.stop(previous_assignment_id)
+                        released = True
+                        break
                     await manager.complete(
                         previous_assignment_id,
                         succeeded=False,
@@ -4717,6 +4730,9 @@ class TurnExecutionService:
                     )
                     released = True
                     break
+            if not released and recovery_admission is not None:
+                recovery_admission()
+                released = True  # Missing handle is safe only with retained positive teardown proof.
             if not released:
                 local_worker = getattr(
                     next(iter(dict(self.session_managers or {}).values()), None),
@@ -4833,7 +4849,10 @@ class TurnExecutionService:
                     actor=self.control_actor,
                     **({'expected_assignment_id':previous_assignment_id,
                         'expected_assignment_fence':previous_context_fence} if context_cas and previous_assignment_id else
-                        ({'expected_assignment_id': previous_assignment_id} if retirement_reason else {})),
+                        ({'expected_assignment_id': previous_assignment_id,
+                          'expected_assignment_fence': recovery_fence,
+                          'allow_lost_assignment': True} if recovery_admission is not None else
+                         ({'expected_assignment_id': previous_assignment_id} if retirement_reason else {}))),
                 )
             except Exception:
                 self.binding_service.workers.cancel_bootstrap(
@@ -4845,10 +4864,13 @@ class TurnExecutionService:
                     actor=self.binding_service.control_actor,
                 )
                 raise
-            return self._bootstrap_binding_for_thread(thread_id)
+            rebound = self._bootstrap_binding_for_thread(thread_id)
+            if recovery_admission is not None:
+                recovery_admission.finish_rollover(rebound)
+            return rebound
 
         try:
-            if retirement_reason or context_cas:
+            if retirement_reason or context_cas or recovery_admission is not None:
                 return await self._settle_custody_call(prepare_and_rebind)
             return await asyncio.to_thread(prepare_and_rebind)
         except TurnExecutionBindingError as exc:

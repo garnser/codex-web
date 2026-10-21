@@ -46,7 +46,7 @@ class ThreadBootstrapBindingStore:
         return self._decode(payload)
 
 
-    def update_with_assignment_fence(self, updater, assignments, assignment_id, fence):
+    def update_with_assignment_fence(self, updater, assignments, assignment_id, fence, *, allow_lost=False):
         """One canonical transaction pins the old binding AND retired fence."""
         from codex_web.execution_workers import ExecutionAssignment
         if assignments.store is not self.store:
@@ -59,7 +59,8 @@ class ThreadBootstrapBindingStore:
             if original is None:
                 raise ValueError('Retired bootstrap assignment unavailable')
             assignment=ExecutionAssignment.model_validate(original)
-            if assignment.fence!=fence or assignment.status not in ('cancelled','failed','succeeded') or assignment.lease is not None:
+            terminal = {'cancelled', 'failed', 'succeeded'} | ({'lost'} if allow_lost else set())
+            if assignment.fence!=fence or assignment.status not in terminal or assignment.lease is not None:
                 raise ValueError('Retired bootstrap fence/status changed')
             state=updater(self._decode(rows[self.namespace][None]))
             result.append(state)
