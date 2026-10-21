@@ -77,6 +77,7 @@ class BotEventDispatchService:
         self.agent_profile_resolver = agent_profile_resolver
         self.execution_profiles = execution_profiles
         self.owner_routing_context = None
+        self.owner_routing_repository_scope = None
 
     @staticmethod
     def recent_activity_grace_seconds() -> float:
@@ -213,6 +214,17 @@ class BotEventDispatchService:
             if self.owner_routing_context is None:
                 raise HTTPException(status_code=409, detail={'code': 'owner_routing_context_unavailable'})
             profile_context = await asyncio.to_thread(self.owner_routing_context, owner_routing_pin, binding)
+        if getattr(owner_routing_pin, 'recipient', None) is not None:
+            if self.owner_routing_repository_scope is None:
+                raise HTTPException(status_code=409, detail={'code': 'owner_recipient_scope_unavailable'})
+            recipient_scope = await asyncio.to_thread(
+                self.owner_routing_repository_scope, owner_routing_pin, binding)
+            if (set(writable_repository_resource_ids) != set(recipient_scope.writable_repository_ids)
+                    or (read_only_repository_resource_ids and
+                        set(read_only_repository_resource_ids) != set(recipient_scope.read_only_repository_ids))):
+                raise HTTPException(status_code=409, detail={'code': 'owner_recipient_request_scope_changed'})
+            # Preserve canonical existing custody; never union sender scope.
+            read_only_repository_resource_ids = tuple(recipient_scope.read_only_repository_ids)
         agent_profile, profile_actor = (
             profile_context if profile_context is not None else (None, None)
         )

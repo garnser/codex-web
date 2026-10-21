@@ -40,6 +40,12 @@ def _path_tags(path: str) -> set[str]:
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_canonical_recipient_scope_comes_from_same_owner_routing_service(self) -> None:
+        callback = application.bot_event_dispatch_service.owner_routing_repository_scope
+        self.assertIs(callback.__self__, application.owner_routing_service)
+        self.assertEqual(callback.__func__, type(application.owner_routing_service).repository_scope_for_pin)
+        self.assertIs(application.turn_execution_service.owner_routing_validator.__self__, application.owner_routing_service)
+
     def test_canonical_owner_dispatch_reads_actual_queue_identity(self) -> None:
         service = application.canonical_work_item_continuity_service
         state = WorkItemState(ref='fixture/core#25', project_id='home',

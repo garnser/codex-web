@@ -66,12 +66,15 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
     def validate(self, pin, *, attempt_id=None):
         self.service.validate_native(pin, thread_id='platform-thread',
             project=self.f.env.env.projects.get('project-a', scope=self.f.env.env.scope),
+            writable_repository_resource_ids=('platform',),
+            read_only_repository_resource_ids=self.assignments['assignment-platform-thread'].repository_scope.read_only_repository_ids,
             work_item_ref=self.state.ref, handoff_requested_at=1, queued_admission_attempt_id=attempt_id,
             agent_profile_id=self.f.profile.profile_id, agent_profile_revision=self.f.profile.revision,
             agent_profile_actor_id=self.f.actor.identity_id)
 
     async def test_real_dispatch_selects_unbound_compatible_lane_preserving_core_and_reply_binding(self):
         await self.continuity.dispatch_structured_handoff(self.state, source='work-item-handoff')
+        self.fixture.dispatch.assert_awaited_once()
         args, kwargs = self.fixture.dispatch.call_args
         pin = kwargs['owner_routing_pin']
         self.assertEqual(pin.recipient.thread_id, 'platform-thread')
@@ -82,6 +85,45 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.binding.model_dump(mode='json'), self.binding_before)
         self.validate(pin)
         self.assertEqual(self.service.context_for_pin(pin, self.f.binding), (self.f.profile, self.f.actor))
+
+    async def test_data_write_core_readonly_pin_survives_real_rpc_capture_without_grant_or_ack(self):
+        assignment = self.assignments['assignment-platform-thread']
+        assignment.repository_scope = assignment.repository_scope.model_copy(
+            update={'read_only_repository_ids': ('core',)})
+        before = assignment.model_dump(mode='json')
+        await self.test_real_dispatch_selects_unbound_compatible_lane_preserving_core_and_reply_binding()
+        pin = self.select()
+        self.assertEqual(self.service.repository_scope_for_pin(pin, self.f.binding).read_only_repository_ids, ('core',))
+        await self.test_retained_native_capture_observer_projects_selected_lane_then_allows_ack()
+        self.assertEqual(assignment.model_dump(mode='json'), before)
+        self.assertEqual(self.f.env.states.get(self.state.ref).handoff.delivery.read_only_repository_resource_ids, ('core',))
+
+    async def test_same_source_readonly_custody_requires_typed_witness_not_legacy_shortcut(self):
+        source = self.assignments['assignment-existing-thread']
+        source.repository_scope = source.repository_scope.model_copy(update={
+            'writable_repository_ids': ('platform',), 'read_only_repository_ids': ('core',)})
+        self.bootstraps.pop('platform-thread')
+        pin = self.select()
+        self.assertEqual(pin.recipient.thread_id, 'existing-thread')
+        self.assertEqual(self.service.repository_scope_for_pin(pin, self.f.binding), source.repository_scope)
+
+    async def test_readonly_changes_and_sender_scope_union_refuse_before_native(self):
+        assignment = self.assignments['assignment-platform-thread']
+        assignment.repository_scope = assignment.repository_scope.model_copy(update={'read_only_repository_ids': ('core',)})
+        pin = self.select()
+        common = dict(thread_id='platform-thread',
+            project=self.f.env.env.projects.get('project-a', scope=self.f.env.env.scope),
+            work_item_ref=self.state.ref, handoff_requested_at=1,
+            agent_profile_id=self.f.profile.profile_id, agent_profile_revision=self.f.profile.revision,
+            agent_profile_actor_id=self.f.actor.identity_id, writable_repository_resource_ids=('platform',))
+        for supplied in ((), ('core', 'foreign'), ('foreign',)):
+            with self.subTest(supplied=supplied), self.assertRaisesRegex(OwnerRoutingError, 'request_scope_changed'):
+                self.service.validate_native(pin, **common, read_only_repository_resource_ids=supplied)
+        assignment.repository_scope = assignment.repository_scope.model_copy(update={'read_only_repository_ids': ('foreign',)})
+        with self.assertRaisesRegex(OwnerRoutingError, 'custody_changed'):
+            self.service.repository_scope_for_pin(pin, self.f.binding)
+        with self.assertRaisesRegex(OwnerRoutingError, 'custody_changed'):
+            self.validate(pin)
 
     async def test_recipient_lookup_does_not_block_native_heartbeat_loop(self):
         entered, release = threading.Event(), threading.Event()
@@ -132,7 +174,8 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
             work_item_ref=self.state.ref, handoff_requested_at=1, created_at=1, owner_routing_pin=pin,
             agent_profile_id=self.f.profile.profile_id, agent_profile_revision=self.f.profile.revision,
             agent_profile_actor_id=self.f.actor.identity_id, execution_profile_id='repository-write',
-            repository_resource_id='platform', writable_repository_resource_ids=('platform',))
+            repository_resource_id='platform', writable_repository_resource_ids=('platform',),
+            read_only_repository_resource_ids=self.assignments['assignment-platform-thread'].repository_scope.read_only_repository_ids)
         preflight = ExecutionPreflightService(self.f.preflight, clock=lambda: 3)
         preflight.queued_start_observer = self.service.project_native_start
         self.service.delivery_recorder = self.continuity.record_handoff_delivery

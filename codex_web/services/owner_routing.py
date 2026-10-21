@@ -314,7 +314,7 @@ class OwnerRoutingService:
             if (assignment is None or profile is None or profile.role_id != owner
                     or assignment.created_by != source_assignment.created_by
                     or assignment.project_id != state.project_id or scope is None
-                    or set(scope.writable_repository_ids) != requested or scope.read_only_repository_ids):
+                    or set(scope.writable_repository_ids) != requested):
                 continue
             try:
                 witness, _, _ = self._live_recipient(state, binding, bootstrap, owner)
@@ -353,10 +353,23 @@ class OwnerRoutingService:
         assignment = self.assignments(witness.assignment_id)
         scope = assignment.repository_scope
         _, writable = work_item_repository_scope(state)
-        if (scope is None or set(scope.writable_repository_ids) != set(writable)
-                or scope.read_only_repository_ids):
+        if scope is None or set(scope.writable_repository_ids) != set(writable):
             raise OwnerRoutingError('owner_recipient_work_item_scope_changed')
         return profile, actor
+
+    def repository_scope_for_pin(self, pin, binding):
+        """Read only the current recipient's already-admitted full scope.
+
+        The typed witness pins all scope/resource authority. No caller-provided
+        repository is added to this existing assignment.
+        """
+        state = self.get_state(pin.work_item_ref)
+        self.validate_intent(pin, state)
+        self.require_resolved_originals(state, pin=pin)
+        if pin.recipient is None:
+            raise OwnerRoutingError('owner_recipient_scope_unavailable')
+        self.recipient_context(pin, state, binding)
+        return self.assignments(pin.recipient.assignment_id).repository_scope
 
     def pin(self, state, binding, configured_owner):
         routing = self.snapshot(state)
@@ -427,7 +440,8 @@ class OwnerRoutingService:
 
     def validate_native(self, pin, *, thread_id, project, work_item_ref, handoff_requested_at,
                         agent_profile_id, agent_profile_revision, agent_profile_actor_id,
-                        queued_admission_attempt_id=None):
+                        queued_admission_attempt_id=None, writable_repository_resource_ids=(),
+                        read_only_repository_resource_ids=()):
         state = self.get_state(pin.work_item_ref)
         self.validate_intent(pin, state)
         self.require_resolved_originals(state, excluding_attempt_id=queued_admission_attempt_id, pin=pin)
@@ -442,6 +456,10 @@ class OwnerRoutingService:
             if len(sources) != 1:
                 raise OwnerRoutingError('owner_executor_binding_changed')
             profile, actor = self.recipient_context(pin, state, sources[0])
+            scope = self.assignments(pin.recipient.assignment_id).repository_scope
+            if (set(writable_repository_resource_ids) != set(scope.writable_repository_ids)
+                    or set(read_only_repository_resource_ids) != set(scope.read_only_repository_ids)):
+                raise OwnerRoutingError('owner_recipient_request_scope_changed')
             if (profile.profile_id, profile.revision, actor.identity_id) != (
                     agent_profile_id, agent_profile_revision, agent_profile_actor_id):
                 raise OwnerRoutingError('owner_executor_profile_changed')

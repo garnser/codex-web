@@ -409,3 +409,13 @@ Unaddressed GitLab reconciliation notifications for the same thread and Work Ite
 ### Pending CI and validation ownership
 
 A running, pending, created or queued check on the exact MR head is an asynchronous prerequisite. The validation owner records the MR, head, pipeline/check identities and observed statuses in a canonical checkpoint, retains ownership in the validation lane, and stops until terminal provider evidence. Pending CI is not rejection or failed work and does not justify an implementation or Orchestrator handback. Model polling and unchanged CI retries are prohibited. The primary validation disposition requirement accepts an exact-head pending-CI checkpoint alongside merge/close and evidenced rejection or defect handback; it must not separately require a handback to finish the turn. A terminal failure identifies one capable repair owner: code defects go to the implementation owner, while runner, dependency and environment defects go to Carl; successful checks still require independent artifact acceptance and all merge/release gates. The project execution-role definition is versioned in the existing Definition Registry; historical execution references remain unchanged.
+
+A typed owner-recipient witness preserves the recipient's **already-admitted**
+read-only repository context when its writable repository set exactly matches
+the Work Item. Dispatch revalidates the current assignment and its full authority
+checksum before deriving this read-only context; caller-supplied repositories
+are never unioned into it. A mismatching supplied scope is refused. The retained
+queue and final native admission carry the exact read/write sets, and a changed
+recipient scope, actor, Profile, lease or fence invalidates the witness before
+input. This also applies when the source channel binding already points to the
+correct recipient. It neither changes that binding nor grants new access.
