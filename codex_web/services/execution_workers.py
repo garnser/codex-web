@@ -1206,7 +1206,8 @@ class ExecutionWorkerService:
             if recovery is not None:
                 return self._record_reconciliation_discovery(state, item, discovery, recovery)
             from codex_web.procedure_reconciliation import RECOVERY_PREFIX
-            if any(value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
+            if len(item.procedure_discoveries) < 64 and any(
+                    value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
                 raise WorkerLeaseError('fresh discovery cannot supply recovery provenance')
             # Every checkpoint above revalidates current custody. Only adjacent
             # identical evidence is redundant; evaluation time alone is not a
