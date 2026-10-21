@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from codex_web.identity import (
 )
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.recovery import (
+    BackupSnapshot,
     RecoveryDeploymentMode,
     RecoveryPolicy,
     RestoreVerificationStatus,
@@ -283,6 +285,60 @@ class RecoveryTests(unittest.TestCase):
             self.evidence.items[0].payload.result.value,
             "pass",
         )
+
+    def test_backup_releases_catalog_before_encryption_and_retains_legacy_bytes(self):
+        class Catalog(dict):
+            pass
+
+        payload = {"unicode": "café\u2028", "values": [None, True, -0.0, {"z": 1, "a": []}]}
+        self.state.put("business", payload)
+        snapshot_documents = self.service._snapshot_documents
+        encrypt = self.crypto.encrypt
+        references = []
+
+        def capture():
+            catalog = Catalog(snapshot_documents())
+            # Pydantic copies the outer documents mapping but retains these
+            # nested Any values. Check both lifetimes, not just the wrapper.
+            catalog["business"] = Catalog(catalog["business"])
+            references.extend((weakref.ref(catalog), weakref.ref(catalog["business"])))
+            return catalog
+
+        def encrypt_after_catalog_release(key_id, plaintext, context, *, actor):
+            self.assertTrue(all(ref() is None for ref in references),
+                            "Decoded catalog or nested values overlap encryption buffers")
+            decoded = json.loads(plaintext)
+            self.assertEqual(decoded["documents"]["business"], payload)
+            legacy = BackupSnapshot.model_validate(decoded).model_dump(mode="json")
+            self.assertEqual(plaintext, json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode())
+            return encrypt(key_id, plaintext, context, actor=actor)
+
+        with patch.object(self.service, "_snapshot_documents", side_effect=capture), patch.object(
+            self.crypto, "encrypt", side_effect=encrypt_after_catalog_release,
+        ):
+            manifest = self.service.create_backup(actor=self.actor)
+        self.assertEqual(self.service.verify_restore(manifest.id, actor=self.actor).status,
+                         RestoreVerificationStatus.PASS)
+
+    def test_isolated_restore_sanitizes_one_namespace_at_a_time(self):
+        self.state.put("business", {"nested": [{"text": "retained"}] * 100})
+        self.state.put("other", {"text": "also retained"})
+        manifest = self.service.create_backup(actor=self.actor)
+        sanitize = self.service._sanitize_restored_documents
+        visited = []
+
+        def bounded_sanitize(documents):
+            self.assertEqual(len(documents), 1, "Restore duplicated the whole decoded catalog")
+            visited.extend(documents)
+            return sanitize(documents)
+
+        target = SQLiteStateStore(Path(self.temp.name) / "bounded-isolated.sqlite3")
+        with patch.object(self.service, "_sanitize_restored_documents", side_effect=bounded_sanitize):
+            verification = self.service.restore_into_isolated(manifest.id, target, actor=self.actor)
+        self.assertEqual(verification.status, RestoreVerificationStatus.PASS)
+        self.assertEqual(set(visited), set(manifest.namespaces))
+        self.assertEqual(target.get("business"), self.state.get("business"))
+        self.assertEqual(target.get("other"), self.state.get("other"))
 
     def test_encrypted_backup_tampering_is_detected(self):
         manifest = self.service.create_backup(actor=self.actor)
