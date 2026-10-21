@@ -1591,6 +1591,12 @@ failed bootstrap may never have resumed its requested scope; it is not native
 custody evidence. Restoration through such a predecessor skips this retirement
 guard and still requires the full canonical session-custody check below.
 
+Successful resume settlement validates its replacement through the canonical
+`AgentSession` model before comparing custody. Equivalent admitted resource sets
+with different ordering are the same custody. Repeated resume and status recovery
+preserve the original immutable reassociation event; actual changed custody still
+requires a new transition and refuses a conflicting historical event.
+
 A controller-owned `native_session_scope_incompatible` refusal records the
 original/current assignment and repository scope before invoking native resume.
 For a retained queued original, its existing blocker binds the exact snapshot
