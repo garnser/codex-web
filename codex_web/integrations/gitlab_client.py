@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -14,12 +15,83 @@ class GitLabAPIError(RuntimeError):
         super().__init__(f"GitLab API returned HTTP {status_code} for {path}")
 
 
+class GitLabReadIncompleteError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"GitLab read is incomplete: {reason}")
+
+
 class GitLabClient:
     """Small async GitLab API transport used by extracted services."""
 
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None, timeout: float = 30.0) -> None:
         self.transport = transport
         self.timeout = timeout
+
+    async def read_json_bounded(self, api_base: str, path: str, *, token: str,
+                                params=None, max_bytes: int = 512 * 1024):
+        """Fixed-path GET only; redirects, compression and oversized JSON fail closed."""
+        if not 1 <= max_bytes <= 512 * 1024:
+            raise ValueError("GitLab read byte limit must be between 1 and 524288")
+        url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+        async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout,
+                                     follow_redirects=False) as client:
+            async with client.stream('GET', url, params=params, headers={
+                    'PRIVATE-TOKEN': token, 'Accept': 'application/json',
+                    'Accept-Encoding': 'identity'}) as response:
+                if 300 <= response.status_code < 400:
+                    raise GitLabReadIncompleteError('redirect')
+                if response.status_code != 200:
+                    raise GitLabAPIError(response.status_code, path)
+                if response.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
+                    raise GitLabReadIncompleteError('media_type')
+                if response.headers.get('content-encoding', '').strip().lower() not in {'', 'identity'}:
+                    raise GitLabReadIncompleteError('content_encoding')
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(content) + len(chunk) > max_bytes:
+                        raise GitLabReadIncompleteError('byte_limit')
+                    content.extend(chunk)
+                length = response.headers.get('content-length')
+                if length is not None:
+                    try:
+                        if int(length) != len(content):
+                            raise ValueError()
+                    except ValueError:
+                        raise GitLabReadIncompleteError('content_length') from None
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('duplicate JSON key')
+                result[key] = value
+            return result
+        def finite(value):
+            result = float(value)
+            if not math.isfinite(result):
+                raise ValueError('non-finite JSON')
+            return result
+        def invalid(_value):
+            raise ValueError('non-JSON constant')
+        try:
+            result = json.loads(content, object_pairs_hook=unique,
+                                parse_float=finite, parse_constant=invalid)
+            def inspect(value, depth=0):
+                if depth > 64:
+                    raise ValueError('JSON depth')
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        key.encode('utf-8'); inspect(item, depth + 1)
+                elif isinstance(value, list):
+                    for item in value: inspect(item, depth + 1)
+                elif isinstance(value, str):
+                    value.encode('utf-8')
+            inspect(result)
+            if not isinstance(result, (dict, list)):
+                raise ValueError('JSON shape')
+        except (ValueError, UnicodeError, RecursionError):
+            raise GitLabReadIncompleteError('invalid_json') from None
+        return result
 
     async def request_json(
         self,

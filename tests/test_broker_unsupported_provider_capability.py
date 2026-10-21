@@ -18,12 +18,18 @@ class UnsupportedProviderCapabilityTests(unittest.TestCase):
             code_host_registry=SimpleNamespace(provider=lambda provider_type: provider),
             capability=CodeHostCapability.MERGE_REQUIREMENTS_READ)
 
-    def test_real_gitlab_adapter_reports_unsupported_instead_of_binding_repair(self):
+    def test_legacy_adapter_reports_unsupported_instead_of_binding_repair(self):
+        class LegacyGitLab(GitLabCodeHostProvider):
+            def capabilities(self):
+                return super().capabilities() - {CodeHostCapability.MERGE_REQUIREMENTS_READ}
         with self.assertRaisesRegex(ControlPlaneBrokerDeniedError,
                                     'provider does not support.*pull_request.merge_requirements.read') as caught:
-            self.resolve(GitLabCodeHostProvider())
+            self.resolve(LegacyGitLab())
         self.assertNotIn('exactly one eligible', str(caught.exception))
         self.assertIn('another binding cannot implement', str(caught.exception))
+
+    def test_gitlab_native_requirements_resolve_through_existing_binding(self):
+        self.assertEqual(self.resolve(GitLabCodeHostProvider()).provider_type, 'gitlab')
 
     def test_absent_binding_remains_a_configuration_refusal(self):
         with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, 'exactly one eligible'):
