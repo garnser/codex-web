@@ -1845,7 +1845,35 @@ class ControlPlaneBrokerService:
                 ("pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"))
         return result
 
-    async def dispatch(
+    async def dispatch(self, *, assignment, worker_actor, method, raw_target, body, assignment_validator=None):
+        from codex_web.procedure_reconciliation import read_only_reconciliation, NORMAL_PROCEDURE_HISTORY
+        scope = None
+        resolved = self._resolve_operation(method, raw_target)
+        if (resolved.operation.id == 'action_intent.reconcile' and self.action_intents is not None
+                and len(getattr(assignment, 'procedure_discoveries', ())) >= NORMAL_PROCEDURE_HISTORY):
+            # Reuse current canonical delivery-scope checks before any reserve
+            # is available. Client JSON cannot supply a recovery witness.
+            _, requester, _, _ = await asyncio.to_thread(self._dispatch_scope, assignment, worker_actor, resolved)
+            try:
+                payload = json.loads(body) if body else {}
+                request = ActionIntentReconcileRequest.model_validate(payload)
+            except (ValueError, TypeError):
+                payload = None
+            if isinstance(payload, dict) and payload.get('retry_if_idempotent') is False:
+                intent = await asyncio.to_thread(self.action_intents.get, resolved.target_ref, requester)
+                repository_id = self._operation_repository_id(assignment, resolved.operation.id, resolved.query, actor=requester)
+                if (intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+                        and intent.requested_by == requester.identity_id
+                        and (intent.organization_id, intent.workspace_id, intent.project_id)
+                            == (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                        and tuple(intent.resource_ids) == (repository_id,)):
+                    scope = await asyncio.to_thread(self.action_intents.read_only_reconciliation_scope,
+                        intent, request, worker_actor, assignment=assignment)
+        with read_only_reconciliation(scope):
+            return await self._dispatch_current(assignment=assignment, worker_actor=worker_actor,
+                method=method, raw_target=raw_target, body=body, assignment_validator=assignment_validator)
+
+    async def _dispatch_current(
         self,
         *,
         assignment: ExecutionAssignment,
@@ -1881,6 +1909,10 @@ class ControlPlaneBrokerService:
 
         if self.procedure_admission is not None:
             procedure_targets = tuple(getattr(state, "resource_ids", ()) or assignment.resource_ids)
+            from codex_web.procedure_reconciliation import current_reconciliation_scope
+            recovery = current_reconciliation_scope()
+            if recovery is not None:
+                procedure_targets = recovery.resource_ids
             if operation.id == "work_graph.edge.create":
                 source_state = self._state_for_target(assignment, str(payload.get("source_ref") or ""))
                 target_state = self._state_for_target(assignment, str(payload.get("target_ref") or ""))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from urllib.parse import urlsplit
 
 from typing import Any, Callable
@@ -11,6 +12,8 @@ from codex_web.action_intents import ActionIntent, ActionIntentState, ActionInte
 from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.state_store import StateStore
 
+
+_ORIGIN_INDEX_EPOCH = uuid.uuid4().hex
 
 ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.6", ("1.6",))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
@@ -203,7 +206,7 @@ class ActionIntentStore:
     @classmethod
     def _indexes(cls, item: ActionIntent) -> dict[str, Any]:
         scope = cls._scope(item.organization_id, item.workspace_id)
-        indexes = cls._publication_indexes(item)
+        indexes = {**cls._publication_indexes(item), **cls._ready_origin_indexes(item)}
         if item.status != ActionIntentStatus.CANCELLED:
             indexes[cls._idempotency_key(item.organization_id, item.workspace_id,
                                         item.binding_id, item.action_id, item.idempotency_key)] = {"id": item.id}
@@ -338,6 +341,68 @@ class ActionIntentStore:
                        if key.startswith(field + ":") and raw is not None]
                for field in self._fields},
         })
+
+    @staticmethod
+    def _ready_origin_indexes(item):
+        if (item.action_id == 'code-host.pull-request.ready' and item.readiness_origin is not None
+                and item.status in {'executing', 'uncertain', 'requires_reconciliation'}
+                and item.attempt > 0 and item.execution_started_at is not None):
+            return {'ready-origin:' + quote(item.readiness_origin.assignment_id, safe='') + ':' + item.id:
+                {'id':item.id}}
+        return {}
+
+    def unsettled_readiness_origin(self, assignment_id: str) -> tuple[ActionIntent, ...]:
+        """Current origin projection; rebuild once per reader process after old writers.
+
+        Pages advance durably for this process epoch. A new process deliberately
+        starts a fresh backfill, so a previous older writer cannot leave a false
+        complete index. Ordinary updates maintain aliases in the same commit.
+        """
+        self._ensure_records()
+        # Separate cursors keep current replicated readers from restarting
+        # each other's bounded migration. Aliases remain shared canonical data.
+        marker = 'ready-origin-index:1.0:' + _ORIGIN_INDEX_EPOCH
+        for _ in range(8):
+            progress = self.store.record_get(self.records_namespace, marker)
+            if progress is not None and (not isinstance(progress,dict)
+                    or set(progress) != {'schema_version','epoch','after','ready'}
+                    or progress['schema_version'] != '1.0'
+                    or not isinstance(progress['epoch'],str) or len(progress['epoch']) != 32
+                    or any(char not in '0123456789abcdef' for char in progress['epoch'])
+                    or not isinstance(progress['ready'],bool)
+                    or progress['after'] is not None and not isinstance(progress['after'],str)
+                    or progress['ready'] and progress['after'] is not None):
+                raise ValueError('readiness origin index metadata is invalid')
+            if progress and progress.get('epoch') == _ORIGIN_INDEX_EPOCH and progress.get('ready') is True:
+                break
+            previous = progress
+            after = progress.get('after') if progress and progress.get('epoch') == _ORIGIN_INDEX_EPOCH else None
+            page, following = self.store.record_page(self.records_namespace,
+                key_prefix='intents:', after=after, limit=128)
+            def apply(current):
+                if current.get(marker) != previous:
+                    return {}
+                changes = {}
+                for key in page:
+                    if current.get(key) is not None:
+                        changes.update(self._ready_origin_indexes(ActionIntent.model_validate(current[key])))
+                changes[marker] = {'schema_version':'1.0','epoch':_ORIGIN_INDEX_EPOCH,
+                    'after':following,'ready':following is None}
+                return changes
+            self.store.record_mutate(self.records_namespace,(*page,marker),apply)
+        progress = self.store.record_get(self.records_namespace,marker)
+        if not progress or progress.get('epoch') != _ORIGIN_INDEX_EPOCH or progress.get('ready') is not True:
+            raise ValueError('readiness origin index backfill is progressing; preserve assignment and retry inspection')
+        prefix = 'ready-origin:' + quote(assignment_id,safe='') + ':'
+        rows, after = self.store.record_page(self.records_namespace,key_prefix=prefix,limit=64)
+        if after is not None:
+            raise ValueError('unsettled readiness origin exceeds the bounded active-action inventory')
+        found = []
+        for key, alias in rows.items():
+            item = self.get(alias['id'])
+            if item is not None and key in self._ready_origin_indexes(item):
+                found.append(item)
+        return tuple(found)
 
     def get(self, intent_id: str) -> ActionIntent | None:
         self._ensure_records()
