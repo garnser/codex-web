@@ -28,6 +28,12 @@ def count(value):
     return value
 
 
+def native_id(value):
+    if type(value) is not int or not 1 <= value <= 2**63 - 1:
+        raise GitLabReadIncompleteError('native_identity_required')
+    return value
+
+
 def text(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_./-]{1,1024}', value):
         raise GitLabReadIncompleteError('invalid_reference')
@@ -86,7 +92,7 @@ class GitLabMergeRequirementsReader:
         return obj(value)
 
     def project_identity(self, raw):
-        identifier = count(raw.get('id'))
+        identifier = native_id(raw.get('id'))
         if identifier == 0:
             raise GitLabReadIncompleteError('repository_identity')
         external = self.resource.provenance.external_id if self.resource.provenance else None
@@ -108,7 +114,7 @@ class GitLabMergeRequirementsReader:
         # names and reflected error messages never enter the projection.
         return dict(head=revision(raw.get('sha')), branch=text(raw.get('target_branch')),
             state=text(raw.get('state')), draft=raw['draft'], gate=text(raw.get('detailed_merge_status')),
-            pipeline=raw.get('head_pipeline'), author=count(obj(raw.get('author')).get('id')),
+            pipeline=raw.get('head_pipeline'), author=native_id(obj(raw.get('author')).get('id')),
             discussions=raw.get('blocking_discussions_resolved'))
 
     def branch(self, raw):
@@ -128,7 +134,7 @@ class GitLabMergeRequirementsReader:
         rows = raw.get('approved_by')
         if not isinstance(rows, list) or len(rows) > 500:
             raise GitLabReadIncompleteError('approval_list_incomplete')
-        users = [count(obj(obj(row).get('user')).get('id')) for row in rows]
+        users = [native_id(obj(obj(row).get('user')).get('id')) for row in rows]
         if 0 in users or len(set(users)) != len(users):
             raise GitLabReadIncompleteError('approval_identity')
         return dict(approved=raw['approved'], required=required, left=left, users=tuple(sorted(users)))
@@ -200,7 +206,7 @@ class GitLabMergeRequirementsReader:
             sha = revision(pipeline.get('sha'))
             if sha != self.pr['head']:
                 raise GitLabReadIncompleteError('pipeline_head_unproven')
-            identifier = count(pipeline.get('id'))
+            identifier = native_id(pipeline.get('id'))
             state = text(pipeline.get('status'))
             checks = (CodeHostMergeCheckFact(external_id=str(identifier), context='GitLab head pipeline',
                 revision=sha, kind='pipeline', provider_state=state,

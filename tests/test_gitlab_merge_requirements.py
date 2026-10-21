@@ -69,6 +69,20 @@ class GitLabMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('fixture-secret',fact.model_dump_json())
         self.assertIn(CodeHostCapability.MERGE_REQUIREMENTS_READ,GitLabCodeHostProvider().capabilities())
 
+    async def test_large_native_user_and_pipeline_ids_are_not_approval_counts(self):
+        project_id=987654320
+        self.resource=self.resource.model_copy(update={'provenance':self.resource.provenance.model_copy(update={'external_id':str(project_id)})})
+        self.pr['project_id']=project_id
+        def project_identity(request,value):
+            if value.get('path_with_namespace')=='acme/widgets':value['id']=project_id
+        self.hook=project_identity
+        self.pr['author']['id']=987654321
+        self.pr['head_pipeline']['id']=123456789012
+        self.approvals['approved_by']=[{'user':{'id':987654322}}]
+        fact=await self.reader().read('7')
+        self.assertEqual(fact.independent_approval_count,1)
+        self.assertEqual(fact.observed_checks[0].external_id,'123456789012')
+
     async def test_community_edition_missing_counts_are_not_zero(self):
         self.approvals = {'approved':True,'approved_by':[{'user':{'id':2}}],
                           'user_can_approve':False,'user_has_approved':False}
