@@ -278,10 +278,27 @@ a fresh reader process rebuilds it so an earlier writer version cannot leave a
 false complete index. Each reader epoch retains its own small progress record;
 replicated readers cannot reset one another. These migration/provenance records
 remain in the existing canonical collection and are not authoritative leases. Retained terminal history does not impose a permanent
-renewal limit. These two checks mitigate retirement but do not form an atomic
-provider-attempt/cancellation transaction; the remaining interleaving guarantee is
-tracked in [#1663](https://github.com/garnser/codex-web/issues/1663). No automatic
-post-turn reconciliation scheduler or LLM polling is introduced.
+renewal limit. Voluntary bootstrap cancellation and ordinary assignment completion
+also lock the existing ActionIntent collection in the same ordered canonical
+writer transaction as the assignment, worker and transition event. After current
+caller/custody validation, they read the completed origin projection without
+performing backfill writes and refuse retirement while an attempted READY needs
+that origin. The typed conflict exposes the owning ActionIntent IDs through the
+existing assignment API and preflight inspector; native input has not begun.
+Preparation reads at most 1,024 retained intent rows per call. A valid incomplete
+page produces `readiness_origin_index_progressing` with its persisted cursor for
+internal continuation; public conflicts expose only its SHA-256 digest and reader
+epoch, keeping other tenants' retained intent keys private. This preserves the
+assignment and permits bounded preparation to
+continue before any retirement effect. Invalid or unavailable evidence remains a
+non-retryable conflict. The retirement writer itself never migrates the index.
+
+READY's transition to EXECUTING atomically checks the original live assignment,
+fence, worker and lease while publishing its origin alias. If the attempt wins,
+retirement observes it; if retirement wins, execution refuses before invoking the
+provider. No database lock spans a network await. Actual worker loss, expiry and
+security revocation retain their existing authority-withdrawal semantics. This
+adds no model call; finite post-turn settlement is described separately below.
 
 Within an authenticated read-only reconciliation scope, assignment lookup reloads
 the exact server-selected originating row rather than decoding all historical
@@ -318,3 +335,47 @@ wall-clock and storage-operation limits bound the process. Source/tree/helper
 hashes, interpreter, installed revision/PID, intent/receipt and token-revocation
 IDs remain inspectable in private operator journals. If the process stops or an
 outcome is unknown, inspect the same canonical intent before any further action.
+
+#### Automatic post-turn read-only settlement
+
+The existing terminal-turn completion task invokes bounded READY settlement after
+the retained bootstrap's repository checkpoint, or before ordinary assignment
+completion. The thread's existing completion barrier prevents queued native input
+from racing this finite operation. It uses the registered local worker's existing
+service actor and the same canonical ActionIntent service, original assignment,
+current authority, credential references, security and verification transactions.
+It creates no model turn, credential grant, provider mutation, callback queue or
+separate recovery registry. An unresolved origin remains protected against
+voluntary retirement; a callback refusal does not claim successful verification.
+Timeout or cancellation cancels the cooperative storage budget and joins the
+actual reconciliation owner before releasing the thread completion barrier.
+
+Only already-attempted, unresolved READY actions are candidates. Before the normal
+64-entry limit, callback discoveries consume normal history slots. The same
+four-attempt/eight-decision ceiling counts marked callback attempts on both sides
+of that boundary; unmarked retained observations remain unchanged.
+A server-derived hash of the terminal turn, originating assignment/fence and
+intent selects the reserve marker. The existing append-only discovery ledger
+prevents the same callback, including re-delivery after a service restart, from
+spending another attempt or repeating its provider reads. A local mutex and the
+existing replicated ownership lease serialize concurrent callbacks. Markers are
+provenance and deduplication only; they never replace fresh admission authority.
+
+Global, identity/project/resource-scoped, exclusive-goal and effective autonomy
+policy plus the existing Project queue-recovery gate admit each new callback.
+Dry-run/simulation or a paused/observation-only policy preserves the unresolved
+action without provider reads. As for other admitted finite worker operations,
+a later admission pause allows an already-running read-only callback to finish.
+There is no callback retry timer or LLM poll. A failed verification remains
+inspectable, and the same terminal event does not authorize another attempt;
+changed meaningful input or the existing explicit incident path is required.
+Missing terminal delivery, changed custody, disabled identity or exhausted reserve
+is not repaired by inventing a new origin or claimed outcome.
+A cold origin index may advance through at most eight existing 1,024-row pages
+within a 30-second cooperative storage budget. Only the typed preparation-progress
+result permits continuation, and each page must advance its canonical cursor;
+other authority, storage or custody refusals preserve the unresolved origin.
+
+Existing ActionIntent receipt/verification and assignment discovery inspectors
+remain the operator surfaces. The existing runtime event stream records callback
+start, completion and typed refusal, without credentials or exception payloads.

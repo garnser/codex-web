@@ -506,5 +506,32 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+@unittest.skipUnless(POSTGRES_DSN, "real PostgreSQL is required")
+class PostgresReadinessOriginRetirementTests(unittest.IsolatedAsyncioTestCase):
+    _store = RealDistributedBackendTests._store
+    _clear_postgres_documents = RealDistributedBackendTests._clear_postgres_documents
+    setUp = RealDistributedBackendTests.setUp
+
+    async def test_ready_attempt_and_retirement_are_serialized_in_both_writer_orders(self):
+        from unittest.mock import patch
+        from tests import test_readiness_origin_retirement as fixture
+        for name in (
+                'test_attempt_commits_after_last_inspection_and_retirement_preserves_origin',
+                'test_retirement_owns_writer_first_and_attempt_cannot_begin_provider_execution'):
+            with self.subTest(order=name):
+                self._clear_postgres_documents()
+                case = fixture.ReadinessOriginRetirementTests(name)
+                # Reuse the actual canonical Profile/worker/SecretBroker/provider
+                # composition against PostgreSQL, not a fake storage contract.
+                with patch('tests.test_control_plane_broker.SQLiteStateStore',
+                           return_value=self.postgres):
+                    await case.asyncSetUp()
+                    try:
+                        await getattr(case, name)()
+                    finally:
+                        await case.broker_client.aclose()
+                        await case.asyncTearDown()
+
+
 if __name__ == "__main__":
     unittest.main()

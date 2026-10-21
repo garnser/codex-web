@@ -103,6 +103,15 @@ ACTION_INTENT_STATE_MIGRATIONS.register(
 )
 
 
+class ReadinessOriginIndexProgressing(ValueError):
+    """A bounded preparation advanced but has not reached the catalog end."""
+
+    def __init__(self, cursor: str, epoch: str):
+        self.cursor = cursor
+        self.epoch = epoch
+        super().__init__("readiness origin index backfill is progressing")
+
+
 class ActionIntentStore:
     namespace = "action_intents"
 
@@ -351,14 +360,19 @@ class ActionIntentStore:
                 {'id':item.id}}
         return {}
 
-    def unsettled_readiness_origin(self, assignment_id: str) -> tuple[ActionIntent, ...]:
+    def unsettled_readiness_origin(self, assignment_id: str, *, prepare=True) -> tuple[ActionIntent, ...]:
         """Current origin projection; rebuild once per reader process after old writers.
 
         Pages advance durably for this process epoch. A new process deliberately
         starts a fresh backfill, so a previous older writer cannot leave a false
         complete index. Ordinary updates maintain aliases in the same commit.
         """
-        self._ensure_records()
+        if prepare:
+            self._ensure_records()
+        elif (not self.store.record_collection_exists(self.records_namespace)
+                or self.store.record_get(self.records_namespace, self._meta_key)
+                    not in ({'schema_version':'1.3'}, {'schema_version':'1.4'})):
+            raise ValueError('readiness origin records require canonical preparation')
         # Separate cursors keep current replicated readers from restarting
         # each other's bounded migration. Aliases remain shared canonical data.
         marker = 'ready-origin-index:1.0:' + _ORIGIN_INDEX_EPOCH
@@ -375,6 +389,8 @@ class ActionIntentStore:
                 raise ValueError('readiness origin index metadata is invalid')
             if progress and progress.get('epoch') == _ORIGIN_INDEX_EPOCH and progress.get('ready') is True:
                 break
+            if not prepare:
+                raise ValueError('readiness origin index requires canonical preparation')
             previous = progress
             after = progress.get('after') if progress and progress.get('epoch') == _ORIGIN_INDEX_EPOCH else None
             page, following = self.store.record_page(self.records_namespace,
@@ -392,14 +408,24 @@ class ActionIntentStore:
             self.store.record_mutate(self.records_namespace,(*page,marker),apply)
         progress = self.store.record_get(self.records_namespace,marker)
         if not progress or progress.get('epoch') != _ORIGIN_INDEX_EPOCH or progress.get('ready') is not True:
-            raise ValueError('readiness origin index backfill is progressing; preserve assignment and retry inspection')
+            if (prepare and isinstance(progress, dict)
+                    and progress.get('epoch') == _ORIGIN_INDEX_EPOCH
+                    and isinstance(progress.get('after'), str)
+                    and progress.get('ready') is False):
+                raise ReadinessOriginIndexProgressing(progress['after'], _ORIGIN_INDEX_EPOCH)
+            raise ValueError('readiness origin index preparation is unavailable')
         prefix = 'ready-origin:' + quote(assignment_id,safe='') + ':'
         rows, after = self.store.record_page(self.records_namespace,key_prefix=prefix,limit=64)
         if after is not None:
             raise ValueError('unsettled readiness origin exceeds the bounded active-action inventory')
         found = []
         for key, alias in rows.items():
+            if (not isinstance(alias, dict) or set(alias) != {'id'}
+                    or not isinstance(alias['id'], str)):
+                raise ValueError('readiness origin alias is invalid')
             item = self.get(alias['id'])
+            if item is None and not prepare:
+                raise ValueError('readiness origin target is unavailable')
             if item is not None and key in self._ready_origin_indexes(item):
                 found.append(item)
         return tuple(found)

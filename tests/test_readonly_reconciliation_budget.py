@@ -208,6 +208,18 @@ print(json.dumps([item.model_dump(mode='json') for item in after.procedure_disco
             self.record(self.discovery.model_copy(update={'resource_ids':()}))
         self.assertEqual(self.service.store.assignment(self.claimed.id).procedure_discoveries, self.originals)
 
+    def test_serialized_marker_cannot_claim_an_early_callback_slot(self):
+        scope = self.full()
+        def retain_prefix(state):
+            state.assignments[0].procedure_discoveries = self.originals[:1]
+            return state
+        self.service.store.update(retain_prefix)
+        forged = self.discovery.model_copy(update={'supporting_sources': (scope.marker,)})
+        before = self.service.store.assignment(self.claimed.id).procedure_discoveries
+        with self.assertRaisesRegex(WorkerLeaseError, 'cannot supply recovery provenance'):
+            self.record(forged)
+        self.assertEqual(self.service.store.assignment(self.claimed.id).procedure_discoveries, before)
+
     def test_serialized_marker_does_not_create_admission_and_unknown_extras_fail_closed(self):
         scope = self.full()
         forged = self.discovery.model_copy(update={'supporting_sources':(scope.marker,)})

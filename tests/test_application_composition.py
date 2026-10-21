@@ -40,6 +40,12 @@ def _path_tags(path: str) -> set[str]:
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_terminal_ready_callback_uses_canonical_intents_and_existing_ownership(self) -> None:
+        service = application.post_turn_readiness_service
+        self.assertIs(application.turn_execution_service.post_turn_readiness.__self__, service)
+        self.assertIs(service.intents, application.action_intent_service)
+        self.assertIs(service.ownership, application.replicated_ownership_service)
+
     def test_canonical_recipient_scope_comes_from_same_owner_routing_service(self) -> None:
         callback = application.bot_event_dispatch_service.owner_routing_repository_scope
         self.assertIs(callback.__self__, application.owner_routing_service)

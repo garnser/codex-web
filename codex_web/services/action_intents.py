@@ -1572,11 +1572,11 @@ class ActionIntentService:
                     break
             return state
 
-        guarded = self._publication_execution_guard(intent)
+        guarded = self._publication_execution_guard(intent, actor=actor)
         updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
         return next(item for item in updated.intents if item.id == intent.id)
 
-    def _publication_execution_guard(self, intent):
+    def _publication_execution_guard(self, intent, *, actor=None):
         scope = intent.publication_recovery_scope
         guarded = {}
         if scope is not None:
@@ -1599,6 +1599,28 @@ class ActionIntentService:
                 from codex_web.execution_workspaces import ExecutionWorkspace
                 workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, assignment.execution_workspace_id))
                 guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            origin = intent.readiness_origin
+            if (origin is None or actor is None or self.execution_workers is None
+                    or self.execution_workers.store.store is not self.store.store):
+                raise ActionRequirementError('Readiness execution requires the canonical live origin transaction')
+            previous_guard = guarded.get('guard')
+            def ready_guard(documents):
+                if previous_guard is not None:
+                    previous_guard(documents)
+                requester = self._requester_actor(intent)
+                assignment = self._ready_assignment(intent.execution_id, intent.request,
+                    requester, origin.assignment_id)
+                worker = self.execution_workers.store.worker(origin.worker_id)
+                if (assignment.fence != origin.fence
+                        or assignment.assigned_worker_id != origin.worker_id
+                        or assignment.execution_profile_definition != origin.execution_profile_definition
+                        or worker is None or worker.revoked_at is not None
+                        or worker.service_identity_id != actor.identity_id):
+                    raise ActionRequirementError('Readiness originating assignment changed before execution')
+            guarded = {'guard_rows': {**guarded.get('guard_rows', {}),
+                ASSIGNMENTS: (origin.assignment_id,), WORKERS: (origin.worker_id,)},
+                'guard': ready_guard}
         return guarded
 
     def _begin_recovery_rollback(self, intent):
@@ -2651,7 +2673,8 @@ class ActionIntentService:
         self.store.update(apply)
         return message
 
-    def read_only_reconciliation_scope(self, intent, payload, worker, *, assignment=None):
+    def read_only_reconciliation_scope(self, intent, payload, worker, *, assignment=None,
+                                       include_normal_budget=False):
         """A recovery reservation is never a provider-write or origin-transfer grant."""
         from codex_web.procedure_reconciliation import ReadOnlyReconciliationScope, current_reconciliation_scope
         self._require_worker(worker)
@@ -2665,7 +2688,9 @@ class ActionIntentService:
         # Preserve ordinary reconciliation semantics below the normal budget;
         # recovery must not turn optional verification into a new early error.
         retained = self.execution_workers.store.assignment(origin.assignment_id)
-        if retained is None or len(retained.procedure_discoveries) < 64:
+        previous = current_reconciliation_scope()
+        if (retained is None or len(retained.procedure_discoveries) < 64
+                and not include_normal_budget and previous is None):
             return None
         requester = self._requester_actor(intent)
         current = self._ready_assignment(intent.execution_id, intent.request, requester, origin.assignment_id)
@@ -2676,7 +2701,6 @@ class ActionIntentService:
                 or (assignment is not None and (assignment.id, assignment.execution_id, assignment.fence)
                     != (current.id, current.execution_id, current.fence))):
             raise ActionRequirementError('Read-only reconciliation requires unchanged originating custody')
-        previous = current_reconciliation_scope()
         if previous is not None:
             if (previous.intent_id, previous.assignment_id, previous.fence, previous.worker_id) != (
                     intent.id, current.id, current.fence, current.assigned_worker_id):
