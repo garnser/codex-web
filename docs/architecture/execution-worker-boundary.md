@@ -1580,6 +1580,14 @@ binary-only rollback after new writes are unsupported.
 
 ### Pre-resume repository custody refusal
 
+Before retiring a bootstrap on the same provider/runtime, turn execution checks
+the canonical previous writable/read-only repository IDs against the requested
+IDs. Known incompatible custody refuses with `native_session_scope_incompatible`
+and phase `before_bootstrap_retirement`, preserving the original assignment and
+binding. The caller needs a separate compatible thread; the refusal does not
+grant delivery, acknowledgement, recovery or replay authority. Compatible
+rollovers still cross the full transactional custody check below.
+
 A controller-owned `native_session_scope_incompatible` refusal records the
 original/current assignment and repository scope before invoking native resume.
 For a retained queued original, its existing blocker binds the exact snapshot
