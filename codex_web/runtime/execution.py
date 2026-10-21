@@ -222,6 +222,7 @@ class TurnExecutionService:
         self.owner_routing_validator = None
         self.procedure_admission = None
         self.readiness_origin_blocker = None
+        self.post_turn_readiness = None
         self.session_custody = None
         self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
@@ -1147,7 +1148,9 @@ class TurnExecutionService:
         self._update_thread_queue(queued.thread_id, mutate)
 
     def thread_is_active(self, thread_id: str | None) -> bool:
-        return bool(thread_id and self._active_turn(thread_id) is not None)
+        completion = self.thread_completion_tasks.get(thread_id) if thread_id else None
+        return bool(thread_id and (self._active_turn(thread_id) is not None
+            or completion is not None and not completion.done()))
 
     def active_execution_id(self, thread_id: str | None) -> str | None:
         if not thread_id:
@@ -1539,24 +1542,31 @@ class TurnExecutionService:
                             ),
                         )
 
-            if callable(checkpoint):
+            if callable(checkpoint) or self.post_turn_readiness is not None:
                 existing = self.assignment_completion_tasks.get(assignment_id)
                 if existing is not None and not existing.done():
                     return
 
                 async def checkpoint_retained_session() -> None:
                     try:
-                        values = await checkpoint(assignment_id)
+                        values = await checkpoint(assignment_id) if callable(checkpoint) else ()
+                        await self._settle_post_turn_readiness(active, manager)
                         record_bootstrap_result(checkpoint_count=len(values))
                     except Exception as exc:
                         record_bootstrap_result(checkpoint_error=str(exc)[:500])
                     finally:
-                        self.assignment_completion_tasks.pop(assignment_id, None)
+                        current_task = asyncio.current_task()
+                        if self.assignment_completion_tasks.get(assignment_id) is current_task:
+                            self.assignment_completion_tasks.pop(assignment_id, None)
+                        if self.thread_completion_tasks.get(active.thread_id) is current_task:
+                            self.thread_completion_tasks.pop(active.thread_id, None)
 
-                self.assignment_completion_tasks[assignment_id] = asyncio.create_task(
+                task = asyncio.create_task(
                     checkpoint_retained_session(),
                     name=f"repository-checkpoint-{assignment_id}",
                 )
+                self.assignment_completion_tasks[assignment_id] = task
+                self.thread_completion_tasks[active.thread_id] = task
             else:
                 record_bootstrap_result()
             return
@@ -1571,6 +1581,7 @@ class TurnExecutionService:
                 failure_message = None if succeeded else str(
                     raw_error or "Codex turn failed"
                 )[:500]
+                await self._settle_post_turn_readiness(active, manager)
                 completed = await manager.complete(
                     assignment_id,
                     succeeded=succeeded,
@@ -1636,6 +1647,22 @@ class TurnExecutionService:
         )
         self.assignment_completion_tasks[assignment_id] = task
         self.thread_completion_tasks[active.thread_id] = task
+
+    async def _settle_post_turn_readiness(self, active, manager) -> None:
+        callback = self.post_turn_readiness
+        local_worker = getattr(manager, 'local_worker', None)
+        actor = getattr(local_worker, 'worker_actor', None)
+        if callback is None or actor is None:
+            return
+        try:
+            await callback(active, actor=actor)
+        except Exception as exc:
+            # A callback refusal never invents successful settlement or turns
+            # a completed native/checkpoint operation into a failed one. The
+            # canonical unresolved-origin retirement guard preserves custody.
+            self.host._append_bot_event({'type': 'post_turn_readiness_deferred',
+                'assignment_id': active.assignment_id, 'turn_id': active.turn_id,
+                'error_type': type(exc).__name__})
 
     @staticmethod
     def _normalize_agent_runtime_item(item: Any) -> Any:

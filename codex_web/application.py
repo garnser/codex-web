@@ -3366,6 +3366,17 @@ turn_execution_service = install_turn_execution_service(
 
 from codex_web.services.agent_session_custody import AgentSessionCustodyService
 turn_execution_service.readiness_origin_blocker = action_intent_service.store.unsettled_readiness_origin
+from codex_web.services.post_turn_readiness import (
+    PostTurnReadinessService, require_post_turn_admission,
+)
+post_turn_readiness_service = PostTurnReadinessService(action_intent_service,
+    admission=lambda assignment, intent, actor: require_post_turn_admission(
+        assignment, intent, actor, controller=autonomy_controller,
+        identity=identity_service, runtime_enabled=runtime_policy.autonomy_enabled,
+        gates=reconciliation_gate_service),
+    ownership=replicated_ownership_service, append_event=bot_runtime_telemetry.append)
+turn_execution_service.post_turn_readiness = post_turn_readiness_service.settle
+app.state.post_turn_readiness_service = post_turn_readiness_service
 turn_execution_service.session_custody = AgentSessionCustodyService(
     agent_session_service, execution_worker_service, thread_bootstrap_binding_service,
     execution_workspace_service, execution_profile_definition_service,

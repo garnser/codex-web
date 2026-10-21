@@ -280,8 +280,7 @@ replicated readers cannot reset one another. These migration/provenance records
 remain in the existing canonical collection and are not authoritative leases. Retained terminal history does not impose a permanent
 renewal limit. These two checks mitigate retirement but do not form an atomic
 provider-attempt/cancellation transaction; the remaining interleaving guarantee is
-tracked in [#1663](https://github.com/garnser/codex-web/issues/1663). No automatic
-post-turn reconciliation scheduler or LLM polling is introduced.
+tracked in [#1663](https://github.com/garnser/codex-web/issues/1663).
 
 Within an authenticated read-only reconciliation scope, assignment lookup reloads
 the exact server-selected originating row rather than decoding all historical
@@ -318,3 +317,39 @@ wall-clock and storage-operation limits bound the process. Source/tree/helper
 hashes, interpreter, installed revision/PID, intent/receipt and token-revocation
 IDs remain inspectable in private operator journals. If the process stops or an
 outcome is unknown, inspect the same canonical intent before any further action.
+
+#### Automatic post-turn read-only settlement
+
+The existing terminal-turn completion task invokes bounded READY settlement after
+the retained bootstrap's repository checkpoint, or before ordinary assignment
+completion. The thread's existing completion barrier prevents queued native input
+from racing this finite operation. It uses the registered local worker's existing
+service actor and the same canonical ActionIntent service, original assignment,
+current authority, credential references, security and verification transactions.
+It creates no model turn, credential grant, provider mutation, callback queue or
+separate recovery registry. An unresolved origin remains protected against
+voluntary retirement; a callback refusal does not claim successful verification.
+
+Only already-attempted, unresolved READY actions with exhausted normal discovery
+history are candidates. The existing four-attempt/eight-decision reserve applies.
+A server-derived hash of the terminal turn, originating assignment/fence and
+intent selects the reserve marker. The existing append-only discovery ledger
+prevents the same callback, including re-delivery after a service restart, from
+spending another attempt or repeating its provider reads. A local mutex and the
+existing replicated ownership lease serialize concurrent callbacks. Markers are
+provenance and deduplication only; they never replace fresh admission authority.
+
+Global, identity/project/resource-scoped, exclusive-goal and effective autonomy
+policy plus the existing Project queue-recovery gate admit each new callback.
+Dry-run/simulation or a paused/observation-only policy preserves the unresolved
+action without provider reads. As for other admitted finite worker operations,
+a later admission pause allows an already-running read-only callback to finish.
+There is no callback retry timer or LLM poll. A failed verification remains
+inspectable, and the same terminal event does not authorize another attempt;
+changed meaningful input or the existing explicit incident path is required.
+Missing terminal delivery, changed custody, disabled identity or exhausted reserve
+is not repaired by inventing a new origin or claimed outcome.
+
+Existing ActionIntent receipt/verification and assignment discovery inspectors
+remain the operator surfaces. The existing runtime event stream records callback
+start, completion and typed refusal, without credentials or exception payloads.
