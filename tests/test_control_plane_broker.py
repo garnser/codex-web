@@ -21,6 +21,8 @@ from codex_web.code_hosts import (
     CodeHostRevisionMaterializationFact,
 )
 from codex_web.agent_profiles import AgentProfileExecutionBinding
+from codex_web.action_providers import ActionRequest
+from codex_web.services.code_host_action_contract import CodeHostActionContract
 from codex_web.authority import (
     AUTHORITY_ROLE_CATALOG_ID,
     AUTHORITY_ROLE_CATALOG_KIND,
@@ -1038,6 +1040,42 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 400)
             self.assertIn("limit must be an integer", response["error"]["message"])
             listing.assert_not_awaited()
+
+    async def test_merge_discovery_describes_the_canonical_merge_contract(self) -> None:
+        status, _, payload = await self._request("GET", "/api/control-plane-broker/operations")
+        self.assertEqual(status, 200, payload)
+        operation = next(item for item in payload["operations"]
+                         if item["id"] == "repository.pull-request.merge")
+        schema = operation["request_body"]["parameters"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["required"], ["pull_request_number"])
+        self.assertEqual(set(schema["properties"]),
+                         {"pull_request_number", "merge_method", "expected_head_sha"})
+        self.assertEqual(schema["properties"]["pull_request_number"]["minimum"], 1)
+
+        def parse(parameters):
+            return CodeHostActionContract.pull_request_merge(ActionRequest(
+                action_id="code-host.pull-request.merge", organization_id="local",
+                workspace_id="default", parameters=parameters))
+
+        minimal = {"pull_request_number": 36}
+        self.assertEqual(parse(minimal)["merge_method"],
+                         schema["properties"]["merge_method"]["default"])
+        self.assertIsNone(parse(minimal)["expected_head_sha"])
+        for method in schema["properties"]["merge_method"]["enum"]:
+            with self.subTest(method=method):
+                parameters = {**minimal, "merge_method": method, "expected_head_sha": "a" * 40}
+                self.assertRegex(parameters["expected_head_sha"],
+                                 schema["properties"]["expected_head_sha"]["pattern"])
+                parsed = parse(parameters)
+                self.assertEqual(parsed["number"], 36)
+                self.assertEqual(parsed["merge_method"], method)
+                self.assertEqual(parsed["expected_head_sha"], "a" * 40)
+        for field, value in (("expected_base_sha", "b" * 40), ("expected_base_ref", "main")):
+            with self.subTest(ready_only_field=field):
+                self.assertNotIn(field, schema["properties"])
+                with self.assertRaisesRegex(ValueError, "unsupported pull request merge parameters"):
+                    parse({**minimal, "expected_head_sha": "a" * 40, field: value})
 
     async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
         with patch.object(
