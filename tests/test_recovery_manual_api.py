@@ -215,8 +215,8 @@ class ManualRecoveryApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(backup.status_code, 200, backup.text)
             identifier = backup.json()['item']['id']
             destination = self.recovery.destinations['local']
-            entered, release, controlled = self.gate(destination.get)
-            with patch.object(destination, 'get', controlled):
+            entered, release, controlled = self.gate(destination.get_bounded)
+            with patch.object(destination, 'get_bounded', controlled):
                 work = asyncio.create_task(client.post('/api/recovery/backups/' + identifier + '/verify'))
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 2))
