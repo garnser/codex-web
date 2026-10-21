@@ -79,6 +79,20 @@ class AssignmentReadinessOriginError(WorkerConflictError):
                 'action_intent_ids': list(self.intent_ids), 'retryable': False}
 
 
+class AssignmentReadinessIndexProgressing(AssignmentReadinessOriginError):
+    """Known before retirement: the bounded canonical index needs another page."""
+
+    def __init__(self, assignment_id, *, cursor, epoch):
+        super().__init__(assignment_id, unavailable=True)
+        self.code = 'readiness_origin_index_progressing'
+        self.cursor, self.epoch = cursor, epoch
+        self.args = (self.code + ': bounded preparation advanced; assignment preserved',)
+
+    def detail(self):
+        return {**super().detail(), 'retryable': True,
+                'cursor': self.cursor, 'epoch': self.epoch}
+
+
 class WorkerLeaseError(ExecutionWorkerError):
     reason_code = FailureReason.WORKER_LEASE_LOST
 
@@ -1584,10 +1598,13 @@ class ExecutionWorkerService:
         return result
 
     def _prepare_readiness_retirement(self, assignment_id):
-        from codex_web.storage.action_intents import ActionIntentStore
+        from codex_web.storage.action_intents import ActionIntentStore, ReadinessOriginIndexProgressing
         intents = ActionIntentStore(self.store.store)
         try:
             intents.unsettled_readiness_origin(assignment_id)
+        except ReadinessOriginIndexProgressing as exc:
+            raise AssignmentReadinessIndexProgressing(assignment_id,
+                cursor=exc.cursor, epoch=exc.epoch) from exc
         except (ValueError, KeyError, TypeError) as exc:
             raise AssignmentReadinessOriginError(assignment_id, unavailable=True) from exc
         return intents
@@ -1762,6 +1779,7 @@ class ExecutionWorkerService:
         current = self.store.assignment(assignment_id)
         if current is None:
             raise AssignmentNotFoundError("execution assignment not found")
+        self._assignment(ExecutionWorkerState(assignments=[current]), assignment_id, actor)
         # READY's EXECUTING write takes this same canonical namespace lock. A
         # concurrent attempt is therefore either visible here or observes our
         # cancelled fence before it can begin provider execution.

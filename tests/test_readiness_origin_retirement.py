@@ -193,3 +193,50 @@ class ReadinessOriginRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped.exception.detail['action_intent_ids'], [intent_id])
         self.assertEqual(self.workers.store.assignment(before.id), before)
         runtime.host._append_bot_event.assert_not_called()
+
+    async def test_foreign_cancel_cannot_prime_or_mutate_readiness_projection(self):
+        from codex_web.services.execution_workers import AssignmentNotFoundError
+        await self.pending_ready()
+        before_assignment = self.workers.store.assignment(self.assignment.id)
+        before_records = self.sqlite.record_items(self.intents.store.records_namespace)
+        foreign_admin = self.admin.model_copy(update={'organization_id': 'foreign-tenant'})
+        with patch.object(self.workers, '_prepare_readiness_retirement',
+                side_effect=AssertionError('foreign caller must not prime indexes')):
+            with self.assertRaises(AssignmentNotFoundError):
+                self.workers.cancel_bootstrap(self.assignment.id,
+                    AssignmentCancelRequest(expected_fence=self.assignment.fence,
+                        reason='foreign cancellation'), actor=foreign_admin)
+        self.assertEqual(self.workers.store.assignment(self.assignment.id), before_assignment)
+        self.assertEqual(self.sqlite.record_items(self.intents.store.records_namespace), before_records)
+
+    async def test_cold_large_catalog_progresses_boundedly_before_retirement(self):
+        from codex_web.action_intents import ActionIntentStatus
+        from codex_web.services.execution_workers import AssignmentReadinessIndexProgressing
+        response = await self.public_ready('cold-retirement')
+        self.assertEqual(response.status_code, 200, response.text)
+        current = self.intents.store.get(response.json()['item']['id'])
+        terminal = current.model_copy(update={'status': ActionIntentStatus.SUCCEEDED,
+            'readiness_origin': None}).model_dump(mode='json')
+        self.sqlite.record_apply(self.intents.store.records_namespace, upserts={
+            'intents:terminal-%04d' % index: {**terminal, 'id': 'terminal-%04d' % index}
+            for index in range(1100)})
+        before = self.workers.store.assignment(self.assignment.id)
+        with patch('codex_web.storage.action_intents._ORIGIN_INDEX_EPOCH', 'e' * 32):
+            with patch.object(self.sqlite, 'record_items', side_effect=AssertionError(
+                    'retirement must not load an unbounded catalog')):
+                with self.assertRaises(AssignmentReadinessIndexProgressing) as progressing:
+                    self.cancel()
+                self.assertEqual(self.workers.store.assignment(self.assignment.id), before)
+                detail = progressing.exception.detail()
+                self.assertEqual(detail['code'], 'readiness_origin_index_progressing')
+                self.assertTrue(detail['retryable'])
+                self.assertTrue(detail['cursor'])
+                self.assertEqual(detail['epoch'], 'e' * 32)
+                # A distinct bounded preparation resumes the persisted cursor;
+                # it performs no native/provider retry and no retirement yet.
+                self.workers._prepare_readiness_retirement(self.assignment.id)
+                self.assertEqual(self.workers.store.assignment(self.assignment.id), before)
+                retired = self.cancel()
+        self.assertEqual(retired.status.value, 'cancelled')
+        self.assertEqual(retired.fence, before.fence + 1)
+        self.assertIsNone(retired.lease)

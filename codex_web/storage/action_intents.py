@@ -103,6 +103,15 @@ ACTION_INTENT_STATE_MIGRATIONS.register(
 )
 
 
+class ReadinessOriginIndexProgressing(ValueError):
+    """A bounded preparation advanced but has not reached the catalog end."""
+
+    def __init__(self, cursor: str, epoch: str):
+        self.cursor = cursor
+        self.epoch = epoch
+        super().__init__("readiness origin index backfill is progressing")
+
+
 class ActionIntentStore:
     namespace = "action_intents"
 
@@ -399,7 +408,12 @@ class ActionIntentStore:
             self.store.record_mutate(self.records_namespace,(*page,marker),apply)
         progress = self.store.record_get(self.records_namespace,marker)
         if not progress or progress.get('epoch') != _ORIGIN_INDEX_EPOCH or progress.get('ready') is not True:
-            raise ValueError('readiness origin index backfill is progressing; preserve assignment and retry inspection')
+            if (prepare and isinstance(progress, dict)
+                    and progress.get('epoch') == _ORIGIN_INDEX_EPOCH
+                    and isinstance(progress.get('after'), str)
+                    and progress.get('ready') is False):
+                raise ReadinessOriginIndexProgressing(progress['after'], _ORIGIN_INDEX_EPOCH)
+            raise ValueError('readiness origin index preparation is unavailable')
         prefix = 'ready-origin:' + quote(assignment_id,safe='') + ':'
         rows, after = self.store.record_page(self.records_namespace,key_prefix=prefix,limit=64)
         if after is not None:

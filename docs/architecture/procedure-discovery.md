@@ -285,6 +285,11 @@ caller/custody validation, they read the completed origin projection without
 performing backfill writes and refuse retirement while an attempted READY needs
 that origin. The typed conflict exposes the owning ActionIntent IDs through the
 existing assignment API and preflight inspector; native input has not begun.
+Preparation reads at most 1,024 retained intent rows per call. A valid incomplete
+page produces `readiness_origin_index_progressing` with its persisted cursor and
+reader epoch, preserving the assignment and permitting bounded preparation to
+continue before any retirement effect. Invalid or unavailable evidence remains a
+non-retryable conflict. The retirement writer itself never migrates the index.
 
 READY's transition to EXECUTING atomically checks the original live assignment,
 fence, worker and lease while publishing its origin alias. If the attempt wins,
