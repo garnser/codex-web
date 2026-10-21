@@ -14,6 +14,7 @@ from codex_web.procedure_reconciliation import (
 )
 from codex_web.services.action_providers import ActionRequirementError
 from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget
+from codex_web.storage.action_intents import ReadinessOriginIndexProgressing
 
 
 def require_post_turn_admission(assignment, intent, actor, *, controller,
@@ -81,8 +82,7 @@ class PostTurnReadinessService:
         self.intents._require_worker(actor)
         await asyncio.to_thread(self.intents.identity.actor_for_identity,
             actor.identity_id, scope=actor.tenant)
-        candidates = await asyncio.to_thread(
-            self.intents.store.unsettled_readiness_origin, current.id)
+        candidates = await self._prepare_candidates(current.id)
         settled = False
         # The canonical reserve already limits all attempts for this origin;
         # also bound selection before any provider access.
@@ -121,22 +121,46 @@ class PostTurnReadinessService:
                 raise
         return settled
 
+    async def _prepare_candidates(self, assignment_id):
+        # Continue only an explicitly typed bounded migration with a changing
+        # canonical cursor. No generic retirement/authority error is retried.
+        async def prepare():
+            seen = set()
+            for _ in range(8):
+                try:
+                    return await asyncio.to_thread(
+                        self.intents.store.unsettled_readiness_origin, assignment_id)
+                except ReadinessOriginIndexProgressing as exc:
+                    progress = (exc.epoch, exc.cursor)
+                    if progress in seen:
+                        raise
+                    seen.add(progress)
+            raise ActionRequirementError('Post-turn readiness index preparation budget exhausted')
+        return await self._run_owned(prepare, seconds=30,
+            name='ready-origin-preparation-' + assignment_id)
+
     async def _reconcile_owned(self, intent, payload, actor, scope):
+        async def operation():
+            with read_only_reconciliation(scope):
+                return await self.intents.reconcile(intent.id, payload, actor=actor)
+        return await self._run_owned(operation, seconds=intent.timeout_seconds,
+            name='ready-settlement-' + intent.id)
+
+    async def _run_owned(self, operation, *, seconds, name):
         """A cancelled waiter cannot retire a still-running canonical writer."""
         parent_budget = storage_operation_budget.get()
-        seconds = min(intent.timeout_seconds, parent_budget.remaining()
-            if parent_budget is not None else intent.timeout_seconds)
+        seconds = min(seconds, parent_budget.remaining()
+            if parent_budget is not None else seconds)
         budget = StorageOperationBudget(seconds)
 
-        async def operation():
+        async def owned_operation():
             token = storage_operation_budget.set(budget)
             try:
-                with read_only_reconciliation(scope):
-                    return await self.intents.reconcile(intent.id, payload, actor=actor)
+                return await operation()
             finally:
                 storage_operation_budget.reset(token)
 
-        task = asyncio.create_task(operation(), name='ready-settlement-' + intent.id)
+        task = asyncio.create_task(owned_operation(), name=name)
         try:
             done, _ = await asyncio.wait((task,), timeout=seconds)
             if not done:

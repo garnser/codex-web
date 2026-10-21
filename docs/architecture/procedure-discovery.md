@@ -369,6 +369,10 @@ inspectable, and the same terminal event does not authorize another attempt;
 changed meaningful input or the existing explicit incident path is required.
 Missing terminal delivery, changed custody, disabled identity or exhausted reserve
 is not repaired by inventing a new origin or claimed outcome.
+A cold origin index may advance through at most eight existing 1,024-row pages
+within a 30-second cooperative storage budget. Only the typed preparation-progress
+result permits continuation, and each page must advance its canonical cursor;
+other authority, storage or custody refusals preserve the unresolved origin.
 
 Existing ActionIntent receipt/verification and assignment discovery inspectors
 remain the operator surfaces. The existing runtime event stream records callback

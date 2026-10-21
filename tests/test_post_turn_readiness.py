@@ -4,7 +4,7 @@ import threading
 import unittest
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from codex_web.action_intents import ActionIntentStatus
 from codex_web.autonomy import AutonomyScopedPauseCreate
@@ -72,6 +72,31 @@ class PostTurnReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current.procedure_discoveries[:64], self.originals)
         history = self.runtime.intents.history(self.intent_id, self.admin)
         self.assertTrue(history['verifications'][-1]['verified'])
+
+    async def test_cold_large_origin_index_finishes_bounded_preparation_before_callback(self):
+        await self.prepare()
+        current = self.runtime.intents.store.get(self.intent_id)
+        terminal = current.model_copy(update={'status': ActionIntentStatus.SUCCEEDED,
+            'readiness_origin': None}).model_dump(mode='json')
+        self.sqlite.record_apply(self.runtime.intents.store.records_namespace, upserts={
+            'intents:terminal-%04d' % index: {**terminal, 'id': 'terminal-%04d' % index}
+            for index in range(1100)})
+        with patch('codex_web.storage.action_intents._ORIGIN_INDEX_EPOCH', 'b' * 32):
+            self.assertTrue(await self.settle())
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    async def test_origin_index_preparation_stops_without_cursor_progress(self):
+        from codex_web.storage.action_intents import ReadinessOriginIndexProgressing
+        await self.prepare()
+        calls = len(self.calls)
+        with patch.object(self.runtime.intents.store, 'unsettled_readiness_origin',
+                side_effect=ReadinessOriginIndexProgressing('same-cursor', 'epoch')) as prepare:
+            with self.assertRaises(ReadinessOriginIndexProgressing):
+                await self.settle()
+            self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.workers.store.assignment(self.assignment.id).procedure_discoveries,
+            self.originals)
 
     async def test_normal_budget_callback_crosses_63_without_rewriting_prefix(self):
         await self.prepare()
