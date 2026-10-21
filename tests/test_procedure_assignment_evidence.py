@@ -142,7 +142,8 @@ class ProcedureAssignmentEvidenceTests(unittest.TestCase):
                 expected_fence=claimed.fence, actor=self.admin)
         for change in [{'lease':None},
                        {'lease':claimed.lease.model_copy(update={'expires_at':0})},
-                       {'status':AssignmentStatus.CANCELLED}]:
+                       {'status':AssignmentStatus.CANCELLED},
+                       {'project_id':'changed'}]:
             with self.subTest(change=change):
                 def mutate(state):
                     item = state.assignments[0]
@@ -150,7 +151,8 @@ class ProcedureAssignmentEvidenceTests(unittest.TestCase):
                         setattr(item, key, value)
                     return state
                 self.service.store.update_assignment(self.worker.id, claimed.id, mutate)
-                with self.assertRaises(WorkerLeaseError):
+                expected_error = AuthorizationError if 'project_id' in change else WorkerLeaseError
+                with self.assertRaises(expected_error):
                     self.service.record_procedure_discovery(claimed.id, discovery,
                         expected_fence=claimed.fence, actor=self.admin)
                 def restore(state):
