@@ -119,7 +119,9 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rebind.call_args.kwargs['expected_assignment_id'], 'failed')
         self.assertEqual(rebind.call_args.kwargs['expected_assignment_fence'], 3)
         records['successor'] = successor.model_copy(update={'status': AssignmentStatus.RUNNING, 'fence': 1,
-            'assigned_worker_id': 'new-worker', 'lease': AssignmentLease(worker_id='new-worker', fence=1,
+            'assigned_worker_id': 'new-worker',
+            'agent_profile': successor.agent_profile.model_copy(update={'selected_worker_id':'new-worker'}),
+            'lease': AssignmentLease(worker_id='new-worker', fence=1,
                 lease_token='synthetic-fixture-lease-token', acquired_at=time.time(), expires_at=time.time()+60)})
         return validator, records, queued
 
@@ -136,7 +138,9 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         validator()
         old = records['successor']
         for change in ({'fence': 2}, {'created_by': 'other'}, {'resource_ids': ('foreign',)},
-                       {'assigned_worker_id': 'other-worker'}, {'status': AssignmentStatus.CANCELLED}):
+                       {'assigned_worker_id': 'other-worker'}, {'status': AssignmentStatus.CANCELLED},
+                       {'agent_profile': old.agent_profile.model_copy(update={'selected_worker_id':'foreign'})},
+                       {'agent_profile': old.agent_profile.model_copy(update={'profile_revision':7})}):
             with self.subTest(change=change):
                 records['successor'] = old.model_copy(update=change)
                 with self.assertRaises(HTTPException): validator()

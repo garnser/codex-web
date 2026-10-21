@@ -384,8 +384,14 @@ class OwnerLaneAdmissionValidator:
 
     @classmethod
     def identity(cls, assignment):
-        return {key: value for key, value in assignment.model_dump(mode='json').items()
-                if key not in cls._LIFECYCLE}
+        values = {key: value for key, value in assignment.model_dump(mode='json').items()
+                  if key not in cls._LIFECYCLE}
+        if values.get('agent_profile') is not None:
+            # Canonical worker.claim records its selected worker in the exact
+            # published Profile binding. It must match the leased worker below;
+            # no other Profile/definition field may drift after preparation.
+            values['agent_profile']['selected_worker_id'] = None
+        return values
 
     def retained_claim(self):
         attempt = self.service.preflight.store.get('preflight-queued-' + self.queued.id)
@@ -410,7 +416,10 @@ class OwnerLaneAdmissionValidator:
                 or self.identity(current) != self.identity(self.successor)
                 or str(current.status) not in {'claimed', 'running'} or current.fence != 1
                 or current.lease is None or current.lease.expires_at <= time.time()
-                or not current.assigned_worker_id
+                or not current.assigned_worker_id or current.agent_profile is None
+                or current.agent_profile.selected_worker_id != current.assigned_worker_id
+                or (self.successor.agent_profile.selected_worker_id is not None
+                    and self.successor.agent_profile.selected_worker_id != current.assigned_worker_id)
                 or (self.worker_id is not None and current.assigned_worker_id != self.worker_id)):
             self.service.refuse('owner_recovery_successor_changed', 'The exact recovery successor no longer owns current fenced custody.')
         self.worker_id = current.assigned_worker_id
