@@ -69,7 +69,7 @@ from codex_web.services.code_host_action_contract import (
     CodeHostActionContract,
 )
 from codex_web.services.code_host_readiness import (
-    ReadyExecution, ReadyIdentityObservation, readiness_execution, readiness_binding_checksum,
+    ReadyExecution, ReadyIdentityObservation, ReadySecretObservation, readiness_execution, readiness_binding_checksum,
 )
 from codex_web.services.code_host_continuation import (
     ChangeRequestContinuation, continuation_context, request_identity,
@@ -1784,11 +1784,15 @@ class ActionIntentService:
 
     def _ready_admission_snapshot(self):
         identity_namespace = self.identity.store.namespace
+        secret_store = getattr(getattr(self.execution, "secret_broker", None), "store", None)
         pins = {}
         for name in self._ready_settlement_domains():
             if name == identity_namespace:
                 observed_at = time.time()
                 pins[name] = ReadyIdentityObservation(self.identity.store.load(), observed_at)
+            elif secret_store is not None and name == secret_store.namespace:
+                observed_at = time.time()
+                pins[name] = ReadySecretObservation(secret_store.load(), observed_at)
             else:
                 pins[name] = self.store.store.namespace_revision(name)
         return pins
@@ -1797,6 +1801,7 @@ class ActionIntentService:
         if set(pins) != set(self._ready_settlement_domains()):
             return False
         identity_namespace = self.identity.store.namespace
+        secret_store = getattr(getattr(self.execution, "secret_broker", None), "store", None)
         for name, pin in pins.items():
             if name == identity_namespace:
                 if not isinstance(pin, ReadyIdentityObservation):
@@ -1811,6 +1816,16 @@ class ActionIntentService:
                         return False
                 except (ValueError, TypeError, KeyError) as exc:
                     raise ActionRequirementError("Readiness current identity admission is unavailable") from exc
+            elif secret_store is not None and name == secret_store.namespace:
+                if not isinstance(pin, ReadySecretObservation):
+                    return False
+                try:
+                    current = (secret_store._decode(documents[name].get(None))
+                               if documents is not None else secret_store.load())
+                    if not pin.matches(current, now=time.time()):
+                        return False
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise ActionRequirementError("Readiness current credential admission is unavailable") from exc
             elif self.store.store.namespace_revision(name) != pin:
                 return False
         return True

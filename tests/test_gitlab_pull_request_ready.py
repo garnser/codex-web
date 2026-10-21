@@ -15,7 +15,7 @@ from codex_web.definitions import DefinitionPublishRequest
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
 from codex_web.resources import ResourceAlias, ResourceUpdate
 from codex_web.secret_backends import LocalFileSecretBackend
-from codex_web.secrets import SecretCreate
+from codex_web.secrets import SecretCreate, SecretRotate
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.control_plane_broker import AssignmentBoundControlPlaneBroker
@@ -198,6 +198,53 @@ class GitLabPullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(touches), 3)
         self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
         self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
+
+    async def test_secret_audit_appends_through_checkpoint_and_writer_do_not_deny_ready(self):
+        slack = self.secret_broker.create(SecretCreate(name='Slack audit fixture', value='offline',
+            provider='slack'), actor=self.admin)
+        admission = self.intents.execution.procedure_admission
+        settlement = self.intents._ready_settlement_guard
+        appends = []
+        def audit():
+            self.secret_broker._audit(slack, self.admin, 'slack.post_message', 'allowed')
+            appends.append(True)
+        async def checkpoint(*args, **kwargs):
+            result = await admission(*args, **kwargs)
+            if args[-1] == 'verify':
+                audit()
+            return result
+        def writer_guard(*args, **kwargs):
+            audit()
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents.execution, 'procedure_admission', checkpoint), \
+             patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            _, _, body = await self.submit(key='slack-secret-audit-appends')
+        self.assertEqual(body['item']['status'], 'succeeded', body)
+        self.assertGreater(len(appends), 3)
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
+        self.assertGreaterEqual(len(self.secret_broker.store.load().audit), len(appends))
+
+    async def test_credential_rotation_during_checkpoint_still_denies(self):
+        await self._reject_changed_verification_identity(lambda session:
+            self.secret_broker.rotate(self.secret.id, SecretRotate(value='rotated-fixture'),
+                                      actor=self.admin))
+
+    async def test_actual_credential_revocation_before_writer_still_denies(self):
+        settlement = self.intents._ready_settlement_guard
+        revoked = []
+        def writer_guard(*args, **kwargs):
+            if not revoked:
+                self.secret_broker.revoke(self.secret.id, actor=self.admin, reason='before-writer')
+                revoked.append(True)
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            _, _, body = await self.submit(key='secret-revoked-before-writer')
+        self.assertEqual(body['item']['status'], 'requires_reconciliation', body)
+        verification = self.intents.history(body['item']['id'], self.admin)['verifications'][-1]
+        self.assertFalse(verification['verified'])
+        self.assertIn('Readiness admission changed at settlement', str(verification['findings']))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
 
     async def _reject_changed_verification_identity(self, change):
         session = self._ready_browser_session()

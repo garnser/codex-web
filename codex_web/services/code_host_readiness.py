@@ -13,6 +13,7 @@ from typing import Awaitable, Callable
 
 from codex_web.action_providers import ActionRequest
 from codex_web.identity import IdentityState
+from codex_web.secrets import SecretState
 from codex_web.services.code_host_continuation import request_identity
 from codex_web.services.action_providers import ActionRequirementError
 
@@ -107,5 +108,24 @@ class ReadyIdentityObservation:
             if (token.revoked_at is None and token.expires_at is not None
                     and (not math.isfinite(token.expires_at)
                          or self.observed_at < token.expires_at <= now)):
+                return False
+        return True
+
+
+@dataclass(frozen=True)
+class ReadySecretObservation:
+    """Exact credential authority at one checkpoint, excluding audit appends only."""
+    state: SecretState
+    observed_at: float
+
+    def matches(self, current: SecretState, *, now: float) -> bool:
+        if not math.isfinite(now) or not math.isfinite(self.observed_at) or now < self.observed_at:
+            return False
+        if self.state.model_dump(exclude={'audit'}) != current.model_dump(exclude={'audit'}):
+            return False
+        for reference in self.state.references:
+            if (reference.revoked_at is None and reference.expires_at is not None
+                    and (not math.isfinite(reference.expires_at)
+                         or self.observed_at < reference.expires_at <= now)):
                 return False
         return True

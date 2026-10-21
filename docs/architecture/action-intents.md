@@ -162,7 +162,7 @@ fence when security enforcement is configured; absent collections are locked
 without creating them. Shared-namespace changes conservatively require read-only
 reconciliation, even when a change ultimately concerns another object.
 
-Identity is the narrow exception to timestamp-revision equality: every checkpoint
+Identity is one narrow exception to timestamp-revision equality: every checkpoint
 samples canonical identity state and the actual writer compares its selected,
 locked identity row. Only session `last_seen_at` and service-token `last_used_at`
 are ignored. A live session's idle deadline may extend monotonically, but the
@@ -175,6 +175,15 @@ cached allow, persistent identity schema, or permission to skip fresh authority
 and assignment checks. GitLab verification propagates typed admission failure so
 the originating receipt records the actual blocker rather than claiming a
 provider-state mismatch without a provider read.
+
+Credential metadata has a separate narrow exception: compare the exact canonical
+`SecretState` excluding only its `audit` list. Slack credential-use audit appends
+cannot invalidate unrelated readiness admission. All references, their order,
+ACLs, scope, owner, backend, rotation, revocation and expiry remain exact; a sampled
+live expiry still bounds the checkpoint. The successful writer decodes its locked
+secret row for this comparison and still checks current credential use permission
+and active status. This observation neither caches authorization nor excludes any
+other settlement namespace from its existing fence.
 
 Security refresh evaluates a specific observed intent security snapshot. Its
 conditional write compares that exact policy and decision under the intent row
