@@ -4709,9 +4709,15 @@ class TurnExecutionService:
             previous = await asyncio.to_thread(self._assignment_record, previous_assignment_id)
             previous_runtime = getattr(previous, "runtime_binding", None)
             previous_scope = getattr(previous, "repository_scope", None)
-            if previous_scope is not None and previous_runtime is not None and (
+            # A terminal failed bootstrap may never have resumed the native
+            # session. Its requested scope is not the session's custody; leave
+            # that restoration to the existing transactional pre-resume hook.
+            if (getattr(previous, "status", None) in {
+                AssignmentStatus.PENDING, AssignmentStatus.CLAIMED,
+                AssignmentStatus.RUNNING, AssignmentStatus.LOST,
+            } and previous_scope is not None and previous_runtime is not None and (
                 previous_runtime.provider_id, previous_runtime.runtime_id
-            ) == (runtime_binding.provider_id, runtime_binding.runtime_id):
+            ) == (runtime_binding.provider_id, runtime_binding.runtime_id)):
                 requested_writable = (tuple(writable_repository_ids)
                     or ((explicit_repository_id,) if explicit_repository_id else
                         tuple(previous_scope.writable_repository_ids)))

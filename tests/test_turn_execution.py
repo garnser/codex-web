@@ -3308,6 +3308,23 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         manager.complete.assert_awaited_once()
         self.assertEqual([item[0] for item in order], ["cleanup", "prepare", "rebind"])
 
+    async def test_terminal_unresumed_wrong_scope_does_not_block_original_custody_restoration(self):
+        for status in (AssignmentStatus.CANCELLED, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED):
+            with self.subTest(status=status):
+                service, _, _, order, _, kwargs = await self._rebind(fresh=True)
+                failed = service._assignment_record("old")
+                # The latest bootstrap requested another repository but never
+                # resumed; native session custody still belongs to repository.
+                failed.repository_scope = RepositoryExecutionScope(
+                    organization_id="local", workspace_id="default", project_id="p1",
+                    writable_repository_ids=("never-resumed-docs",), source=RepositoryTargetSource.EXPLICIT)
+                failed.resource_ids = ("never-resumed-docs",)
+                failed.status = status
+                failed.lease = None
+                kwargs["writable_repository_ids"] = ("repository",)
+                await service._supersede_thread_bootstrap(**kwargs)
+                self.assertEqual([item[0] for item in order], ["cleanup", "prepare", "rebind"])
+
     async def test_different_runtime_keeps_its_existing_fresh_session_path(self):
         service, _, manager, order, _, kwargs = await self._rebind(fresh=True)
         previous = service._assignment_record("old")
