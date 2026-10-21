@@ -72,3 +72,91 @@ class ProcedureAssignmentEvidenceTests(unittest.TestCase):
         self.assertEqual(current.procedure_discoveries, discoveries[:64])
         self.assertEqual(current.lease, claimed.lease)
         self.assertEqual(current.fence, claimed.fence)
+
+    def _claimed_with_discovery(self):
+        assignment = self._assignment()
+        claimed = self.service.claim(self.worker.id, AssignmentClaimRequest(lease_seconds=30),
+            actor=self.worker_actor, assignment_id=assignment.id)
+        discovery = ProcedureDiscovery(actor_identity_id=self.admin.identity_id,
+            organization_id='local', workspace_id='default', project_id='home',
+            resource_ids=('repo-1',), operation='repository.read', context_checksum='same-context',
+            evaluated_at=1, outcome='no_match', policy_source='canonical:existing-policy', policy_allows=True)
+        self.service.record_procedure_discovery(assignment.id, discovery,
+            expected_fence=claimed.fence, actor=self.admin)
+        return claimed, discovery
+
+    def test_adjacent_identical_checkpoints_retain_original_evidence_and_timestamp(self):
+        claimed, discovery = self._claimed_with_discovery()
+        before = self.service.store.assignment(claimed.id)
+        for evaluated_at in range(2, 80):
+            current = self.service.record_procedure_discovery(claimed.id,
+                discovery.model_copy(update={'evaluated_at':evaluated_at}),
+                expected_fence=claimed.fence, actor=self.admin)
+        self.assertEqual(current, before)
+        self.assertEqual(current.procedure_discoveries, (discovery,))
+
+    def test_identical_at_capacity_is_allowed_but_every_semantic_change_still_refuses(self):
+        claimed, discovery = self._claimed_with_discovery()
+        for index in range(1, 64):
+            discovery = discovery.model_copy(update={'context_checksum':f'context-{index}'})
+            self.service.record_procedure_discovery(claimed.id, discovery,
+                expected_fence=claimed.fence, actor=self.admin)
+        before = self.service.store.assignment(claimed.id)
+        updated = self.service.record_procedure_discovery(claimed.id,
+            discovery.model_copy(update={'evaluated_at':99}),
+            expected_fence=claimed.fence, actor=self.admin)
+        self.assertEqual(updated, before)
+        changes = [{'context_checksum':'different'}, {'actor_identity_id':'different-requester'},
+                   {'outcome':'failed'}, {'policy_source':'changed'}, {'policy_allows':False},
+                   {'resource_ids':('repo-2',)}, {'operation':'repository.write'},
+                   {'blockers':('changed',)}, {'supporting_sources':('changed',)},
+                   {'capability_sources':('changed',)}, {'instruction_checksum':'different'}]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ProcedureHistoryExhaustedError):
+                self.service.record_procedure_discovery(claimed.id, discovery.model_copy(update=change),
+                    expected_fence=claimed.fence, actor=self.admin)
+        self.assertEqual(self.service.store.assignment(claimed.id), before)
+
+    def test_nonadjacent_repeat_and_changed_context_both_append(self):
+        claimed, discovery = self._claimed_with_discovery()
+        changed = discovery.model_copy(update={'context_checksum':'changed'})
+        self.service.record_procedure_discovery(claimed.id, changed,
+            expected_fence=claimed.fence, actor=self.admin)
+        current = self.service.record_procedure_discovery(claimed.id, discovery,
+            expected_fence=claimed.fence, actor=self.admin)
+        self.assertEqual(current.procedure_discoveries, (discovery, changed, discovery))
+
+    def test_duplicate_never_bypasses_current_requester_fence_scope_status_or_lease(self):
+        from codex_web.execution_workers import AssignmentStatus
+        claimed, discovery = self._claimed_with_discovery()
+        before = self.service.store.assignment(claimed.id)
+        with self.assertRaises(AuthorizationError):
+            self.service.record_procedure_discovery(claimed.id, discovery,
+                expected_fence=claimed.fence, actor=self.worker_actor)
+        with self.assertRaises(WorkerLeaseError):
+            self.service.record_procedure_discovery(claimed.id, discovery,
+                expected_fence=claimed.fence+1, actor=self.admin)
+        with self.assertRaises(AuthorizationError):
+            self.service.record_procedure_discovery(claimed.id,
+                discovery.model_copy(update={'project_id':'changed'}),
+                expected_fence=claimed.fence, actor=self.admin)
+        for change in [{'lease':None},
+                       {'lease':claimed.lease.model_copy(update={'expires_at':0})},
+                       {'status':AssignmentStatus.CANCELLED},
+                       {'project_id':'changed'}]:
+            with self.subTest(change=change):
+                def mutate(state):
+                    item = state.assignments[0]
+                    for key, value in change.items():
+                        setattr(item, key, value)
+                    return state
+                self.service.store.update_assignment(self.worker.id, claimed.id, mutate)
+                expected_error = AuthorizationError if 'project_id' in change else WorkerLeaseError
+                with self.assertRaises(expected_error):
+                    self.service.record_procedure_discovery(claimed.id, discovery,
+                        expected_fence=claimed.fence, actor=self.admin)
+                def restore(state):
+                    state.assignments[0] = before.model_copy(deep=True)
+                    return state
+                self.service.store.update_assignment(self.worker.id, claimed.id, restore)
+        self.assertEqual(self.service.store.assignment(claimed.id), before)

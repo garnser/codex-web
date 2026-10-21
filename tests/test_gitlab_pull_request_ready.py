@@ -6,6 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from urllib.parse import quote
+from unittest.mock import patch
 
 import httpx
 
@@ -14,7 +15,7 @@ from codex_web.definitions import DefinitionPublishRequest
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
 from codex_web.resources import ResourceAlias, ResourceUpdate
 from codex_web.secret_backends import LocalFileSecretBackend
-from codex_web.secrets import SecretCreate
+from codex_web.secrets import SecretCreate, SecretRotate
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.control_plane_broker import AssignmentBoundControlPlaneBroker
@@ -138,6 +139,169 @@ class GitLabPullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         _, _, again = await self.submit()
         self.assertEqual(body['item']['id'], again['item']['id'])
         self.assertEqual(sum(method=='PUT' for method,_ in self.calls), 1)
+
+    async def test_ready_at_last_history_slot_revalidates_without_duplicate_exhaustion(self):
+        from codex_web.procedure_discovery import ProcedureDiscovery
+        original = []
+        for index in range(63):
+            discovery = ProcedureDiscovery(actor_identity_id=self.admin.identity_id,
+                organization_id=self.admin.organization_id, workspace_id=self.admin.workspace_id,
+                project_id=self.assignment.project_id, resource_ids=(self.target.id,),
+                operation='repository.read', context_checksum=f'preserved-{index}', evaluated_at=1,
+                outcome='no_match', policy_source='canonical:fixture', policy_allows=True)
+            self.workers.record_procedure_discovery(self.assignment.id, discovery,
+                expected_fence=self.assignment.fence, actor=self.admin)
+            original.append(discovery)
+        with patch.object(self.intents.procedure_discovery, 'discover',
+                wraps=self.intents.procedure_discovery.discover) as discover:
+            status, _, body = await self.submit(key='ready-last-history-slot')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'succeeded', body)
+        self.assertGreater(discover.call_count, 5)
+        current = self.workers.store.assignment(self.assignment.id)
+        self.assertEqual(len(current.procedure_discoveries), 64)
+        self.assertEqual(current.procedure_discoveries[:63], tuple(original))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        # The real adapter reads/rechecks repeatedly before and after mutation;
+        # all those checkpoints still run, without consuming redundant history.
+        self.assertGreaterEqual(self.pr_reads, 5)
+        self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
+
+    def _ready_browser_session(self):
+        from codex_web.identity import AuthenticationAssurance
+        return self.identity.create_session(identity_id=self.admin.identity_id,
+            scope=self.admin.tenant, assurance=AuthenticationAssurance.LOCAL_TRUSTED)
+
+    async def test_session_touches_through_verification_and_writer_guard_do_not_deny_ready(self):
+        session = self._ready_browser_session()
+        admission = self.intents.execution.procedure_admission
+        settlement = self.intents._ready_settlement_guard
+        touches = []
+        def touch():
+            self.identity.authenticate_session(session.session_token, touch=True)
+            touches.append(True)
+        async def checkpoint(*args, **kwargs):
+            result = await admission(*args, **kwargs)
+            if args[-1] == 'verify':
+                touch()
+            return result
+        def writer_guard(*args, **kwargs):
+            # A browser poll after admission but before the actual writer takes
+            # its canonical locks must also compare the locked semantic state.
+            touch()
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents.execution, 'procedure_admission', checkpoint), \
+             patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            status, _, body = await self.submit(key='browser-session-touches')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'succeeded', body)
+        self.assertGreater(len(touches), 3)
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
+
+    async def test_secret_audit_appends_through_checkpoint_and_writer_do_not_deny_ready(self):
+        slack = self.secret_broker.create(SecretCreate(name='Slack audit fixture', value='offline',
+            provider='slack'), actor=self.admin)
+        admission = self.intents.execution.procedure_admission
+        settlement = self.intents._ready_settlement_guard
+        appends = []
+        def audit():
+            self.secret_broker._audit(slack, self.admin, 'slack.post_message', 'allowed')
+            appends.append(True)
+        async def checkpoint(*args, **kwargs):
+            result = await admission(*args, **kwargs)
+            if args[-1] == 'verify':
+                audit()
+            return result
+        def writer_guard(*args, **kwargs):
+            audit()
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents.execution, 'procedure_admission', checkpoint), \
+             patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            _, _, body = await self.submit(key='slack-secret-audit-appends')
+        self.assertEqual(body['item']['status'], 'succeeded', body)
+        self.assertGreater(len(appends), 3)
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
+        self.assertGreaterEqual(len(self.secret_broker.store.load().audit), len(appends))
+
+    async def test_credential_rotation_during_checkpoint_still_denies(self):
+        await self._reject_changed_verification_identity(lambda session:
+            self.secret_broker.rotate(self.secret.id, SecretRotate(value='rotated-fixture'),
+                                      actor=self.admin))
+
+    async def test_actual_credential_revocation_before_writer_still_denies(self):
+        settlement = self.intents._ready_settlement_guard
+        revoked = []
+        def writer_guard(*args, **kwargs):
+            if not revoked:
+                self.secret_broker.revoke(self.secret.id, actor=self.admin, reason='before-writer')
+                revoked.append(True)
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            _, _, body = await self.submit(key='secret-revoked-before-writer')
+        self.assertEqual(body['item']['status'], 'requires_reconciliation', body)
+        verification = self.intents.history(body['item']['id'], self.admin)['verifications'][-1]
+        self.assertFalse(verification['verified'])
+        self.assertIn('Readiness admission changed at settlement', str(verification['findings']))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    async def _reject_changed_verification_identity(self, change):
+        session = self._ready_browser_session()
+        admission = self.intents.execution.procedure_admission
+        changed = []
+        async def checkpoint(*args, **kwargs):
+            result = await admission(*args, **kwargs)
+            if args[-1] == 'verify' and not changed:
+                change(session)
+                changed.append(True)
+            return result
+        with patch.object(self.intents.execution, 'procedure_admission', checkpoint):
+            status, _, body = await self.submit(key='changed-verification-identity')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'requires_reconciliation', body)
+        self.assertFalse(self.pr['draft'])  # Do not erase the actual provider write.
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        verification = self.intents.history(body['item']['id'], self.admin)['verifications'][-1]
+        self.assertFalse(verification['verified'])
+        self.assertIn('ActionRequirementError', str(verification['findings']))
+        self.assertNotIn('GitLab provider state differs', str(verification))
+        return verification
+
+    async def test_session_revocation_retains_typed_admission_denial_after_write(self):
+        verification = await self._reject_changed_verification_identity(
+            lambda session: self.identity.revoke_session(session.session_id, reason='fixture'))
+        self.assertIn('Readiness admission changed during checkpoint', str(verification['findings']))
+
+    async def test_shortened_idle_deadline_remains_meaningful_even_before_expiry(self):
+        def shorten(session):
+            def update(state):
+                item = next(item for item in state.sessions if item.id == session.session_id)
+                item.idle_expires_at -= 1
+                return state
+            self.identity.store.update(update)
+        await self._reject_changed_verification_identity(shorten)
+
+    async def test_session_revocation_after_checkpoint_is_rejected_under_writer_lock(self):
+        session = self._ready_browser_session()
+        settlement = self.intents._ready_settlement_guard
+        revoked = []
+        def writer_guard(*args, **kwargs):
+            if not revoked:
+                self.identity.revoke_session(session.session_id, reason='fixture-before-writer')
+                revoked.append(True)
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            _, _, body = await self.submit(key='session-revoked-before-actual-write')
+        self.assertEqual(body['item']['status'], 'requires_reconciliation', body)
+        verification = self.intents.history(body['item']['id'], self.admin)['verifications'][-1]
+        self.assertFalse(verification['verified'])
+        self.assertIn('Readiness admission changed at settlement', str(verification['findings']))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    async def test_verification_fence_change_still_denies_after_provider_write(self):
+        await self._reject_changed_verification_identity(
+            lambda session: self.change_assignment(fence=self.assignment.fence+1))
 
     async def test_already_ready_reads_only(self):
         self.pr.update(draft=False, title='Preserve real title')

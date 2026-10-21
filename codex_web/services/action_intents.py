@@ -68,7 +68,9 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CodeHostActionContract,
 )
-from codex_web.services.code_host_readiness import ReadyExecution, readiness_execution, readiness_binding_checksum
+from codex_web.services.code_host_readiness import (
+    ReadyExecution, ReadyIdentityObservation, ReadySecretObservation, readiness_execution, readiness_binding_checksum,
+)
 from codex_web.services.code_host_continuation import (
     ChangeRequestContinuation, continuation_context, request_identity,
 )
@@ -1780,6 +1782,54 @@ class ActionIntentService:
             domains.update({name: () if existing[name] else (None,) for name in names})
         return domains
 
+    def _ready_admission_snapshot(self):
+        identity_namespace = self.identity.store.namespace
+        secret_store = getattr(getattr(self.execution, "secret_broker", None), "store", None)
+        pins = {}
+        for name in self._ready_settlement_domains():
+            if name == identity_namespace:
+                observed_at = time.time()
+                pins[name] = ReadyIdentityObservation(self.identity.store.load(), observed_at)
+            elif secret_store is not None and name == secret_store.namespace:
+                observed_at = time.time()
+                pins[name] = ReadySecretObservation(secret_store.load(), observed_at)
+            else:
+                pins[name] = self.store.store.namespace_revision(name)
+        return pins
+
+    def _ready_admission_unchanged(self, pins, *, documents=None):
+        if set(pins) != set(self._ready_settlement_domains()):
+            return False
+        identity_namespace = self.identity.store.namespace
+        secret_store = getattr(getattr(self.execution, "secret_broker", None), "store", None)
+        for name, pin in pins.items():
+            if name == identity_namespace:
+                if not isinstance(pin, ReadyIdentityObservation):
+                    return False
+                try:
+                    # The actual successful writer has this singleton selected
+                    # and locked; compare its supplied row, never an unlocked
+                    # observation after the checkpoint.
+                    current = (self.identity.store._decode(documents[name].get(None))
+                               if documents is not None else self.identity.store.load())
+                    if not pin.matches(current, now=time.time()):
+                        return False
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise ActionRequirementError("Readiness current identity admission is unavailable") from exc
+            elif secret_store is not None and name == secret_store.namespace:
+                if not isinstance(pin, ReadySecretObservation):
+                    return False
+                try:
+                    current = (secret_store._decode(documents[name].get(None))
+                               if documents is not None else secret_store.load())
+                    if not pin.matches(current, now=time.time()):
+                        return False
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise ActionRequirementError("Readiness current credential admission is unavailable") from exc
+            elif self.store.store.namespace_revision(name) != pin:
+                return False
+        return True
+
     def _ready_settlement_guard(self, intent, actor, admission_pins):
         """Recheck origin and exact Definition pins under the shared writer lock.
 
@@ -1799,8 +1849,7 @@ class ActionIntentService:
         if not admission_pins or set(admission_pins) != set(domains):
             raise ActionRequirementError("Readiness has no completed admission checkpoint")
         def guard(documents):
-            if any(self.store.store.namespace_revision(name) != revision
-                   for name, revision in admission_pins.items()):
+            if not self._ready_admission_unchanged(admission_pins, documents=documents):
                 raise ActionRequirementError("Readiness admission changed at settlement; reconcile read-only")
             raw = documents[self.store.records_namespace].get("intents:" + intent.id)
             current = ActionIntent.model_validate(raw) if raw else None
@@ -1897,11 +1946,8 @@ class ActionIntentService:
                 raise ActionRequirementError("Readiness verification credential is inactive")
             return binding, provider, definition
         admission_pins = {}
-        def revisions():
-            return {name: self.store.store.namespace_revision(name)
-                    for name in self._ready_settlement_domains()}
         async def checkpoint():
-            before = await asyncio.to_thread(revisions)
+            before = await asyncio.to_thread(self._ready_admission_snapshot)
             binding, provider, definition = await asyncio.to_thread(validate)
             if self.execution.procedure_admission is None:
                 raise ActionRequirementError("Readiness verification procedure admission is unavailable")
@@ -1911,7 +1957,7 @@ class ActionIntentService:
                     and current.procedure_discoveries[-1].selected):
                 raise ActionRequirementError("Readiness selected procedure requires the canonical procedure interpreter")
             await asyncio.to_thread(validate)
-            if await asyncio.to_thread(revisions) != before:
+            if not await asyncio.to_thread(self._ready_admission_unchanged, before):
                 raise ActionRequirementError("Readiness admission changed during checkpoint")
             admission_pins.clear()
             admission_pins.update(before)
