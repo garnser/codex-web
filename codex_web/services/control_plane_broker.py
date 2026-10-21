@@ -602,6 +602,20 @@ class ControlPlaneBrokerService:
                         "expected_head_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
                         "expected_base_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
                         "expected_base_ref": {"type": "string"}}}
+            if item.id == "repository.pull-request.merge":
+                result["request_body"]["parameters"] = {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["pull_request_number"],
+                    "properties": {
+                        "pull_request_number": {"type": "integer", "minimum": 1},
+                        "merge_method": {"type": "string", "enum": ["merge", "squash", "rebase"],
+                            "default": "squash",
+                            "description": "Provider constraints still apply; GitLab rejects rebase-and-merge."},
+                        "expected_head_sha": {"type": "string", "pattern": "^[a-fA-F0-9]{40}$",
+                            "description": "Optional exact head precondition; obtain from a fresh authorized read."},
+                    },
+                    "description": "Merge parameters only. expected_base_sha and expected_base_ref belong to readiness, not merge.",
+                }
             if item.id == "repository.branch.publish":
                 result["request_body"]["parameters"] = {
                     "type": "object",
