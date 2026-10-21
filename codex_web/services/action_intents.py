@@ -2651,7 +2651,8 @@ class ActionIntentService:
         self.store.update(apply)
         return message
 
-    def read_only_reconciliation_scope(self, intent, payload, worker, *, assignment=None):
+    def read_only_reconciliation_scope(self, intent, payload, worker, *, assignment=None,
+                                       include_normal_budget=False):
         """A recovery reservation is never a provider-write or origin-transfer grant."""
         from codex_web.procedure_reconciliation import ReadOnlyReconciliationScope, current_reconciliation_scope
         self._require_worker(worker)
@@ -2665,7 +2666,9 @@ class ActionIntentService:
         # Preserve ordinary reconciliation semantics below the normal budget;
         # recovery must not turn optional verification into a new early error.
         retained = self.execution_workers.store.assignment(origin.assignment_id)
-        if retained is None or len(retained.procedure_discoveries) < 64:
+        previous = current_reconciliation_scope()
+        if (retained is None or len(retained.procedure_discoveries) < 64
+                and not include_normal_budget and previous is None):
             return None
         requester = self._requester_actor(intent)
         current = self._ready_assignment(intent.execution_id, intent.request, requester, origin.assignment_id)
@@ -2676,7 +2679,6 @@ class ActionIntentService:
                 or (assignment is not None and (assignment.id, assignment.execution_id, assignment.fence)
                     != (current.id, current.execution_id, current.fence))):
             raise ActionRequirementError('Read-only reconciliation requires unchanged originating custody')
-        previous = current_reconciliation_scope()
         if previous is not None:
             if (previous.intent_id, previous.assignment_id, previous.fence, previous.worker_id) != (
                     intent.id, current.id, current.fence, current.assigned_worker_id):

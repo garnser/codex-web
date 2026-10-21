@@ -1,5 +1,6 @@
 """Real READY receipts, canonical authority and append-only post-turn recovery."""
 import asyncio
+import threading
 import unittest
 from functools import partial
 from types import SimpleNamespace
@@ -72,6 +73,37 @@ class PostTurnReadinessTests(unittest.IsolatedAsyncioTestCase):
         history = self.runtime.intents.history(self.intent_id, self.admin)
         self.assertTrue(history['verifications'][-1]['verified'])
 
+    async def test_normal_budget_callback_crosses_63_without_rewriting_prefix(self):
+        await self.prepare()
+        prefix = self.originals[:63]
+        self.change_assignment(procedure_discoveries=prefix)
+        self.assertTrue(await self.settle())
+        current = self.workers.store.assignment(self.assignment.id)
+        self.assertEqual(current.procedure_discoveries[:63], prefix)
+        self.assertGreater(len(current.procedure_discoveries), 63)
+        from codex_web.procedure_reconciliation import RECOVERY_PREFIX
+        self.assertTrue(any(value.startswith(RECOVERY_PREFIX)
+            for value in current.procedure_discoveries[63].supporting_sources))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    async def test_early_marked_attempts_share_later_exhaustion_limit(self):
+        await self.prepare()
+        prefix = self.originals[:2]
+        self.change_assignment(procedure_discoveries=prefix)
+        self.pr['sha'] = 'c' * 40
+        for index in range(4):
+            self.active.turn_id = 'early-terminal-' + str(index)
+            self.assertFalse(await self.settle())
+        current = self.workers.store.assignment(self.assignment.id)
+        self.assertLess(len(current.procedure_discoveries), 64)
+        self.assertEqual(current.procedure_discoveries[:2], prefix)
+        calls = len(self.calls)
+        self.active.turn_id = 'overflow-terminal'
+        self.assertFalse(await self.settle())
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.workers.store.assignment(self.assignment.id).procedure_discoveries,
+            current.procedure_discoveries)
+
     async def test_duplicate_concurrent_and_reopened_callback_preserves_failed_verification(self):
         await self.prepare()
         self.pr['sha'] = 'c' * 40
@@ -120,6 +152,17 @@ class PostTurnReadinessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_terminal_runtime_callback_advances_actual_canonical_verification(self):
         await self.prepare()
+        runtime, active = self.terminal_runtime()
+        runtime._schedule_assignment_completion(active, succeeded=True,
+            message={'method': 'turn/completed', 'params': {'turn': {'id': active.turn_id}}})
+        self.assertIn(active.thread_id, runtime.thread_completion_tasks)
+        await asyncio.gather(*runtime.assignment_completion_tasks.values())
+        self.assertEqual(runtime.thread_completion_tasks, {})
+        self.assertEqual(self.runtime.intents.store.get(self.intent_id).status, ActionIntentStatus.SUCCEEDED)
+        self.assertTrue(self.runtime.intents.history(self.intent_id, self.admin)['verifications'][-1]['verified'])
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    def terminal_runtime(self):
         host = SimpleNamespace(_append_bot_event=self.events.append)
         runtime = TurnExecutionService(host)
         manager = SimpleNamespace(local_worker=SimpleNamespace(worker_actor=self.runtime.worker_actor),
@@ -132,14 +175,56 @@ class PostTurnReadinessTests(unittest.IsolatedAsyncioTestCase):
             execution_workspace_id=self.assignment.execution_workspace_id)
         runtime.post_turn_readiness = self.callback.settle
         active = ActiveThreadTurn(**vars(self.active), started_at=1, updated_at=1)
+        # No native turn is active during this canonical completion boundary.
+        runtime._active_turn = lambda _thread: None
+        return runtime, active
+
+    async def delayed_writer(self, *, cancel):
+        await self.prepare()
+        if not cancel:
+            def shorten(state):
+                state.intents = [row.model_copy(update={'timeout_seconds': 0.03})
+                    if row.id == self.intent_id else row for row in state.intents]
+                return state
+            self.runtime.intents.store.update(shorten, intent_ids=(self.intent_id,))
+        entered, release = threading.Event(), threading.Event()
+        def write_after_delay():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('Test did not release the owned synchronous operation')
+            self.sqlite.put('post-turn-delayed-write', {'unexpected': True})
+        async def delayed(*_args, **_kwargs):
+            await asyncio.to_thread(write_after_delay)
+            return self.runtime.intents.store.get(self.intent_id)
+        self.runtime.intents.reconcile = delayed
+        runtime, active = self.terminal_runtime()
         runtime._schedule_assignment_completion(active, succeeded=True,
             message={'method': 'turn/completed', 'params': {'turn': {'id': active.turn_id}}})
-        self.assertIn(active.thread_id, runtime.thread_completion_tasks)
-        await asyncio.gather(*runtime.assignment_completion_tasks.values())
-        self.assertEqual(runtime.thread_completion_tasks, {})
-        self.assertEqual(self.runtime.intents.store.get(self.intent_id).status, ActionIntentStatus.SUCCEEDED)
-        self.assertTrue(self.runtime.intents.history(self.intent_id, self.admin)['verifications'][-1]['verified'])
-        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        completion = runtime.thread_completion_tasks[active.thread_id]
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            if cancel:
+                completion.cancel()
+            await asyncio.sleep(0.07)
+            self.assertFalse(completion.done())
+            self.assertTrue(runtime.thread_is_active(active.thread_id))
+            self.assertIsNone(self.sqlite.get('post-turn-delayed-write'))
+        finally:
+            release.set()
+            if cancel:
+                with self.assertRaises(asyncio.CancelledError):
+                    await completion
+            else:
+                await completion
+        self.assertFalse(runtime.thread_is_active(active.thread_id))
+        self.assertIsNone(self.sqlite.get('post-turn-delayed-write'))
+        self.assertNotEqual(self.runtime.intents.store.get(self.intent_id).status, ActionIntentStatus.SUCCEEDED)
+
+    async def test_timeout_holds_native_admission_until_actual_storage_owner_settles(self):
+        await self.delayed_writer(cancel=False)
+
+    async def test_cancellation_holds_native_admission_until_actual_storage_owner_settles(self):
+        await self.delayed_writer(cancel=True)
 
     async def test_revoked_provider_credential_cannot_be_recovered_by_callback(self):
         await self.prepare()

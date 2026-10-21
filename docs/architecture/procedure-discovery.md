@@ -329,9 +329,13 @@ current authority, credential references, security and verification transactions
 It creates no model turn, credential grant, provider mutation, callback queue or
 separate recovery registry. An unresolved origin remains protected against
 voluntary retirement; a callback refusal does not claim successful verification.
+Timeout or cancellation cancels the cooperative storage budget and joins the
+actual reconciliation owner before releasing the thread completion barrier.
 
-Only already-attempted, unresolved READY actions with exhausted normal discovery
-history are candidates. The existing four-attempt/eight-decision reserve applies.
+Only already-attempted, unresolved READY actions are candidates. Before the normal
+64-entry limit, callback discoveries consume normal history slots. The same
+four-attempt/eight-decision ceiling counts marked callback attempts on both sides
+of that boundary; unmarked retained observations remain unchanged.
 A server-derived hash of the terminal turn, originating assignment/fence and
 intent selects the reserve marker. The existing append-only discovery ledger
 prevents the same callback, including re-delivery after a service restart, from

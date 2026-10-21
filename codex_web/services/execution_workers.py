@@ -1170,10 +1170,13 @@ class ExecutionWorkerService:
             if (item.organization_id, item.workspace_id, item.project_id) != (
                 discovery.organization_id, discovery.workspace_id, discovery.project_id):
                 raise AuthorizationError("procedure discovery scope differs from assignment")
-            from codex_web.procedure_reconciliation import current_reconciliation_scope, NORMAL_PROCEDURE_HISTORY
+            from codex_web.procedure_reconciliation import current_reconciliation_scope
             recovery = current_reconciliation_scope()
-            if recovery is not None and len(item.procedure_discoveries) >= NORMAL_PROCEDURE_HISTORY:
+            if recovery is not None:
                 return self._record_reconciliation_discovery(state, item, discovery, recovery)
+            from codex_web.procedure_reconciliation import RECOVERY_PREFIX
+            if any(value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
+                raise WorkerLeaseError('fresh discovery cannot supply recovery provenance')
             # Every checkpoint above revalidates current custody. Only adjacent
             # identical evidence is redundant; evaluation time alone is not a
             # new authority/context decision. Preserve the original observation.
@@ -1218,8 +1221,10 @@ class ExecutionWorkerService:
         if any(value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
             raise WorkerLeaseError('fresh discovery cannot supply recovery provenance')
         attempts = {}
-        for previous in item.procedure_discoveries[NORMAL_PROCEDURE_HISTORY:]:
+        for index, previous in enumerate(item.procedure_discoveries):
             markers = [value for value in previous.supporting_sources if value.startswith(RECOVERY_PREFIX)]
+            if index < NORMAL_PROCEDURE_HISTORY and not markers:
+                continue
             marker_parts = markers[0][len(RECOVERY_PREFIX):].split(':', 1) if len(markers) == 1 else ()
             if (len(marker_parts) != 2 or len(marker_parts[0]) != 32
                     or any(c not in '0123456789abcdef' for c in marker_parts[0]) or not marker_parts[1]):

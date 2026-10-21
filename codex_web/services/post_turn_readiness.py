@@ -10,9 +10,10 @@ import time
 
 from codex_web.action_intents import ActionIntentReconcileRequest, ActionIntentStatus
 from codex_web.procedure_reconciliation import (
-    NORMAL_PROCEDURE_HISTORY, MAX_RECOVERY_ATTEMPTS, read_only_reconciliation,
+    MAX_RECOVERY_ATTEMPTS, read_only_reconciliation,
 )
 from codex_web.services.action_providers import ActionRequirementError
+from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget
 
 
 def require_post_turn_admission(assignment, intent, actor, *, controller,
@@ -77,8 +78,6 @@ class PostTurnReadinessService:
         if ((current.id, current.execution_id, current.assigned_worker_id, current.fence)
                 != (active.assignment_id, active.execution_id, active.worker_id, active.fence)):
             raise ActionRequirementError('Post-turn readiness custody changed')
-        if len(current.procedure_discoveries) < NORMAL_PROCEDURE_HISTORY:
-            return False
         self.intents._require_worker(actor)
         await asyncio.to_thread(self.intents.identity.actor_for_identity,
             actor.identity_id, scope=actor.tenant)
@@ -93,7 +92,7 @@ class PostTurnReadinessService:
                 continue
             payload = ActionIntentReconcileRequest(retry_if_idempotent=False)
             scope = await asyncio.to_thread(self.intents.read_only_reconciliation_scope,
-                intent, payload, actor, assignment=current)
+                intent, payload, actor, assignment=current, include_normal_budget=True)
             if scope is None:
                 continue
             # Native terminal identity is supplied only by the runtime engine.
@@ -102,7 +101,7 @@ class PostTurnReadinessService:
             scope = replace(scope, id=hashlib.sha256(identity.encode()).hexdigest()[:32])
             current = await asyncio.to_thread(workers.store.assignment, current.id)
             if any(scope.marker in row.supporting_sources
-                    for row in current.procedure_discoveries[NORMAL_PROCEDURE_HISTORY:]):
+                    for row in current.procedure_discoveries):
                 continue
             # Pause applies to admission. Like other already-admitted finite
             # worker operations, an in-flight read-only callback may finish.
@@ -110,9 +109,7 @@ class PostTurnReadinessService:
             self.append_event({'type': 'post_turn_readiness_started',
                 'assignment_id': current.id, 'turn_id': active.turn_id, 'intent_id': intent.id})
             try:
-                async with asyncio.timeout(intent.timeout_seconds):
-                    with read_only_reconciliation(scope):
-                        result = await self.intents.reconcile(intent.id, payload, actor=actor)
+                result = await self._reconcile_owned(intent, payload, actor, scope)
                 settled = settled or result.status == ActionIntentStatus.SUCCEEDED
                 self.append_event({'type': 'post_turn_readiness_completed',
                     'assignment_id': current.id, 'turn_id': active.turn_id,
@@ -123,3 +120,41 @@ class PostTurnReadinessService:
                     'intent_id': intent.id, 'error_type': type(exc).__name__})
                 raise
         return settled
+
+    async def _reconcile_owned(self, intent, payload, actor, scope):
+        """A cancelled waiter cannot retire a still-running canonical writer."""
+        parent_budget = storage_operation_budget.get()
+        seconds = min(intent.timeout_seconds, parent_budget.remaining()
+            if parent_budget is not None else intent.timeout_seconds)
+        budget = StorageOperationBudget(seconds)
+
+        async def operation():
+            token = storage_operation_budget.set(budget)
+            try:
+                with read_only_reconciliation(scope):
+                    return await self.intents.reconcile(intent.id, payload, actor=actor)
+            finally:
+                storage_operation_budget.reset(token)
+
+        task = asyncio.create_task(operation(), name='ready-settlement-' + intent.id)
+        try:
+            done, _ = await asyncio.wait((task,), timeout=seconds)
+            if not done:
+                raise TimeoutError('Post-turn readiness operation deadline exceeded')
+            return task.result()
+        except BaseException:
+            # Existing store budgets follow asyncio.to_thread and check again
+            # before canonical commits. Stop subsequent operations, then join
+            # the actual owner; do not cancel its asyncio waiter and abandon a
+            # synchronous database writer behind a released admission barrier.
+            budget.cancelled.set()
+            while not task.done():
+                try:
+                    await asyncio.wait((task,))
+                except asyncio.CancelledError:
+                    budget.cancelled.set()
+                except Exception:
+                    break
+            if task.done() and not task.cancelled():
+                task.exception()  # Observe the real terminal outcome.
+            raise
