@@ -200,6 +200,44 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.complete(self.capture()), before)
         self.assertEqual(events(), original_events)
 
+    async def test_unsorted_multi_repository_resume_is_canonical_and_preserves_event(self):
+        from codex_web.resources import ResourceCreate, ResourceType
+        core = self.f.resources.create(ResourceCreate(resource_type=ResourceType.REPOSITORY,
+            name='Already admitted read-only Core context'), actor=self.actor)
+        self.f.resources.bind_project(project=self.f.project, resource_id=core.id, actor=self.actor)
+        resources = tuple(sorted((self.f.repository.id, core.id), reverse=True))
+        # Real admitted custody/lease rows, with matching predecessor scope.
+        # Assignment ordering is intentionally noncanonical, as in Data/Core.
+        for original in (self.f.workers.store.assignment(self.old.id), self.assignment):
+            changes = {'resource_ids': resources}
+            if original.repository_scope is not None:
+                changes['repository_scope'] = original.repository_scope.model_copy(
+                    update={'read_only_repository_ids': (core.id,)})
+            updated = original.model_copy(update=changes)
+            self.f.sqlite.record_apply(self.f.workers.store.assignment_namespace,
+                upserts={original.id: updated.model_dump(mode='json')})
+            if original.id == self.assignment.id:
+                self.assignment = updated
+        ws = self.f.workspaces.store.workspace(self.assignment.execution_workspace_id)
+        lease = self.f.workspaces.store.lease(ws.lease_id)
+        self.f.sqlite.record_apply(self.f.workspaces.store.lease_namespace,
+            upserts={lease.id: lease.model_copy(update={'resource_ids': resources}).model_dump(mode='json')})
+        self.request = self.request.model_copy(update={'resource_ids': resources})
+        current = self.complete(self.capture())
+        original_events = self.f.sqlite.record_items(self.f.workers.store.event_namespace)
+        for status in (AgentSessionStatus.READY, AgentSessionStatus.FAILED, AgentSessionStatus.CLOSED):
+            self.sessions.store.upsert(current.model_copy(update={
+                'status': status, 'failure_reason': 'actual provider failure' if status != AgentSessionStatus.READY else None}))
+            try:
+                recovered = self.complete(self.capture())
+            except AgentRuntimeError as exc:
+                self.fail(f"Equivalent canonical multi-repository custody must resume without an event collision: {exc}")
+            self.assertEqual(recovered.resource_ids, tuple(sorted(resources)))
+            self.assertEqual(recovered.status, AgentSessionStatus.READY)
+            self.assertEqual(self.f.sqlite.record_items(self.f.workers.store.event_namespace), original_events)
+            current = recovered
+        self.assertEqual(self.f.workers.store.assignment(self.assignment.id).resource_ids, resources)
+
     async def exercise_actual_resume_path(self, outcome, *, legacy_adoption=False, prior_changes=None, prior_missing=False):
         child, _ = await self.create()
         # This is an existing native thread being resumed after rollover, not
