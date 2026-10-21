@@ -108,6 +108,14 @@ Each BackupManifest retains:
 - autonomy-audit root/checkpoint present at backup time;
 - recovery-policy ID/version/fingerprint.
 
+Capture checks both current live audit integrity and the audit document in the
+exported StateStore snapshot through the same chain/checkpoint/signature verifier.
+The manifest's audit root and checkpoint come from that verified export, never
+from a later live tail. Valid concurrent appends or checkpoints cannot change the
+captured anchor; corruption in either the live audit or exported audit refuses
+capture before destination publication. The audit verifier uses records and
+checkpoints from one decoded state rather than separate live reads.
+
 Restore verification authenticates/decrypts the envelope, recomputes state
 checksum/count, checks exact StateStore schema compatibility, validates key
 references and verifies the backed-up autonomy-audit root against the root

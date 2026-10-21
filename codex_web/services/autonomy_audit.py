@@ -31,6 +31,7 @@ from codex_web.autonomy_audit import (
     AutonomyAuditMetrics,
     AutonomyAuditPayload,
     AutonomyAuditRecord,
+    AutonomyAuditState,
     AutonomyReliabilityPolicy,
     AutonomySafetySignal,
     AutonomySafetySignalCreate,
@@ -539,12 +540,13 @@ class AutonomyAuditService:
         self,
         partition: str,
         rows: list[AutonomyAuditRecord],
+        state: AutonomyAuditState,
     ) -> tuple[AutonomyAuditCheckpoint | None, str | None]:
         # Checkpoints are append-only. Preserve durable append order because
         # multiple checkpoints can intentionally anchor the same record sequence.
         checkpoints = [
             item
-            for item in self.store.load().checkpoints
+            for item in state.checkpoints
             if item.partition_id == partition
         ]
         previous_hash = GENESIS_HASH
@@ -585,6 +587,33 @@ class AutonomyAuditService:
         organization_id: str,
         workspace_id: str,
     ) -> AuditIntegrityResult:
+        return self._verify_state(
+            self.store.load(),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+
+    def verify_snapshot(
+        self,
+        document: Any,
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> AuditIntegrityResult:
+        """Verify one exported canonical audit document without reading live state."""
+        return self._verify_state(
+            AutonomyAuditStore._decode(document),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+
+    def _verify_state(
+        self,
+        state: AutonomyAuditState,
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> AuditIntegrityResult:
         partition = AutonomyAuditRecord.partition_for(
             organization_id,
             workspace_id,
@@ -592,7 +621,7 @@ class AutonomyAuditService:
         rows = sorted(
             (
                 item
-                for item in self.store.load().records
+                for item in state.records
                 if item.partition_id == partition
             ),
             key=lambda item: item.sequence,
@@ -601,6 +630,7 @@ class AutonomyAuditService:
             checkpoint, checkpoint_error = self._verify_checkpoints(
                 partition,
                 [],
+                state,
             )
             if checkpoint_error is not None:
                 return AuditIntegrityResult(
@@ -675,6 +705,7 @@ class AutonomyAuditService:
         checkpoint, checkpoint_error = self._verify_checkpoints(
             partition,
             rows,
+            state,
         )
         if checkpoint_error is not None:
             return AuditIntegrityResult(
