@@ -37,6 +37,45 @@ class TurnQueuePolicy:
         return len(self.queue(thread_id))
 
     @staticmethod
+    def work_item_queue_outcome(
+        items: list[QueuedTurn] | None,
+        *,
+        work_item_ref: str | None,
+        project_id: str,
+        message: str,
+        repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
+        read_only_repository_resource_ids: tuple[str, ...] = (),
+        handoff_requested_at: float | None = None,
+    ) -> str:
+        """Classify retained requests, without consuming them or proving delivery.
+
+        The canonical prompt includes the current artifact/result context. A
+        matching role or nonempty thread queue alone cannot identify that input.
+        Unknown/legacy entries fail closed and retain their original snapshots.
+        """
+        if not work_item_ref:
+            return "already_queued"
+        if items is None:
+            return "owner_queue_context_unavailable"
+        if not items:
+            return "owner_queue_context_changed"
+        for item in items:
+            if (
+                getattr(item, "work_item_ref", None) == work_item_ref
+                and getattr(item, "project_id", None) == project_id
+                and getattr(item, "message", None) == message
+                and getattr(item, "repository_resource_id", None) == repository_resource_id
+                and set(getattr(item, "writable_repository_resource_ids", ()) or ())
+                == set(writable_repository_resource_ids)
+                and set(getattr(item, "read_only_repository_resource_ids", ()) or ())
+                == set(read_only_repository_resource_ids)
+                and getattr(item, "handoff_requested_at", None) == handoff_requested_at
+            ):
+                return "already_queued"
+        return "owner_queue_context_mismatch"
+
+    @staticmethod
     def source_origin(source: str) -> str:
         while source.startswith(("queued:", "steer:")):
             source = source.split(":", 1)[1]

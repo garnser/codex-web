@@ -13,6 +13,7 @@ from codex_web.models import WorkItemState, WorkItemHandoffDelivery
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.services.turn_queue_policy import TurnQueuePolicy
 from codex_web.owner_routing import OwnerRoutingError
 
 
@@ -149,6 +150,7 @@ class WorkItemContinuityService:
         coordination_channel: str,
         revalidate_after_thread_replacement: bool = True,
         update_state: Callable[..., Any] | None = None,
+        thread_queue: Callable[[str], list[Any]] | None = None,
     ) -> None:
         self.policy = policy
         self.owner_routing = None
@@ -163,6 +165,7 @@ class WorkItemContinuityService:
         self.truncate_text = truncate_text
         self.thread_is_active = thread_is_active
         self.thread_queue_depth = thread_queue_depth
+        self.thread_queue = thread_queue
         self.thread_recently_active = thread_recently_active
         self.watchdog_dispatch_allowed = watchdog_dispatch_allowed
         self.record_watchdog_dispatch = record_watchdog_dispatch
@@ -427,6 +430,12 @@ class WorkItemContinuityService:
                             'bot_binding_id': binding.id})
             except OwnerRoutingError as exc:
                 blocked_reason, binding = str(exc), None
+        if blocked_reason is None and binding is not None and self.thread_queue_depth(binding.thread_id):
+            outcome = self._owner_queue_outcome(state, binding.thread_id)
+            metadata['queue_status'] = outcome
+            if outcome != 'already_queued':
+                blocked_reason = outcome
+                metadata['next_action'] = 'Inspect the retained queue and its original outcomes; an unrelated input does not deliver this Work Item.'
         if blocked_reason is not None or binding is None:
             return {
                 "eligible": False,
@@ -448,6 +457,20 @@ class WorkItemContinuityService:
         state: WorkItemState,
     ) -> tuple[str | None, tuple[str, ...]]:
         return work_item_repository_scope(state)
+
+    def _owner_queue_outcome(self, state: WorkItemState, thread_id: str) -> str:
+        if self.thread_queue is None:
+            return 'owner_queue_context_unavailable'
+        repository_id, writable_ids = self._dispatch_repository_scope(state)
+        outcome = TurnQueuePolicy.work_item_queue_outcome(
+            self.thread_queue(thread_id), work_item_ref=state.ref,
+            project_id=state.project_id, message=self.dispatch_text(state),
+            repository_resource_id=repository_id,
+            writable_repository_resource_ids=writable_ids,
+        )
+        # A concurrent drain is no proof that the previously observed input
+        # matched. Leave admission to a subsequent fresh canonical invocation.
+        return outcome
 
     @_routing_dispatch
     async def dispatch_structured_handoff(
@@ -768,7 +791,7 @@ class WorkItemContinuityService:
             }
         if self.thread_queue_depth(binding.thread_id) and not explicit_retry:
             return {
-                "status": "already_queued",
+                "status": self._owner_queue_outcome(state, binding.thread_id),
                 "dispatched": False,
                 "owner": owner,
                 "thread_id": binding.thread_id,
@@ -1232,6 +1255,7 @@ def build_work_item_continuity_compatibility_service(
         truncate_text=lambda value, limit: host._truncate_text(value, limit),
         thread_is_active=lambda thread_id: host._thread_is_active(thread_id),
         thread_queue_depth=lambda thread_id: host._thread_queue_depth(thread_id),
+        thread_queue=(lambda thread_id: host._thread_queue(thread_id)) if hasattr(host, '_thread_queue') else None,
         thread_recently_active=lambda thread_id: host._thread_recently_active(
             thread_id
         ),
