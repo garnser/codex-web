@@ -65,6 +65,18 @@ class RecoveryConflictError(RecoveryError):
     pass
 
 
+class RecoveryMemoryConflictError(RecoveryConflictError):
+    """An actionable cooperative capacity refusal, never integrity evidence."""
+
+
+def _memory_admit(stage: str, estimated_allocation_bytes: int):
+    from codex_web.services.recovery_memory import admit, RecoveryMemoryRefused
+    try:
+        return admit(stage, estimated_allocation_bytes)
+    except RecoveryMemoryRefused as exc:
+        raise RecoveryMemoryConflictError(str(exc)) from exc
+
+
 class LocalBackupDestination:
     """Create-only encrypted backup destination for local/simple deployments."""
 
@@ -106,6 +118,18 @@ class LocalBackupDestination:
 
     def get(self, destination_ref: str) -> bytes:
         return self._path(destination_ref).read_bytes()
+
+    def size(self, destination_ref: str) -> int:
+        return self._path(destination_ref).stat().st_size
+
+    def get_bounded(self, destination_ref: str, maximum_bytes: int) -> bytes:
+        with self._path(destination_ref).open("rb") as handle:
+            payload = handle.read(maximum_bytes + 1)
+        if len(payload) != maximum_bytes:
+            raise RecoveryMemoryConflictError(
+                "recovery_memory_size_changed: backup changed after capacity admission"
+            )
+        return payload
 
     def delete(self, destination_ref: str) -> bool:
         try:
@@ -362,6 +386,12 @@ class RecoveryService:
             raise RecoveryConflictError("configured backup key purpose changed")
         destination = self._destination(policy.destination_id)
 
+        from codex_web.services.recovery_memory import snapshot_size, RecoveryMemoryRefused
+        try:
+            rows, source_bytes = snapshot_size(self.state_store)
+        except RecoveryMemoryRefused as exc:
+            raise RecoveryMemoryConflictError(str(exc)) from exc
+        _memory_admit("capture_snapshot", source_bytes * 12 + rows * 512)
         documents = self._snapshot_documents()
         checksum = state_documents_checksum(documents)
         status = self.state_store.status()
@@ -405,6 +435,7 @@ class RecoveryService:
         state_backend = snapshot.state_backend
         state_schema_version = snapshot.state_schema_version
         del snapshot_payload, snapshot, documents
+        _memory_admit("capture_encrypt", len(plaintext) * 3)
         envelope = self.crypto.encrypt(
             policy.backup_key_id,
             plaintext,
@@ -412,6 +443,7 @@ class RecoveryService:
             actor=actor,
         )
         del plaintext
+        _memory_admit("capture_envelope", len(envelope.ciphertext_b64) * 2)
         encrypted_bytes = self._canonical_bytes(
             envelope.model_dump(mode="json")
         )
@@ -516,7 +548,22 @@ class RecoveryService:
         _requirements=None,
     ) -> BackupSnapshot:
         destination = self._destination(manifest.destination_id)
-        encrypted = destination.get(manifest.destination_ref)
+        size_read = getattr(destination, "size", None)
+        bounded_read = getattr(destination, "get_bounded", None)
+        if not callable(size_read) or not callable(bounded_read):
+            raise RecoveryMemoryConflictError(
+                "recovery_memory_size_unknown: destination requires metadata sizing and bounded reads"
+            )
+        try:
+            encrypted_size = size_read(manifest.destination_ref)
+        except (OSError, BackupDestinationError) as exc:
+            raise RecoveryMemoryConflictError(
+                "recovery_memory_size_unknown: cannot size scoped backup destination"
+            ) from exc
+        if type(encrypted_size) is not int or encrypted_size < 0:
+            raise RecoveryMemoryConflictError("recovery_memory_size_unknown: invalid backup size")
+        _memory_admit("restore_snapshot", encrypted_size * 8)
+        encrypted = bounded_read(manifest.destination_ref, encrypted_size)
         if hashlib.sha256(encrypted).hexdigest() != manifest.envelope_sha256:
             raise RecoveryConflictError("encrypted backup checksum mismatch")
         envelope = EncryptedEnvelope.model_validate(json.loads(encrypted))
@@ -529,12 +576,14 @@ class RecoveryService:
             object_type="recovery_backup",
             object_id=manifest.id,
         )
+        _memory_admit("restore_decrypt", len(envelope.ciphertext_b64) * 3)
         plaintext = self.crypto.decrypt(
             envelope,
             context,
             actor=actor,
         )
         del envelope
+        _memory_admit("restore_decode", len(plaintext) * 6)
         decoded = json.loads(plaintext)
         del plaintext
         snapshot = BackupSnapshot.model_validate(decoded)
@@ -630,6 +679,9 @@ class RecoveryService:
                 )
                 if not audit_continuity_valid:
                     blockers.append("audit_continuity_invalid")
+        except RecoveryMemoryConflictError:
+            # Capacity refusal is actionable, not a failed integrity result.
+            raise
         except Exception as exc:
             blockers.append(f"restore_validation_failed:{type(exc).__name__}")
 
