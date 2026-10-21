@@ -4705,6 +4705,40 @@ class TurnExecutionService:
         """
 
         h = self.host
+        if previous_assignment_id:
+            previous = await asyncio.to_thread(self._assignment_record, previous_assignment_id)
+            previous_runtime = getattr(previous, "runtime_binding", None)
+            previous_scope = getattr(previous, "repository_scope", None)
+            # A terminal failed bootstrap may never have resumed the native
+            # session. Its requested scope is not the session's custody; leave
+            # that restoration to the existing transactional pre-resume hook.
+            if (getattr(previous, "status", None) in {
+                AssignmentStatus.PENDING, AssignmentStatus.CLAIMED,
+                AssignmentStatus.RUNNING, AssignmentStatus.LOST,
+            } and previous_scope is not None and previous_runtime is not None and (
+                previous_runtime.provider_id, previous_runtime.runtime_id
+            ) == (runtime_binding.provider_id, runtime_binding.runtime_id)):
+                requested_writable = (tuple(writable_repository_ids)
+                    or ((explicit_repository_id,) if explicit_repository_id else
+                        tuple(previous_scope.writable_repository_ids)))
+                # The same native identity cannot acquire another repository
+                # scope. Detect known ID drift before retiring its valid owner;
+                # the transactional custody hook still checks the full scope
+                # and current authority before any later provider resume.
+                if (set(requested_writable) != set(previous_scope.writable_repository_ids)
+                        or set(read_only_repository_ids) != set(previous_scope.read_only_repository_ids)):
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                        "code": "native_session_scope_incompatible",
+                        "phase": "before_bootstrap_retirement",
+                        "message": "Native repository custody requires a separate compatible thread; the original assignment was preserved.",
+                        "thread_id": thread_id,
+                        "previous_assignment_id": previous_assignment_id,
+                        "original_writable_repository_ids": list(previous_scope.writable_repository_ids),
+                        "requested_writable_repository_ids": list(requested_writable),
+                        "original_read_only_repository_ids": list(previous_scope.read_only_repository_ids),
+                        "requested_read_only_repository_ids": list(read_only_repository_ids),
+                        "retryable": False,
+                    })
         recovery_fence = None
         if recovery_admission is not None:
             recovery_fence = await asyncio.to_thread(recovery_admission.begin_rollover, previous_assignment_id)

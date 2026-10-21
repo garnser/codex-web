@@ -24,6 +24,7 @@ from codex_web.models import (
 )
 from codex_web.resources import RepositoryTargetSource, RepositoryExecutionScope
 from codex_web.runtime.execution import (
+    ExecutionPrestartRefusal,
     TurnExecutionService,
     _turn_failure_text,
     install_turn_execution_service,
@@ -3270,6 +3271,73 @@ class TurnExecutionInstallationTests(unittest.TestCase):
 
 
 class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_incompatible_native_repository_rollover_preserves_original_before_retirement(self):
+        for change in ("writable", "read_only"):
+            with self.subTest(change=change):
+                service, host, manager, order, _, kwargs = await self._rebind(fresh=True)
+                previous = service._assignment_record("old")
+                previous.repository_scope = RepositoryExecutionScope(
+                    organization_id="local", workspace_id="default", project_id="p1",
+                    writable_repository_ids=("repository",),
+                    read_only_repository_ids=("context",), source=RepositoryTargetSource.EXPLICIT)
+                original = previous.model_dump_json()
+                kwargs["read_only_repository_ids"] = ("context",)
+                if change == "writable":
+                    kwargs.update(explicit_repository_id="other", writable_repository_ids=("other",))
+                else:
+                    kwargs["read_only_repository_ids"] = ("other-context",)
+                with self.assertRaises(HTTPException) as caught:
+                    await service._supersede_thread_bootstrap(**kwargs)
+                self.assertIsInstance(caught.exception, ExecutionPrestartRefusal)
+                self.assertEqual(caught.exception.detail["code"], "native_session_scope_incompatible")
+                self.assertEqual(caught.exception.detail["phase"], "before_bootstrap_retirement")
+                self.assertIn("separate compatible thread", caught.exception.detail["message"])
+                self.assertFalse(caught.exception.detail["retryable"])
+                self.assertEqual(service._assignment_record("old").model_dump_json(), original)
+                manager.complete.assert_not_awaited()
+                host.codex.request.assert_not_awaited()
+                self.assertEqual(order, [])  # No preparation/rebind or provider call either.
+
+    async def test_compatible_native_repository_rollover_keeps_normal_admission(self):
+        service, _, manager, order, _, kwargs = await self._rebind(fresh=True)
+        previous = service._assignment_record("old")
+        previous.repository_scope = RepositoryExecutionScope(
+            organization_id="local", workspace_id="default", project_id="p1",
+            writable_repository_ids=("repository",), source=RepositoryTargetSource.EXPLICIT)
+        await service._supersede_thread_bootstrap(**kwargs)
+        manager.complete.assert_awaited_once()
+        self.assertEqual([item[0] for item in order], ["cleanup", "prepare", "rebind"])
+
+    async def test_terminal_unresumed_wrong_scope_does_not_block_original_custody_restoration(self):
+        for status in (AssignmentStatus.CANCELLED, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED):
+            with self.subTest(status=status):
+                service, _, _, order, _, kwargs = await self._rebind(fresh=True)
+                failed = service._assignment_record("old")
+                # The latest bootstrap requested another repository but never
+                # resumed; native session custody still belongs to repository.
+                failed.repository_scope = RepositoryExecutionScope(
+                    organization_id="local", workspace_id="default", project_id="p1",
+                    writable_repository_ids=("never-resumed-docs",), source=RepositoryTargetSource.EXPLICIT)
+                failed.resource_ids = ("never-resumed-docs",)
+                failed.status = status
+                failed.lease = None
+                kwargs["writable_repository_ids"] = ("repository",)
+                await service._supersede_thread_bootstrap(**kwargs)
+                self.assertEqual([item[0] for item in order], ["cleanup", "prepare", "rebind"])
+
+    async def test_different_runtime_keeps_its_existing_fresh_session_path(self):
+        service, _, manager, order, _, kwargs = await self._rebind(fresh=True)
+        previous = service._assignment_record("old")
+        previous.repository_scope = RepositoryExecutionScope(
+            organization_id="local", workspace_id="default", project_id="p1",
+            writable_repository_ids=("repository",), source=RepositoryTargetSource.EXPLICIT)
+        kwargs.update(explicit_repository_id="other", writable_repository_ids=("other",),
+            runtime_binding=ExecutionRuntimeBinding(provider_id="other-provider", runtime_id="other-runtime",
+                capability_revision=1))
+        await service._supersede_thread_bootstrap(**kwargs)
+        manager.complete.assert_awaited_once()
+        self.assertEqual([item[0] for item in order], ["cleanup", "prepare", "rebind"])
+
     @staticmethod
     def _previous_assignment(*,provider='openai',runtime='codex',mode='trusted_local_session'):
         now=time.time()

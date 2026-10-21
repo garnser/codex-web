@@ -158,7 +158,7 @@ these normalization primitives do not widen existing profiles or grants.
 ### Merge-requirement admission and operator inspection
 
 The explicit CodeHost capability is `pull_request.merge_requirements.read`.
-GitHub advertises it; GitLab explicitly excludes it and reports unsupported.
+GitHub and GitLab advertise it; both still require an explicitly declared provider binding and current canonical authority.
 The broker distinguishes an installed adapter's unsupported capability from
 missing or ambiguous provider bindings. Its existing worker/operator denial and
 discovery metadata expose that distinction; adding bindings or broadening grants
@@ -296,3 +296,34 @@ forward the private token to a different origin and reject HTTPS downgrades.
 
 UI impact: the existing artifact fact and download views remain the contract;
 this adds no new first-class object or provider-specific settings surface.
+
+### GitLab native merge-gate observations
+
+GitLab uses the same version 1.0 projection and canonical credential/assignment
+read checkpoints. Its bounded GET-only reader establishes the exact project/MR,
+head and current target branch tip (not `diff_refs.base_sha`, which is a merge
+base), native `detailed_merge_status`, the approval endpoint decision and an
+exact-head pipeline observation. It re-reads the MR, target tip and available
+approval observation, marking detected drift as changed. One observation has
+at most eight requests, a 30-second deadline/freshness window, 512 KiB per response
+and 128 KiB projected output; redirects/compression/invalid or duplicate-key JSON
+fail closed. Every request, including errors, and the final result recheck the
+canonical read guard. No provider mutation, polling or grant is introduced.
+
+These are intentionally **partial native gate facts**, not a complete GitHub-like
+branch/rules/review-thread inventory. `complete` remains false; unknown policy
+flags, thread counts and commit-attributed approval counts remain null. GitLab's
+`approved_by` has no approval commit SHA, so a nonempty approval list never
+establishes current-head approvals. Community Edition's missing approval counts
+and permission/tier HTTP404 never establish zero requirements. Native
+`approved=false` alone is `NOT_APPROVED`, not a mandatory review failure; only
+positive `approvals_left` or native `not_approved` establishes a required review
+blocker. The provider-native merge gate remains visible alongside unavailable
+policy sources so operators can assess actual known facts without fabricating
+full coverage. Neither a positive native gate nor a partial projection grants
+merge authority; current ActionIntent/provider enforcement remains unchanged.
+
+The existing broker/operator projection exposes these source availabilities and
+blockers; no separate UI object is added. Provider semantics follow GitLab's
+[MR API](https://docs.gitlab.com/api/merge_requests/) and
+[approval API](https://docs.gitlab.com/api/merge_request_approvals/).
