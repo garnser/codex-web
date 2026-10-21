@@ -278,9 +278,20 @@ a fresh reader process rebuilds it so an earlier writer version cannot leave a
 false complete index. Each reader epoch retains its own small progress record;
 replicated readers cannot reset one another. These migration/provenance records
 remain in the existing canonical collection and are not authoritative leases. Retained terminal history does not impose a permanent
-renewal limit. These two checks mitigate retirement but do not form an atomic
-provider-attempt/cancellation transaction; the remaining interleaving guarantee is
-tracked in [#1663](https://github.com/garnser/codex-web/issues/1663).
+renewal limit. Voluntary bootstrap cancellation and ordinary assignment completion
+also lock the existing ActionIntent collection in the same ordered canonical
+writer transaction as the assignment, worker and transition event. After current
+caller/custody validation, they read the completed origin projection without
+performing backfill writes and refuse retirement while an attempted READY needs
+that origin. The typed conflict exposes the owning ActionIntent IDs through the
+existing assignment API and preflight inspector; native input has not begun.
+
+READY's transition to EXECUTING atomically checks the original live assignment,
+fence, worker and lease while publishing its origin alias. If the attempt wins,
+retirement observes it; if retirement wins, execution refuses before invoking the
+provider. No database lock spans a network await. Actual worker loss, expiry and
+security revocation retain their existing authority-withdrawal semantics. This
+adds no model call; finite post-turn settlement is described separately below.
 
 Within an authenticated read-only reconciliation scope, assignment lookup reloads
 the exact server-selected originating row rather than decoding all historical

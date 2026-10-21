@@ -4734,6 +4734,15 @@ class TurnExecutionService:
         exhaustion renewal retains the same native identity for ordinary resume.
         """
 
+        from codex_web.services.execution_workers import AssignmentReadinessOriginError
+        def retirement_refusal(exc):
+            detail = exc.detail()
+            return ExecutionPrestartRefusal(status_code=409, detail={**detail,
+                'phase': 'before_bootstrap_retirement', 'thread_id': thread_id,
+                'blockers': [{**detail, 'target_type': 'execution_assignment',
+                    'target_id': previous_assignment_id,
+                    'remediation_route': '/api/action-intents'}]})
+
         h = self.host
         if previous_assignment_id:
             previous = await asyncio.to_thread(self._assignment_record, previous_assignment_id)
@@ -4783,15 +4792,18 @@ class TurnExecutionService:
                         await manager.stop(previous_assignment_id)
                         released = True
                         break
-                    await manager.complete(
-                        previous_assignment_id,
-                        succeeded=False,
-                        failure_code=(retirement_reason or "thread_runtime_switched"),
-                        failure_message=(
-                            "thread procedure admission history exhausted" if retirement_reason
-                            else "thread superseded onto a different agent runtime"
-                        ),
-                    )
+                    try:
+                        await manager.complete(
+                            previous_assignment_id,
+                            succeeded=False,
+                            failure_code=(retirement_reason or "thread_runtime_switched"),
+                            failure_message=(
+                                "thread procedure admission history exhausted" if retirement_reason
+                                else "thread superseded onto a different agent runtime"
+                            ),
+                        )
+                    except AssignmentReadinessOriginError as exc:
+                        raise retirement_refusal(exc) from exc
                     released = True
                     break
             if not released and recovery_admission is not None:
@@ -4837,7 +4849,10 @@ class TurnExecutionService:
                                 actor=local_worker.control_actor,
                             )
 
-                    await asyncio.to_thread(release_superseded)
+                    try:
+                        await asyncio.to_thread(release_superseded)
+                    except AssignmentReadinessOriginError as exc:
+                        raise retirement_refusal(exc) from exc
         h._append_bot_event(
             {
                 "type": "thread_assignment_renewal_started" if retirement_reason else "thread_runtime_switched",

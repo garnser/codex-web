@@ -1572,11 +1572,11 @@ class ActionIntentService:
                     break
             return state
 
-        guarded = self._publication_execution_guard(intent)
+        guarded = self._publication_execution_guard(intent, actor=actor)
         updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
         return next(item for item in updated.intents if item.id == intent.id)
 
-    def _publication_execution_guard(self, intent):
+    def _publication_execution_guard(self, intent, *, actor=None):
         scope = intent.publication_recovery_scope
         guarded = {}
         if scope is not None:
@@ -1599,6 +1599,28 @@ class ActionIntentService:
                 from codex_web.execution_workspaces import ExecutionWorkspace
                 workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, assignment.execution_workspace_id))
                 guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            origin = intent.readiness_origin
+            if (origin is None or actor is None or self.execution_workers is None
+                    or self.execution_workers.store.store is not self.store.store):
+                raise ActionRequirementError('Readiness execution requires the canonical live origin transaction')
+            previous_guard = guarded.get('guard')
+            def ready_guard(documents):
+                if previous_guard is not None:
+                    previous_guard(documents)
+                requester = self._requester_actor(intent)
+                assignment = self._ready_assignment(intent.execution_id, intent.request,
+                    requester, origin.assignment_id)
+                worker = self.execution_workers.store.worker(origin.worker_id)
+                if (assignment.fence != origin.fence
+                        or assignment.assigned_worker_id != origin.worker_id
+                        or assignment.execution_profile_definition != origin.execution_profile_definition
+                        or worker is None or worker.revoked_at is not None
+                        or worker.service_identity_id != actor.identity_id):
+                    raise ActionRequirementError('Readiness originating assignment changed before execution')
+            guarded = {'guard_rows': {**guarded.get('guard_rows', {}),
+                ASSIGNMENTS: (origin.assignment_id,), WORKERS: (origin.worker_id,)},
+                'guard': ready_guard}
         return guarded
 
     def _begin_recovery_rollback(self, intent):

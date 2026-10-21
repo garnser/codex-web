@@ -62,6 +62,23 @@ class ProcedureHistoryExhaustedError(WorkerConflictError):
     """The current assignment cannot retain another procedure admission."""
 
 
+class AssignmentReadinessOriginError(WorkerConflictError):
+    """Voluntary retirement cannot discard an attempted READY's live origin."""
+
+    def __init__(self, assignment_id, intent_ids=(), *, unavailable=False):
+        self.assignment_id = assignment_id
+        self.intent_ids = tuple(intent_ids)
+        self.code = ('assignment_readiness_origin_unavailable' if unavailable
+                     else 'assignment_readiness_origin_unsettled')
+        super().__init__(self.code + ': preserve assignment ' + assignment_id +
+            ('; inspect canonical readiness-origin evidence' if unavailable else
+             '; reconcile read-only the owning intent(s): ' + ', '.join(self.intent_ids)))
+
+    def detail(self):
+        return {'code': self.code, 'message': str(self), 'assignment_id': self.assignment_id,
+                'action_intent_ids': list(self.intent_ids), 'retryable': False}
+
+
 class WorkerLeaseError(ExecutionWorkerError):
     reason_code = FailureReason.WORKER_LEASE_LOST
 
@@ -1566,6 +1583,28 @@ class ExecutionWorkerService:
         self._notify_assignment(result, "assignment_started")
         return result
 
+    def _prepare_readiness_retirement(self, assignment_id):
+        from codex_web.storage.action_intents import ActionIntentStore
+        intents = ActionIntentStore(self.store.store)
+        try:
+            intents.unsettled_readiness_origin(assignment_id)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AssignmentReadinessOriginError(assignment_id, unavailable=True) from exc
+        return intents
+
+    @staticmethod
+    def _require_settled_readiness_origin(intents, assignment):
+        try:
+            current = intents.unsettled_readiness_origin(assignment.id, prepare=False)
+            if any((item.organization_id, item.workspace_id, item.project_id, item.execution_id)
+                    != (assignment.organization_id, assignment.workspace_id,
+                        assignment.project_id, assignment.execution_id) for item in current):
+                raise ValueError('readiness origin custody is inconsistent')
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AssignmentReadinessOriginError(assignment.id, unavailable=True) from exc
+        if current:
+            raise AssignmentReadinessOriginError(assignment.id, tuple(item.id for item in current))
+
     def complete(
         self,
         worker_id: str,
@@ -1574,6 +1613,18 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
+        # Prepare the bounded projection before owning the cross-domain writer.
+        # This observation grants no retirement; the callback rechecks it after
+        # the actual assignment and intent namespace locks have been acquired.
+        worker = self.store.worker(worker_id)
+        assignment = self.store.assignment(assignment_id)
+        snapshot = ExecutionWorkerState(workers=[worker] if worker else [],
+            assignments=[assignment] if assignment else [])
+        worker = self._worker(snapshot, worker_id, actor)
+        assignment = self._assignment(snapshot, assignment_id, actor)
+        self._validate_lease(assignment, worker, actor=actor, fence=payload.fence,
+            token=payload.lease_token, now=time.time())
+        intents = self._prepare_readiness_retirement(assignment_id)
         updated: list[ExecutionAssignment] = []
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
             now = time.time()
@@ -1589,6 +1640,7 @@ class ExecutionWorkerService:
             )
             if assignment.status != AssignmentStatus.RUNNING:
                 raise WorkerConflictError("assignment must be running before completion")
+            self._require_settled_readiness_origin(intents, assignment)
             status = AssignmentStatus.SUCCEEDED if payload.succeeded else AssignmentStatus.FAILED
             failure = None
             if not payload.succeeded:
@@ -1643,7 +1695,8 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.transition_assignment(worker_id, assignment_id, apply)
+        self.store.transition_assignment(worker_id, assignment_id, apply,
+            guard_rows={intents.records_namespace: ()})
         result = updated[0]
         self._notify_assignment(result, "assignment_completed")
         return result
@@ -1680,6 +1733,7 @@ class ExecutionWorkerService:
                 AssignmentStatus.RUNNING, AssignmentStatus.LOST,
             }:
                 raise WorkerConflictError("bootstrap assignment is already terminal")
+            self._require_settled_readiness_origin(intents, assignment)
             replacement = assignment.model_copy(update={
                 "status": AssignmentStatus.CANCELLED,
                 "fence": assignment.fence + 1,
@@ -1708,7 +1762,12 @@ class ExecutionWorkerService:
         current = self.store.assignment(assignment_id)
         if current is None:
             raise AssignmentNotFoundError("execution assignment not found")
-        self.store.transition_assignment(current.assigned_worker_id or "", assignment_id, apply)
+        # READY's EXECUTING write takes this same canonical namespace lock. A
+        # concurrent attempt is therefore either visible here or observes our
+        # cancelled fence before it can begin provider execution.
+        intents = self._prepare_readiness_retirement(assignment_id)
+        self.store.transition_assignment(current.assigned_worker_id or "", assignment_id, apply,
+            guard_rows={intents.records_namespace: ()})
         result = updated[0]
         self._notify_assignment(result, "assignment_cancelled")
         if result.execution_workspace_id and self.workspaces is not None:

@@ -24,6 +24,7 @@ from codex_web.execution_workers import (
 )
 from codex_web.services.control_plane_broker import DeferredControlPlaneBrokerFactory
 from codex_web.services.execution_workers import (
+    AssignmentReadinessOriginError,
     AssignmentNotFoundError,
     ExecutionWorkerError,
     ExecutionWorkerService,
@@ -36,6 +37,8 @@ from codex_web.services.identity import AuthorizationError, IdentityService, Ten
 
 
 def _error(exc: Exception) -> HTTPException:
+    if isinstance(exc, AssignmentReadinessOriginError):
+        return HTTPException(status_code=409, detail=exc.detail())
     if isinstance(exc, (WorkerNotFoundError, AssignmentNotFoundError)):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (AuthorizationError, TenantIsolationError)):

@@ -351,14 +351,19 @@ class ActionIntentStore:
                 {'id':item.id}}
         return {}
 
-    def unsettled_readiness_origin(self, assignment_id: str) -> tuple[ActionIntent, ...]:
+    def unsettled_readiness_origin(self, assignment_id: str, *, prepare=True) -> tuple[ActionIntent, ...]:
         """Current origin projection; rebuild once per reader process after old writers.
 
         Pages advance durably for this process epoch. A new process deliberately
         starts a fresh backfill, so a previous older writer cannot leave a false
         complete index. Ordinary updates maintain aliases in the same commit.
         """
-        self._ensure_records()
+        if prepare:
+            self._ensure_records()
+        elif (not self.store.record_collection_exists(self.records_namespace)
+                or self.store.record_get(self.records_namespace, self._meta_key)
+                    not in ({'schema_version':'1.3'}, {'schema_version':'1.4'})):
+            raise ValueError('readiness origin records require canonical preparation')
         # Separate cursors keep current replicated readers from restarting
         # each other's bounded migration. Aliases remain shared canonical data.
         marker = 'ready-origin-index:1.0:' + _ORIGIN_INDEX_EPOCH
@@ -375,6 +380,8 @@ class ActionIntentStore:
                 raise ValueError('readiness origin index metadata is invalid')
             if progress and progress.get('epoch') == _ORIGIN_INDEX_EPOCH and progress.get('ready') is True:
                 break
+            if not prepare:
+                raise ValueError('readiness origin index requires canonical preparation')
             previous = progress
             after = progress.get('after') if progress and progress.get('epoch') == _ORIGIN_INDEX_EPOCH else None
             page, following = self.store.record_page(self.records_namespace,
@@ -399,7 +406,12 @@ class ActionIntentStore:
             raise ValueError('unsettled readiness origin exceeds the bounded active-action inventory')
         found = []
         for key, alias in rows.items():
+            if (not isinstance(alias, dict) or set(alias) != {'id'}
+                    or not isinstance(alias['id'], str)):
+                raise ValueError('readiness origin alias is invalid')
             item = self.get(alias['id'])
+            if item is None and not prepare:
+                raise ValueError('readiness origin target is unavailable')
             if item is not None and key in self._ready_origin_indexes(item):
                 found.append(item)
         return tuple(found)
