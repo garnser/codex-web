@@ -1,0 +1,282 @@
+"""One canonical backup while an operator-controlled, drained service is stopped.
+
+This command never stops, starts, upgrades or rolls back a service. The reviewed
+operator procedure owns stop/restoration and its independent deadline guard.
+It acquires the existing deploy lock, obtains genuine pre-stop observations,
+waits at most 30 seconds for a clean stop, and captures once. An interrupted
+capture is an unknown outcome requiring canonical inspection, never a retry.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+import asyncio
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import resource
+import subprocess
+import time
+from urllib.parse import quote, urlsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from codex_web.canonical_json import canonical_json_bytes
+from codex_web.local_deployment import LOCAL_DEPLOY_LOCK
+from codex_web.preinstall_backup import OfflineCaptureProof, compose_capture_runtime, qualify_capture
+from codex_web.upgrades import UpgradePlan
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        raise RuntimeError('Local operator API redirects are unavailable')
+
+
+def local_api(base, token, method, path):
+    parsed = urlsplit(base)
+    if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', '::1'}
+            or parsed.username or parsed.password or parsed.path not in {'', '/'}
+            or parsed.query or parsed.fragment):
+        raise ValueError('A loopback canonical API origin is required')
+    request = Request(base.rstrip('/') + path, method=method,
+        data=b'{}' if method == 'POST' else None,
+        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    with build_opener(ProxyHandler({}), _NoRedirect()).open(request, timeout=25) as response:
+        body = response.read(16 * 1024**2 + 1)
+        if response.status != 200 or len(body) > 16 * 1024**2:
+            raise RuntimeError('Canonical API observation unavailable')
+        return json.loads(body)
+
+
+def record(directory, name, value):
+    # O_EXCL and fsync make each checkpoint durable BEFORE the next effect.
+    path = directory / (name + '.json')
+    with path.open('x', encoding='utf-8') as output:
+        json.dump({'recorded_at': time.time(), **value}, output, sort_keys=True, indent=2)
+        output.flush()
+        os.fsync(output.fileno())
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def git(checkout, *args):
+    return subprocess.check_output(['git', '-c', 'core.hooksPath=/dev/null', '-C',
+        str(checkout), *args], text=True, timeout=15).strip()
+
+
+class OfflineHostGuard:
+    """Read actual host state; no service-control mutation or credentials."""
+    def __init__(self, options, lock_fd):
+        self.options, self.lock_fd = options, lock_fd
+        self.initial = self.service()
+        self.stopped = False
+        self.start_time = None
+
+    def service(self):
+        values = subprocess.check_output(['systemctl', 'show', self.options.unit,
+            '--property=ActiveState,MainPID,InvocationID,Result,ExecMainCode,ExecMainStatus,ExecMainPID,ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic'],
+            text=True, timeout=10)
+        return dict(line.split('=', 1) for line in values.splitlines() if '=' in line)
+
+    def check(self):
+        options = self.options
+        fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_stat = os.fstat(self.lock_fd)
+        path_stat = LOCAL_DEPLOY_LOCK.stat()
+        if (lock_stat.st_dev, lock_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+            raise RuntimeError('Deploy lock identity changed')
+        for checkout, revision in ((options.runtime_checkout, options.expected_runtime_revision),
+                                   (options.producer_checkout, options.expected_producer_revision)):
+            if git(checkout, 'rev-parse', 'HEAD') != revision or git(checkout,
+                    'status', '--porcelain', '--untracked-files=all', '--', 'codex_web',
+                    'scripts', 'server.py', 'pyproject.toml', 'requirements.txt', 'requirements-dev.txt'):
+                raise RuntimeError('Reviewed executable source changed')
+        current = self.service()
+        if (not self.initial.get('InvocationID')
+                or current.get('ExecMainPID') != str(options.expected_runtime_pid)
+                or not self.initial.get('ExecMainStartTimestampMonotonic', '').isdigit()
+                or int(self.initial['ExecMainStartTimestampMonotonic']) <= 0
+                or current.get('ExecMainStartTimestampMonotonic') != self.initial['ExecMainStartTimestampMonotonic']):
+            raise RuntimeError('Pinned service invocation changed')
+        if self.stopped:
+            if (current.get('ActiveState') != 'inactive' or current.get('MainPID') != '0'
+                    or current.get('InvocationID') not in {'', self.initial['InvocationID']}
+                    or current.get('Result') != 'success' or current.get('ExecMainCode') != '1'
+                    or current.get('ExecMainStatus') != '0'
+                    or not current.get('ExecMainExitTimestampMonotonic', '').isdigit()
+                    or int(current['ExecMainExitTimestampMonotonic']) < int(self.initial['ExecMainStartTimestampMonotonic'])
+                    or Path('/proc', str(options.expected_runtime_pid)).exists()):
+                raise RuntimeError('Pinned service is not positively cleanly stopped')
+        else:
+            if (current.get('ActiveState') != 'active' or current.get('MainPID') != str(options.expected_runtime_pid)
+                    or current.get('InvocationID') != self.initial['InvocationID']):
+                raise RuntimeError('Pinned service is not running')
+            proc = Path('/proc', str(options.expected_runtime_pid))
+            if proc.stat().st_uid != os.getuid() or (proc/'cwd').resolve() != options.runtime_checkout.resolve():
+                raise RuntimeError('Pinned runtime process ownership/source changed')
+            start_time = (proc/'stat').read_text().rsplit(')', 1)[1].split()[19]
+            if self.start_time is not None and start_time != self.start_time:
+                raise RuntimeError('Pinned runtime process was replaced')
+            self.start_time = start_time
+
+    def wait_stopped(self, deadline):
+        while time.time() <= deadline:
+            current = self.service()
+            if current.get('ActiveState') == 'inactive':
+                self.stopped = True
+                self.check()
+                return
+            if current.get('ActiveState') not in {'active', 'deactivating'}:
+                raise RuntimeError('Service stop did not complete cleanly')
+            time.sleep(0.25)
+        raise RuntimeError('Fresh pre-stop observation expired before clean service stop')
+
+
+def require_recovery_idle(observation):
+    executor = observation.get('scheduled_work', {}).get('local_executor', {})
+    if (executor.get('accepting') is not True
+            or type(executor.get('waiting_or_running')) is not int or executor['waiting_or_running'] != 0
+            or type(executor.get('inflight_work')) is not int or executor['inflight_work'] != 0
+            or executor.get('quiescence_guard') is not False):
+        raise RuntimeError('Installed Recovery executor is not positively idle')
+    return executor
+
+
+def recovery_custody(store):
+    from codex_web.storage.recovery import RecoveryStore
+    state = RecoveryStore._decode(store.get(RecoveryStore.namespace))
+    if state.policy is None or any(item.status == 'running' for item in state.scheduled_firings.values()):
+        raise RuntimeError('Canonical Recovery policy or scheduled custody is unavailable')
+    # Capturing may legitimately add a backup and enforce retention. It cannot
+    # change policy, schedules or the disposition of another scheduled owner.
+    value = {'policy': state.policy.model_dump(mode='json'),
+        'backup_schedule_id': state.backup_schedule_id,
+        'verification_schedule_id': state.verification_schedule_id,
+        'firings': {key: item.model_dump(mode='json') for key, item in state.scheduled_firings.items()},
+        'reconciliations': {key: item.model_dump(mode='json') for key, item in state.reconciliations.items()}}
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def parser():
+    result = argparse.ArgumentParser(description=__doc__)
+    for name in ('plan-id', 'service-instance-id', 'expected-runtime-revision', 'expected-producer-revision'):
+        result.add_argument('--' + name, required=True)
+    for name in ('runtime-checkout', 'producer-checkout', 'sqlite-path', 'key-material-directory',
+                 'backup-directory', 'journal-directory', 'qualification-lock'):
+        result.add_argument('--' + name, type=Path, required=True)
+    result.add_argument('--unit', default='codex-web.service')
+    result.add_argument('--api', default='http://127.0.0.1:8765')
+    result.add_argument('--expected-runtime-pid', type=int, required=True)
+    result.add_argument('--operator-token-fd', type=int, required=True)
+    result.add_argument('--execute', action='store_true', required=True)
+    return result
+
+
+def main(argv=None):
+    options = parser().parse_args(argv)
+    if (not re.fullmatch(r'[A-Za-z0-9_.@-]+\.service', options.unit)
+            or any(not re.fullmatch(r'[0-9a-f]{40}', value) for value in
+                (options.expected_runtime_revision, options.expected_producer_revision))
+            or options.expected_runtime_pid <= 0
+            or Path(__file__).resolve().parents[1] != options.producer_checkout.resolve()):
+        raise ValueError('Explicit source/process/unit pins are required')
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    options.journal_directory.mkdir(mode=0o700, parents=False, exist_ok=False)
+    stage, runtime, token = 'preflight', None, None
+    memory_errors = ()
+    lock_fds = []
+    try:
+        for path in (LOCAL_DEPLOY_LOCK, options.qualification_lock):
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            lock_fds.append(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        host = OfflineHostGuard(options, lock_fds[0])
+        host.check()
+        token = os.read(options.operator_token_fd, 16385).decode().strip()
+        if not token or len(token) > 16384 or '\n' in token or '\r' in token:
+            raise ValueError('Existing operator credential is unavailable')
+        # Reuse the canonical actual-cgroup guard; never infer a 6 GiB limit
+        # from command-line intent or relax a memory admission estimate.
+        from codex_web.services.recovery_memory import require_process_memory_limit, RecoveryMemoryRefused
+        from codex_web.services.recovery import RecoveryMemoryConflictError
+        memory_errors = (RecoveryMemoryRefused, RecoveryMemoryConflictError)
+        cap = require_process_memory_limit(maximum_bytes=6 * 1024**3, maximum_swap_bytes=0)
+        from codex_web.storage.state_store import build_state_store
+        store = build_state_store(sqlite_path=options.sqlite_path,
+            backend=os.environ.get('CODEX_WEB_STATE_BACKEND', 'sqlite'),
+            postgres_dsn=os.environ.get('CODEX_WEB_POSTGRES_DSN'), initialize=False)
+        observed = {}
+        def refresh():
+            return observed['plan']
+        custody = None
+        def guard():
+            host.check()
+            require_process_memory_limit(maximum_bytes=6 * 1024**3, maximum_swap_bytes=0)
+            if custody is not None and recovery_custody(store) != custody:
+                raise RuntimeError('Canonical Recovery custody changed')
+        runtime = compose_capture_runtime(store, operator_token=token,
+            key_material_dir=options.key_material_directory, backup_dir=options.backup_directory,
+            refresh=refresh, check_runtime=guard,
+            journal=lambda kind, value: record(options.journal_directory, kind, value),
+            source_revision=options.expected_runtime_revision,
+            target_revision=options.expected_producer_revision,
+            service_instance_id=options.service_instance_id)
+        if local_api(options.api, token, 'GET', '/api/version')['gitRevision'] != options.expected_runtime_revision:
+            raise RuntimeError('Installed API source changed')
+        recovery_observation = local_api(options.api, token, 'GET', '/api/recovery')
+        executor = require_recovery_idle(recovery_observation)
+        observed['plan'] = UpgradePlan.model_validate(local_api(options.api, token, 'POST',
+            '/api/upgrades/' + quote(options.plan_id, safe='') + '/preflight')['item'])
+        prepared_at = time.time()
+        qualify_capture(runtime.upgrades, observed['plan'], actor=runtime.authenticate(),
+            source_revision=options.expected_runtime_revision,
+            target_revision=options.expected_producer_revision,
+            service_instance_id=options.service_instance_id, now=prepared_at)
+        custody = recovery_custody(store)
+        host.check()
+        record(options.journal_directory, 'pre-stop-qualified', {
+            'pre_stop_plan': observed['plan'].model_dump(mode='json'),
+            'historical_observation_at': prepared_at, 'recovery_executor': executor,
+            'recovery_custody_sha256': custody, 'memory_cap': asdict(cap),
+            'runtime_pid': options.expected_runtime_pid, 'service_invocation': host.initial['InvocationID'],
+            'runtime_revision': options.expected_runtime_revision,
+            'producer_revision': options.expected_producer_revision,
+            'operator_must_restore_service': True})
+        stage = 'waiting_for_operator_clean_stop'
+        host.wait_stopped(min(prepared_at + 30, observed['plan'].preflight.evaluated_at + 30))
+        guard()
+        record(options.journal_directory, 'service-stopped', {'stopped_at': time.time(),
+            'service': host.service(), 'historical_preflight_not_refreshed': True})
+        runtime.offline = OfflineCaptureProof(hashlib.sha256(canonical_json_bytes(
+            observed['plan'].model_dump(mode='json'))).hexdigest(), prepared_at, prepared_at + 600, guard)
+        stage = 'capture_once'
+        plan = asyncio.run(runtime.capture_once())
+        record(options.journal_directory, 'capture-completed', {'plan_id': plan.id,
+            'backup_id': plan.pre_upgrade_backup_id, 'restore_qualification_claimed': False,
+            'deployment_qualification_claimed': False, 'operator_must_restore_service': True})
+        return 0
+    except Exception as error:
+        record(options.journal_directory, 'stopped', {'stage': stage,
+            'exception_type': type(error).__name__, 'retry_authorized': False,
+            # Only these canonical types contain bounded capacity codes and
+            # numbers. Other exception strings/causes may expose credentials.
+            **({'capacity_refusal': str(error)[:2048]} if type(error) in memory_errors else {}),
+            'effect_outcome': 'inspect canonical outcome' if stage == 'capture_once' else 'no capture started',
+            'operator_must_inspect_and_restore_service': True})
+        return 2
+    finally:
+        if runtime is not None:
+            asyncio.run(runtime.upgrades.recovery.stop())
+        token = None
+        for fd in reversed(lock_fds):
+            os.close(fd)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

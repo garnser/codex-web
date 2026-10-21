@@ -6,8 +6,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
-from codex_web.identity import AuthenticationAssurance, PrincipalKind
-from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.identity import AuthorizationError
 from codex_web.services.local_installation_inspector import LocalInstallationInspector
 from codex_web.services.artifact_evidence import ArtifactEvidenceError
 from codex_web.services.releases import ReleaseError
@@ -33,15 +32,7 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
 
     def admin(request: Request):
         actor = request_actor(request)
-        if actor.principal_kind == PrincipalKind.SERVICE:
-            if "upgrade:admin" not in actor.service_scopes:
-                raise AuthorizationError("upgrade:admin service scope required")
-            return actor
-        IdentityService.require_admin(actor)
-        IdentityService.require_assurance(
-            actor,
-            AuthenticationAssurance.MFA,
-        )
+        UpgradeService.require_operator(actor)
         return actor
 
     def error(exc: Exception) -> HTTPException:

@@ -89,6 +89,36 @@ class PostgresDocumentsStreamingTests(unittest.TestCase):
         self.backend = PostgresStateStore(self.dsn, connection_pool=self.pool)
         self.addCleanup(self.backend.close)
 
+    def test_existing_only_constructor_reads_private_schema_without_initialization(self):
+        from unittest.mock import patch
+        self.backend.put('existing-only-private-fixture', {'retained': True})
+        with patch.object(PostgresStateStore, '_initialize', side_effect=AssertionError('schema bootstrap')):
+            existing = PostgresStateStore(self.dsn, connection_pool=self.pool, initialize=False)
+        self.addCleanup(existing.close)
+        self.assertEqual(existing.get('existing-only-private-fixture'), {'retained': True})
+
+    def test_existing_only_empty_private_schema_remains_empty(self):
+        import psycopg
+        from psycopg import sql
+        from psycopg_pool import ConnectionPool
+        empty = 'existing_only_' + uuid.uuid4().hex
+        with psycopg.connect(self.dsn) as connection:
+            connection.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(empty)))
+        try:
+            pool = ConnectionPool(self.dsn, min_size=1, max_size=1, timeout=.5,
+                kwargs={'options': '-c search_path=' + empty})
+            try:
+                with self.assertRaises(psycopg.errors.UndefinedTable):
+                    PostgresStateStore(self.dsn, connection_pool=pool, initialize=False)
+            finally:
+                pool.close()
+            with psycopg.connect(self.dsn) as connection:
+                rows = connection.execute('SELECT tablename FROM pg_tables WHERE schemaname=%s', (empty,)).fetchall()
+            self.assertEqual(rows, [])
+        finally:
+            with psycopg.connect(self.dsn) as connection:
+                connection.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(empty)))
+
     def seed(self, count, payload_size=16384):
         with self.pool.connection() as connection:
             with connection.cursor() as cursor:

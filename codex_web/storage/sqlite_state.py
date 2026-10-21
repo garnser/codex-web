@@ -7,7 +7,7 @@ import sqlite3
 import stat
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -26,13 +26,26 @@ class SQLiteStateStore:
 
     SCHEMA_VERSION = 1
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, initialize: bool = True) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)
+        self._existing_only = not initialize
+        if initialize:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.path.parent, 0o700)
+        elif not self.path.is_file():
+            raise RuntimeError('Existing canonical state database is required')
         self._keyed_mutation_metrics = OperationTimingMetrics()
         self._write_lock = threading.RLock()
-        self._initialize()
+        if initialize:
+            self._initialize()
+        else:
+            # A helper may inspect existing identity before it has authority;
+            # it must never create schema, metadata or a replacement file.
+            with closing(sqlite3.connect(self.path.absolute().as_uri() + '?mode=ro', uri=True)) as connection:
+                row = connection.execute("SELECT value FROM state_metadata WHERE key='schema_version'").fetchone()
+                connection.execute('SELECT namespace FROM state_documents LIMIT 0')
+            if row is None or int(row[0]) != self.SCHEMA_VERSION:
+                raise RuntimeError('Existing canonical state schema is unsupported')
 
     def _secure_database_files(self) -> None:
         for candidate in (
@@ -54,7 +67,8 @@ class SQLiteStateStore:
         check_operation_budget()
         budget = storage_operation_budget.get()
         timeout = min(5.0, budget.remaining()) if budget else 5.0
-        connection = sqlite3.connect(self.path, timeout=timeout)
+        connection = (sqlite3.connect(self.path.absolute().as_uri() + '?mode=rw', uri=True, timeout=timeout)
+                      if getattr(self, '_existing_only', False) else sqlite3.connect(self.path, timeout=timeout))
         if budget:
             connection.set_progress_handler(lambda: int(budget.cancelled.is_set() or time.monotonic() >= budget.deadline), 1000)
         try:
