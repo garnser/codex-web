@@ -1142,6 +1142,13 @@ class ExecutionWorkerService:
             if (item.organization_id, item.workspace_id, item.project_id) != (
                 discovery.organization_id, discovery.workspace_id, discovery.project_id):
                 raise AuthorizationError("procedure discovery scope differs from assignment")
+            # Every checkpoint above revalidates current custody. Only adjacent
+            # identical evidence is redundant; evaluation time alone is not a
+            # new authority/context decision. Preserve the original observation.
+            if (item.procedure_discoveries
+                    and item.procedure_discoveries[-1].model_dump(exclude={"evaluated_at"})
+                    == discovery.model_dump(exclude={"evaluated_at"})):
+                return state
             if len(item.procedure_discoveries) >= 64:
                 raise ProcedureHistoryExhaustedError("procedure history limit: create a new admitted assignment")
             item.procedure_discoveries = (*item.procedure_discoveries, discovery)

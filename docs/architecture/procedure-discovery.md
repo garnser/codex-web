@@ -12,7 +12,12 @@ operation, context checksum, evaluation time, policy source/result, selected exa
 Definition references, candidate outcomes/reasons, blockers, supporting source
 references and instruction checksum/size. It contains no instruction bodies,
 credentials or raw reader exceptions. ActionIntent history is append-only and
-bounded to 64 admissions; assignments use the same bound. Exhaustion requires a
+bounded to 64 admissions; assignments use the same bound. Assignment checkpoints
+always revalidate current actor, scope, fence/status and live lease before recording.
+Adjacent discoveries identical in every field except evaluation time retain their
+original record, including at capacity; no authority result is cached. A changed
+context, policy, actor, outcome or other semantic field still appends or refuses
+at 64. Nonadjacent repeats are retained. Exhaustion requires a
 new admitted execution rather than silently dropping old evidence. Thread history
 retains its existing 1,000-entry bound and now accepts/migrates schema 1.0 to 1.1.
 
