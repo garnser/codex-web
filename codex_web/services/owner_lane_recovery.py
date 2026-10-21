@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import time
@@ -137,6 +138,9 @@ class OwnerLaneRecoveryService:
                 or local.fence not in allowed_fences):
             return None
         return local.fence, time.time()
+
+    def admission_validator(self, queued):
+        return OwnerLaneAdmissionValidator(self, queued)
 
     def validate_queued(self, queued):
         context = queued.owner_lane_recovery
@@ -361,3 +365,108 @@ class OwnerLaneRecoveryService:
         await self.execution.publish_queue_status(binding.thread_id)
         return {'ok': True, 'queued': True, 'threadId': binding.thread_id,
             'queuedId': queued.id, 'preflightAttemptId': attempt.id, 'actionOwner': actionable_owner_value(current)}
+
+
+class OwnerLaneAdmissionValidator:
+    """One admission's witnessed rollover; never persisted or reusable after restart.
+
+    Current work/authority and the unchanged historical terminal assignment are
+    still read on EVERY call. This only links the successor created by this
+    exact admitted invocation; it never authorizes cancelled source custody.
+    """
+    _LIFECYCLE = frozenset({'status', 'fence', 'lease', 'assigned_worker_id',
+        'updated_at', 'started_at'})
+
+    def __init__(self, service, queued):
+        self.service, self.queued = service, queued
+        self.source = self.successor = self.bootstrap = self.claim_id = None
+        self.worker_id = None
+
+    @classmethod
+    def identity(cls, assignment):
+        values = {key: value for key, value in assignment.model_dump(mode='json').items()
+                  if key not in cls._LIFECYCLE}
+        if values.get('agent_profile') is not None:
+            # Canonical worker.claim records its selected worker in the exact
+            # published Profile binding. It must match the leased worker below;
+            # no other Profile/definition field may drift after preparation.
+            values['agent_profile']['selected_worker_id'] = None
+        return values
+
+    def retained_claim(self):
+        attempt = self.service.preflight.store.get('preflight-queued-' + self.queued.id)
+        if (attempt is None or attempt.queued_admission_claim_id != self.claim_id
+                or attempt.status != 'reconciliation_required' or attempt.queued_start_receipt is not None):
+            self.service.refuse('owner_recovery_admission_changed', 'The retained recovery no longer owns its exact native admission claim.')
+        return attempt
+
+    def __call__(self):
+        self.service.validate_queued(self.queued)
+        if self.source is None:
+            return
+        current_source = self.service.execution._assignment_record(self.source.id)
+        if current_source != self.source:
+            self.service.refuse('owner_recovery_custody_changed', 'Historical failed custody changed during recovery admission.')
+        self.retained_claim()
+        if self.successor is None:
+            return
+        bootstrap = self.service.execution._bootstrap_binding_for_thread(self.queued.thread_id)
+        current = self.service.execution._assignment_record(self.successor.id)
+        if (bootstrap != self.bootstrap or current is None
+                or self.identity(current) != self.identity(self.successor)
+                or str(current.status) not in {'claimed', 'running'} or current.fence != 1
+                or current.lease is None or current.lease.expires_at <= time.time()
+                or current.lease.fence != current.fence
+                or current.lease.worker_id != current.assigned_worker_id
+                or not current.assigned_worker_id or current.agent_profile is None
+                or current.agent_profile.selected_worker_id != current.assigned_worker_id
+                or (self.successor.agent_profile.selected_worker_id is not None
+                    and self.successor.agent_profile.selected_worker_id != current.assigned_worker_id)
+                or (self.worker_id is not None and current.assigned_worker_id != self.worker_id)):
+            self.service.refuse('owner_recovery_successor_changed', 'The exact recovery successor no longer owns current fenced custody.')
+        self.worker_id = current.assigned_worker_id
+        # A human arriving during slow bootstrap owns the next input. Unknown
+        # historical originals are retained evidence, not fresh human arrivals.
+        from codex_web.services.turn_queue_policy import TurnQueuePolicy
+        for queued in self.service.dispatch.queue_policy.queue(self.queued.thread_id):
+            if not TurnQueuePolicy.is_human_source(queued.source):
+                continue
+            attempt = self.service.preflight.store.get('preflight-queued-' + queued.id)
+            if attempt is None or attempt.status in {'queued', 'admitting', 'retrying'}:
+                self.service.refuse('owner_recovery_human_waiting', 'Pending human input owns this lane before automated recovery.')
+
+    def begin_rollover(self, previous_assignment_id):
+        if self.source is not None or previous_assignment_id != self.queued.owner_lane_recovery.failed_assignment_id:
+            self.service.refuse('owner_recovery_successor_changed', 'Recovery must replace only its exact observed failed assignment once.')
+        self.service.validate_queued(self.queued)
+        bootstrap = self.service.execution._bootstrap_binding_for_thread(self.queued.thread_id)
+        if bootstrap is None or bootstrap.assignment_id != previous_assignment_id:
+            self.service.refuse('owner_recovery_successor_changed', 'The canonical thread bootstrap changed before recovery.')
+        source = self.service.execution._assignment_record(previous_assignment_id)
+        attempt = self.service.preflight.store.get('preflight-queued-' + self.queued.id)
+        self.claim_id = attempt.queued_admission_claim_id if attempt else None
+        if not self.claim_id:
+            self.service.refuse('owner_recovery_admission_changed', 'Recovery has no retained native admission claim.')
+        self.source = copy.deepcopy(source)
+        self.retained_claim()
+        return source.fence
+
+    def finish_rollover(self, bootstrap):
+        self()  # Fresh work, controls, original custody and retained claim.
+        current = self.service.execution._bootstrap_binding_for_thread(self.queued.thread_id)
+        successor = self.service.execution._assignment_record(bootstrap.assignment_id)
+        profile = successor.agent_profile if successor is not None else None
+        if (current != bootstrap or successor is None or successor.id == self.source.id
+                or str(successor.status) != 'pending' or successor.fence != 0 or successor.lease is not None
+                or (successor.organization_id, successor.workspace_id, successor.project_id)
+                    != (self.source.organization_id, self.source.workspace_id, self.queued.project_id)
+                or successor.execution_id != bootstrap.execution_id
+                or successor.execution_workspace_id != bootstrap.execution_workspace_id
+                or successor.created_by != self.service.execution.control_actor.identity_id
+                or profile is None or (profile.profile_id, profile.profile_revision)
+                    != (self.queued.agent_profile_id, self.queued.agent_profile_revision)
+                or successor.execution_profile_id != self.queued.execution_profile_id
+                or set(successor.resource_ids) != set((*self.queued.writable_repository_resource_ids,
+                    *self.queued.read_only_repository_resource_ids))):
+            self.service.refuse('owner_recovery_successor_changed', 'Canonical recovery successor does not match this retained request scope, Profile and actor.')
+        self.bootstrap, self.successor = copy.deepcopy(bootstrap), copy.deepcopy(successor)
