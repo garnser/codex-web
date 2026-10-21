@@ -8,6 +8,7 @@ from codex_web.services.recovery import RecoveryMemoryConflictError
 from codex_web.recovery import BackupDestinationError
 from codex_web.services.recovery_memory import (
     MemoryHeadroom, RecoveryMemoryRefused, admit, memory_headroom, snapshot_size,
+    require_process_memory_limit,
 )
 from tests import test_recovery as recovery_fixtures
 
@@ -61,6 +62,73 @@ class RecoveryMemoryProbeTests(unittest.TestCase):
                 admit('fixture', 200)
         with self.assertRaisesRegex(RecoveryMemoryRefused, 'size_unknown'):
             snapshot_size(object())
+
+    def require_limit(self):
+        return require_process_memory_limit(
+            maximum_bytes=6*1024**3, proc=self.proc, cgroup=self.cg,
+        )
+
+    def test_operation_budget_uses_actual_own_cgroup_and_never_sets_limits(self):
+        leaf = self.cg / 'parent/service'
+        (leaf / 'memory.swap.max').write_text('0')
+        original = {f.name: f.read_bytes() for f in leaf.iterdir()}
+        observed = self.require_limit()
+        self.assertEqual(observed.memory_max_bytes, 5*1024**3)
+        self.assertEqual(observed.memory_swap_max_bytes, 0)
+        self.assertEqual(observed.current_bytes, 2*1024**3)
+        self.assertEqual({f.name: f.read_bytes() for f in leaf.iterdir()}, original)
+
+    def test_larger_ram_or_nonzero_swap_budget_refuses(self):
+        leaf = self.cg / 'parent/service'
+        for ram, swap in [(7*1024**3, 0), (6*1024**3, 1)]:
+            with self.subTest(ram=ram, swap=swap):
+                (leaf / 'memory.max').write_text(str(ram))
+                (leaf / 'memory.swap.max').write_text(str(swap))
+                with self.assertRaisesRegex(RecoveryMemoryRefused, 'limit_exceeded'):
+                    self.require_limit()
+
+    def test_missing_malformed_or_unlimited_own_budget_never_inherits_a_claim(self):
+        leaf = self.cg / 'parent/service'
+        for name in ('memory.max', 'memory.swap.max', 'memory.current'):
+            for value in (None, 'max', '-1', 'unknown'):
+                with self.subTest(name=name, value=value):
+                    (leaf / 'memory.max').write_text(str(6*1024**3))
+                    (leaf / 'memory.swap.max').write_text('0')
+                    (leaf / 'memory.current').write_text('123')
+                    path = leaf / name
+                    path.unlink() if value is None else path.write_text(value)
+                    with self.assertRaisesRegex(RecoveryMemoryRefused, 'limit_unknown'):
+                        self.require_limit()
+
+    def test_budget_and_headroom_share_namespaced_mount_resolution(self):
+        (self.proc / 'self/cgroup').write_text('0::/tenant/service\n')
+        (self.proc / 'self/mountinfo').write_text(
+            f'1 0 0:1 /tenant {self.cg} rw - cgroup2 cgroup rw\n'
+        )
+        leaf = self.cg / 'service'
+        leaf.mkdir()
+        (leaf / 'memory.max').write_text(str(6*1024**3))
+        (leaf / 'memory.swap.max').write_text('0')
+        (leaf / 'memory.current').write_text(str(64*1024**2))
+        self.assertEqual(self.require_limit().memory_max_bytes, 6*1024**3)
+        # The unchanged production-size estimate fits THIS synthetic low baseline.
+        # This is accounting arithmetic, not a production capture measurement.
+        with patch('codex_web.services.recovery_memory.memory_headroom', side_effect=self.probe):
+            admit('capture_snapshot', 414579972*12 + 164898*512)
+        (leaf / 'memory.current').write_text(str(2253623296))
+        with patch('codex_web.services.recovery_memory.memory_headroom', side_effect=self.probe):
+            with self.assertRaisesRegex(RecoveryMemoryRefused, 'memory_insufficient'):
+                admit('capture_snapshot', 414579972*12 + 164898*512)
+
+    def test_invalid_declared_budget_refuses_before_reading_accounting(self):
+        for maximum, swap in [(True, 0), (0, 0), (6*1024**3, -1)]:
+            with self.subTest(maximum=maximum, swap=swap):
+                with patch('pathlib.Path.read_text', side_effect=AssertionError('must not read')):
+                    with self.assertRaisesRegex(RecoveryMemoryRefused, 'limit_invalid'):
+                        require_process_memory_limit(
+                            maximum_bytes=maximum, maximum_swap_bytes=swap,
+                            proc=self.proc, cgroup=self.cg,
+                        )
 
 
 class RecoveryMemoryIntegrationTests(unittest.TestCase):

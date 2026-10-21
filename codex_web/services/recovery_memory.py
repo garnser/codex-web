@@ -16,10 +16,74 @@ class MemoryHeadroom:
     source: str
 
 
+@dataclass(frozen=True)
+class ProcessMemoryLimit:
+    memory_max_bytes: int
+    memory_swap_max_bytes: int
+    current_bytes: int
+
+
 def _number(value: str) -> int:
     if not value.strip().isdigit():
         raise ValueError("invalid memory counter")
     return int(value.strip())
+
+
+def _unified_cgroup(proc: Path, cgroup: Path) -> tuple[Path, Path]:
+    memberships = (proc / 'self/cgroup').read_text().splitlines()
+    unified = [line[3:] for line in memberships if line.startswith('0::')]
+    if len(unified) != 1 or any(not line.startswith('0::') for line in memberships):
+        raise ValueError('unsupported cgroup hierarchy')
+    membership = Path(unified[0])
+    if not membership.is_absolute() or '..' in membership.parts:
+        raise ValueError('invalid cgroup membership')
+    mounts = []
+    for line in (proc / 'self/mountinfo').read_text().splitlines():
+        before, _, after = line.partition(' - ')
+        if after.split()[:1] == ['cgroup2']:
+            parts = before.split()
+            unescape = lambda s: re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), s)
+            mounts.append((Path(unescape(parts[3])), Path(unescape(parts[4]))))
+    matching = [(root, mount) for root, mount in mounts if mount == cgroup]
+    if len(matching) != 1:
+        raise ValueError('unknown cgroup mount')
+    root, mount = matching[0]
+    return mount / membership.relative_to(root), mount
+
+
+def require_process_memory_limit(
+    *, maximum_bytes: int, maximum_swap_bytes: int = 0,
+    proc: Path = Path('/proc'), cgroup: Path = Path('/sys/fs/cgroup'),
+) -> ProcessMemoryLimit:
+    """Require actual finite limits on this process's cgroup, not CLI assertions.
+
+    This is a budget observation for a separately supervised operation. It does
+    not set limits, reserve memory, authorize Recovery or replace fresh headroom
+    admission. A caller must retain its supervision and lifecycle guards.
+    """
+    if type(maximum_bytes) is not int or maximum_bytes <= 0 or \
+            type(maximum_swap_bytes) is not int or maximum_swap_bytes < 0:
+        raise RecoveryMemoryRefused('recovery_memory_limit_invalid: invalid operation budget')
+    try:
+        current, _ = _unified_cgroup(proc, cgroup)
+        limit = _number((current / 'memory.max').read_text())
+        swap = _number((current / 'memory.swap.max').read_text())
+        used = _number((current / 'memory.current').read_text())
+        if limit <= 0:
+            raise ValueError('invalid cgroup limit')
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        raise RecoveryMemoryRefused(
+            'recovery_memory_limit_unknown: require a dedicated cgroup-v2 operation '
+            'with observable finite memory.max and memory.swap.max'
+        ) from exc
+    if limit > maximum_bytes or swap > maximum_swap_bytes:
+        raise RecoveryMemoryRefused(
+            f'recovery_memory_limit_exceeded: observed_memory_max_bytes={limit}; '
+            f'observed_memory_swap_max_bytes={swap}; maximum_bytes={maximum_bytes}; '
+            f'maximum_swap_bytes={maximum_swap_bytes}; configure the supervised '
+            'operation budget before Recovery; no limits changed'
+        )
+    return ProcessMemoryLimit(limit, swap, used)
 
 
 def memory_headroom(*, proc: Path = Path('/proc'), cgroup: Path = Path('/sys/fs/cgroup')) -> MemoryHeadroom:
@@ -36,27 +100,7 @@ def memory_headroom(*, proc: Path = Path('/proc'), cgroup: Path = Path('/sys/fs/
         available, total = fields['MemAvailable'], fields['MemTotal']
         if not 0 <= available <= total or total <= 0:
             raise ValueError('invalid host memory')
-        memberships = (proc / 'self/cgroup').read_text().splitlines()
-        unified = [line[3:] for line in memberships if line.startswith('0::')]
-        if len(unified) != 1 or any(not line.startswith('0::') for line in memberships):
-            raise ValueError('unsupported cgroup hierarchy')
-        membership = Path(unified[0])
-        if not membership.is_absolute() or '..' in membership.parts:
-            raise ValueError('invalid cgroup membership')
-        # Resolve the visible mount root, including cgroup namespaces/containers.
-        mounts = []
-        for line in (proc / 'self/mountinfo').read_text().splitlines():
-            before, _, after = line.partition(' - ')
-            if after.split()[:1] == ['cgroup2']:
-                parts = before.split()
-                unescape = lambda s: re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), s)
-                mounts.append((Path(unescape(parts[3])), Path(unescape(parts[4]))))
-        matching = [(root, mount) for root, mount in mounts if mount == cgroup]
-        if len(matching) != 1:
-            raise ValueError('unknown cgroup mount')
-        root, mount = matching[0]
-        relative = membership.relative_to(root)
-        current = mount / relative
+        current, mount = _unified_cgroup(proc, cgroup)
         finite = 0
         while True:
             maximum = current / 'memory.max'

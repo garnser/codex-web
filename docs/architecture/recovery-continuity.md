@@ -77,6 +77,18 @@ Recovery/Upgrade errors; no backup or verification PASS is inferred. Operators
 must review workload/capacity when refused. These checks do not mutate memory or
 swap limits, clear caches, restart services or authorize retries of uncertain work.
 
+A separately supervised offline operation can additionally require an actual
+process budget through `require_process_memory_limit`. This reads the current
+process's own cgroup-v2 `memory.max`, `memory.swap.max` and `memory.current` via
+the same mount/membership resolver. A missing, malformed or unlimited own budget,
+a RAM ceiling above the reviewed bound, or swap above its reviewed bound refuses
+before capture. A claimed command-line limit or a different service's budget is
+not proof. The returned numeric observation is suitable for the operator journal;
+it does not set or reserve capacity. The supervisor, stopped-service/source/lock
+guards and fresh canonical Recovery headroom checks remain separately required.
+This check makes no claim that a production dataset fits the budget: an admitted
+canonical capture and isolated restore must actually pass to qualify an upgrade.
+
 Transport/broker queues are not backed up as business truth. After restore they
 are reconstructed from canonical state/outbox semantics.
 
