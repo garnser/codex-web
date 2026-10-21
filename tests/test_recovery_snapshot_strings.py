@@ -73,4 +73,3 @@ class SnapshotStringObservationTests(unittest.TestCase):
         encrypt.assert_not_called()
         put.assert_not_called()
         self.assertEqual(service.store.load().backups, {})
-
