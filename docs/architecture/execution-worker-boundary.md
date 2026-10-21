@@ -322,6 +322,12 @@ fields, stage enums and defaults. Worker discovery and operator inspection use
 the same metadata. Discovery grants no additional authority; mutation-time
 assignment, actor, tenant, resource and handoff checks still apply.
 
+Merge discovery exposes only `pull_request_number`, optional `merge_method`
+(default `squash`) and optional `expected_head_sha`. Readiness-only
+`expected_base_sha` and `expected_base_ref` are excluded. Provider constraints
+still apply (GitLab does not support atomic rebase-and-merge); catalog discovery
+does not grant authority or replace fresh checks and the provider head precondition.
+
 The caller's catalog includes an additive `assignment_context` with only
 assignment/execution/workspace IDs, the execution profile and its pinned
 `execution_profile_definition` reference (ID, kind, schema version, record ID,
