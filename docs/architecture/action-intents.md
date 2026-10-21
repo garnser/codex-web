@@ -162,6 +162,20 @@ fence when security enforcement is configured; absent collections are locked
 without creating them. Shared-namespace changes conservatively require read-only
 reconciliation, even when a change ultimately concerns another object.
 
+Identity is the narrow exception to timestamp-revision equality: every checkpoint
+samples canonical identity state and the actual writer compares its selected,
+locked identity row. Only session `last_seen_at` and service-token `last_used_at`
+are ignored. A live session's idle deadline may extend monotonically, but the
+original sampled deadline still bounds that checkpoint; shortening or expiry
+refuses. Expired/revoked historical sessions cannot extend through this rule.
+Revocation, disabled identities, memberships, roles, policy, absolute expiry and
+all other identity fields remain exact; sampled live absolute/step-up/token expiry
+also refuses when reached. This is an ephemeral admission observation, never a
+cached allow, persistent identity schema, or permission to skip fresh authority
+and assignment checks. GitLab verification propagates typed admission failure so
+the originating receipt records the actual blocker rather than claiming a
+provider-state mismatch without a provider read.
+
 Security refresh evaluates a specific observed intent security snapshot. Its
 conditional write compares that exact policy and decision under the intent row
 lock; an intervening observation wins, including a newer denial. A successful

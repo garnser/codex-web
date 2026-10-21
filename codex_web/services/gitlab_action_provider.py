@@ -879,7 +879,12 @@ class GitLabActionProvider:
                     and self._merge_request_title(observed["title"], False) == observed["title"]
                     and (not result.output.get("metadata_sha256") or
                         result.output["metadata_sha256"] == hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()))
-            except (ActionRequirementError, KeyError, TypeError, ValueError):
+            except ActionRequirementError:
+                # Canonical admission did not reach provider observation. Retain
+                # its typed cause in the originating verification receipt rather
+                # than claiming that GitLab state differs from the receipt.
+                raise
+            except (KeyError, TypeError, ValueError):
                 verified = False
         elif result.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             item = await self.client.merge_request(
