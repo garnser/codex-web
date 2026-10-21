@@ -266,7 +266,9 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             thread_has_live_agent_runtime_session=Mock(return_value=True),
             thread_has_inflight_agent_runtime_assignment=Mock(return_value=False),
         )
-        self.queue_policy = SimpleNamespace(depth=Mock(return_value=1))
+        self.queue_policy = SimpleNamespace(
+            depth=Mock(return_value=1), queue=Mock(return_value=[object()]),
+        )
         self.service = BotEventDispatchService(
             projects=SimpleNamespace(
                 get=Mock(return_value=SimpleNamespace(id="project-1", model="model-1"))

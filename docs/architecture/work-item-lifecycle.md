@@ -207,6 +207,17 @@ reservation: steering reloads canonical state under its per-item lock and
 revalidates the owner, lifecycle conditions, Project and exact thread before
 dispatch.
 
+A nonempty owner thread queue is not proof that the current request is queued.
+`already_queued` requires an exact current canonical prompt (including its
+artifact/result context), Work Item, Project, repository read/write scope and
+handoff timestamp. An unrelated, stale or unreadable retained request returns
+`owner_queue_context_mismatch` or `owner_queue_context_unavailable`; a concurrent
+drain returns `owner_queue_context_changed`. These outcomes preserve every
+original request and FIFO order, start no native work and grant no delivery or
+ACK evidence. The actual dispatch repeats the identity check at its idle-queue
+race boundary. The Work Item inspector exposes the queue outcome and repair
+action, while a matching queued request remains explicitly delivery-unproven.
+
 An identical normalized progress update remains an attributed audit receipt and
 owner activity acknowledgement. It does not advance `last_meaningful_update_at`
 or schedule another owner dispatch/continuity check solely for the unchanged

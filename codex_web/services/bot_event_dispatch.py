@@ -378,6 +378,23 @@ class BotEventDispatchService:
         if owner_routing_pin is not None or provider_notification_pin is not None:
             # Recipient-pinned inputs need the durable retained claim and the
             # synchronous guarded native transport, including an idle thread.
+            if require_idle:
+                recipient_active = self.execution.thread_is_active(recipient_thread_id)
+                if recipient_active or self.queue_policy.depth(recipient_thread_id):
+                    return {
+                        'ok': True, 'queued': False,
+                        'skipped': ('already_active' if recipient_active else
+                            TurnQueuePolicy.work_item_queue_outcome(
+                                self.queue_policy.queue(recipient_thread_id),
+                                work_item_ref=work_item_ref, project_id=project.id,
+                                message=text, repository_resource_id=repository_resource_id,
+                                writable_repository_resource_ids=writable_repository_resource_ids,
+                                read_only_repository_resource_ids=read_only_repository_resource_ids,
+                                handoff_requested_at=handoff_requested_at,
+                            )),
+                        'threadId': recipient_thread_id,
+                        'dispatchScope': dispatch_scope,
+                    }
             result = await queue_turn('event_turn_queued_owner_routing' if owner_routing_pin is not None
                                       else 'event_turn_queued_provider_notification')
             self.execution.schedule_queue_drain(recipient_thread_id)
@@ -397,7 +414,15 @@ class BotEventDispatchService:
                     "skipped": (
                         "already_active"
                         if thread_active
-                        else "already_queued"
+                        else TurnQueuePolicy.work_item_queue_outcome(
+                            self.queue_policy.queue(binding.thread_id),
+                            work_item_ref=work_item_ref, project_id=project.id,
+                            message=text,
+                            repository_resource_id=repository_resource_id,
+                            writable_repository_resource_ids=writable_repository_resource_ids,
+                            read_only_repository_resource_ids=read_only_repository_resource_ids,
+                            handoff_requested_at=handoff_requested_at,
+                        )
                     ),
                     "threadId": binding.thread_id,
                     "dispatchScope": dispatch_scope,
@@ -643,7 +668,14 @@ class BotEventDispatchCompatibilityFacade:
                     "skipped": (
                         "already_active"
                         if thread_active
-                        else "already_queued"
+                        else TurnQueuePolicy.work_item_queue_outcome(
+                            host._thread_queue(binding.thread_id) if hasattr(host, '_thread_queue') else None,
+                            work_item_ref=work_item_ref, project_id=project.id,
+                            message=text,
+                            repository_resource_id=repository_resource_id,
+                            writable_repository_resource_ids=writable_repository_resource_ids,
+                            read_only_repository_resource_ids=read_only_repository_resource_ids,
+                        )
                     ),
                     "threadId": binding.thread_id,
                 }

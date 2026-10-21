@@ -3956,6 +3956,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
     truncate_text=lambda value, limit: str(value)[:limit],
     thread_is_active=turn_execution_service.thread_is_active,
     thread_queue_depth=turn_queue_policy.depth,
+    thread_queue=turn_queue_policy.queue,
     thread_recently_active=bot_event_dispatch_service.thread_recently_active,
     watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
