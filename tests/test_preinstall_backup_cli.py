@@ -72,6 +72,15 @@ class OfflineHostGuardTests(unittest.TestCase):
                 self.guard.wait_stopped(100)
         sleep.assert_not_called()
 
+    def test_stop_observation_and_qualification_cannot_cross_freshness_deadline(self):
+        for clock in ([99, 101], [99, 99, 101]):
+            with self.subTest(clock=clock), patch.object(self.guard, 'service', return_value=self.stopped), \
+                    patch.object(self.guard, 'check') as check, \
+                    patch.object(cli.time, 'time', side_effect=clock):
+                with self.assertRaisesRegex(RuntimeError, 'expired'):
+                    self.guard.wait_stopped(100)
+                self.assertEqual(check.call_count, 0 if len(clock) == 2 else 1)
+
 
 class RecoveryObservationTests(unittest.TestCase):
     def test_actual_installed_executor_requires_typed_zero_counts(self):

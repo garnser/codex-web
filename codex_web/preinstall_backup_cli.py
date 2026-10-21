@@ -127,9 +127,13 @@ class OfflineHostGuard:
     def wait_stopped(self, deadline):
         while time.time() <= deadline:
             current = self.service()
+            if time.time() > deadline:
+                raise RuntimeError('Fresh pre-stop observation expired during service observation')
             if current.get('ActiveState') == 'inactive':
                 self.stopped = True
                 self.check()
+                if time.time() > deadline:
+                    raise RuntimeError('Fresh pre-stop observation expired during stop qualification')
                 return
             if current.get('ActiveState') not in {'active', 'deactivating'}:
                 raise RuntimeError('Service stop did not complete cleanly')
