@@ -2178,6 +2178,8 @@ class TurnExecutionService:
                 self.owner_routing_validator(owner_routing_pin, thread_id=thread_id, project=project,
                     work_item_ref=work_item_ref, handoff_requested_at=handoff_requested_at,
                     queued_admission_attempt_id=queued_admission_attempt_id,
+                    writable_repository_resource_ids=writable_repository_resource_ids,
+                    read_only_repository_resource_ids=read_only_repository_resource_ids,
                     agent_profile_id=agent_profile_id, agent_profile_revision=agent_profile_revision,
                     agent_profile_actor_id=agent_profile_actor_id)
             except (LookupError, RuntimeError, ValueError, HTTPException) as exc:

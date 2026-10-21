@@ -3957,6 +3957,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
     truncate_text=lambda value, limit: str(value)[:limit],
     thread_is_active=turn_execution_service.thread_is_active,
     thread_queue_depth=turn_queue_policy.depth,
+    thread_queue=turn_queue_policy.queue,
     thread_recently_active=bot_event_dispatch_service.thread_recently_active,
     watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
@@ -3984,6 +3985,7 @@ canonical_work_item_continuity_service.owner_routing = owner_routing_service
 owner_routing_service.delivery_recorder = canonical_work_item_continuity_service.record_handoff_delivery
 execution_preflight_service.queued_start_observer = owner_routing_service.project_native_start
 bot_event_dispatch_service.owner_routing_context = owner_routing_service.context_for_pin
+bot_event_dispatch_service.owner_routing_repository_scope = owner_routing_service.repository_scope_for_pin
 turn_execution_service.owner_routing_validator = owner_routing_service.validate_native
 app.state.owner_routing_service = owner_routing_service
 work_item_continuity_service.bind(

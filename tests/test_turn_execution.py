@@ -1117,7 +1117,12 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     await service.start_thread_turn_now('t1',
                         project=Project(id='p1', name='Project', path='/workspace/project'),
                         message='Original alias recovery', sandbox='workspace-write', approval_policy='on-request',
-                        source='owner-work-watchdog', owner_routing_pin=object(), work_item_ref='group/project#1')
+                        source='owner-work-watchdog', owner_routing_pin=object(), work_item_ref='group/project#1',
+                        writable_repository_resource_ids=('data',), read_only_repository_resource_ids=('core',))
+                self.assertTrue(calls)
+                for context in calls:
+                    self.assertEqual(context['writable_repository_resource_ids'], ('data',))
+                    self.assertEqual(context['read_only_repository_resource_ids'], ('core',))
                 self.assertEqual(caught.exception.detail['code'], 'owner_routing_definition_changed')
                 self.assertFalse(any(method == 'turn/start' for method, _ in sessions.session.requests))
                 self.assertFalse(service.thread_is_active('t1'))
