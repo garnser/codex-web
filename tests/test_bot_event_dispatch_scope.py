@@ -107,6 +107,24 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs['agent_profile_actor_id'], actor.identity_id)
         self.execution.schedule_queue_drain.assert_called_once_with(self.binding.thread_id)
 
+    async def test_internal_recipient_queues_to_platform_without_rewriting_core_source_or_reply(self):
+        self.install_captured_target()
+        before = self.binding.model_dump(mode='json')
+        pin = SimpleNamespace(recipient=SimpleNamespace(thread_id='platform-thread'))
+        profile = SimpleNamespace(profile_id='platform-quinn', revision=6, execution_profile_id='repository-write')
+        self.service.owner_routing_context = Mock(return_value=(profile, SimpleNamespace(identity_id='root')))
+        result = await self.service.dispatch(self.binding, 'Review exact Platform artifact', 'work-item-handoff',
+            owner_routing_pin=pin, repository_resource_id='platform', writable_repository_resource_ids=('platform',))
+        queued = self.execution.enqueue_turn.call_args.kwargs
+        self.assertEqual(queued['thread_id'], 'platform-thread')
+        self.assertEqual(queued['agent_profile_id'], 'platform-quinn')
+        self.assertEqual(queued['reply_target'], self.captured)
+        self.assertEqual(result['threadId'], 'platform-thread')
+        self.execution.schedule_queue_drain.assert_called_once_with('platform-thread')
+        self.service.settings.get.assert_called_once_with('platform-thread')
+        self.service.bindings.upsert.assert_not_called()
+        self.assertEqual(self.binding.model_dump(mode='json'), before)
+
     async def test_immediate_dispatch_and_recovery_revalidate_captured_target(self):
         self.install_captured_target()
         self.execution.thread_is_active.return_value = False
