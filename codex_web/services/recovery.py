@@ -316,6 +316,7 @@ class RecoveryService:
     def _audit_anchor(
         self,
         actor: AuthenticationActor,
+        documents: dict[str, Any],
     ) -> tuple[str | None, str | None]:
         if self.audit is None:
             return None, None
@@ -327,6 +328,22 @@ class RecoveryService:
             raise RecoveryConflictError(
                 f"cannot back up invalid autonomy audit: {result.reason}"
             )
+        # Live integrity remains mandatory, but its tail may have advanced while
+        # the exported StateStore snapshot was being checksummed. Bind the
+        # backup only to the independently verified audit in that exact export.
+        result = self.audit.verify_snapshot(
+            documents.get(AutonomyAuditStore.namespace),
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        if result.status == AuditIntegrityStatus.FAILED:
+            raise RecoveryConflictError(
+                f"cannot back up invalid snapshot autonomy audit: {result.reason}"
+            )
+        if documents.get(AutonomyAuditStore.namespace) is None:
+            # Retain the legacy absent-audit representation. The first valid
+            # live append can occur after an export with no audit document.
+            return None, None
         return result.root_hash, result.checkpoint_id
 
     def create_backup(
@@ -348,7 +365,7 @@ class RecoveryService:
         documents = self._snapshot_documents()
         checksum = state_documents_checksum(documents)
         status = self.state_store.status()
-        root_hash, checkpoint_id = self._audit_anchor(actor)
+        root_hash, checkpoint_id = self._audit_anchor(actor, documents)
         now = float(self.clock())
         backup_material = (
             f"{actor.organization_id}:{actor.workspace_id}:{now}:{checksum}"
