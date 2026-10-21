@@ -110,6 +110,15 @@ class ReadOnlyReconciliationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError,'backfill is progressing'):
                 store.unsettled_readiness_origin(self.assignment.id)
             self.assertEqual([item.id for item in store.unsettled_readiness_origin(self.assignment.id)],[intent_id])
+            # Independent current reader processes alternate over a catalog
+            # larger than one bounded pass without resetting each other's cursor.
+            for epoch in ('c'*32,'d'*32):
+                with patch('codex_web.storage.action_intents._ORIGIN_INDEX_EPOCH',epoch):
+                    with self.assertRaisesRegex(ValueError,'backfill is progressing'):
+                        store.unsettled_readiness_origin(self.assignment.id)
+            for epoch in ('c'*32,'d'*32):
+                with patch('codex_web.storage.action_intents._ORIGIN_INDEX_EPOCH',epoch):
+                    self.assertEqual([item.id for item in store.unsettled_readiness_origin(self.assignment.id)],[intent_id])
             # An old writer does not maintain the new secondary projection.
             alias=next(iter(store._ready_origin_indexes(current)))
             self.sqlite.record_apply(store.records_namespace,upserts={alias:None})

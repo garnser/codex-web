@@ -359,7 +359,9 @@ class ActionIntentStore:
         complete index. Ordinary updates maintain aliases in the same commit.
         """
         self._ensure_records()
-        marker = 'ready-origin-index:1.0'
+        # Separate cursors keep current replicated readers from restarting
+        # each other's bounded migration. Aliases remain shared canonical data.
+        marker = 'ready-origin-index:1.0:' + _ORIGIN_INDEX_EPOCH
         for _ in range(8):
             progress = self.store.record_get(self.records_namespace, marker)
             if progress is not None and (not isinstance(progress,dict)

@@ -275,7 +275,9 @@ READY origin projection before inspection and again before superseding. It holds
 the original instead of knowingly retiring required custody. The projection is
 maintained by ordinary canonical intent updates and backfills in bounded pages;
 a fresh reader process rebuilds it so an earlier writer version cannot leave a
-false complete index. Retained terminal history does not impose a permanent
+false complete index. Each reader epoch retains its own small progress record;
+replicated readers cannot reset one another. These migration/provenance records
+remain in the existing canonical collection and are not authoritative leases. Retained terminal history does not impose a permanent
 renewal limit. These two checks mitigate retirement but do not form an atomic
 provider-attempt/cancellation transaction; the remaining interleaving guarantee is
 tracked in [#1663](https://github.com/garnser/codex-web/issues/1663). No automatic
