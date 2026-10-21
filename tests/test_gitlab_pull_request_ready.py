@@ -167,6 +167,95 @@ class GitLabPullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(self.pr_reads, 5)
         self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
 
+    def _ready_browser_session(self):
+        from codex_web.identity import AuthenticationAssurance
+        return self.identity.create_session(identity_id=self.admin.identity_id,
+            scope=self.admin.tenant, assurance=AuthenticationAssurance.LOCAL_TRUSTED)
+
+    async def test_session_touches_through_verification_and_writer_guard_do_not_deny_ready(self):
+        session = self._ready_browser_session()
+        admission = self.intents.execution.procedure_admission
+        settlement = self.intents._ready_settlement_guard
+        touches = []
+        def touch():
+            self.identity.authenticate_session(session.session_token, touch=True)
+            touches.append(True)
+        async def checkpoint(*args, **kwargs):
+            result = await admission(*args, **kwargs)
+            if args[-1] == 'verify':
+                touch()
+            return result
+        def writer_guard(*args, **kwargs):
+            # A browser poll after admission but before the actual writer takes
+            # its canonical locks must also compare the locked semantic state.
+            touch()
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents.execution, 'procedure_admission', checkpoint), \
+             patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            status, _, body = await self.submit(key='browser-session-touches')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'succeeded', body)
+        self.assertGreater(len(touches), 3)
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
+
+    async def _reject_changed_verification_identity(self, change):
+        session = self._ready_browser_session()
+        admission = self.intents.execution.procedure_admission
+        changed = []
+        async def checkpoint(*args, **kwargs):
+            result = await admission(*args, **kwargs)
+            if args[-1] == 'verify' and not changed:
+                change(session)
+                changed.append(True)
+            return result
+        with patch.object(self.intents.execution, 'procedure_admission', checkpoint):
+            status, _, body = await self.submit(key='changed-verification-identity')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'requires_reconciliation', body)
+        self.assertFalse(self.pr['draft'])  # Do not erase the actual provider write.
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        verification = self.intents.history(body['item']['id'], self.admin)['verifications'][-1]
+        self.assertFalse(verification['verified'])
+        self.assertIn('ActionRequirementError', str(verification['findings']))
+        self.assertNotIn('GitLab provider state differs', str(verification))
+        return verification
+
+    async def test_session_revocation_retains_typed_admission_denial_after_write(self):
+        verification = await self._reject_changed_verification_identity(
+            lambda session: self.identity.revoke_session(session.session_id, reason='fixture'))
+        self.assertIn('Readiness admission changed during checkpoint', str(verification['findings']))
+
+    async def test_shortened_idle_deadline_remains_meaningful_even_before_expiry(self):
+        def shorten(session):
+            def update(state):
+                item = next(item for item in state.sessions if item.id == session.session_id)
+                item.idle_expires_at -= 1
+                return state
+            self.identity.store.update(update)
+        await self._reject_changed_verification_identity(shorten)
+
+    async def test_session_revocation_after_checkpoint_is_rejected_under_writer_lock(self):
+        session = self._ready_browser_session()
+        settlement = self.intents._ready_settlement_guard
+        revoked = []
+        def writer_guard(*args, **kwargs):
+            if not revoked:
+                self.identity.revoke_session(session.session_id, reason='fixture-before-writer')
+                revoked.append(True)
+            return settlement(*args, **kwargs)
+        with patch.object(self.intents, '_ready_settlement_guard', writer_guard):
+            _, _, body = await self.submit(key='session-revoked-before-actual-write')
+        self.assertEqual(body['item']['status'], 'requires_reconciliation', body)
+        verification = self.intents.history(body['item']['id'], self.admin)['verifications'][-1]
+        self.assertFalse(verification['verified'])
+        self.assertIn('Readiness admission changed at settlement', str(verification['findings']))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    async def test_verification_fence_change_still_denies_after_provider_write(self):
+        await self._reject_changed_verification_identity(
+            lambda session: self.change_assignment(fence=self.assignment.fence+1))
+
     async def test_already_ready_reads_only(self):
         self.pr.update(draft=False, title='Preserve real title')
         _, _, body = await self.submit()
