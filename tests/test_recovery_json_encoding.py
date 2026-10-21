@@ -2,6 +2,7 @@
 import hashlib
 import json
 import unittest
+import tracemalloc
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,6 +39,20 @@ class RecoveryEncodingTests(unittest.TestCase):
             value = {'records': [{'number': i} for i in range(1000)]}
             encoded = canonical_json_bytes(value)
             self.assertEqual(json.loads(encoded), value)
+
+    def test_large_catalog_encoding_avoids_second_full_output_buffer(self):
+        # Construct before tracing: measure encoding overhead, not retained input.
+        # Many modest records model catalog traversal without one giant string
+        # whose required escaping would itself dominate temporary allocations.
+        value = {"records": ["x" * 1024 for _ in range(16384)]}
+        tracemalloc.start()
+        try:
+            encoded = canonical_json_bytes(value)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, len(encoded) * 1.35)
+        self.assertEqual(json.loads(encoded), value)
 
     def test_invalid_payloads_still_fail(self):
         with self.assertRaises(TypeError):

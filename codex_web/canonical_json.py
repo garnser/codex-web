@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from collections.abc import Iterator
 from typing import Any, Callable
 
@@ -17,7 +18,10 @@ def canonical_json_chunks(value: Any, *, default: Callable | None = None) -> Ite
 
 
 def canonical_json_bytes(value: Any, *, default: Callable | None = None) -> bytes:
-    result = bytearray()
-    for chunk in canonical_json_chunks(value, default=default):
-        result.extend(chunk)
-    return bytes(result)
+    # BytesIO exposes its completed immutable buffer without the second full
+    # payload allocation required by bytes(bytearray). Do not write after
+    # getvalue(): that would force a copy of the shared backing buffer.
+    with BytesIO() as result:
+        for chunk in canonical_json_chunks(value, default=default):
+            result.write(chunk)
+        return result.getvalue()

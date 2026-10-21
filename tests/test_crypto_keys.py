@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import tracemalloc
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -102,6 +103,24 @@ class CryptoKeyServiceTests(unittest.TestCase):
         self.assertNotIn("private decision payload", persisted)
         self.assertNotIn(envelope.ciphertext_b64, persisted)
         self.assertEqual(len(self.backend.get(key.versions[0].backend_ref)), 32)
+
+    def test_large_encryption_releases_ciphertext_before_base64_text_copy(self) -> None:
+        key = self._key()
+        plaintext = b"x" * (8 * 1024 * 1024)
+        tracemalloc.start()
+        try:
+            envelope = self.service.encrypt(
+                key.id, plaintext, self.context, actor=self.actor,
+            )
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # Previously ciphertext + base64 bytes + base64 str overlapped (~3.67x).
+        # Retain room for key/audit bookkeeping, while rejecting that full copy.
+        self.assertLess(peak, len(plaintext) * 3.3)
+        self.assertEqual(
+            self.service.decrypt(envelope, self.context, actor=self.actor), plaintext,
+        )
 
     def test_context_and_tenant_substitution_fail_closed(self) -> None:
         key = self._key()
