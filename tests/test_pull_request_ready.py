@@ -198,6 +198,78 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(method=='GET' for method,_ in self.calls[count:]))
         self.assertEqual(sum(m=='POST' for m,_ in self.calls),1)
 
+    async def test_exhausted_readonly_reconciliation_crosses_broker_and_provider_without_replay(self):
+        import time
+        from codex_web.services.procedure_discovery import BrokerProcedureAdmissionService
+        from codex_web.procedure_discovery import ProcedureDiscovery
+        self.mode = 'lost'
+        status, _, body = await self.submit()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'uncertain', body)
+        intent_id = body['item']['id']
+        current = self.workers.store.assignment(self.assignment.id)
+        for index in range(64 - len(current.procedure_discoveries)):
+            self.workers.record_procedure_discovery(self.assignment.id, ProcedureDiscovery(
+                actor_identity_id=self.admin.identity_id, organization_id=self.admin.organization_id,
+                workspace_id=self.admin.workspace_id, project_id=self.assignment.project_id,
+                resource_ids=(self.target.id,), operation='repository.read',
+                context_checksum='prior-' + str(index), evaluated_at=time.time(),
+                outcome='no_match', policy_source='canonical:test', policy_allows=True),
+                expected_fence=self.assignment.fence, actor=self.admin)
+        original = self.workers.store.assignment(self.assignment.id).procedure_discoveries
+        from codex_web.action_intents import ActionIntentReconcileRequest
+        from codex_web.services.action_providers import ActionRequirementError
+        intent = self.intents.get(intent_id, self.admin)
+        request = ActionIntentReconcileRequest(retry_if_idempotent=False)
+        self.assertIsNone(self.intents.read_only_reconciliation_scope(intent,
+            ActionIntentReconcileRequest(retry_if_idempotent=True), self.worker_actor))
+        with self.assertRaises(ActionRequirementError):
+            self.intents.read_only_reconciliation_scope(intent, request, self.worker_actor,
+                assignment=self.assignment.model_copy(update={'fence':self.assignment.fence+1}))
+        for change in ({'fence':self.assignment.fence+1},
+                {'lease':self.assignment.lease.model_copy(update={'expires_at':0})}):
+            with self.subTest(change=change):
+                self.change_assignment(**change)
+                with self.assertRaises(ActionRequirementError):
+                    self.intents.read_only_reconciliation_scope(intent, request, self.worker_actor)
+                self.change_assignment(fence=self.assignment.fence, lease=self.assignment.lease)
+        self.service.procedure_admission = BrokerProcedureAdmissionService(
+            self.intents.procedure_discovery, self.workers, self.admin)
+        count = len(self.calls)
+        status, _, settled = await self._request('POST',
+            '/api/action-intents/' + intent_id + '/reconcile?repository_resource_id=' + self.target.id,
+            payload={'retry_if_idempotent': False})
+        self.assertEqual(status, 200, settled)
+        self.assertEqual(settled['item']['status'], 'succeeded', settled)
+        self.assertTrue(all(method == 'GET' for method, _ in self.calls[count:]))
+        self.assertEqual(sum(method == 'POST' for method, _ in self.calls), 1)
+        retained = self.workers.store.assignment(self.assignment.id).procedure_discoveries
+        self.assertEqual(retained[:64], original)
+        self.assertGreater(len(retained), 64)
+        self.assertIn('action_intent.reconcile', {entry.operation for entry in retained[64:]})
+        self.assertIn('code-host.pull-request.ready', {entry.operation for entry in retained[64:]})
+
+    async def test_recovery_context_cannot_execute_rollback_or_verify_another_intent(self):
+        from codex_web.procedure_reconciliation import ReadOnlyReconciliationScope, read_only_reconciliation
+        from codex_web.procedure_discovery import procedure_action_intent
+        from codex_web.services.action_providers import ActionRequirementError
+        import time
+        scope = ReadOnlyReconciliationScope(id='a'*32, intent_id='retained-ready',
+            assignment_id=self.assignment.id, execution_id=self.assignment.execution_id,
+            worker_id=self.worker.id, fence=self.assignment.fence,
+            requester_identity_id=self.admin.identity_id, organization_id=self.admin.organization_id,
+            workspace_id=self.admin.workspace_id, project_id=self.assignment.project_id,
+            resource_ids=(self.target.id,), agent_profile=self.assignment.agent_profile,
+            execution_profile_definition=self.assignment.execution_profile_definition, expires_at=time.time()+300)
+        with read_only_reconciliation(scope), procedure_action_intent(scope.intent_id):
+            for phase in ('execute', 'rollback'):
+                with self.subTest(phase=phase), self.assertRaises(ActionRequirementError):
+                    await self.intents.procedure_provider_admission(None, None, None, None, self.worker_actor, phase)
+        with read_only_reconciliation(scope), procedure_action_intent('another-ready'):
+            with self.assertRaisesRegex(ActionRequirementError, 'intent changed'):
+                await self.intents.procedure_provider_admission(None, None, None, None, self.worker_actor, 'verify')
+        self.assertEqual(self.calls, [])
+
     async def test_foreign_target_and_stale_head_are_known_precondition_failures(self):
         self.pr['base']['repo']['full_name']='other/repo'
         _,_,body=await self.submit()

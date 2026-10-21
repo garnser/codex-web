@@ -1142,6 +1142,10 @@ class ExecutionWorkerService:
             if (item.organization_id, item.workspace_id, item.project_id) != (
                 discovery.organization_id, discovery.workspace_id, discovery.project_id):
                 raise AuthorizationError("procedure discovery scope differs from assignment")
+            from codex_web.procedure_reconciliation import current_reconciliation_scope, NORMAL_PROCEDURE_HISTORY
+            recovery = current_reconciliation_scope()
+            if recovery is not None and len(item.procedure_discoveries) >= NORMAL_PROCEDURE_HISTORY:
+                return self._record_reconciliation_discovery(state, item, discovery, recovery)
             # Every checkpoint above revalidates current custody. Only adjacent
             # identical evidence is redundant; evaluation time alone is not a
             # new authority/context decision. Preserve the original observation.
@@ -1159,6 +1163,54 @@ class ExecutionWorkerService:
             raise AssignmentNotFoundError("execution assignment not found")
         state = self.store.update_assignment(current.assigned_worker_id or "", assignment_id, apply)
         return self._assignment(state, assignment_id, actor)
+
+    def _record_reconciliation_discovery(self, state, item, discovery, scope):
+        """Append bounded recovery evidence; never discard the original history."""
+        from codex_web.procedure_reconciliation import (
+            RECOVERY_PREFIX, MAX_RECOVERY_ATTEMPTS, MAX_RECOVERY_DECISIONS, NORMAL_PROCEDURE_HISTORY)
+        if (scope.expires_at <= time.time() or scope.assignment_id != item.id
+                or scope.execution_id != item.execution_id or scope.worker_id != item.assigned_worker_id
+                or scope.fence != item.fence or scope.requester_identity_id != item.created_by
+                or item.lease is None or item.lease.worker_id != scope.worker_id or item.lease.fence != scope.fence
+                or (item.deadline_at is not None and item.deadline_at <= time.time())
+                or scope.requester_identity_id != discovery.actor_identity_id
+                or (scope.organization_id, scope.workspace_id, scope.project_id)
+                    != (item.organization_id, item.workspace_id, item.project_id)
+                or scope.agent_profile != item.agent_profile
+                or scope.execution_profile_definition != item.execution_profile_definition
+                or not scope.resource_ids
+                or discovery.operation not in {'action_intent.reconcile', 'code-host.pull-request.ready'}
+                or set(discovery.resource_ids) != set(scope.resource_ids)):
+            raise WorkerLeaseError('read-only reconciliation admission changed')
+        worker = self.store.worker(scope.worker_id)
+        if (worker is None or worker.lifecycle not in {WorkerLifecycle.ACTIVE, WorkerLifecycle.DRAINING}
+                or worker.revoked_at is not None
+                or (worker.organization_id, worker.workspace_id) != (scope.organization_id, scope.workspace_id)):
+            raise WorkerLeaseError('read-only reconciliation worker changed')
+        if any(value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
+            raise WorkerLeaseError('fresh discovery cannot supply recovery provenance')
+        attempts = {}
+        for previous in item.procedure_discoveries[NORMAL_PROCEDURE_HISTORY:]:
+            markers = [value for value in previous.supporting_sources if value.startswith(RECOVERY_PREFIX)]
+            marker_parts = markers[0][len(RECOVERY_PREFIX):].split(':', 1) if len(markers) == 1 else ()
+            if (len(marker_parts) != 2 or len(marker_parts[0]) != 32
+                    or any(c not in '0123456789abcdef' for c in marker_parts[0]) or not marker_parts[1]):
+                raise ProcedureHistoryExhaustedError('unrecognized procedure recovery history; inspect retained evidence')
+            attempts.setdefault(markers[0], []).append(previous)
+        if scope.marker not in attempts and len(attempts) >= MAX_RECOVERY_ATTEMPTS:
+            raise ProcedureHistoryExhaustedError('read-only reconciliation recovery attempt limit')
+        # Markers are provenance/counting only. Admission comes exclusively
+        # from the server-produced current context and fresh checks above.
+        marked = discovery.model_copy(update={'supporting_sources': tuple(
+            value for value in discovery.supporting_sources if not value.startswith(RECOVERY_PREFIX)) + (scope.marker,)})
+        current = attempts.get(scope.marker, [])
+        if current and current[-1].model_dump(exclude={'evaluated_at'}) == marked.model_dump(exclude={'evaluated_at'}):
+            return state
+        if len(current) >= MAX_RECOVERY_DECISIONS:
+            raise ProcedureHistoryExhaustedError('read-only reconciliation changed-decision limit')
+        item.procedure_discoveries = (*item.procedure_discoveries, marked)
+        item.updated_at = time.time()
+        return state
 
     def list_assignments(
         self,

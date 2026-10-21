@@ -235,3 +235,36 @@ unknown preflights and coordination receipts retain their reconciliation state;
 renewal only admits a separately retained current request. Existing thread and
 assignment inspectors expose blockers/history; there is no new UI object, schema,
 queue, Definition, timer or model call.
+
+
+### Same-origin read-only settlement reserve
+
+An attempted READY action with an unknown outcome can retain the exact live
+origin after its normal 64 discovery decisions are consumed. Only an explicit
+`action_intent.reconcile` with `retry_if_idempotent: false` may obtain an internal
+read-only settlement scope. The canonical engine derives it from the current
+intent, original requester, live assignment/fence/worker, current Profile and
+Definition, tenant/project and repository resource. It expires within five
+minutes and cannot authorize execute, rollback, another intent or new custody.
+Both the outer broker and inner provider verification use the same scope while
+still performing their ordinary current authority, credential and admission
+checks. No provider write is retried.
+
+Recovery evidence appends to the existing assignment discovery tuple without
+changing any original entry. At most four recovery attempts may retain at most
+eight distinct checkpoint decisions each; fresh identical adjacent decisions in
+one attempt retain their first observation after current guards run again.
+Existing `supporting_sources` carries a versioned server marker for durable
+counting/provenance only. A serialized marker does not grant admission, malformed
+extra history refuses recovery, and ordinary execution remains capped at 64.
+Existing assignment/broker inspectors retain the discoveries and refusal reason;
+no new persisted object or recipient/authority registry is introduced. Legacy
+readers and ordinary renewal writers preserve the appended evidence.
+
+An already-stranded origin may also prevent canonical source deployment because
+an unresolved action and its live originating assignment block drain. The future
+service semantics alone do not resolve that bootstrap cycle. Incident tooling
+must use a separately reviewed canonical composition, genuine authenticated
+original worker, current authority and read-only provider transport; it must not
+cancel the origin, edit discovery history, repeat READY or claim the running
+service has been upgraded.
