@@ -416,6 +416,8 @@ class OwnerLaneAdmissionValidator:
                 or self.identity(current) != self.identity(self.successor)
                 or str(current.status) not in {'claimed', 'running'} or current.fence != 1
                 or current.lease is None or current.lease.expires_at <= time.time()
+                or current.lease.fence != current.fence
+                or current.lease.worker_id != current.assigned_worker_id
                 or not current.assigned_worker_id or current.agent_profile is None
                 or current.agent_profile.selected_worker_id != current.assigned_worker_id
                 or (self.successor.agent_profile.selected_worker_id is not None

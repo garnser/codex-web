@@ -140,7 +140,9 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         for change in ({'fence': 2}, {'created_by': 'other'}, {'resource_ids': ('foreign',)},
                        {'assigned_worker_id': 'other-worker'}, {'status': AssignmentStatus.CANCELLED},
                        {'agent_profile': old.agent_profile.model_copy(update={'selected_worker_id':'foreign'})},
-                       {'agent_profile': old.agent_profile.model_copy(update={'profile_revision':7})}):
+                       {'agent_profile': old.agent_profile.model_copy(update={'profile_revision':7})},
+                       {'lease':old.lease.model_copy(update={'worker_id':'foreign'})},
+                       {'lease':old.lease.model_copy(update={'fence':2})}):
             with self.subTest(change=change):
                 records['successor'] = old.model_copy(update=change)
                 with self.assertRaises(HTTPException): validator()
