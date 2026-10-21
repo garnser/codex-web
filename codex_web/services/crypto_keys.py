@@ -613,13 +613,17 @@ class CryptoKeyService:
             plaintext,
             self._data_aad(context),
         )
+        encoded_ciphertext = base64.b64encode(ciphertext)
+        del ciphertext
+        ciphertext_b64 = encoded_ciphertext.decode("ascii")
+        del encoded_ciphertext
         envelope = EncryptedEnvelope(
             key_id=key.id,
             key_version=version.version,
             wrap_nonce_b64=base64.b64encode(wrap_nonce).decode("ascii"),
             wrapped_data_key_b64=base64.b64encode(wrapped).decode("ascii"),
             data_nonce_b64=base64.b64encode(data_nonce).decode("ascii"),
-            ciphertext_b64=base64.b64encode(ciphertext).decode("ascii"),
+            ciphertext_b64=ciphertext_b64,
             context_digest=self._context_digest(context),
         )
 

@@ -51,7 +51,10 @@ StateStore documents, avoiding a recursive Pydantic serialization copy of the
 catalog. Decoded documents are released before encryption; restore likewise
 releases envelope/plaintext buffers before subsequent decoding and validation.
 Isolated restore sanitizes and writes one namespace at a time instead of copying
-the whole decoded catalog. These reduce overlapping representations; they do not
+the whole decoded catalog. Canonical JSON accumulation exposes its completed immutable buffer without
+copying a full bytearray; encryption releases binary ciphertext before materializing
+its base64 text. Memory regressions measure both phases independently.
+These reduce overlapping representations; they do not
 make capture constant-memory or remove the need to size the service for the
 decoded state and complete authenticated encryption payload.
 
