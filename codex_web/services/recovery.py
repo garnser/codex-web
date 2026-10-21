@@ -55,6 +55,11 @@ from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.state_store import StateStore, state_documents_checksum
+from codex_web.services.recovery_snapshot_strings import (
+    SnapshotStringMetadataChanged,
+    observe_snapshot_string_bound,
+    require_snapshot_string_bound,
+)
 
 
 class RecoveryError(RuntimeError):
@@ -393,6 +398,7 @@ class RecoveryService:
             raise RecoveryMemoryConflictError(str(exc)) from exc
         _memory_admit("capture_snapshot", source_bytes * 12 + rows * 512)
         documents = self._snapshot_documents()
+        string_bound = observe_snapshot_string_bound(documents)
         checksum = state_documents_checksum(documents)
         status = self.state_store.status()
         root_hash, checkpoint_id = self._audit_anchor(actor, documents)
@@ -431,6 +437,11 @@ class RecoveryService:
         # the original, plaintext and encryption buffers are all still live.
         snapshot_payload = snapshot.model_dump(mode="json", exclude={"documents"})
         snapshot_payload["documents"] = documents
+        try:
+            require_snapshot_string_bound(documents, string_bound)
+        except SnapshotStringMetadataChanged as exc:
+            # Do not format the affected object or attempt encryption/storage.
+            raise RecoveryConflictError(str(exc)) from None
         plaintext = self._canonical_bytes(snapshot_payload)
         state_backend = snapshot.state_backend
         state_schema_version = snapshot.state_schema_version

@@ -58,6 +58,19 @@ These reduce overlapping representations; they do not
 make capture constant-memory or remove the need to size the service for the
 decoded state and complete authenticated encryption payload.
 
+Capture also observes the maximum string length in the original JSON documents
+before the checksum pass and checks that bound again before plaintext encoding.
+The traversal retains one scalar bound plus iterator frames proportional to
+document depth. A string longer than the original maximum causes a payload-free
+Recovery conflict before encryption, destination storage or manifest registration.
+Keys, Unicode values and shared containers are included; circular containers are
+refused. Valid snapshots retain the same canonical bytes and restore checks.
+
+This contains only length growth beyond that observed maximum. It does not
+diagnose or repair native memory corruption, detect changes within the bound,
+or protect corruption present before the first observation or occurring after the
+final check. A refused capture does not qualify a backup or authorize a retry.
+
 Capture and restore perform cooperative memory admission before loading a whole
 snapshot or encrypted envelope. SQLite/PostgreSQL sizing uses only SQL row counts
 and encoded payload/key lengths; local destinations provide metadata size and a
