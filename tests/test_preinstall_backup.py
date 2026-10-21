@@ -348,6 +348,13 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
         self.state.put(RecoveryStore.namespace, RecoveryStore._encode(RecoveryState(
             policy=RecoveryPolicy(backup_key_id='private-fixture-key'))))
         runtime = self.runtime()
+        original_capture = self.recovery.create_backup
+        def budgeted_capture(**kwargs):
+            from codex_web.storage.state_store import storage_operation_budget
+            self.assertIsNotNone(storage_operation_budget.get())
+            self.assertLessEqual(storage_operation_budget.get().remaining(), 600)
+            return original_capture(**kwargs)
+        self.recovery.create_backup = budgeted_capture
         async def stop():
             pass
         self.recovery.stop = stop
@@ -364,6 +371,7 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
         class Host:
             def __init__(host, *_):
                 host.initial = {'InvocationID': 'private-fixture-invocation'}
+                host.data_root = Path(self.temp.name)
             def check(host):
                 pass
             def wait_stopped(host, _deadline):

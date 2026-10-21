@@ -73,6 +73,10 @@ class OfflineHostGuard:
     """Read actual host state; no service-control mutation or credentials."""
     def __init__(self, options, lock_fd):
         self.options, self.lock_fd = options, lock_fd
+        self.data_root = (options.runtime_checkout / 'data').resolve(strict=True)
+        self.canonical_paths = {name: (self.data_root / relative).resolve()
+            for name, relative in (('key_material_directory', 'keys'),
+                ('backup_directory', 'backups'), ('sqlite_path', 'codex-web.db'))}
         self.initial = self.service()
         self.stopped = False
         self.start_time = None
@@ -90,6 +94,14 @@ class OfflineHostGuard:
         path_stat = LOCAL_DEPLOY_LOCK.stat()
         if (lock_stat.st_dev, lock_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
             raise RuntimeError('Deploy lock identity changed')
+        if (options.runtime_checkout / 'data').resolve(strict=True) != self.data_root:
+            raise RuntimeError('Canonical runtime data directory changed')
+        for name, expected in self.canonical_paths.items():
+            relative = {'key_material_directory': 'keys', 'backup_directory': 'backups',
+                'sqlite_path': 'codex-web.db'}[name]
+            if (getattr(options, name).resolve() != expected
+                    or (self.data_root / relative).resolve() != expected):
+                raise RuntimeError('Backup producer differs from canonical runtime storage paths')
         for checkout, revision in ((options.runtime_checkout, options.expected_runtime_revision),
                                    (options.producer_checkout, options.expected_producer_revision)):
             if git(checkout, 'rev-parse', 'HEAD') != revision or git(checkout,
@@ -211,7 +223,7 @@ def main(argv=None):
         from codex_web.services.recovery import RecoveryMemoryConflictError
         memory_errors = (RecoveryMemoryRefused, RecoveryMemoryConflictError)
         cap = require_process_memory_limit(maximum_bytes=6 * 1024**3, maximum_swap_bytes=0)
-        from codex_web.storage.state_store import build_state_store
+        from codex_web.storage.state_store import build_state_store, StorageOperationBudget, storage_operation_budget
         store = build_state_store(sqlite_path=options.sqlite_path,
             backend=os.environ.get('CODEX_WEB_STATE_BACKEND', 'sqlite'),
             postgres_dsn=os.environ.get('CODEX_WEB_POSTGRES_DSN'), initialize=False)
@@ -251,6 +263,7 @@ def main(argv=None):
             'runtime_pid': options.expected_runtime_pid, 'service_invocation': host.initial['InvocationID'],
             'runtime_revision': options.expected_runtime_revision,
             'producer_revision': options.expected_producer_revision,
+            'canonical_data_directory': str(host.data_root),
             'operator_must_restore_service': True})
         stage = 'waiting_for_operator_clean_stop'
         host.wait_stopped(min(prepared_at + 30, observed['plan'].preflight.evaluated_at + 30))
@@ -260,7 +273,15 @@ def main(argv=None):
         runtime.offline = OfflineCaptureProof(hashlib.sha256(canonical_json_bytes(
             observed['plan'].model_dump(mode='json'))).hexdigest(), prepared_at, prepared_at + 600, guard)
         stage = 'capture_once'
-        plan = asyncio.run(runtime.capture_once())
+        # Existing cooperative storage deadlines reach the owned Recovery
+        # thread through its copied context. Expiry never detaches that writer
+        # or turns an incomplete operation into permission for another attempt.
+        budget = StorageOperationBudget(max(0.001, runtime.offline.deadline_at - time.time()))
+        budget_token = storage_operation_budget.set(budget)
+        try:
+            plan = asyncio.run(runtime.capture_once())
+        finally:
+            storage_operation_budget.reset(budget_token)
         record(options.journal_directory, 'capture-completed', {'plan_id': plan.id,
             'backup_id': plan.pre_upgrade_backup_id, 'restore_qualification_claimed': False,
             'deployment_qualification_claimed': False, 'operator_must_restore_service': True})

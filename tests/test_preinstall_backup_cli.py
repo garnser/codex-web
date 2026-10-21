@@ -15,13 +15,17 @@ class OfflineHostGuardTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name)
+        (self.path/'data').mkdir()
+        (self.path/'data/keys').mkdir()
+        (self.path/'data/backups').mkdir()
         self.lock = self.path / 'deploy.lock'
         self.fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o600)
         self.addCleanup(os.close, self.fd)
         self.options = SimpleNamespace(unit='private-fixture.service',
             expected_runtime_pid=987654321, runtime_checkout=self.path,
             producer_checkout=self.path, expected_runtime_revision='a'*40,
-            expected_producer_revision='a'*40)
+            expected_producer_revision='a'*40, key_material_directory=self.path/'data/keys',
+            backup_directory=self.path/'data/backups', sqlite_path=self.path/'data/codex-web.db')
         self.active = {'ActiveState': 'active', 'MainPID': '987654321',
             'InvocationID': 'original-invocation', 'ExecMainPID': '987654321',
             'ExecMainStartTimestampMonotonic': '1000', 'ExecMainExitTimestampMonotonic': '0',
@@ -62,6 +66,30 @@ class OfflineHostGuardTests(unittest.TestCase):
         self.lock.unlink()
         self.lock.write_text('replacement')
         with self.assertRaises(RuntimeError):
+            self.check()
+
+    def test_alternate_backup_or_key_or_state_configuration_refuses(self):
+        alternate = self.path/'alternate'
+        alternate.mkdir()
+        for name in ('backup_directory', 'key_material_directory', 'sqlite_path'):
+            original = getattr(self.options, name)
+            with self.subTest(name=name):
+                setattr(self.options, name, alternate)
+                with self.assertRaisesRegex(RuntimeError, 'canonical runtime storage'):
+                    self.check()
+                setattr(self.options, name, original)
+
+    def test_runtime_data_or_backend_symlink_retarget_refuses(self):
+        (self.path/'data/backups').rename(self.path/'old-backups')
+        (self.path/'alternate-backups').mkdir()
+        (self.path/'data/backups').symlink_to(self.path/'alternate-backups')
+        self.options.backup_directory = self.path/'data/backups'
+        with self.assertRaisesRegex(RuntimeError, 'canonical runtime storage'):
+            self.check()
+        (self.path/'data').rename(self.path/'old-data')
+        (self.path/'new-data').mkdir()
+        (self.path/'data').symlink_to(self.path/'new-data')
+        with self.assertRaisesRegex(RuntimeError, 'runtime data directory changed'):
             self.check()
 
     def test_wait_for_clean_stop_has_a_finite_deadline(self):

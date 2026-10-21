@@ -288,6 +288,11 @@ service instance, PID and invocation pins. A separately supervised cgroup must
 actually cap this helper at no more than 6 GiB with zero swap; claimed arguments
 are insufficient. Canonical Recovery headroom admission remains independently
 required and can refuse even under that cap.
+The runtime data directory and its database, key and backup paths are frozen
+from the pinned installation's `data` layout and rechecked at both boundaries.
+An alternate destination cannot register a `local` manifest which only the
+helper, rather than the installed service, can read. Retargeted data/backend
+symlinks refuse capture or association.
 
 The helper obtains authenticated observations from the **running** installed API:
 its version, actual Recovery executor idle status, and a fresh canonical Upgrade
@@ -308,6 +313,10 @@ stopped service, sources, locks, canonical hosted scopes, durable zero-work coun
 Release, Recovery policy/scheduled custody, Evidence validity and current actor.
 Credential/Evidence expiry is checked against actual current time. Capture uses
 the existing owned Recovery executor; cancellation waits for its real writer.
+The same finite window supplies cooperative storage deadlines. Expiry refuses
+further guarded writes or association; it does not claim that a synchronous
+writer has stopped or detach an in-flight operation. Restoration must inspect
+the actual helper/writer outcome rather than infer completion from elapsed time.
 The created manifest is journaled before post-capture checks. Association uses
 canonical Upgrade storage with identity-locked reauthentication and plan-context
 CAS; a changed plan or actor retains the backup without falsely associating it.
