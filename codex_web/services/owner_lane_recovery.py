@@ -375,7 +375,7 @@ class OwnerLaneAdmissionValidator:
     exact admitted invocation; it never authorizes cancelled source custody.
     """
     _LIFECYCLE = frozenset({'status', 'fence', 'lease', 'assigned_worker_id',
-        'updated_at', 'started_at'})
+        'updated_at', 'started_at', 'procedure_discoveries'})
 
     def __init__(self, service, queued):
         self.service, self.queued = service, queued
@@ -384,6 +384,10 @@ class OwnerLaneAdmissionValidator:
 
     @classmethod
     def identity(cls, assignment):
+        # Native admission appends canonical discovery evidence (including
+        # no_match) after claim. It grants no authority and is not custody
+        # identity. Actual procedure pins/admission and all other assignment
+        # fields, plus the fresh worker/fence/lease checks below, stay intact.
         values = {key: value for key, value in assignment.model_dump(mode='json').items()
                   if key not in cls._LIFECYCLE}
         if values.get('agent_profile') is not None:

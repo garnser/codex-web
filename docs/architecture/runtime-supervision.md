@@ -1087,7 +1087,11 @@ source assignment and fence participate in the atomic bootstrap rebind compare
 and swap. An admission-local witness links only that invocation's retained
 claim, unchanged failed source and newly created successor. It rechecks the
 current bootstrap, successor identity, Profile, actor, resources, worker, fresh
-lease and fence at the native resume/input boundary. Current Work Item, Goal,
+lease and fence at the native resume/input boundary. Canonical append-only procedure discovery evidence
+(including a no-match result recorded during ordinary bootstrap) is observational
+history, not successor custody identity. Procedure bindings and required admission
+remain authoritative; a changed Profile or other authority field still refuses
+the recovery. Current Work Item, Goal,
 authority and pauses are still read on every validation; a new pending human
 input takes precedence. The witness is never restart authority: a later drain
 cannot recreate it to accept a cancelled or unrelated successor. External
