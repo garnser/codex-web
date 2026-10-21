@@ -137,8 +137,8 @@ class MergeRequirementServiceTests(unittest.IsolatedAsyncioTestCase):
             await self.read()
         self.registry.register_provider(GitLabCodeHostProvider())
         gitlab = self.registry.provider('gitlab')
-        self.assertNotIn(CodeHostCapability.MERGE_REQUIREMENTS_READ, gitlab.capabilities())
-        with self.assertRaises(CodeHostUnsupportedCapabilityError):
+        self.assertIn(CodeHostCapability.MERGE_REQUIREMENTS_READ, gitlab.capabilities())
+        with self.assertRaises(CodeHostError):
             await gitlab.merge_requirements(self.binding, self.resource, '7', credential=None)
         self.assertFalse(self.server.calls)
 
