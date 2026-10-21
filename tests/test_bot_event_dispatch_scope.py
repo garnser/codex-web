@@ -107,6 +107,51 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs['agent_profile_actor_id'], actor.identity_id)
         self.execution.schedule_queue_drain.assert_called_once_with(self.binding.thread_id)
 
+    async def test_internal_recipient_queues_to_platform_without_rewriting_core_source_or_reply(self):
+        self.install_captured_target()
+        before = self.binding.model_dump(mode='json')
+        pin = SimpleNamespace(recipient=SimpleNamespace(thread_id='platform-thread'))
+        self.service.owner_routing_repository_scope = Mock(return_value=SimpleNamespace(
+            writable_repository_ids=('platform',), read_only_repository_ids=()))
+        profile = SimpleNamespace(profile_id='platform-quinn', revision=6, execution_profile_id='repository-write')
+        self.service.owner_routing_context = Mock(return_value=(profile, SimpleNamespace(identity_id='root')))
+        result = await self.service.dispatch(self.binding, 'Review exact Platform artifact', 'work-item-handoff',
+            owner_routing_pin=pin, repository_resource_id='platform', writable_repository_resource_ids=('platform',))
+        queued = self.execution.enqueue_turn.call_args.kwargs
+        self.assertEqual(queued['thread_id'], 'platform-thread')
+        self.assertEqual(queued['agent_profile_id'], 'platform-quinn')
+        self.assertEqual(queued['reply_target'], self.captured)
+        self.assertEqual(result['threadId'], 'platform-thread')
+        self.execution.schedule_queue_drain.assert_called_once_with('platform-thread')
+        self.service.settings.get.assert_called_once_with('platform-thread')
+        self.service.bindings.upsert.assert_not_called()
+        self.assertEqual(self.binding.model_dump(mode='json'), before)
+
+    async def test_typed_recipient_preserves_only_canonical_readonly_scope(self):
+        from tests.test_owner_routing_recipients import CompatibleRecipientTests
+        fixture = CompatibleRecipientTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        assignment = fixture.assignments['assignment-platform-thread']
+        assignment.repository_scope = assignment.repository_scope.model_copy(update={'read_only_repository_ids': ('core',)})
+        pin = fixture.select()
+        self.service.projects.get.return_value = fixture.f.env.env.projects.get('project-a', scope=fixture.f.env.env.scope)
+        self.service.owner_routing_context = fixture.service.context_for_pin
+        self.service.owner_routing_repository_scope = fixture.service.repository_scope_for_pin
+        await self.service.dispatch(fixture.f.binding, 'Review exact Data result', 'work-item-handoff',
+            owner_routing_pin=pin, repository_resource_id='platform', writable_repository_resource_ids=('platform',))
+        queued = self.execution.enqueue_turn.call_args.kwargs
+        self.assertEqual(queued['read_only_repository_resource_ids'], ('core',))
+        self.assertEqual(queued['writable_repository_resource_ids'], ('platform',))
+        self.assertEqual(queued['thread_id'], pin.recipient.thread_id)
+        self.execution.enqueue_turn.reset_mock()
+        with self.assertRaises(HTTPException) as denied:
+            await self.service.dispatch(fixture.f.binding, 'Untrusted union', 'work-item-handoff',
+                owner_routing_pin=pin, repository_resource_id='platform', writable_repository_resource_ids=('platform',),
+                read_only_repository_resource_ids=('core', 'foreign'))
+        self.assertEqual(denied.exception.detail['code'], 'owner_recipient_request_scope_changed')
+        self.execution.enqueue_turn.assert_not_called()
+
     async def test_immediate_dispatch_and_recovery_revalidate_captured_target(self):
         self.install_captured_target()
         self.execution.thread_is_active.return_value = False
@@ -248,7 +293,9 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             thread_has_live_agent_runtime_session=Mock(return_value=True),
             thread_has_inflight_agent_runtime_assignment=Mock(return_value=False),
         )
-        self.queue_policy = SimpleNamespace(depth=Mock(return_value=1))
+        self.queue_policy = SimpleNamespace(
+            depth=Mock(return_value=1), queue=Mock(return_value=[object()]),
+        )
         self.service = BotEventDispatchService(
             projects=SimpleNamespace(
                 get=Mock(return_value=SimpleNamespace(id="project-1", model="model-1"))

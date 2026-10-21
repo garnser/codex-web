@@ -175,6 +175,7 @@ class AssignmentRenewalTests(unittest.IsolatedAsyncioTestCase):
         self.actual = TurnExecutionService(self.host, binding_service=f.service, session_manager=self.real_manager,
             bootstrap_bindings=self.bindings, control_actor=self.actor)
         self.actual.session_custody = self.custody
+        self.actual.readiness_origin_blocker = lambda _assignment_id: ()
         self.actual.schedule_queue_drain = Mock()
         self.actual._trusted_local_codex_session_enabled = lambda **kwargs: False
         self.actual.automated_admission_allowed = lambda: False
@@ -202,6 +203,33 @@ class AssignmentRenewalTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://test') as client:
             return await client.post(f'/api/threads/{self.native_thread_id}/turns', json={
                 'project_id': 'home', 'message': message, 'execution_profile_id': 'project-governor', **parameters})
+
+    async def test_exhausted_origin_with_unresolved_ready_is_not_retired_or_given_new_input(self):
+        self.actual.readiness_origin_blocker = lambda assignment_id: ('retained-attempted-ready',)
+        before = self.f.workers.store.assignment(self.old.id).model_dump(mode='json')
+        response = await self.post('A separately retained current instruction must not retire the READY origin.')
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertIn('same-origin read-only reconciliation',response.text)
+        self.assertEqual(self.f.workers.store.assignment(self.old.id).model_dump(mode='json'),before)
+        self.assertEqual(self.actual._bootstrap_binding_for_thread(self.native_thread_id).assignment_id,self.old.id)
+        self.assertEqual(self.native_inputs,[])
+
+    async def test_settled_origin_with_appended_recovery_evidence_can_renew_without_deletion(self):
+        from codex_web.procedure_reconciliation import RECOVERY_PREFIX
+        def append(state):
+            for item in state.assignments:
+                if item.id == self.old.id:
+                    item.procedure_discoveries = (*item.procedure_discoveries,
+                        item.procedure_discoveries[-1].model_copy(update={
+                            'supporting_sources':(RECOVERY_PREFIX+'a'*32+':settled-ready',)}))
+            return state
+        self.f.workers.store.update(append)
+        before = self.f.workers.store.assignment(self.old.id).procedure_discoveries
+        response = await self.post('A genuine current task after positive settlement.')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertTrue(response.json()['assignmentRenewed'])
+        self.assertEqual(self.f.workers.store.assignment(self.old.id).procedure_discoveries,before)
+        self.assertEqual(len(self.native_inputs),1)
 
     async def test_idle_message_renews_once_preserving_native_goal_custody_and_history(self):
         goal_before = self.goals.get(self.goal.id, scope=self.actor.tenant).model_dump(mode='json')

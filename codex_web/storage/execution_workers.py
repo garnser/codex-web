@@ -356,7 +356,7 @@ class ExecutionWorkerStore:
             self.store.record_update(self.worker_namespace, worker_id, apply, default=None)
             return result[0]
 
-    def transition_assignment(self, worker_id, assignment_id, updater, *, retained_event_ids=()):
+    def transition_assignment(self, worker_id, assignment_id, updater, *, retained_event_ids=(), guard_rows=None):
         """Read actor/assignment and append transition events in one transaction.
 
         A repository lock alone does not fence a second store facade or an SQL
@@ -390,7 +390,9 @@ class ExecutionWorkerStore:
                             if after_assignment != before_assignment else {}),
                         self.event_namespace: {key: value for key, value in after_events.items()
                                                if key not in before_events}}
-            self.store.record_mutate_many({self.worker_namespace: (worker_id,),
+            if set(guard_rows or ()) & {self.worker_namespace, self.assignment_namespace, self.event_namespace}:
+                raise ValueError('assignment guard rows cannot replace transition custody selectors')
+            self.store.record_mutate_many({**(guard_rows or {}), self.worker_namespace: (worker_id,),
                 self.assignment_namespace: (assignment_id,),
                 self.event_namespace: tuple(retained_event_ids)}, apply)
             return result[0]

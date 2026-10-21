@@ -6,7 +6,7 @@ Historical Work Item values and authenticated principals remain unchanged.
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from codex_web.definitions import DefinitionReference, DefinitionScope
 from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
@@ -19,7 +19,7 @@ class OwnerRoutingError(ValueError):
 class OwnerRoutingBinding(BaseModel):
     """Original recipient intent/provenance, never an identity or grant."""
     model_config = ConfigDict(extra='forbid', frozen=True, str_strip_whitespace=True)
-    schema_version: Literal['1.0'] = '1.0'
+    schema_version: Literal['1.0', '1.1'] = '1.0'
     organization_id: str = Field(min_length=1, max_length=128)
     workspace_id: str = Field(min_length=1, max_length=128)
     project_id: str = Field(min_length=1, max_length=128)
@@ -33,7 +33,7 @@ class OwnerRoutingBinding(BaseModel):
                 or self.definition.definition_id != 'execution-roles.default'
                 or self.definition.definition_schema_version != '1.0'
                 or normalized_owner(self.configured_owner) != self.configured_owner
-                or self.configured_owner == self.canonical_owner):
+                or (self.schema_version == '1.0' and self.configured_owner == self.canonical_owner)):
             raise ValueError('invalid coordination owner binding')
         return self
 
@@ -53,6 +53,19 @@ class OwnerRoutingBinding(BaseModel):
             'definition_schema_version': self.definition.definition_schema_version}
 
 
+class OwnerRoutingRecipient(BaseModel):
+    """Current canonical execution custody, separate from conversation provenance."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    thread_id: str = Field(min_length=1, max_length=256)
+    bootstrap_id: str = Field(min_length=1, max_length=256)
+    assignment_id: str = Field(min_length=1, max_length=256)
+    execution_id: str = Field(min_length=1, max_length=256)
+    worker_id: str = Field(min_length=1, max_length=256)
+    fence: int = Field(ge=1)
+    authority_checksum: str = Field(pattern=r'^[a-f0-9]{64}$')
+    work_item_owner_checksum: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
 class OwnerRoutingPin(BaseModel):
     """Server-produced recipient intent retained with the original queued turn.
 
@@ -60,7 +73,7 @@ class OwnerRoutingPin(BaseModel):
     fields. This pin adds no credentials, permissions or native outcome claims.
     """
     model_config = ConfigDict(extra='forbid', frozen=True)
-    schema_version: Literal['1.0'] = '1.0'
+    schema_version: Literal['1.0', '1.1'] = '1.0'
     binding: OwnerRoutingBinding
     work_item_ref: str = Field(min_length=1, max_length=500)
     stage: str = Field(min_length=1, max_length=128)
@@ -68,6 +81,23 @@ class OwnerRoutingPin(BaseModel):
     handoff_requested_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     bot_binding_id: str = Field(min_length=1, max_length=256)
     original_thread_id: str = Field(min_length=1, max_length=256)
+
+    recipient: OwnerRoutingRecipient | None = None
+
+    @model_validator(mode='after')
+    def versioned_recipient(self):
+        if (self.schema_version == '1.1') != (self.recipient is not None):
+            raise ValueError('recipient witness requires explicit owner-routing 1.1')
+        if self.schema_version == '1.0' and self.binding.schema_version != '1.0':
+            raise ValueError('legacy pin requires legacy binding')
+        return self
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_shape(self, handler):
+        result = handler(self)
+        if self.schema_version == '1.0':
+            result.pop('recipient', None)
+        return result
 
 
 class OwnerRoutingBlocker(BaseModel):

@@ -3365,6 +3365,18 @@ turn_execution_service = install_turn_execution_service(
 )
 
 from codex_web.services.agent_session_custody import AgentSessionCustodyService
+turn_execution_service.readiness_origin_blocker = action_intent_service.store.unsettled_readiness_origin
+from codex_web.services.post_turn_readiness import (
+    PostTurnReadinessService, require_post_turn_admission,
+)
+post_turn_readiness_service = PostTurnReadinessService(action_intent_service,
+    admission=lambda assignment, intent, actor: require_post_turn_admission(
+        assignment, intent, actor, controller=autonomy_controller,
+        identity=identity_service, runtime_enabled=runtime_policy.autonomy_enabled,
+        gates=reconciliation_gate_service),
+    ownership=replicated_ownership_service, append_event=bot_runtime_telemetry.append)
+turn_execution_service.post_turn_readiness = post_turn_readiness_service.settle
+app.state.post_turn_readiness_service = post_turn_readiness_service
 turn_execution_service.session_custody = AgentSessionCustodyService(
     agent_session_service, execution_worker_service, thread_bootstrap_binding_service,
     execution_workspace_service, execution_profile_definition_service,
@@ -3956,6 +3968,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
     truncate_text=lambda value, limit: str(value)[:limit],
     thread_is_active=turn_execution_service.thread_is_active,
     thread_queue_depth=turn_queue_policy.depth,
+    thread_queue=turn_queue_policy.queue,
     thread_recently_active=bot_event_dispatch_service.thread_recently_active,
     watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
@@ -3970,6 +3983,8 @@ owner_routing_service = OwnerRoutingService(
     binding_prefix=bot_presentation_service.binding_prefix,
     bootstraps=thread_bootstrap_binding_service,
     assignments=execution_worker_service.store.assignment, profiles=agent_profile_service,
+    workers=execution_worker_service.store.worker,
+    execution_profiles=execution_profile_definition_service,
     control_actor=identity_service.local_trusted_actor,
     actor_resolver=turn_execution_service.actor_resolver,
     replacement_resolver=thread_index_repository.replacement_thread_id,
@@ -3981,6 +3996,7 @@ canonical_work_item_continuity_service.owner_routing = owner_routing_service
 owner_routing_service.delivery_recorder = canonical_work_item_continuity_service.record_handoff_delivery
 execution_preflight_service.queued_start_observer = owner_routing_service.project_native_start
 bot_event_dispatch_service.owner_routing_context = owner_routing_service.context_for_pin
+bot_event_dispatch_service.owner_routing_repository_scope = owner_routing_service.repository_scope_for_pin
 turn_execution_service.owner_routing_validator = owner_routing_service.validate_native
 app.state.owner_routing_service = owner_routing_service
 work_item_continuity_service.bind(

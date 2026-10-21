@@ -103,7 +103,7 @@ class OwnerWatchdogScopeTests(unittest.IsolatedAsyncioTestCase):
         await AutonomyService(runtime=runtime).run_owner_work_cycle()
         fixture.execution.start_thread_turn_now.assert_not_awaited()
         fixture.execution.enqueue_turn.assert_not_called()
-        self.assertEqual(events[-1]['result']['skipped'], 'already_queued')
+        self.assertEqual(events[-1]['result']['skipped'], 'owner_queue_context_mismatch')
 
     async def test_scope_preflight_error_surfaces_without_wrong_lane_or_fallback(self):
         runtime = autonomy_fixture.AutonomyOwnerWorkTests._runtime(self.states())

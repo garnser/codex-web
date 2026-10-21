@@ -77,6 +77,7 @@ class BotEventDispatchService:
         self.agent_profile_resolver = agent_profile_resolver
         self.execution_profiles = execution_profiles
         self.owner_routing_context = None
+        self.owner_routing_repository_scope = None
 
     @staticmethod
     def recent_activity_grace_seconds() -> float:
@@ -194,8 +195,10 @@ class BotEventDispatchService:
         provider_notification_pin=None,
         owner_routing_pin=None,
     ) -> dict[str, Any]:
+        recipient_thread_id = (owner_routing_pin.recipient.thread_id
+            if getattr(owner_routing_pin, 'recipient', None) is not None else binding.thread_id)
         project = self.projects.get(binding.project_id)
-        settings = self.settings.get(binding.thread_id)
+        settings = self.settings.get(recipient_thread_id)
         effective_model = settings.model or project.model
         effective_reasoning_effort = settings.reasoning_effort
         reply_target = (
@@ -211,6 +214,17 @@ class BotEventDispatchService:
             if self.owner_routing_context is None:
                 raise HTTPException(status_code=409, detail={'code': 'owner_routing_context_unavailable'})
             profile_context = await asyncio.to_thread(self.owner_routing_context, owner_routing_pin, binding)
+        if getattr(owner_routing_pin, 'recipient', None) is not None:
+            if self.owner_routing_repository_scope is None:
+                raise HTTPException(status_code=409, detail={'code': 'owner_recipient_scope_unavailable'})
+            recipient_scope = await asyncio.to_thread(
+                self.owner_routing_repository_scope, owner_routing_pin, binding)
+            if (set(writable_repository_resource_ids) != set(recipient_scope.writable_repository_ids)
+                    or (read_only_repository_resource_ids and
+                        set(read_only_repository_resource_ids) != set(recipient_scope.read_only_repository_ids))):
+                raise HTTPException(status_code=409, detail={'code': 'owner_recipient_request_scope_changed'})
+            # Preserve canonical existing custody; never union sender scope.
+            read_only_repository_resource_ids = tuple(recipient_scope.read_only_repository_ids)
         agent_profile, profile_actor = (
             profile_context if profile_context is not None else (None, None)
         )
@@ -265,7 +279,7 @@ class BotEventDispatchService:
             reason: str | None = None,
         ) -> dict[str, Any]:
             duplicate = self.execution.find_duplicate_queued_turn(
-                binding.thread_id,
+                recipient_thread_id,
                 message=text,
                 source=source,
                 project_id=project.id,
@@ -288,30 +302,30 @@ class BotEventDispatchService:
                     {
                         "type": "event_turn_duplicate_skipped",
                         "source": source,
-                        "thread_id": binding.thread_id,
+                        "thread_id": recipient_thread_id,
                         "external_conversation_id": (
                             binding.external_conversation_id
                         ),
                         "queued_id": duplicate.id,
                         "queue_depth": self.queue_policy.depth(
-                            binding.thread_id
+                            recipient_thread_id
                         ),
                     }
                 )
                 await self.execution.publish_queue_status(
-                    binding.thread_id
+                    recipient_thread_id
                 )
                 return {
                     "ok": True,
                     "queued": True,
                     "duplicate": True,
-                    "threadId": binding.thread_id,
+                    "threadId": recipient_thread_id,
                     "queuedId": duplicate.id,
                     "dispatchScope": dispatch_scope,
                 }
 
             queued = self.execution.enqueue_turn(
-                thread_id=binding.thread_id,
+                thread_id=recipient_thread_id,
                 project_id=project.id,
                 message=text,
                 sandbox=binding.sandbox,
@@ -329,25 +343,26 @@ class BotEventDispatchService:
                 **({"provider_notification_pin":provider_notification_pin} if provider_notification_pin is not None else {}),
                 **({'owner_routing_pin': owner_routing_pin} if owner_routing_pin is not None else {}),
             )
-            binding.updated_at = time.time()
-            await asyncio.to_thread(self.bindings.upsert, binding)
+            if getattr(owner_routing_pin, 'recipient', None) is None:
+                binding.updated_at = time.time()
+                await asyncio.to_thread(self.bindings.upsert, binding)
             payload: dict[str, Any] = {
                 "type": event_type,
                 "source": source,
-                "thread_id": binding.thread_id,
+                "thread_id": recipient_thread_id,
                 "external_conversation_id": (
                     binding.external_conversation_id
                 ),
                 "queued_id": queued.id,
                 "queue_depth": self.queue_policy.depth(
-                    binding.thread_id
+                    recipient_thread_id
                 ),
             }
             if reason:
                 payload["reason"] = str(reason)[:500]
             self.telemetry.append(payload)
             await self.execution.publish_queue_status(
-                binding.thread_id
+                recipient_thread_id
             )
             await self.publish_event(
                 {
@@ -356,18 +371,18 @@ class BotEventDispatchService:
                     "externalConversationId": (
                         binding.external_conversation_id
                     ),
-                    "threadId": binding.thread_id,
+                    "threadId": recipient_thread_id,
                     "queued": True,
                     "queuedId": queued.id,
                     "queueDepth": self.queue_policy.depth(
-                        binding.thread_id
+                        recipient_thread_id
                     ),
                 }
             )
             return {
                 "ok": True,
                 "queued": True,
-                "threadId": binding.thread_id,
+                "threadId": recipient_thread_id,
                 "queuedId": queued.id,
                 "dispatchScope": dispatch_scope,
             }
@@ -375,9 +390,26 @@ class BotEventDispatchService:
         if owner_routing_pin is not None or provider_notification_pin is not None:
             # Recipient-pinned inputs need the durable retained claim and the
             # synchronous guarded native transport, including an idle thread.
+            if require_idle:
+                recipient_active = self.execution.thread_is_active(recipient_thread_id)
+                if recipient_active or self.queue_policy.depth(recipient_thread_id):
+                    return {
+                        'ok': True, 'queued': False,
+                        'skipped': ('already_active' if recipient_active else
+                            TurnQueuePolicy.work_item_queue_outcome(
+                                self.queue_policy.queue(recipient_thread_id),
+                                work_item_ref=work_item_ref, project_id=project.id,
+                                message=text, repository_resource_id=repository_resource_id,
+                                writable_repository_resource_ids=writable_repository_resource_ids,
+                                read_only_repository_resource_ids=read_only_repository_resource_ids,
+                                handoff_requested_at=handoff_requested_at,
+                            )),
+                        'threadId': recipient_thread_id,
+                        'dispatchScope': dispatch_scope,
+                    }
             result = await queue_turn('event_turn_queued_owner_routing' if owner_routing_pin is not None
                                       else 'event_turn_queued_provider_notification')
-            self.execution.schedule_queue_drain(binding.thread_id)
+            self.execution.schedule_queue_drain(recipient_thread_id)
             return result
 
         self.recovery.release_stale_active_turn(
@@ -394,7 +426,15 @@ class BotEventDispatchService:
                     "skipped": (
                         "already_active"
                         if thread_active
-                        else "already_queued"
+                        else TurnQueuePolicy.work_item_queue_outcome(
+                            self.queue_policy.queue(binding.thread_id),
+                            work_item_ref=work_item_ref, project_id=project.id,
+                            message=text,
+                            repository_resource_id=repository_resource_id,
+                            writable_repository_resource_ids=writable_repository_resource_ids,
+                            read_only_repository_resource_ids=read_only_repository_resource_ids,
+                            handoff_requested_at=handoff_requested_at,
+                        )
                     ),
                     "threadId": binding.thread_id,
                     "dispatchScope": dispatch_scope,
@@ -435,6 +475,7 @@ class BotEventDispatchService:
                 binding,
                 str(exc),
             )
+            recipient_thread_id = binding.thread_id
             project = self.projects.get(binding.project_id)
             settings = self.settings.get(binding.thread_id)
             effective_model = settings.model or project.model
@@ -639,7 +680,14 @@ class BotEventDispatchCompatibilityFacade:
                     "skipped": (
                         "already_active"
                         if thread_active
-                        else "already_queued"
+                        else TurnQueuePolicy.work_item_queue_outcome(
+                            host._thread_queue(binding.thread_id) if hasattr(host, '_thread_queue') else None,
+                            work_item_ref=work_item_ref, project_id=project.id,
+                            message=text,
+                            repository_resource_id=repository_resource_id,
+                            writable_repository_resource_ids=writable_repository_resource_ids,
+                            read_only_repository_resource_ids=read_only_repository_resource_ids,
+                        )
                     ),
                     "threadId": binding.thread_id,
                 }

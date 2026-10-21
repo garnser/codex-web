@@ -18,6 +18,7 @@ from codex_web.integrations.webhook_security import (
 from codex_web.runtime import core
 from codex_web.identity import TenantScope
 from codex_web.services.identity import AuthenticationError
+from codex_web.models import QueuedTurn, WorkItemState
 
 
 def _request(headers: dict[str, str] | None = None) -> Request:
@@ -39,6 +40,34 @@ def _path_tags(path: str) -> set[str]:
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_terminal_ready_callback_uses_canonical_intents_and_existing_ownership(self) -> None:
+        service = application.post_turn_readiness_service
+        self.assertIs(application.turn_execution_service.post_turn_readiness.__self__, service)
+        self.assertIs(service.intents, application.action_intent_service)
+        self.assertIs(service.ownership, application.replicated_ownership_service)
+
+    def test_canonical_recipient_scope_comes_from_same_owner_routing_service(self) -> None:
+        callback = application.bot_event_dispatch_service.owner_routing_repository_scope
+        self.assertIs(callback.__self__, application.owner_routing_service)
+        self.assertEqual(callback.__func__, type(application.owner_routing_service).repository_scope_for_pin)
+        self.assertIs(application.turn_execution_service.owner_routing_validator.__self__, application.owner_routing_service)
+
+    def test_canonical_owner_dispatch_reads_actual_queue_identity(self) -> None:
+        service = application.canonical_work_item_continuity_service
+        state = WorkItemState(ref='fixture/core#25', project_id='home',
+            current_owner='james', current_stage='implementation_active',
+            resource_ids=['fixture-core'], created_at=1, updated_at=2,
+            last_meaningful_update_at=2)
+        queued = QueuedTurn(id='retained', thread_id='fixture-thread', project_id='home',
+            work_item_ref=state.ref, message=service.dispatch_text(state),
+            repository_resource_id='fixture-core', writable_repository_resource_ids=('fixture-core',),
+            created_at=1)
+        with patch.object(application.turn_queue_policy, 'get_queue', return_value=[queued]) as load:
+            self.assertEqual(service._owner_queue_outcome(state, 'fixture-thread'), 'already_queued')
+            load.assert_called_once_with('fixture-thread')
+        with patch.object(application.turn_queue_policy, 'get_queue', return_value=[queued.model_copy(update={'message': 'old artifact'})]):
+            self.assertEqual(service._owner_queue_outcome(state, 'fixture-thread'), 'owner_queue_context_mismatch')
+
     def test_supervisor_expiry_callback_uses_composed_worker_service_and_control_actor(self) -> None:
         callback = application.runtime_supervisor.recover_expired_assignments
         self.assertIs(callback, application._recover_expired_execution_assignments)

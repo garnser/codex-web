@@ -235,3 +235,147 @@ unknown preflights and coordination receipts retain their reconciliation state;
 renewal only admits a separately retained current request. Existing thread and
 assignment inspectors expose blockers/history; there is no new UI object, schema,
 queue, Definition, timer or model call.
+
+
+### Same-origin read-only settlement reserve
+
+An attempted READY action with an unknown outcome can retain the exact live
+origin after its normal 64 discovery decisions are consumed. Only an explicit
+`action_intent.reconcile` with `retry_if_idempotent: false` may obtain an internal
+read-only settlement scope. The canonical engine derives it from the current
+intent, original requester, live assignment/fence/worker, current Profile and
+Definition, tenant/project and repository resource. It expires within five
+minutes and cannot authorize execute, rollback, another intent or new custody.
+Both the outer broker and inner provider verification use the same scope while
+still performing their ordinary current authority, credential and admission
+checks. No provider write is retried.
+
+Recovery evidence appends to the existing assignment discovery tuple without
+changing any original entry. At most four recovery attempts may retain at most
+eight distinct checkpoint decisions each; fresh identical adjacent decisions in
+one attempt retain their first observation after current guards run again.
+Existing `supporting_sources` carries a versioned server marker for durable
+counting/provenance only. A serialized marker does not grant admission, malformed
+extra history refuses recovery, and ordinary execution remains capped at 64.
+Existing assignment/broker inspectors retain the discoveries and refusal reason;
+no new persisted object or recipient/authority registry is introduced. Legacy
+readers and ordinary renewal writers preserve the appended evidence.
+
+An already-stranded origin may also prevent canonical source deployment because
+an unresolved action and its live originating assignment block drain. The future
+service semantics alone do not resolve that bootstrap cycle. Incident tooling
+must use a separately reviewed canonical composition, genuine authenticated
+original worker, current authority and read-only provider transport; it must not
+cancel the origin, edit discovery history, repeat READY or claim the running
+service has been upgraded.
+
+
+The native idle-renewal path checks the existing ActionIntent store's unresolved
+READY origin projection before inspection and again before superseding. It holds
+the original instead of knowingly retiring required custody. The projection is
+maintained by ordinary canonical intent updates and backfills in bounded pages;
+a fresh reader process rebuilds it so an earlier writer version cannot leave a
+false complete index. Each reader epoch retains its own small progress record;
+replicated readers cannot reset one another. These migration/provenance records
+remain in the existing canonical collection and are not authoritative leases. Retained terminal history does not impose a permanent
+renewal limit. Voluntary bootstrap cancellation and ordinary assignment completion
+also lock the existing ActionIntent collection in the same ordered canonical
+writer transaction as the assignment, worker and transition event. After current
+caller/custody validation, they read the completed origin projection without
+performing backfill writes and refuse retirement while an attempted READY needs
+that origin. The typed conflict exposes the owning ActionIntent IDs through the
+existing assignment API and preflight inspector; native input has not begun.
+Preparation reads at most 1,024 retained intent rows per call. A valid incomplete
+page produces `readiness_origin_index_progressing` with its persisted cursor for
+internal continuation; public conflicts expose only its SHA-256 digest and reader
+epoch, keeping other tenants' retained intent keys private. This preserves the
+assignment and permits bounded preparation to
+continue before any retirement effect. Invalid or unavailable evidence remains a
+non-retryable conflict. The retirement writer itself never migrates the index.
+
+READY's transition to EXECUTING atomically checks the original live assignment,
+fence, worker and lease while publishing its origin alias. If the attempt wins,
+retirement observes it; if retirement wins, execution refuses before invoking the
+provider. No database lock spans a network await. Actual worker loss, expiry and
+security revocation retain their existing authority-withdrawal semantics. This
+adds no model call; finite post-turn settlement is described separately below.
+
+Within an authenticated read-only reconciliation scope, assignment lookup reloads
+the exact server-selected originating row rather than decoding all historical
+assignments at every checkpoint. It checks current tenant, identity, execution,
+worker, fence, Profile/Definition, lease and deadline; normal lookup and its
+repository-ambiguity checks remain unchanged outside this scope.
+
+#### Incident command
+
+`scripts/reconcile-readiness-once.py --help` lists the explicit source/PID,
+origin, state-store, existing secret backend and provider configuration pins.
+The command requires the reviewed committed tool revision and clean executable
+source, canonical local-deployment lock plus a separate qualification lock, and
+an exclusive private journal directory. It never upgrades the running service or
+changes autonomy/bot controls. The operator must separately establish a safe
+finite incident window and retain the original custody.
+
+Before any credential API call it refuses unnormalized legacy storage, changed
+origin, WorkItem-owning intents, procedural checkpoints, rollback checkpoints,
+missing completed provider results and nonempty expected artifact evidence. The
+narrow tool therefore cannot omit required owning-result or content semantics.
+Only the canonical Identity API can issue a five-minute credential for the
+existing originating worker principal, with `action-intent:worker` and
+`secret:use` scopes. Its raw value stays in memory; entry authenticates it again
+and finally revokes it. Credential creation/settlement/revocation uncertainty is
+journaled without tokens or exception bodies and never automatically retried.
+
+The complete canonical service composition performs one same-intent read-only
+reconciliation with current identity, authority, Profile/Definition, skills,
+approvals, security, credential and store transaction controls. Provider transport
+allows at most 16 GET/HEAD requests to the exact configured GitLab API authority
+and path; native/model transports refuse execution. CPU, memory, core-dump,
+wall-clock and storage-operation limits bound the process. Source/tree/helper
+hashes, interpreter, installed revision/PID, intent/receipt and token-revocation
+IDs remain inspectable in private operator journals. If the process stops or an
+outcome is unknown, inspect the same canonical intent before any further action.
+
+#### Automatic post-turn read-only settlement
+
+The existing terminal-turn completion task invokes bounded READY settlement after
+the retained bootstrap's repository checkpoint, or before ordinary assignment
+completion. The thread's existing completion barrier prevents queued native input
+from racing this finite operation. It uses the registered local worker's existing
+service actor and the same canonical ActionIntent service, original assignment,
+current authority, credential references, security and verification transactions.
+It creates no model turn, credential grant, provider mutation, callback queue or
+separate recovery registry. An unresolved origin remains protected against
+voluntary retirement; a callback refusal does not claim successful verification.
+Timeout or cancellation cancels the cooperative storage budget and joins the
+actual reconciliation owner before releasing the thread completion barrier.
+
+Only already-attempted, unresolved READY actions are candidates. Before the normal
+64-entry limit, callback discoveries consume normal history slots. The same
+four-attempt/eight-decision ceiling counts marked callback attempts on both sides
+of that boundary; unmarked retained observations remain unchanged.
+A server-derived hash of the terminal turn, originating assignment/fence and
+intent selects the reserve marker. The existing append-only discovery ledger
+prevents the same callback, including re-delivery after a service restart, from
+spending another attempt or repeating its provider reads. A local mutex and the
+existing replicated ownership lease serialize concurrent callbacks. Markers are
+provenance and deduplication only; they never replace fresh admission authority.
+
+Global, identity/project/resource-scoped, exclusive-goal and effective autonomy
+policy plus the existing Project queue-recovery gate admit each new callback.
+Dry-run/simulation or a paused/observation-only policy preserves the unresolved
+action without provider reads. As for other admitted finite worker operations,
+a later admission pause allows an already-running read-only callback to finish.
+There is no callback retry timer or LLM poll. A failed verification remains
+inspectable, and the same terminal event does not authorize another attempt;
+changed meaningful input or the existing explicit incident path is required.
+Missing terminal delivery, changed custody, disabled identity or exhausted reserve
+is not repaired by inventing a new origin or claimed outcome.
+A cold origin index may advance through at most eight existing 1,024-row pages
+within a 30-second cooperative storage budget. Only the typed preparation-progress
+result permits continuation, and each page must advance its canonical cursor;
+other authority, storage or custody refusals preserve the unresolved origin.
+
+Existing ActionIntent receipt/verification and assignment discovery inspectors
+remain the operator surfaces. The existing runtime event stream records callback
+start, completion and typed refusal, without credentials or exception payloads.

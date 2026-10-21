@@ -1117,7 +1117,12 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     await service.start_thread_turn_now('t1',
                         project=Project(id='p1', name='Project', path='/workspace/project'),
                         message='Original alias recovery', sandbox='workspace-write', approval_policy='on-request',
-                        source='owner-work-watchdog', owner_routing_pin=object(), work_item_ref='group/project#1')
+                        source='owner-work-watchdog', owner_routing_pin=object(), work_item_ref='group/project#1',
+                        writable_repository_resource_ids=('data',), read_only_repository_resource_ids=('core',))
+                self.assertTrue(calls)
+                for context in calls:
+                    self.assertEqual(context['writable_repository_resource_ids'], ('data',))
+                    self.assertEqual(context['read_only_repository_resource_ids'], ('core',))
                 self.assertEqual(caught.exception.detail['code'], 'owner_routing_definition_changed')
                 self.assertFalse(any(method == 'turn/start' for method, _ in sessions.session.requests))
                 self.assertFalse(service.thread_is_active('t1'))
@@ -2691,6 +2696,49 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         host.codex.request.assert_not_awaited()
 
+    async def test_terminal_bootstrap_readiness_callback_blocks_queue_drain_until_settled(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        sessions.local_worker = SimpleNamespace(worker_actor=object())
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def callback(active, *, actor):
+            self.assertIs(actor, sessions.local_worker.worker_actor)
+            self.assertEqual(active.turn_id, 'turn-1')
+            entered.set()
+            await release.wait()
+        service.post_turn_readiness = callback
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        await asyncio.wait_for(entered.wait(), 1)
+        host._thread_queue = Mock(return_value=[])
+        service.publish_queue_status = AsyncMock()
+        drain = asyncio.create_task(service._drain_thread_queue_owned('t1'))
+        await asyncio.sleep(0)
+        host._thread_queue.assert_not_called()
+        self.assertEqual(sessions.completed, [])
+        release.set()
+        await asyncio.wait_for(drain, 1)
+        host._thread_queue.assert_called()
+        self.assertEqual(service.thread_completion_tasks, {})
+
+    async def test_terminal_ordinary_assignment_readiness_settles_before_completion(self):
+        host, _binding, sessions, service = self._service()
+        sessions.local_worker = SimpleNamespace(worker_actor=object())
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def callback(active, *, actor):
+            entered.set()
+            await release.wait()
+        service.post_turn_readiness = callback
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(sessions.completed, [])
+        tasks = list(service.assignment_completion_tasks.values())
+        release.set()
+        await asyncio.gather(*tasks)
+        self.assertEqual(len(sessions.completed), 1)
+
     async def test_offloop_terminal_bootstrap_projection_clears_active_and_checkpoints(self):
         host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
         entered = asyncio.Event()
@@ -3128,6 +3176,54 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_human_input_waits_in_priority_queue_during_actual_post_turn_callback(self):
+        host, _, sessions, execution = TurnExecutionStartTests()._service(bootstrap_thread_id='t1')
+        sessions.local_worker = SimpleNamespace(worker_actor=object())
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def callback(active, *, actor):
+            entered.set()
+            await release.wait()
+        execution.post_turn_readiness = callback
+        execution.start_thread_turn_now = AsyncMock()
+        execution.schedule_queue_drain = lambda _thread_id: None
+        execution.publish_queue_status = AsyncMock()
+        execution.mark_thread_active('t1', turn_id='terminal', assignment_id='assignment-1')
+        execution.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'terminal'}}})
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertNotIn('t1', host.active)  # Native turn is genuinely terminal.
+        self.assertTrue(execution.thread_is_active('t1'))  # Canonical completion still owns admission.
+        project = Project(id='p1', name='Project', path='/workspace/project')
+        host._truncate_text = lambda value, limit: str(value)[:limit]
+        web = TurnService(
+            projects=SimpleNamespace(get=lambda _: project, params=lambda _, values=None: values or {}),
+            settings=SimpleNamespace(get=lambda _: ThreadRunSettings(),
+                remember=lambda *_args, **kwargs: ThreadRunSettings(**kwargs)),
+            recovery=SimpleNamespace(raise_if_thread_replaced=lambda _: None,
+                release_stale_active_turn=lambda *_args: None),
+            resume_runtime=SimpleNamespace(is_timeout_error=lambda _: False,
+                is_stale_thread_error=lambda _: False),
+            bindings=SimpleNamespace(for_thread=lambda _: []),
+            queue_policy=SimpleNamespace(depth=host._thread_queue_depth,
+                queue=host._thread_queue, record_steer=lambda _: None),
+            execution=execution, event_sink=host._append_bot_event,
+            truncate_text=host._truncate_text, binding_public=lambda item: item.model_dump())
+        automated = execution.enqueue_turn(thread_id='t1', project_id=project.id, message='Automated work',
+            sandbox='workspace-write', approval_policy='on-request', source='work-item')
+        result = await web.start('t1', TurnCreate(project_id='p1', message='A human message'))
+        self.assertTrue(result['queued'])
+        execution.start_thread_turn_now.assert_not_awaited()
+        retained = host._thread_queue('t1')
+        self.assertEqual(len(retained), 2)
+        from codex_web.services.turn_queue_policy import TurnQueuePolicy
+        self.assertEqual(TurnQueuePolicy.admission_candidates(retained)[0].source, 'web')
+        tasks = list(execution.assignment_completion_tasks.values())
+        release.set()
+        await asyncio.gather(*tasks)
+        self.assertFalse(execution.thread_is_active('t1'))
+        self.assertEqual(host._thread_queue('t1'), retained)
+        self.assertIn(automated.id, [item.id for item in retained])
+
     async def test_web_start_queues_when_thread_becomes_active_during_start_lock(self) -> None:
         host = _Host()
         project = Project(

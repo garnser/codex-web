@@ -62,6 +62,38 @@ class ProcedureHistoryExhaustedError(WorkerConflictError):
     """The current assignment cannot retain another procedure admission."""
 
 
+class AssignmentReadinessOriginError(WorkerConflictError):
+    """Voluntary retirement cannot discard an attempted READY's live origin."""
+
+    def __init__(self, assignment_id, intent_ids=(), *, unavailable=False):
+        self.assignment_id = assignment_id
+        self.intent_ids = tuple(intent_ids)
+        self.code = ('assignment_readiness_origin_unavailable' if unavailable
+                     else 'assignment_readiness_origin_unsettled')
+        super().__init__(self.code + ': preserve assignment ' + assignment_id +
+            ('; inspect canonical readiness-origin evidence' if unavailable else
+             '; reconcile read-only the owning intent(s): ' + ', '.join(self.intent_ids)))
+
+    def detail(self):
+        return {'code': self.code, 'message': str(self), 'assignment_id': self.assignment_id,
+                'action_intent_ids': list(self.intent_ids), 'retryable': False}
+
+
+class AssignmentReadinessIndexProgressing(AssignmentReadinessOriginError):
+    """Known before retirement: the bounded canonical index needs another page."""
+
+    def __init__(self, assignment_id, *, cursor, epoch):
+        super().__init__(assignment_id, unavailable=True)
+        self.code = 'readiness_origin_index_progressing'
+        self.cursor, self.epoch = cursor, epoch
+        self.args = (self.code + ': bounded preparation advanced; assignment preserved',)
+
+    def detail(self):
+        return {**super().detail(), 'retryable': True,
+                'cursor_sha256': hashlib.sha256(self.cursor.encode()).hexdigest(),
+                'epoch': self.epoch}
+
+
 class WorkerLeaseError(ExecutionWorkerError):
     reason_code = FailureReason.WORKER_LEASE_LOST
 
@@ -369,6 +401,34 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
+        from codex_web.procedure_reconciliation import current_reconciliation_scope
+        recovery = current_reconciliation_scope()
+        if recovery is not None:
+            # The engine has already selected the original READY assignment,
+            # not a latest historical candidate. Reload that exact row at every
+            # checkpoint; normal execution retains its ambiguity scan below.
+            item = self.store.assignment(recovery.assignment_id)
+            worker = self.store.worker(recovery.worker_id)
+            now = time.time()
+            if (execution_id != recovery.execution_id or recovery.expires_at <= now
+                    or item is None or item.execution_id != execution_id
+                    or not self._same_scope(item, actor)
+                    or (item.organization_id,item.workspace_id,item.project_id)
+                        != (recovery.organization_id,recovery.workspace_id,recovery.project_id)
+                    or item.fence != recovery.fence or item.assigned_worker_id != recovery.worker_id
+                    or item.created_by != recovery.requester_identity_id
+                    or item.status not in {AssignmentStatus.CLAIMED,AssignmentStatus.RUNNING}
+                    or item.agent_profile != recovery.agent_profile
+                    or item.execution_profile_definition != recovery.execution_profile_definition
+                    or item.lease is None or item.lease.expires_at <= now
+                    or item.lease.worker_id != recovery.worker_id or item.lease.fence != recovery.fence
+                    or item.deadline_at is not None and item.deadline_at <= now
+                    or worker is None or worker.revoked_at is not None
+                    or (worker.organization_id,worker.workspace_id) != (recovery.organization_id,recovery.workspace_id)
+                    or worker.lifecycle not in {WorkerLifecycle.ACTIVE,WorkerLifecycle.DRAINING}
+                    or actor.identity_id not in {recovery.requester_identity_id,worker.service_identity_id}):
+                raise WorkerConflictError('read-only reconciliation originating assignment changed')
+            return item
         matches = [
             item
             for item in self.store.list_assignments()
@@ -1142,6 +1202,14 @@ class ExecutionWorkerService:
             if (item.organization_id, item.workspace_id, item.project_id) != (
                 discovery.organization_id, discovery.workspace_id, discovery.project_id):
                 raise AuthorizationError("procedure discovery scope differs from assignment")
+            from codex_web.procedure_reconciliation import current_reconciliation_scope
+            recovery = current_reconciliation_scope()
+            if recovery is not None:
+                return self._record_reconciliation_discovery(state, item, discovery, recovery)
+            from codex_web.procedure_reconciliation import RECOVERY_PREFIX
+            if len(item.procedure_discoveries) < 64 and any(
+                    value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
+                raise WorkerLeaseError('fresh discovery cannot supply recovery provenance')
             # Every checkpoint above revalidates current custody. Only adjacent
             # identical evidence is redundant; evaluation time alone is not a
             # new authority/context decision. Preserve the original observation.
@@ -1159,6 +1227,56 @@ class ExecutionWorkerService:
             raise AssignmentNotFoundError("execution assignment not found")
         state = self.store.update_assignment(current.assigned_worker_id or "", assignment_id, apply)
         return self._assignment(state, assignment_id, actor)
+
+    def _record_reconciliation_discovery(self, state, item, discovery, scope):
+        """Append bounded recovery evidence; never discard the original history."""
+        from codex_web.procedure_reconciliation import (
+            RECOVERY_PREFIX, MAX_RECOVERY_ATTEMPTS, MAX_RECOVERY_DECISIONS, NORMAL_PROCEDURE_HISTORY)
+        if (scope.expires_at <= time.time() or scope.assignment_id != item.id
+                or scope.execution_id != item.execution_id or scope.worker_id != item.assigned_worker_id
+                or scope.fence != item.fence or scope.requester_identity_id != item.created_by
+                or item.lease is None or item.lease.worker_id != scope.worker_id or item.lease.fence != scope.fence
+                or (item.deadline_at is not None and item.deadline_at <= time.time())
+                or scope.requester_identity_id != discovery.actor_identity_id
+                or (scope.organization_id, scope.workspace_id, scope.project_id)
+                    != (item.organization_id, item.workspace_id, item.project_id)
+                or scope.agent_profile != item.agent_profile
+                or scope.execution_profile_definition != item.execution_profile_definition
+                or not scope.resource_ids
+                or discovery.operation not in {'action_intent.reconcile', 'code-host.pull-request.ready'}
+                or set(discovery.resource_ids) != set(scope.resource_ids)):
+            raise WorkerLeaseError('read-only reconciliation admission changed')
+        worker = self.store.worker(scope.worker_id)
+        if (worker is None or worker.lifecycle not in {WorkerLifecycle.ACTIVE, WorkerLifecycle.DRAINING}
+                or worker.revoked_at is not None
+                or (worker.organization_id, worker.workspace_id) != (scope.organization_id, scope.workspace_id)):
+            raise WorkerLeaseError('read-only reconciliation worker changed')
+        if any(value.startswith(RECOVERY_PREFIX) for value in discovery.supporting_sources):
+            raise WorkerLeaseError('fresh discovery cannot supply recovery provenance')
+        attempts = {}
+        for index, previous in enumerate(item.procedure_discoveries):
+            markers = [value for value in previous.supporting_sources if value.startswith(RECOVERY_PREFIX)]
+            if index < NORMAL_PROCEDURE_HISTORY and not markers:
+                continue
+            marker_parts = markers[0][len(RECOVERY_PREFIX):].split(':', 1) if len(markers) == 1 else ()
+            if (len(marker_parts) != 2 or len(marker_parts[0]) != 32
+                    or any(c not in '0123456789abcdef' for c in marker_parts[0]) or not marker_parts[1]):
+                raise ProcedureHistoryExhaustedError('unrecognized procedure recovery history; inspect retained evidence')
+            attempts.setdefault(markers[0], []).append(previous)
+        if scope.marker not in attempts and len(attempts) >= MAX_RECOVERY_ATTEMPTS:
+            raise ProcedureHistoryExhaustedError('read-only reconciliation recovery attempt limit')
+        # Markers are provenance/counting only. Admission comes exclusively
+        # from the server-produced current context and fresh checks above.
+        marked = discovery.model_copy(update={'supporting_sources': tuple(
+            value for value in discovery.supporting_sources if not value.startswith(RECOVERY_PREFIX)) + (scope.marker,)})
+        current = attempts.get(scope.marker, [])
+        if current and current[-1].model_dump(exclude={'evaluated_at'}) == marked.model_dump(exclude={'evaluated_at'}):
+            return state
+        if len(current) >= MAX_RECOVERY_DECISIONS:
+            raise ProcedureHistoryExhaustedError('read-only reconciliation changed-decision limit')
+        item.procedure_discoveries = (*item.procedure_discoveries, marked)
+        item.updated_at = time.time()
+        return state
 
     def list_assignments(
         self,
@@ -1481,6 +1599,31 @@ class ExecutionWorkerService:
         self._notify_assignment(result, "assignment_started")
         return result
 
+    def _prepare_readiness_retirement(self, assignment_id):
+        from codex_web.storage.action_intents import ActionIntentStore, ReadinessOriginIndexProgressing
+        intents = ActionIntentStore(self.store.store)
+        try:
+            intents.unsettled_readiness_origin(assignment_id)
+        except ReadinessOriginIndexProgressing as exc:
+            raise AssignmentReadinessIndexProgressing(assignment_id,
+                cursor=exc.cursor, epoch=exc.epoch) from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AssignmentReadinessOriginError(assignment_id, unavailable=True) from exc
+        return intents
+
+    @staticmethod
+    def _require_settled_readiness_origin(intents, assignment):
+        try:
+            current = intents.unsettled_readiness_origin(assignment.id, prepare=False)
+            if any((item.organization_id, item.workspace_id, item.project_id, item.execution_id)
+                    != (assignment.organization_id, assignment.workspace_id,
+                        assignment.project_id, assignment.execution_id) for item in current):
+                raise ValueError('readiness origin custody is inconsistent')
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AssignmentReadinessOriginError(assignment.id, unavailable=True) from exc
+        if current:
+            raise AssignmentReadinessOriginError(assignment.id, tuple(item.id for item in current))
+
     def complete(
         self,
         worker_id: str,
@@ -1489,6 +1632,18 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
+        # Prepare the bounded projection before owning the cross-domain writer.
+        # This observation grants no retirement; the callback rechecks it after
+        # the actual assignment and intent namespace locks have been acquired.
+        worker = self.store.worker(worker_id)
+        assignment = self.store.assignment(assignment_id)
+        snapshot = ExecutionWorkerState(workers=[worker] if worker else [],
+            assignments=[assignment] if assignment else [])
+        worker = self._worker(snapshot, worker_id, actor)
+        assignment = self._assignment(snapshot, assignment_id, actor)
+        self._validate_lease(assignment, worker, actor=actor, fence=payload.fence,
+            token=payload.lease_token, now=time.time())
+        intents = self._prepare_readiness_retirement(assignment_id)
         updated: list[ExecutionAssignment] = []
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
             now = time.time()
@@ -1504,6 +1659,7 @@ class ExecutionWorkerService:
             )
             if assignment.status != AssignmentStatus.RUNNING:
                 raise WorkerConflictError("assignment must be running before completion")
+            self._require_settled_readiness_origin(intents, assignment)
             status = AssignmentStatus.SUCCEEDED if payload.succeeded else AssignmentStatus.FAILED
             failure = None
             if not payload.succeeded:
@@ -1558,7 +1714,8 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.transition_assignment(worker_id, assignment_id, apply)
+        self.store.transition_assignment(worker_id, assignment_id, apply,
+            guard_rows={intents.records_namespace: ()})
         result = updated[0]
         self._notify_assignment(result, "assignment_completed")
         return result
@@ -1595,6 +1752,7 @@ class ExecutionWorkerService:
                 AssignmentStatus.RUNNING, AssignmentStatus.LOST,
             }:
                 raise WorkerConflictError("bootstrap assignment is already terminal")
+            self._require_settled_readiness_origin(intents, assignment)
             replacement = assignment.model_copy(update={
                 "status": AssignmentStatus.CANCELLED,
                 "fence": assignment.fence + 1,
@@ -1623,7 +1781,13 @@ class ExecutionWorkerService:
         current = self.store.assignment(assignment_id)
         if current is None:
             raise AssignmentNotFoundError("execution assignment not found")
-        self.store.transition_assignment(current.assigned_worker_id or "", assignment_id, apply)
+        self._assignment(ExecutionWorkerState(assignments=[current]), assignment_id, actor)
+        # READY's EXECUTING write takes this same canonical namespace lock. A
+        # concurrent attempt is therefore either visible here or observes our
+        # cancelled fence before it can begin provider execution.
+        intents = self._prepare_readiness_retirement(assignment_id)
+        self.store.transition_assignment(current.assigned_worker_id or "", assignment_id, apply,
+            guard_rows={intents.records_namespace: ()})
         result = updated[0]
         self._notify_assignment(result, "assignment_cancelled")
         if result.execution_workspace_id and self.workspaces is not None:

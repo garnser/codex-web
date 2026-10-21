@@ -243,7 +243,9 @@ class AgentSessionCustodyService:
                 # status recovery, or an event claiming provider success.
                 updated.append(current)
                 return {}
-            replacement = current.model_copy(update={
+            # Apply the canonical session normalization before comparing custody.
+            # Assignment resource ordering is not a new ownership transition.
+            replacement = AgentSession.model_validate({**current.model_dump(mode="python"),
                 "execution_id": assignment.execution_id, "assignment_id": assignment.id,
                 "execution_workspace_id": assignment.execution_workspace_id,
                 "worker_id": worker.id, "resource_ids": tuple(assignment.resource_ids),

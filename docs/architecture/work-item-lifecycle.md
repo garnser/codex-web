@@ -107,6 +107,29 @@ native outcomes retain their existing reconciliation semantics and never
 authorize replay. Actual start recording uses the original bound recipient,
 not the mapping effective after the native input was sent.
 
+Repository handoffs may retain an explicit owner-routing pin `1.1` when the
+conversation-bound lane has incompatible native repository custody. Selection
+uses the existing tenant-scoped bootstrap bindings, indexed assignments,
+current AgentProfile/role and worker lease: exactly one live compatible lane
+created by the same requester must qualify. Missing, ambiguous, stale, revoked
+or quarantined recipients produce the existing visible Work Item routing blocker
+before any source-lane retirement. Scratch-only coordination profiles retain
+their existing no-repository route. Selection performs storage work off the
+async event loop; it neither creates threads/bindings nor grants access.
+
+The `1.1` recipient witness identifies actual bootstrap, assignment, execution,
+worker/fence and a checksum of immutable authority fields. The original bot
+binding/thread and reply target remain conversation provenance, including for
+an execution recipient without its own Slack binding. Queue status and native
+delivery identify the actual recipient thread. Current Work Item repository
+scope, original source binding eligibility, actor/Profile/Definition authority
+and current recipient custody are rechecked before native input. Lease renewal
+clocks and append-only procedure discovery are not custody changes. A change
+requires a new governed intent; uncertain originals cannot be redirected.
+Legacy `1.0` pins serialize exactly their original shape without a recipient
+field, preserving retained snapshot comparison. Actual matching native delivery
+is still required before ordinary recipient ACK; routing itself never ACKs.
+
 A committed native-start observer also projects exact late positive delivery
 after a waiter times out or an earlier metadata projection fails. It reuses the
 canonical snapshot-digest/correlation checks, exact response evidence and
@@ -183,6 +206,17 @@ lists, queues, messages or authority. It is a preflight observation, not a
 reservation: steering reloads canonical state under its per-item lock and
 revalidates the owner, lifecycle conditions, Project and exact thread before
 dispatch.
+
+A nonempty owner thread queue is not proof that the current request is queued.
+`already_queued` requires an exact current canonical prompt (including its
+artifact/result context), Work Item, Project, repository read/write scope and
+handoff timestamp. An unrelated, stale or unreadable retained request returns
+`owner_queue_context_mismatch` or `owner_queue_context_unavailable`; a concurrent
+drain returns `owner_queue_context_changed`. These outcomes preserve every
+original request and FIFO order, start no native work and grant no delivery or
+ACK evidence. The actual dispatch repeats the identity check at its idle-queue
+race boundary. The Work Item inspector exposes the queue outcome and repair
+action, while a matching queued request remains explicitly delivery-unproven.
 
 An identical normalized progress update remains an attributed audit receipt and
 owner activity acknowledgement. It does not advance `last_meaningful_update_at`
@@ -375,3 +409,13 @@ Unaddressed GitLab reconciliation notifications for the same thread and Work Ite
 ### Pending CI and validation ownership
 
 A running, pending, created or queued check on the exact MR head is an asynchronous prerequisite. The validation owner records the MR, head, pipeline/check identities and observed statuses in a canonical checkpoint, retains ownership in the validation lane, and stops until terminal provider evidence. Pending CI is not rejection or failed work and does not justify an implementation or Orchestrator handback. Model polling and unchanged CI retries are prohibited. The primary validation disposition requirement accepts an exact-head pending-CI checkpoint alongside merge/close and evidenced rejection or defect handback; it must not separately require a handback to finish the turn. A terminal failure identifies one capable repair owner: code defects go to the implementation owner, while runner, dependency and environment defects go to Carl; successful checks still require independent artifact acceptance and all merge/release gates. The project execution-role definition is versioned in the existing Definition Registry; historical execution references remain unchanged.
+
+A typed owner-recipient witness preserves the recipient's **already-admitted**
+read-only repository context when its writable repository set exactly matches
+the Work Item. Dispatch revalidates the current assignment and its full authority
+checksum before deriving this read-only context; caller-supplied repositories
+are never unioned into it. A mismatching supplied scope is refused. The retained
+queue and final native admission carry the exact read/write sets, and a changed
+recipient scope, actor, Profile, lease or fence invalidates the witness before
+input. This also applies when the source channel binding already points to the
+correct recipient. It neither changes that binding nor grants new access.
