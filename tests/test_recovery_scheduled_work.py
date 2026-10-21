@@ -81,9 +81,9 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_verification_allows_loop_progress_and_uses_reserved_identity(self):
         self.service.create_backup(actor=self.actor)
         destination = self.service.destinations['local']
-        entered, release, controlled = self.gate(destination.get)
+        entered, release, controlled = self.gate(destination.get_bounded)
         self.clock.value = 1301
-        with patch.object(destination, 'get', controlled):
+        with patch.object(destination, 'get_bounded', controlled):
             work = asyncio.create_task(self.scheduler.run_due())
             try:
                 self.assertTrue(await asyncio.to_thread(entered.wait, 2))
@@ -244,9 +244,9 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
     async def test_pausing_current_schedule_during_verification_prevents_evidence_and_success(self):
         self.service.create_backup(actor=self.actor)
         destination = self.service.destinations['local']
-        entered, release, controlled = self.gate(destination.get)
+        entered, release, controlled = self.gate(destination.get_bounded)
         self.clock.value = 1301
-        with patch.object(destination, 'get', controlled):
+        with patch.object(destination, 'get_bounded', controlled):
             work = asyncio.create_task(self.scheduler.run_due())
             try:
                 self.assertTrue(await asyncio.to_thread(entered.wait, 2))

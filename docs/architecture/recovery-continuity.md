@@ -58,6 +58,25 @@ These reduce overlapping representations; they do not
 make capture constant-memory or remove the need to size the service for the
 decoded state and complete authenticated encryption payload.
 
+Capture and restore perform cooperative memory admission before loading a whole
+snapshot or encrypted envelope. SQLite/PostgreSQL sizing uses only SQL row counts
+and encoded payload/key lengths; local destinations provide metadata size and a
+bounded read that refuses size changes. Unsupported sizing never means unlimited.
+On Linux, current host `MemAvailable` and all visible cgroup-v2 ancestor limits
+are intersected; swap is not credited. Missing or malformed accounting refuses
+admission rather than assuming host RAM is available to the service.
+
+Capture estimates additional allocation as twelve times source bytes plus 512
+bytes per row; restore estimates eight times encrypted size. Each check also
+requires 512 MiB of remaining headroom. These are conservative operational
+estimates, **not reservations or guarantees for arbitrary JSON or concurrent
+process growth**. Actual buffer lengths trigger further headroom checks before
+encryption, envelope encoding, decryption and plaintext decoding. Refusals expose
+the stage, estimated required bytes and observed available bytes through existing
+Recovery/Upgrade errors; no backup or verification PASS is inferred. Operators
+must review workload/capacity when refused. These checks do not mutate memory or
+swap limits, clear caches, restart services or authorize retries of uncertain work.
+
 Transport/broker queues are not backed up as business truth. After restore they
 are reconstructed from canonical state/outbox semantics.
 
