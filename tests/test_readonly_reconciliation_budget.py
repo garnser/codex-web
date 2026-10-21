@@ -158,6 +158,39 @@ print(json.dumps([item.model_dump(mode='json') for item in after.procedure_disco
                     self.record(self.discovery.model_copy(update=changes))
         self.assertEqual(self.service.store.assignment(self.claimed.id).procedure_discoveries, self.originals)
 
+    def test_scoped_assignment_lookup_is_fresh_exact_and_normal_ambiguity_is_unchanged(self):
+        from unittest.mock import patch
+        from codex_web.services.execution_workers import WorkerConflictError
+        scope = self.full()
+        current = self.service.store.assignment(self.claimed.id)
+        # A large retained catalog must not be decoded just to verify one origin.
+        def history(state):
+            state.assignments.extend(current.model_copy(update={
+                'id':'foreign-%04d'%index,'execution_id':'other-%04d'%index,'status':'cancelled',
+                'lease':None,'organization_id':'foreign'}) for index in range(500))
+            return state
+        self.service.store.update(history)
+        with read_only_reconciliation(scope), patch.object(self.service.store,'list_assignments',
+                side_effect=AssertionError('full history read')):
+            self.assertEqual(self.service.assignment_for_execution(scope.execution_id,actor=self.admin),current)
+            with self.assertRaises(WorkerConflictError):
+                self.service.assignment_for_execution('foreign-execution',actor=self.admin)
+            with self.assertRaises(WorkerConflictError):
+                self.service.assignment_for_execution(scope.execution_id,
+                    actor=self.admin.model_copy(update={'workspace_id':'foreign'}))
+        for changed in (replace(scope,fence=scope.fence+1),replace(scope,expires_at=0)):
+            with read_only_reconciliation(changed),self.assertRaises(WorkerConflictError):
+                self.service.assignment_for_execution(scope.execution_id,actor=self.admin)
+        from codex_web.resources import RepositoryExecutionScope
+        competing = current.model_copy(update={'id':'competing','repository_scope':RepositoryExecutionScope(
+            organization_id=current.organization_id,workspace_id=current.workspace_id,project_id=current.project_id,
+            writable_repository_ids=('different-repo',),source='explicit')})
+        # Outside recovery, the original loader and its ambiguity checks remain.
+        with patch.object(self.service.store,'list_assignments',return_value=[current,competing]) as loader:
+            with self.assertRaisesRegex(WorkerConflictError,'disagree on repository authority'):
+                self.service.assignment_for_execution(scope.execution_id,actor=self.admin)
+            loader.assert_called_once()
+
     def test_replaced_lease_and_empty_bound_scope_refuse_even_with_current_marker(self):
         scope = self.full()
         for change in ({'worker_id':'different-worker'}, {'fence':scope.fence+1}):

@@ -369,6 +369,34 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
+        from codex_web.procedure_reconciliation import current_reconciliation_scope
+        recovery = current_reconciliation_scope()
+        if recovery is not None:
+            # The engine has already selected the original READY assignment,
+            # not a latest historical candidate. Reload that exact row at every
+            # checkpoint; normal execution retains its ambiguity scan below.
+            item = self.store.assignment(recovery.assignment_id)
+            worker = self.store.worker(recovery.worker_id)
+            now = time.time()
+            if (execution_id != recovery.execution_id or recovery.expires_at <= now
+                    or item is None or item.execution_id != execution_id
+                    or not self._same_scope(item, actor)
+                    or (item.organization_id,item.workspace_id,item.project_id)
+                        != (recovery.organization_id,recovery.workspace_id,recovery.project_id)
+                    or item.fence != recovery.fence or item.assigned_worker_id != recovery.worker_id
+                    or item.created_by != recovery.requester_identity_id
+                    or item.status not in {AssignmentStatus.CLAIMED,AssignmentStatus.RUNNING}
+                    or item.agent_profile != recovery.agent_profile
+                    or item.execution_profile_definition != recovery.execution_profile_definition
+                    or item.lease is None or item.lease.expires_at <= now
+                    or item.lease.worker_id != recovery.worker_id or item.lease.fence != recovery.fence
+                    or item.deadline_at is not None and item.deadline_at <= now
+                    or worker is None or worker.revoked_at is not None
+                    or (worker.organization_id,worker.workspace_id) != (recovery.organization_id,recovery.workspace_id)
+                    or worker.lifecycle not in {WorkerLifecycle.ACTIVE,WorkerLifecycle.DRAINING}
+                    or actor.identity_id not in {recovery.requester_identity_id,worker.service_identity_id}):
+                raise WorkerConflictError('read-only reconciliation originating assignment changed')
+            return item
         matches = [
             item
             for item in self.store.list_assignments()

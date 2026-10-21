@@ -3365,6 +3365,7 @@ turn_execution_service = install_turn_execution_service(
 )
 
 from codex_web.services.agent_session_custody import AgentSessionCustodyService
+turn_execution_service.readiness_origin_blocker = action_intent_service.store.unsettled_readiness_origin
 turn_execution_service.session_custody = AgentSessionCustodyService(
     agent_session_service, execution_worker_service, thread_bootstrap_binding_service,
     execution_workspace_service, execution_profile_definition_service,

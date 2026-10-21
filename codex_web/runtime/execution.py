@@ -221,6 +221,7 @@ class TurnExecutionService:
         self._queued_retention_notice_at: dict[str, float] = {}
         self.owner_routing_validator = None
         self.procedure_admission = None
+        self.readiness_origin_blocker = None
         self.session_custody = None
         self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
@@ -4966,8 +4967,14 @@ class TurnExecutionService:
                     or assignment.created_by != actor.identity_id
                     or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
                     != (actor.organization_id, actor.workspace_id, project.id)
-                    or len(assignment.procedure_discoveries) != 64):
+                    or len(assignment.procedure_discoveries) < 64):
                 raise blocked('The exhausted assignment no longer matches the authenticated thread owner and scope.')
+            async def require_settled_origin():
+                if self.readiness_origin_blocker is None:
+                    raise blocked('Readiness origin inspection is unavailable; preserve this assignment.')
+                if await asyncio.to_thread(self.readiness_origin_blocker, assignment.id):
+                    raise blocked('An attempted READY action still requires same-origin read-only reconciliation; preserve its assignment.')
+            await require_settled_origin()
             local_worker = getattr(manager, 'local_worker', None)
             custody = getattr(session, 'managed_validation', None)
             status = session.status()
@@ -5039,6 +5046,7 @@ class TurnExecutionService:
                     or current.resource_context != assignment.resource_context
                     or session.status().pending_executor_work != 0):
                 raise blocked('Assignment ownership or activity changed during renewal inspection.')
+            await require_settled_origin()
             scope = assignment.repository_scope
             renewed = await self._supersede_thread_bootstrap(thread_id=thread_id, project=project,
                 runtime_binding=runtime, sandbox=assignment.sandbox, approval_policy=assignment.approval_policy,

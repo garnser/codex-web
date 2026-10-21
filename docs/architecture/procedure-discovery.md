@@ -268,3 +268,51 @@ must use a separately reviewed canonical composition, genuine authenticated
 original worker, current authority and read-only provider transport; it must not
 cancel the origin, edit discovery history, repeat READY or claim the running
 service has been upgraded.
+
+
+The native idle-renewal path checks the existing ActionIntent store's unresolved
+READY origin projection before inspection and again before superseding. It holds
+the original instead of knowingly retiring required custody. The projection is
+maintained by ordinary canonical intent updates and backfills in bounded pages;
+a fresh reader process rebuilds it so an earlier writer version cannot leave a
+false complete index. Retained terminal history does not impose a permanent
+renewal limit. These two checks mitigate retirement but do not form an atomic
+provider-attempt/cancellation transaction; the remaining interleaving guarantee is
+tracked in [#1663](https://github.com/garnser/codex-web/issues/1663). No automatic
+post-turn reconciliation scheduler or LLM polling is introduced.
+
+Within an authenticated read-only reconciliation scope, assignment lookup reloads
+the exact server-selected originating row rather than decoding all historical
+assignments at every checkpoint. It checks current tenant, identity, execution,
+worker, fence, Profile/Definition, lease and deadline; normal lookup and its
+repository-ambiguity checks remain unchanged outside this scope.
+
+#### Incident command
+
+`scripts/reconcile-readiness-once.py --help` lists the explicit source/PID,
+origin, state-store, existing secret backend and provider configuration pins.
+The command requires the reviewed committed tool revision and clean executable
+source, canonical local-deployment lock plus a separate qualification lock, and
+an exclusive private journal directory. It never upgrades the running service or
+changes autonomy/bot controls. The operator must separately establish a safe
+finite incident window and retain the original custody.
+
+Before any credential API call it refuses unnormalized legacy storage, changed
+origin, WorkItem-owning intents, procedural checkpoints, rollback checkpoints,
+missing completed provider results and nonempty expected artifact evidence. The
+narrow tool therefore cannot omit required owning-result or content semantics.
+Only the canonical Identity API can issue a five-minute credential for the
+existing originating worker principal, with `action-intent:worker` and
+`secret:use` scopes. Its raw value stays in memory; entry authenticates it again
+and finally revokes it. Credential creation/settlement/revocation uncertainty is
+journaled without tokens or exception bodies and never automatically retried.
+
+The complete canonical service composition performs one same-intent read-only
+reconciliation with current identity, authority, Profile/Definition, skills,
+approvals, security, credential and store transaction controls. Provider transport
+allows at most 16 GET/HEAD requests to the exact configured GitLab API authority
+and path; native/model transports refuse execution. CPU, memory, core-dump,
+wall-clock and storage-operation limits bound the process. Source/tree/helper
+hashes, interpreter, installed revision/PID, intent/receipt and token-revocation
+IDs remain inspectable in private operator journals. If the process stops or an
+outcome is unknown, inspect the same canonical intent before any further action.

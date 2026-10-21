@@ -2660,6 +2660,8 @@ class ActionIntentService:
                 or intent.attempt < 1 or intent.execution_started_at is None or intent.readiness_origin is None):
             return None
         origin = intent.readiness_origin
+        if self.execution_workers is None:
+            raise ActionRequirementError('Read-only reconciliation requires canonical execution workers')
         # Preserve ordinary reconciliation semantics below the normal budget;
         # recovery must not turn optional verification into a new early error.
         retained = self.execution_workers.store.assignment(origin.assignment_id)

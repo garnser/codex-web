@@ -207,6 +207,7 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(body['item']['status'], 'uncertain', body)
         intent_id = body['item']['id']
+        self.assertEqual([item.id for item in self.intents.store.unsettled_readiness_origin(self.assignment.id)], [intent_id])
         current = self.workers.store.assignment(self.assignment.id)
         for index in range(64 - len(current.procedure_discoveries)):
             self.workers.record_procedure_discovery(self.assignment.id, ProcedureDiscovery(
@@ -248,6 +249,7 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(retained), 64)
         self.assertIn('action_intent.reconcile', {entry.operation for entry in retained[64:]})
         self.assertIn('code-host.pull-request.ready', {entry.operation for entry in retained[64:]})
+        self.assertEqual(self.intents.store.unsettled_readiness_origin(self.assignment.id), ())
 
     async def test_recovery_context_cannot_execute_rollback_or_verify_another_intent(self):
         from codex_web.procedure_reconciliation import ReadOnlyReconciliationScope, read_only_reconciliation
