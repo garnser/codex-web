@@ -6,6 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from urllib.parse import quote
+from unittest.mock import patch
 
 import httpx
 
@@ -138,6 +139,33 @@ class GitLabPullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         _, _, again = await self.submit()
         self.assertEqual(body['item']['id'], again['item']['id'])
         self.assertEqual(sum(method=='PUT' for method,_ in self.calls), 1)
+
+    async def test_ready_at_last_history_slot_revalidates_without_duplicate_exhaustion(self):
+        from codex_web.procedure_discovery import ProcedureDiscovery
+        original = []
+        for index in range(63):
+            discovery = ProcedureDiscovery(actor_identity_id=self.admin.identity_id,
+                organization_id=self.admin.organization_id, workspace_id=self.admin.workspace_id,
+                project_id=self.assignment.project_id, resource_ids=(self.target.id,),
+                operation='repository.read', context_checksum=f'preserved-{index}', evaluated_at=1,
+                outcome='no_match', policy_source='canonical:fixture', policy_allows=True)
+            self.workers.record_procedure_discovery(self.assignment.id, discovery,
+                expected_fence=self.assignment.fence, actor=self.admin)
+            original.append(discovery)
+        with patch.object(self.intents.procedure_discovery, 'discover',
+                wraps=self.intents.procedure_discovery.discover) as discover:
+            status, _, body = await self.submit(key='ready-last-history-slot')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'succeeded', body)
+        self.assertGreater(discover.call_count, 5)
+        current = self.workers.store.assignment(self.assignment.id)
+        self.assertEqual(len(current.procedure_discoveries), 64)
+        self.assertEqual(current.procedure_discoveries[:63], tuple(original))
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        # The real adapter reads/rechecks repeatedly before and after mutation;
+        # all those checkpoints still run, without consuming redundant history.
+        self.assertGreaterEqual(self.pr_reads, 5)
+        self.assertTrue(self.intents.history(body['item']['id'], self.admin)['verifications'][-1]['verified'])
 
     async def test_already_ready_reads_only(self):
         self.pr.update(draft=False, title='Preserve real title')

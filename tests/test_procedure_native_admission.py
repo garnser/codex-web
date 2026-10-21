@@ -175,7 +175,7 @@ class ProductionNativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
                     execution_id=self.native_assignment.execution_id, actor=self.actor)
                 self.assertTrue(any(method == 'turn/start' for method, _ in sessions.session.requests))
         evidence = self.workers.assignment_for_execution(self.native_assignment.execution_id, actor=self.actor).procedure_discoveries
-        self.assertEqual(len(evidence), 5)
+        self.assertEqual(len(evidence), 1)  # Adjacent identical current decisions share evidence.
         self.assertTrue(all(d.admitted and d.outcome == 'no_match' for d in evidence))
         self.assertTrue(all(d.policy_source.startswith('definition:') for d in evidence))
 
