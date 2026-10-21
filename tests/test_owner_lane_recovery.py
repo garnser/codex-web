@@ -15,6 +15,10 @@ from codex_web.autonomy import AutonomyControl
 from codex_web.models import Project, QueuedTurn, WorkItemState
 from codex_web.execution_workers import ExecutionAssignment, AssignmentStatus, AssignmentLease, NetworkPolicy, WorkerResourceLimits, ExecutionRuntimeBinding
 from codex_web.agent_profiles import AgentProfileExecutionBinding
+from codex_web.identity import AuthenticationActor
+from codex_web.procedure_discovery import ProcedureDiscovery
+from codex_web.services.execution_workers import ExecutionWorkerService
+from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.runtime.execution import TurnExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.execution_preflight import ExecutionPreflightService
@@ -132,6 +136,33 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records['failed'].status, 'lost')
         self.assertEqual(len(self.queue), 1)
         self.assertEqual(self.preflight.store.get('preflight-queued-uncertain').status, 'reconciliation_required')
+
+    async def test_native_guard_accepts_canonical_procedure_evidence_append_but_not_profile_change(self):
+        validator, records, queued = await self.rollover()
+        validator()  # Bootstrap has claimed its exact worker before discovery.
+        workers = ExecutionWorkerService(ExecutionWorkerStore(self.store))
+        workers.store.update(lambda state: state.model_copy(update={
+            'assignments': [records['successor']]}))
+        actor = AuthenticationActor(identity_id='actor', principal_kind='service',
+            organization_id='org', workspace_id='ws', assurance='service_token',
+            service_scopes=('execution-worker:admin',))
+        # Real native procedure admission records even a no-match discovery
+        # after bootstrap and before the final resume/input guard (#1613).
+        discovery = ProcedureDiscovery(actor_identity_id=actor.identity_id,
+            organization_id='org', workspace_id='ws', project_id='project',
+            resource_ids=('repo',), operation=None, context_checksum='current-context',
+            evaluated_at=time.time(), outcome='no_match', policy_source='canonical:fixture',
+            policy_allows=True)
+        records['successor'] = workers.record_procedure_discovery('successor', discovery,
+            expected_fence=1, actor=actor)
+        self.assertEqual(records['successor'].procedure_discoveries, (discovery,))
+        validator()  # Discovery evidence must not look like replacement custody.
+        records['successor'] = records['successor'].model_copy(update={
+            'agent_profile': records['successor'].agent_profile.model_copy(update={
+                'profile_record_id': 'different-profile-authority'})})
+        with self.assertRaises(HTTPException) as caught:
+            validator()
+        self.assertEqual(caught.exception.detail['code'], 'owner_recovery_successor_changed')
 
     async def test_rollover_final_guard_refuses_changed_custody_claim_authority_and_human(self):
         validator, records, queued = await self.rollover()
