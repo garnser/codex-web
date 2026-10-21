@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from codex_web.models import QueuedTurn, WorkItemState
@@ -173,6 +174,8 @@ class OwnerQueueIdentityTests(unittest.IsolatedAsyncioTestCase):
             return (routing.profile, routing.actor)
 
         fixture.service.owner_routing_context = context_after_racing_enqueue
+        fixture.service.owner_routing_repository_scope = Mock(return_value=SimpleNamespace(
+            writable_repository_ids=('repo-data',), read_only_repository_ids=()))
         result = await fixture.service.dispatch(fixture.binding, text, 'owner-work-watchdog',
             owner_routing_pin=pin, work_item_ref=pin.work_item_ref,
             repository_resource_id='repo-data', writable_repository_resource_ids=('repo-data',),
