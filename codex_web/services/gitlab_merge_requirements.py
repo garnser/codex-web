@@ -13,6 +13,7 @@ from codex_web.code_host_merge_requirements import (
     CodeHostMergeSourceFact, MergeFactAvailability as Availability, MergeFactSource as Source,
 )
 from codex_web.code_hosts import CodeHostError
+from codex_web.services.code_host_action_contract import CodeHostActionContract
 from codex_web.integrations.gitlab_client import GitLabAPIError, GitLabReadIncompleteError
 
 
@@ -38,6 +39,18 @@ def text(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_./-]{1,1024}', value):
         raise GitLabReadIncompleteError('invalid_reference')
     return value
+
+
+def branch_name(value):
+    if not isinstance(value, str) or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise GitLabReadIncompleteError('invalid_target_branch')
+    try:
+        branch = CodeHostActionContract.branch(value, field='target_branch')
+    except ValueError:
+        raise GitLabReadIncompleteError('invalid_target_branch') from None
+    if branch != value:
+        raise GitLabReadIncompleteError('invalid_target_branch')
+    return branch
 
 
 def revision(value):
@@ -112,7 +125,7 @@ class GitLabMergeRequirementsReader:
             raise GitLabReadIncompleteError('draft_required')
         # Keep only gate and scope fields. Provider descriptions, note bodies,
         # names and reflected error messages never enter the projection.
-        return dict(head=revision(raw.get('sha')), branch=text(raw.get('target_branch')),
+        return dict(head=revision(raw.get('sha')), branch=branch_name(raw.get('target_branch')),
             state=text(raw.get('state')), draft=raw['draft'], gate=text(raw.get('detailed_merge_status')),
             pipeline=raw.get('head_pipeline'), author=native_id(obj(raw.get('author')).get('id')),
             discussions=raw.get('blocking_discussions_resolved'))

@@ -83,6 +83,23 @@ class GitLabMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fact.independent_approval_count,1)
         self.assertEqual(fact.observed_checks[0].external_id,'123456789012')
 
+    async def test_valid_unicode_plus_and_at_target_branch_roundtrips(self):
+        target='release/å+fix@2'
+        self.pr['target_branch']=target
+        self.branch['name']=target
+        fact=await self.reader().read('7')
+        self.assertEqual(fact.target_branch,target)
+        requests=[r for r in self.calls if '/repository/branches/' in r.url.path]
+        self.assertEqual(len(requests),2)
+        self.assertTrue(all(b'release%2F%C3%A5%2Bfix%402' in r.url.raw_path for r in requests))
+        self.assertEqual(fact.merge_state,'mergeable')
+
+    async def test_invalid_target_branch_is_not_normalized_into_scope(self):
+        for target in ['../main',' main','main\x00',12]:
+            with self.subTest(target=target):
+                self.pr['target_branch']=target
+                with self.assertRaises(CodeHostError):await self.reader().read('7')
+
     async def test_community_edition_missing_counts_are_not_zero(self):
         self.approvals = {'approved':True,'approved_by':[{'user':{'id':2}}],
                           'user_can_approve':False,'user_has_approved':False}
