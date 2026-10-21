@@ -39,7 +39,7 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
                 assigned_worker_id='worker', deadline_at=time.time()+1000,
                 lease=AssignmentLease(worker_id='worker', fence=1, lease_token='not-a-real-secret-token',
                     acquired_at=time.time(), expires_at=time.time()+1000),
-                agent_profile=f.assignment.agent_profile,
+                agent_profile=f.assignment.agent_profile, execution_profile_id='repository-write',
                 sandbox=f.binding.sandbox, approval_policy=f.binding.approval_policy,
                 resource_ids=(scope,), repository_scope=RepositoryExecutionScope(
                     organization_id='org-a', workspace_id='workspace-a', project_id='project-a',
@@ -63,10 +63,10 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
         return self.service.compatible_pin(self.state, self.f.binding, 'orchestrator',
             writable_repository_ids=('platform',))
 
-    def validate(self, pin):
+    def validate(self, pin, *, attempt_id=None):
         self.service.validate_native(pin, thread_id='platform-thread',
             project=self.f.env.env.projects.get('project-a', scope=self.f.env.env.scope),
-            work_item_ref=self.state.ref, handoff_requested_at=1,
+            work_item_ref=self.state.ref, handoff_requested_at=1, queued_admission_attempt_id=attempt_id,
             agent_profile_id=self.f.profile.profile_id, agent_profile_revision=self.f.profile.revision,
             agent_profile_actor_id=self.f.actor.identity_id)
 
@@ -104,7 +104,7 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await task
 
-    async def test_actual_start_is_required_then_normal_ack_preserves_handoff_provenance(self):
+    async def test_delivery_projection_requires_matching_selected_scope_and_preserves_provenance(self):
         pin = self.select()
         self.assertFalse(self.continuity.record_handoff_delivery(self.state.ref, expected_requested_at=1,
             recipient='orchestrator', organization_id='org-a', workspace_id='workspace-a', project_id='project-a',
@@ -120,6 +120,53 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
             WorkItemAckCreate(actor='orchestrator', expected_handoff_requested_at=1))
         self.assertEqual(result.current_owner, 'orchestrator')
         self.assertEqual(result.handoff.delivery.thread_id, 'platform-thread')
+        self.assertEqual(self.f.binding.model_dump(mode='json'), self.binding_before)
+
+    async def test_retained_native_capture_observer_projects_selected_lane_then_allows_ack(self):
+        from codex_web.models import QueuedTurn
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_start import QueuedNativeStartCapture
+        pin = self.select()
+        original = QueuedTurn(id='recipient-original', execution_id='requested-recipient-original',
+            thread_id='platform-thread', project_id='project-a', message='Review selected artifact',
+            work_item_ref=self.state.ref, handoff_requested_at=1, created_at=1, owner_routing_pin=pin,
+            agent_profile_id=self.f.profile.profile_id, agent_profile_revision=self.f.profile.revision,
+            agent_profile_actor_id=self.f.actor.identity_id, execution_profile_id='repository-write',
+            repository_resource_id='platform', writable_repository_resource_ids=('platform',))
+        preflight = ExecutionPreflightService(self.f.preflight, clock=lambda: 3)
+        preflight.queued_start_observer = self.service.project_native_start
+        self.service.delivery_recorder = self.continuity.record_handoff_delivery
+        attempt = preflight.retain_queued(original, organization_id='org-a', workspace_id='workspace-a')
+        _, claim = preflight.claim_queued_admission(attempt.id)
+        preflight.begin_queued_start(attempt.id, claim_id=claim)
+        assignment = self.assignments[pin.recipient.assignment_id]
+        capture = QueuedNativeStartCapture(preflight, attempt.id, claim, original.execution_id,
+            original.thread_id, self.f.actor.identity_id,
+            admission_validator=lambda: self.validate(pin, attempt_id=attempt.id), require_send_guard=True).bind_assignment(assignment,
+                worker_id='worker', fence=1, validator=lambda: assignment)
+        correlation = capture.prepare(generation='test-generation', rpc_request_id='test-rpc',
+            native_session_id='test-native-session')
+        capture.validate_before_send(correlation)
+        self.assertFalse(self.service.project_native_start(self.f.preflight.get(attempt.id)))
+        self.assertEqual(self.f.env.states.get(self.state.ref).handoff.delivery.status, 'awaiting_dispatch')
+        # Exact trusted RPC-reader fixture, not an operator-provided delivery assertion.
+        self.assertTrue(capture.observe(correlation, generation='test-generation', message={
+            'id': 'test-rpc', 'result': {'thread': {'id': 'test-native-session'},
+                'turn': {'id': 'test-native-turn', 'threadId': 'test-native-session', 'status': 'inProgress'}}}))
+        delivered = self.f.env.states.get(self.state.ref)
+        self.assertEqual(delivered.handoff.delivery.thread_id, 'platform-thread')
+        self.assertEqual(delivered.handoff.delivery.execution_id, 'execution-platform-thread')
+        self.assertEqual(delivered.handoff.delivery.turn_id, 'test-native-turn')
+        self.assertIsNone(delivered.handoff.acknowledged_at)
+        saved = self.f.preflight.get(attempt.id)
+        for changes in ({'thread_id': 'core-thread'}, {'execution_id': 'foreign-execution'}):
+            corrupted = saved.model_copy(update={'queued_start_receipt':
+                saved.queued_start_receipt.model_copy(update=changes)})
+            with self.assertRaisesRegex(OwnerRoutingError, 'native_fact_mismatch'):
+                self.service.project_native_start(corrupted)
+        result = self.f.env.machine._structured_ack(self.state.ref,
+            WorkItemAckCreate(actor='orchestrator', expected_handoff_requested_at=1))
+        self.assertEqual(result.current_owner, 'orchestrator')
         self.assertEqual(self.f.binding.model_dump(mode='json'), self.binding_before)
 
     async def test_missing_or_ambiguous_current_executor_is_bounded_and_never_replaces_core(self):
