@@ -454,9 +454,10 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
                     workspace_id=project.workspace_id,
                 ),
             ),
-            # This test isolates instruction composition. Real procedure gates
-            # and production wiring are covered by test_procedure_native_admission.
+            # Isolate instruction composition from both native admission hooks.
+            # Real gates/wiring are covered by native-admission and Home-host tests.
             patch.object(execution_service, "procedure_admission", new=AsyncMock(return_value=(None, ""))),
+            patch.object(execution_service, "native_input_guard_factory", new=None),
             patch.object(execution_service.binding_service, "prepare", return_value=binding),
             patch.object(execution_service.session_manager, "start", new=AsyncMock(return_value=session)),
             patch.object(execution_service, "mark_thread_active"),
