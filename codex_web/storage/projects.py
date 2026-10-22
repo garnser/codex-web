@@ -99,6 +99,29 @@ class ProjectRepository:
         self._snapshot.set(copy.deepcopy(normalized_payload))
         return projects
 
+    def update_home_operator(self, *, organization_id, workspace_id, expected_revision, binding):
+        """CAS one navigation field without overwriting concurrent Project edits."""
+        if self.store is None:
+            raise ValueError("Canonical transactional Project storage is required")
+
+        def update(current):
+            rows = list(current or [])
+            for index, raw in enumerate(rows):
+                project = Project.model_validate(raw)
+                if (project.id, project.organization_id, project.workspace_id) != (
+                        'home', organization_id, workspace_id):
+                    continue
+                revision = project.home_operator.revision if project.home_operator else 0
+                if revision != expected_revision:
+                    raise ValueError("Operator selection changed; refresh before replacing it")
+                rows[index] = {**raw, 'home_operator': binding.model_dump()}
+                return rows
+            raise ValueError("Home Project changed; refresh before replacing the selection")
+
+        merged = self.store.update(self.namespace, update, default=[])
+        self._snapshot.set(copy.deepcopy(merged))
+        self._write_payload(merged)
+
     def save(self, projects: list[Project]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._storage_payload(projects)

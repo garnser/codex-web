@@ -1,3 +1,4 @@
+import { renderHomeOperator } from "./home_operator_ui.js";
 import { request as apiRequest } from "./api_client.js";
 import { journeyId, trackUx } from "./ux_telemetry.js";
 import {
@@ -370,6 +371,13 @@ function renderPayload(host, payload) {
   titleBox.append(eyebrow, title, path);
   header.append(titleBox, statusBadge(payload.status));
   host.appendChild(header);
+  if (payload.project.id === "home") {
+    const operator = document.createElement("section");
+    operator.className = "home-overview-section";
+    operator.dataset.homeOperator = "true";
+    host.appendChild(operator);
+    void renderHomeOperator(operator, { signal: controller?.signal });
+  }
 
   observeOnboarding(payload);
   const onboarding = renderOnboarding(payload);

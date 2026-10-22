@@ -358,6 +358,7 @@ from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
 from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
 from codex_web.services.home_overview import HomeOverviewService
+from codex_web.services.home_operator import HomeOperatorService
 from codex_web.services.metrics import MetricService
 from codex_web.services.outcome_metrics import OutcomeMetricService
 from codex_web.services.ux_telemetry import UxTelemetryService
@@ -4863,6 +4864,10 @@ operator_ui_service = OperatorUiService(
     load_work_item_states=runtime_state.work_item_states.load,
     event_hub=event_hub,
 )
+home_operator_service = HomeOperatorService(
+    projects=project_service, thread_scope=thread_scope_service,
+    thread_index=thread_index_repository, settings=thread_execution_settings_service,
+)
 home_overview_service = HomeOverviewService(
     projects=project_service,
     work_items=work_item_service,
@@ -5075,7 +5080,7 @@ EXTRACTED_ROUTE_COUNTS = {
         build_ui_router(operator_ui_service)
     ),
     "home": _include_domain_router(
-        build_home_router(home_overview_service)
+        build_home_router(home_overview_service, home_operator_service)
     ),
     "system": _include_domain_router(
         build_system_router(
