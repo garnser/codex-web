@@ -37,6 +37,7 @@ from codex_web.services.work_item_dependencies import (
     gitlab_token_for_project,
 )
 from codex_web.models import GitLabProjectRoutingSettings, GitLabRoutingSettings, WorkItemState
+from codex_web.owner_routing import OwnerRoutingError
 
 
 class GitLabService:
@@ -1322,17 +1323,38 @@ class GitLabService:
                         notification_kwargs["provider_notification_pin"] = ProviderNotificationPin.from_event(
                             canonical_delivery.event,source_origin="gitlab",provider_event_kind=kind,
                             work_item_ref=projected_state.ref,message=prompt)
-                    result = await self.operations.dispatch_scoped_event(
-                        binding,
-                        prompt,
-                        "gitlab",
-                        work_item_ref=projected_state.ref,
-                        repository_resource_id=repository_resource_id,
-                        writable_repository_resource_ids=(
-                            repository_resource_id,
-                        ),
-                        **notification_kwargs,
-                    )
+                    owner_routing = getattr(self.work_items, 'owner_routing', None)
+                    try:
+                        # The bot binding is conversation provenance. A current
+                        # owner may hold another canonical repository executor.
+                        # Pending handoffs retain their separate delivery/ACK path.
+                        handoff = getattr(projected_state, 'handoff', None)
+                        if (owner_routing is not None and agent is not None
+                                and (handoff is None or handoff.status != 'pending')
+                                and self.work_items.coerce_owner(agent)
+                                == self.work_items.coerce_owner(actionable_owner_value(projected_state))):
+                            notification_kwargs['owner_routing_pin'] = await asyncio.to_thread(
+                                owner_routing.compatible_pin, projected_state, binding, agent,
+                                writable_repository_ids=(repository_resource_id,))
+                        result = await self.operations.dispatch_scoped_event(
+                            binding,
+                            prompt,
+                            "gitlab",
+                            work_item_ref=projected_state.ref,
+                            repository_resource_id=repository_resource_id,
+                            writable_repository_resource_ids=(repository_resource_id,),
+                            **notification_kwargs,
+                        )
+                    except OwnerRoutingError as error:
+                        if owner_routing is None:
+                            raise
+                        await asyncio.to_thread(owner_routing.record_failure, projected_state, error)
+                        result = {'ok': False, 'queued': False,
+                            'threadId': binding.thread_id, 'code': str(error)}
+                        self.operations.append_event({'type': 'gitlab_owner_route_refused',
+                            'event_id': event_id, 'project_id': project_id,
+                            'work_item_ref': projected_state.ref, 'agent': agent,
+                            'reason': str(error)})
                 else:
                     result = await self.operations.dispatch_event(
                         binding,
