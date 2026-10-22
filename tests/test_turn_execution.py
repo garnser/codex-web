@@ -2721,6 +2721,61 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         host._thread_queue.assert_called()
         self.assertEqual(service.thread_completion_tasks, {})
 
+    async def test_successful_checkpoint_keeps_its_result_when_readiness_callback_refuses(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
+        sessions.local_worker = SimpleNamespace(worker_actor=object())
+        sessions.checkpoint = AsyncMock(return_value=(SimpleNamespace(),))
+        callback = AsyncMock(side_effect=RuntimeError('private read-only settlement refusal'))
+        service.post_turn_readiness = callback
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        await asyncio.gather(*service.assignment_completion_tasks.values())
+        callback.assert_awaited_once()
+        completion = next(event for event in reversed(host.events)
+            if event['type'] == 'thread_bootstrap_turn_completed')
+        self.assertTrue(completion['succeeded'])
+        self.assertEqual(completion['repository_checkpoint_count'], 1)
+        self.assertIsNone(completion['repository_checkpoint_error'])
+        self.assertTrue(any(event['type'] == 'post_turn_readiness_deferred' for event in host.events))
+        self.assertFalse(service.thread_completion_tasks)
+
+    async def test_failed_checkpoint_keeps_failed_business_outcome_after_callback(self):
+        outcomes = []
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1',
+            work_item_outcome_recorder=lambda *args: outcomes.append(args))
+        sessions.session.work_item_ref = 'group/app#531'
+        sessions.local_worker = SimpleNamespace(worker_actor=object())
+        sessions.checkpoint = AsyncMock(side_effect=RuntimeError('checkpoint failed'))
+        callback = AsyncMock()
+        service.post_turn_readiness = callback
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        await asyncio.gather(*service.assignment_completion_tasks.values())
+        callback.assert_awaited_once()
+        self.assertEqual(outcomes, [('group/app#531', 'bootstrap-exec', 'failed')])
+        completion = next(event for event in reversed(host.events)
+            if event['type'] == 'thread_bootstrap_turn_completed')
+        self.assertFalse(completion['succeeded'])
+        self.assertEqual(completion['repository_checkpoint_error'], 'checkpoint failed')
+        self.assertFalse(service.thread_completion_tasks)
+
+    async def test_cancelled_repository_checkpoint_does_not_start_readiness_callback(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
+        sessions.local_worker = SimpleNamespace(worker_actor=object())
+        sessions.checkpoint = AsyncMock(side_effect=asyncio.CancelledError)
+        callback = AsyncMock()
+        service.post_turn_readiness = callback
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        outcomes = await asyncio.gather(*service.assignment_completion_tasks.values(),
+            return_exceptions=True)
+        self.assertTrue(any(isinstance(value, asyncio.CancelledError) for value in outcomes))
+        callback.assert_not_awaited()
+        self.assertFalse(service.thread_completion_tasks)
+
     async def test_terminal_ordinary_assignment_readiness_settles_before_completion(self):
         host, _binding, sessions, service = self._service()
         sessions.local_worker = SimpleNamespace(worker_actor=object())
