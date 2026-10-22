@@ -162,3 +162,7 @@ The target architecture is:
 
 - [Durable procedure execution](procedure-execution.md) — assignment checkpoints, isolated diagnostics, ActionIntent effects and originating-receipt rollback, Evidence and bounded governed judgment.
 - [Verified procedure outcome drafts](procedure-outcomes.md) — atomic governed derivation, exact source attribution, review conflicts, erasure and explicit publication.
+
+### [Home operator conversation reference](project-home.md)
+
+Revisioned administrator selection of an existing Home conversation; canonical scope and execution authority remain separate from the navigation binding.

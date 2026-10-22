@@ -221,6 +221,7 @@ class TurnExecutionService:
         self._queued_retention_notice_at: dict[str, float] = {}
         self.owner_routing_validator = None
         self.procedure_admission = None
+        self.native_input_guard_factory = None
         self.readiness_origin_blocker = None
         self.post_turn_readiness = None
         self.readiness_terminal_events = None
@@ -3070,7 +3071,7 @@ class TurnExecutionService:
             procedure_discovery = None
             if self.procedure_admission is not None:
                 procedure_discovery, procedure_text = await self.procedure_admission(
-                    project=project, actor=actor or self.control_actor,
+                    project=project, actor=actor or self.control_actor, input_actor=actor,
                     thread_id=thread_id, execution_id=canonical_execution_id,
                     assignment_id=assignment_id, sandbox=effective_sandbox,
                     source=source, request_checksum=hashlib.sha256(message.encode()).hexdigest(),
@@ -3078,6 +3079,12 @@ class TurnExecutionService:
                 if procedure_text:
                     effective_developer_instructions = "\n\n".join(
                         item for item in (effective_developer_instructions, procedure_text) if item)
+
+            input_admission_validator = None
+            if self.native_input_guard_factory is not None:
+                input_admission_validator = await asyncio.to_thread(self.native_input_guard_factory,
+                    project=project, actor=actor, execution_id=canonical_execution_id,
+                    assignment_id=assignment_id, source=source)
 
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(
@@ -3312,14 +3319,24 @@ class TurnExecutionService:
                                         if retained and retained.queued_turn_snapshot is not None else None,
                                 }) from refusal
                         custody_before = await self._settle_custody_call(capture_custody, work_owner=session)
-                    if (queued_admission_attempt_id and queued_admission_claim_id
+                    resume_capture_supported = (queued_admission_attempt_id and queued_admission_claim_id
                             and self.queued_preflight is not None
-                            and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)):
+                            and isinstance(runtime_adapter, CodexAgentRuntimeAdapter))
+                    if input_admission_validator is not None:
+                        await asyncio.to_thread(input_admission_validator)
+                        if not resume_capture_supported:
+                            raise ExecutionPrestartRefusal(status_code=409, detail={
+                                'code': 'operator_input_transport_unsupported',
+                                'message': 'Home operator input requires canonical guarded native transport',
+                                'retryable': False})
+                    if resume_capture_supported:
                         from codex_web.services.queued_native_resume import QueuedNativeResumeCapture
                         def validate_resume_admission():
                             if operator_admission_validator is not None:
                                 operator_admission_validator()
                             owner_admission_validator()
+                            if input_admission_validator is not None:
+                                input_admission_validator()
                         resume_options['resume_capture'] = QueuedNativeResumeCapture(
                             self.queued_preflight, queued_admission_attempt_id,
                             queued_admission_claim_id, requested_execution_id, thread_id,
@@ -3525,6 +3542,8 @@ class TurnExecutionService:
                         preinput_admission_refused = True
                         raise
                 try:
+                    if input_admission_validator is not None:
+                        await asyncio.to_thread(input_admission_validator)
                     owner_admission_validator()
                 except (ExecutionPrestartRefusal, AutomatedAdmissionPaused):
                     preinput_admission_refused = True
@@ -3533,14 +3552,16 @@ class TurnExecutionService:
                 delegated = (TurnQueuePolicy.source_origin(source) == "project-coordination"
                              and operator_admission_validator is not None)
                 guarded_owner = owner_routing_pin is not None
+                guarded_input = input_admission_validator is not None
                 capture_supported = (queued_admission_attempt_id and queued_admission_claim_id
                         and self.queued_preflight is not None
                         and isinstance(runtime_adapter, CodexAgentRuntimeAdapter))
-                if (delegated or guarded_owner) and not capture_supported:
+                if (delegated or guarded_owner or guarded_input) and not capture_supported:
                     preinput_admission_refused = True
-                    refusal = ExecutionPrestartRefusal if guarded_owner else AutomatedAdmissionPaused
+                    refusal = ExecutionPrestartRefusal if guarded_owner or guarded_input else AutomatedAdmissionPaused
                     raise refusal(status_code=409, detail={
-                        "code": "owner_routing_transport_unsupported" if guarded_owner else "project_delegation_transport_unsupported",
+                        "code": ("owner_routing_transport_unsupported" if guarded_owner else
+                                 "operator_input_transport_unsupported" if guarded_input else "project_delegation_transport_unsupported"),
                         "message": "Recipient-pinned input requires the canonical guarded native-start transport",
                         "retryable": False})
                 if capture_supported:
@@ -3549,12 +3570,14 @@ class TurnExecutionService:
                         if operator_admission_validator is not None:
                             operator_admission_validator()
                         owner_admission_validator()
+                        if input_admission_validator is not None:
+                            input_admission_validator()
                     start_options['start_capture'] = QueuedNativeStartCapture(
                         self.queued_preflight, queued_admission_attempt_id,
                         queued_admission_claim_id, requested_execution_id, thread_id,
                         actor.identity_id if actor is not None else agent_profile_actor_id,
-                        admission_validator=validate_native_admission if guarded_owner else operator_admission_validator,
-                        require_send_guard=delegated or guarded_owner)
+                        admission_validator=validate_native_admission if guarded_owner or guarded_input else operator_admission_validator,
+                        require_send_guard=delegated or guarded_owner or guarded_input)
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,

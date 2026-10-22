@@ -99,6 +99,29 @@ class ProjectRepository:
         self._snapshot.set(copy.deepcopy(normalized_payload))
         return projects
 
+    def update_home_operator(self, *, organization_id, workspace_id, expected_revision, binding):
+        """CAS one navigation field without overwriting concurrent Project edits."""
+        if self.store is None:
+            raise ValueError("Canonical transactional Project storage is required")
+
+        def update(current):
+            rows = list(current or [])
+            for index, raw in enumerate(rows):
+                project = Project.model_validate(raw)
+                if (project.id, project.organization_id, project.workspace_id) != (
+                        'home', organization_id, workspace_id):
+                    continue
+                revision = project.home_operator.revision if project.home_operator else 0
+                if revision != expected_revision:
+                    raise ValueError("Operator selection changed; refresh before replacing it")
+                rows[index] = {**raw, 'home_operator': binding.model_dump()}
+                return rows
+            raise ValueError("Home Project changed; refresh before replacing the selection")
+
+        merged = self.store.update(self.namespace, update, default=[])
+        self._snapshot.set(copy.deepcopy(merged))
+        self._write_payload(merged)
+
     def save(self, projects: list[Project]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._storage_payload(projects)
@@ -138,7 +161,18 @@ class ProjectRepository:
                         item_id = str(item.get("id") or "")
                         if not item_id or item_id in deleted:
                             continue
-                        result.append(changed.get(item_id, item))
+                        updated = changed.get(item_id, item)
+                        # Navigation selection has its own CAS revision. An
+                        # unrelated writer loaded before that CAS must not
+                        # restore its stale copy of the binding.
+                        base_item = base_by_id.get(item_id, {})
+                        if updated is not item and updated.get('home_operator') == base_item.get('home_operator'):
+                            updated = dict(updated)
+                            if 'home_operator' in item:
+                                updated['home_operator'] = item['home_operator']
+                            else:
+                                updated.pop('home_operator', None)
+                        result.append(updated)
                         seen.add(item_id)
                     for item_id in payload_order:
                         if item_id in changed and item_id not in seen:

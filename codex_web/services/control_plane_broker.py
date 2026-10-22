@@ -98,6 +98,8 @@ from codex_web.services.project_coordination import (
     PREFIX as COORDINATION_PREFIX, PROJECT_COORDINATION_OPERATIONS, resolve_operation,
 )
 
+from codex_web.services.home_operator_host import HOST_INSPECTION
+
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
     WorkerVerificationAdapter,
@@ -141,6 +143,7 @@ class _ResolvedOperation:
 
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
+    HOST_INSPECTION,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
@@ -524,6 +527,7 @@ class ControlPlaneBrokerService:
         self._local_installers = {}
         self.procedure_admission = None
         self.project_coordination = None
+        self.home_operator_host = None
 
     @staticmethod
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
@@ -545,6 +549,11 @@ class ControlPlaneBrokerService:
         }.get(item.id)
         if work_item_model is not None:
             result["request_body"] = work_item_model.model_json_schema()
+        if item.id == HOST_INSPECTION.id:
+            result['scope'] = 'Explicitly selected Home operator; current Home-scoped profile declaration and administrator authority required'
+            result['request_body'] = {'allowed': False}
+            result['query_parameters'] = {'allowed': False}
+            result['effect'] = 'Fixed read-only process/platform/filesystem-capacity metadata; no commands, file contents or credentials'
         if item.id.startswith("verification."):
             result["scope"] = "Current assignment Work Item and exact admitted Resources; writable repository remains required"
             result["authorizer"] = "Current assignment requester, exact API capability"
@@ -706,6 +715,20 @@ class ControlPlaneBrokerService:
                     context['merge_requirements_declaration'] = {'declared': declared,
                         'status': 'declared' if declared else 'unavailable',
                         'effective_authority_requires_operation_checks': True}
+        host_declared = False
+        if enabled and assignment.project_id == 'home' and self.home_operator_host is not None:
+            try:
+                self.home_operator_host.authorize(assignment, self._requester_actor(assignment))
+                host_declared = True
+            except ControlPlaneBrokerDeniedError:
+                pass
+        operations = [op for op in operations if op['id'] != HOST_INSPECTION.id or host_declared]
+        if context is not None and assignment.project_id == 'home':
+            context['host_inspection_declaration'] = {
+                'declared': host_declared,
+                'effective_authority_requires_operation_checks': True,
+                'scope': 'Read-only fixed host metadata; no shell or file contents',
+            }
         # New action recognition must not widen stored/default profile authority.
         try:
             self._ready_declaration(assignment)
@@ -912,6 +935,10 @@ class ControlPlaneBrokerService:
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
                 query[key] = member_query[key]
+        if path == HOST_INSPECTION.path_template:
+            if method != HOST_INSPECTION.method or parsed.query:
+                raise ControlPlaneBrokerRequestError('Host inspection accepts only GET without query parameters')
+            return _ResolvedOperation(operation=HOST_INSPECTION, target_ref=None, query={})
         if path == "/api/agent-upgrade-approvals":
             operation = _OPERATION_BY_ID["upgrade.approval.request"]
             if method != operation.method or parsed.query:
@@ -1700,6 +1727,10 @@ class ControlPlaneBrokerService:
             if self.project_coordination is None:
                 raise ControlPlaneBrokerDeniedError("project coordination adapters unavailable")
             self.project_coordination.authorize(assignment, operation, self._requester_actor(assignment))
+        if operation.id == HOST_INSPECTION.id:
+            if self.home_operator_host is None:
+                raise ControlPlaneBrokerDeniedError('Home operator inspection is unavailable')
+            self.home_operator_host.authorize(assignment, actor)
         if assignment.execution_profile_id == "orchestration-admin":
             if self.execution_profiles is None:
                 raise ControlPlaneBrokerDeniedError("administrative execution capability is unavailable")
@@ -1759,6 +1790,7 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("project.")
             or operation.id.startswith("verification.")
             or operation.id == "upgrade.approval.request"
+            or operation.id == HOST_INSPECTION.id
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
@@ -1933,7 +1965,12 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id == "upgrade.approval.request":
+        if operation.id == HOST_INSPECTION.id:
+            if body:
+                raise ControlPlaneBrokerRequestError('Host inspection accepts no request body')
+            result = await run_settled(lambda: self.home_operator_host.inspect(
+                assignment, worker_actor, resolved, assignment_validator))
+        elif operation.id == "upgrade.approval.request":
             from codex_web.services.worker_upgrade_approvals import WorkerUpgradeApprovalAdapter
             result = await WorkerUpgradeApprovalAdapter(self).request(
                 assignment, worker_actor, resolved, payload, assignment_validator)

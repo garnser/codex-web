@@ -383,6 +383,9 @@ class ProcedureDiscoveryService:
         )
 
 
+_INPUT_ACTOR_UNSET = object()
+
+
 class NativeProcedureAdmissionService:
     """Retain authorized isolated no-match work; refuse unmediated operations.
 
@@ -397,6 +400,7 @@ class NativeProcedureAdmissionService:
         self.history = history
         self.control_actor = control_actor
         self.execution_profiles = execution_profiles
+        self.input_authorizer = None
 
     def _native_policy(self, assignment, actor, project, sandbox):
         """Existing exact profile permits isolated preparation, never host operations.
@@ -471,7 +475,7 @@ class NativeProcedureAdmissionService:
         except Exception:
             return "native_tools", "canonical:execution-policy-unavailable"
 
-    async def __call__(self, *, project, actor, thread_id, execution_id, assignment_id, sandbox, source, request_checksum=None):
+    async def __call__(self, *, project, actor, thread_id, execution_id, assignment_id, sandbox, source, request_checksum=None, input_actor=_INPUT_ACTOR_UNSET):
         import asyncio
         from codex_web.runtime.execution import ExecutionPrestartRefusal
         if actor is None or (actor.organization_id, actor.workspace_id) != (project.organization_id, project.workspace_id):
@@ -488,6 +492,15 @@ class NativeProcedureAdmissionService:
                 }) from exc
             if assignment.id != assignment_id:
                 raise ExecutionPrestartRefusal(status_code=409, detail={"code": "procedure_assignment_changed"})
+        if self.input_authorizer is not None:
+            from codex_web.services.identity import AuthorizationError
+            try:
+                await asyncio.to_thread(self.input_authorizer, assignment=assignment,
+                    actor=actor if input_actor is _INPUT_ACTOR_UNSET else input_actor, project=project, source=source)
+            except AuthorizationError as exc:
+                raise ExecutionPrestartRefusal(status_code=403, detail={
+                    'code': 'native_input_authority_denied', 'message': str(exc),
+                }) from exc
         targets = assignment.resource_ids if assignment is not None else ()
         enforcement, policy_source = await asyncio.to_thread(self._native_policy, assignment, actor, project, sandbox)
         context = OperationContext(actor=actor, project_id=project.id, resource_ids=targets, operation=None,
@@ -537,7 +550,8 @@ class NativeProcedureAdmissionService:
         sandbox = "unsupported"
         return await self(project=project, actor=actor, thread_id=session.id,
             execution_id=session.execution_id or session.id, assignment_id=session.assignment_id,
-            sandbox=sandbox, source="agent-session:" + phase, request_checksum=checksum(request.model_dump(mode="json")))
+            sandbox=sandbox, source="agent-session:" + phase, request_checksum=checksum(request.model_dump(mode="json")),
+            input_actor=actor)
 
 
 class BrokerProcedureAdmissionService:

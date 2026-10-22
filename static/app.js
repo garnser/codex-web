@@ -24,6 +24,7 @@ import{createHeaderUsageController}from"./usage_refresh.js";
 import{renderUsageResources}from"./usage_resources.js";
 import{careScope}from"./care_composer.js";
 import{installContextPickers}from"./ux_brief_picker.js";
+import { prepareHomeOperatorInput, assertHomeOperatorReplacement } from './home_operator_input.js';
 let ux=null;
 let careComposer=null;
 
@@ -1343,9 +1344,11 @@ async function sendPrompt() {
   const threadOptions = selectedThreadTurnOptions(threadId);
   const runSettings = currentRunSettings();
   const selectedThreadSettings = threadRunSettings(threadId);
-  const turnPayload=tsui.turnPayload(prompt,state.projectId,threadOptions,runSettings,selectedThreadSettings,rtui.scope(),selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId());
+  let turnPayload=tsui.turnPayload(prompt,state.projectId,threadOptions,runSettings,selectedThreadSettings,rtui.scope(),selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId());
   if(ut?.selection)turnPayload.memory_context_selection=ut.selection;
   try {
+    turnPayload = await prepareHomeOperatorInput(state.projectId, threadId, turnPayload);
+    if (!current()) throw new Error('Conversation changed before submission; no message was sent.');
     let targetThreadId = threadId;
     let response;
     try {
@@ -1356,6 +1359,7 @@ async function sendPrompt() {
     } catch (error) {
       const replacement = replacementFrom(error);
       if (!replacement) throw error;
+      assertHomeOperatorReplacement(turnPayload);
       await applyThreadReplacement(replacement.oldThreadId, replacement.newThreadId);
       targetThreadId = replacement.newThreadId;
       response = await api(`/api/threads/${targetThreadId}/turns`, {
@@ -1365,6 +1369,7 @@ async function sendPrompt() {
     }
     const replacement = replacementFrom(response);
     if (replacement) {
+      assertHomeOperatorReplacement(turnPayload);
       await applyThreadReplacement(replacement.oldThreadId, replacement.newThreadId);
       targetThreadId = replacement.newThreadId;
       response = await api(`/api/threads/${targetThreadId}/turns`, {

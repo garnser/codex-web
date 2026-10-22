@@ -229,6 +229,32 @@ class ProjectDeliveryConfiguration(ProjectDeliveryUpdate):
     actor_identity_id: str = Field(min_length=1)
 
 
+class HomeOperatorBinding(BaseModel):
+    """Navigation identity only; execution authority remains in canonical profiles."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=200)
+    selected_by: str
+    revision: int = Field(ge=1)
+    updated_at: float
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=200)
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+
+    @model_serializer(mode="wrap")
+    def serialize_profile(self, handler):
+        result = handler(self)
+        if self.agent_profile_id is None:
+            result.pop("agent_profile_id", None)
+            result.pop("agent_profile_revision", None)
+        return result
+
+
+class HomeOperatorUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    thread_id: str | None = Field(default=None, min_length=1, max_length=200)
+    expected_revision: int = Field(ge=0)
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class Project(BaseModel):
     id: str
     organization_id: str = "local"
@@ -241,6 +267,14 @@ class Project(BaseModel):
     repository_selection_policy: RepositorySelectionPolicy = "deterministic"
     authoritative_task_source: TaskSourceConfiguration | None = None
     delivery_supervision: ProjectDeliveryConfiguration | None = None
+    home_operator: HomeOperatorBinding | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_operator(self, handler):
+        result = handler(self)
+        if self.home_operator is None:
+            result.pop("home_operator", None)
+        return result
 
 
 class ProjectCreate(BaseModel):
