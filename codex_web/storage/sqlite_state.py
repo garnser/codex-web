@@ -767,6 +767,42 @@ class SQLiteStateStore:
                 )
             return None
 
+    def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
+                                     organization_id: str, workspace_id: str,
+                                     collection_names: tuple[str, ...]) -> Any | None:
+        """Read one scoped complete record plus its document schema envelope.
+
+        This is an optional read optimization, never a schema/authority decision.
+        Nonstandard legacy JSON and incompatible envelope shapes retain the full
+        document path so the canonical domain decoder can refuse them normally.
+        """
+        names = record_projection_fields(collection_names)
+        if array_name not in names or "schema_version" in names:
+            raise ValueError("selected array must belong to the canonical envelope")
+        allowed = ("schema_version", *names)
+        unexpected = ",".join("?" for _ in allowed)
+        arrays = " OR ".join("COALESCE(json_type(payload, ?), 'array') != 'array'" for _ in names)
+        query = f"""SELECT CASE WHEN json_valid(payload) = 0 THEN payload
+            WHEN json_type(payload) != 'object' THEN payload
+            WHEN EXISTS(SELECT 1 FROM json_each(payload) AS field WHERE field.key NOT IN ({unexpected})) THEN payload
+            WHEN {arrays} THEN payload
+            ELSE json_object('schema_version', COALESCE(json_extract(payload, '$.schema_version'), '0.0'),
+                ?, json(COALESCE((SELECT '[' || item.value || ']' FROM json_each(payload, ?) AS item
+                    WHERE item.type = 'object' AND json_extract(item.value, '$.id') = ?
+                      AND json_extract(item.value, '$.organization_id') = ?
+                      AND json_extract(item.value, '$.workspace_id') = ? LIMIT 1), '[]')))
+            END FROM state_documents WHERE namespace = ?"""
+        parameters = (*allowed, *(f"$.{name}" for name in names), array_name,
+                      f"$.{array_name}", item_id, organization_id, workspace_id, namespace)
+        try:
+            with self._connection() as connection:
+                row = connection.execute(query, parameters).fetchone()
+            return self._decode(row) if row is not None else self.get(namespace)
+        except sqlite3.OperationalError as exc:
+            if not str(exc).startswith("Could not decode to UTF-8 column"):
+                raise
+            return self.get(namespace)
+
     def document_array_item(
         self,
         namespace: str,
