@@ -146,7 +146,8 @@ class PostTurnReadinessService:
         return await self._run_owned(operation, seconds=intent.timeout_seconds,
             name='ready-settlement-' + intent.id)
 
-    async def _run_owned(self, operation, *, seconds, name):
+    @staticmethod
+    async def _run_owned(operation, *, seconds, name):
         """A cancelled waiter cannot retire a still-running canonical writer."""
         parent_budget = storage_operation_budget.get()
         seconds = min(seconds, parent_budget.remaining()
