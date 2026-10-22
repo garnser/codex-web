@@ -430,8 +430,21 @@ class WorkItemContinuityService:
                             'bot_binding_id': binding.id})
             except OwnerRoutingError as exc:
                 blocked_reason, binding = str(exc), None
-        if blocked_reason is None and binding is not None and self.thread_queue_depth(binding.thread_id):
-            outcome = self._owner_queue_outcome(state, binding.thread_id)
+        target_thread_id = binding.thread_id if binding is not None else None
+        readonly_ids = ()
+        if blocked_reason is None and binding is not None and self.owner_routing is not None:
+            try:
+                _, writable_ids = self._dispatch_repository_scope(state)
+                pin = self.owner_routing.compatible_pin(state, binding,
+                    actionable_owner_value(state), writable_repository_ids=writable_ids)
+                if pin is not None and pin.recipient is not None:
+                    target_thread_id = pin.recipient.thread_id
+                    readonly_ids = self.owner_routing.repository_scope_for_pin(pin, binding).read_only_repository_ids
+            except OwnerRoutingError as exc:
+                blocked_reason = str(exc)
+        if blocked_reason is None and binding is not None and self.thread_queue_depth(target_thread_id):
+            outcome = self._owner_queue_outcome(state, target_thread_id,
+                read_only_repository_resource_ids=readonly_ids)
             metadata['queue_status'] = outcome
             if outcome != 'already_queued':
                 blocked_reason = outcome
@@ -458,7 +471,9 @@ class WorkItemContinuityService:
     ) -> tuple[str | None, tuple[str, ...]]:
         return work_item_repository_scope(state)
 
-    def _owner_queue_outcome(self, state: WorkItemState, thread_id: str) -> str:
+    def _owner_queue_outcome(self, state: WorkItemState, thread_id: str, *,
+        read_only_repository_resource_ids: tuple[str, ...] = (),
+    ) -> str:
         if self.thread_queue is None:
             return 'owner_queue_context_unavailable'
         repository_id, writable_ids = self._dispatch_repository_scope(state)
@@ -467,6 +482,7 @@ class WorkItemContinuityService:
             project_id=state.project_id, message=self.dispatch_text(state),
             repository_resource_id=repository_id,
             writable_repository_resource_ids=writable_ids,
+            read_only_repository_resource_ids=read_only_repository_resource_ids,
         )
         # A concurrent drain is no proof that the previously observed input
         # matched. Leave admission to a subsequent fresh canonical invocation.
@@ -773,32 +789,46 @@ class WorkItemContinuityService:
         binding = self.responsible_binding(state)
         if not binding:
             return {"status": "binding_unavailable", "dispatched": False}
-        pin = (self.owner_routing.pin(state, binding, actionable_owner_value(state))
-            if self.owner_routing is not None else None)
         explicit_retry = source == 'operator-retry'
-        # Capture scalars before replacement can yield: canonical state may be
-        # mutated in place while this invocation is suspended.
+        # Capture scalars before recipient lookup or replacement yields:
+        # canonical state may mutate while this invocation is suspended.
         expected_retry_attempt = (
             state.execution.retry.attempt if explicit_retry else None
         )
         expected_stage = state.current_stage
-        if self.thread_is_active(binding.thread_id) and not explicit_retry:
+        repository_resource_id, writable_repository_resource_ids = (
+            self._dispatch_repository_scope(state)
+        )
+        pin = (await asyncio.to_thread(self.owner_routing.compatible_pin,
+            state, binding, actionable_owner_value(state),
+            writable_repository_ids=writable_repository_resource_ids)
+            if self.owner_routing is not None else None)
+        selected = pin is not None and pin.recipient is not None
+        target_thread_id = pin.recipient.thread_id if selected else binding.thread_id
+        readonly_ids = ()
+        if selected:
+            scope = await asyncio.to_thread(self.owner_routing.repository_scope_for_pin, pin, binding)
+            readonly_ids = scope.read_only_repository_ids
+        if self.thread_is_active(target_thread_id) and (selected or not explicit_retry):
             return {
                 "status": "already_active",
                 "dispatched": False,
                 "owner": owner,
-                "thread_id": binding.thread_id,
+                "thread_id": target_thread_id,
             }
-        if self.thread_queue_depth(binding.thread_id) and not explicit_retry:
+        if self.thread_queue_depth(target_thread_id) and (selected or not explicit_retry):
             return {
-                "status": self._owner_queue_outcome(state, binding.thread_id),
+                "status": self._owner_queue_outcome(state, target_thread_id,
+                    read_only_repository_resource_ids=readonly_ids),
                 "dispatched": False,
                 "owner": owner,
-                "thread_id": binding.thread_id,
+                "thread_id": target_thread_id,
             }
-        binding = await self.replace_nonperforming_thread(binding, source)
+        if not selected:
+            binding = await self.replace_nonperforming_thread(binding, source)
+            target_thread_id = binding.thread_id
         if pin is not None:
-            self.owner_routing.context_for_pin(pin, binding)
+            await asyncio.to_thread(self.owner_routing.context_for_pin, pin, binding)
         if self.revalidate_after_thread_replacement or explicit_retry or pin is not None:
             try:
                 latest = self.get_state(state.ref)
@@ -829,7 +859,7 @@ class WorkItemContinuityService:
                 return {"status": "stale_state", "dispatched": False}
             state = latest
         dispatch_key = (
-            f"work-item-owner-progress:{state.ref}:{binding.thread_id}:"
+            f"work-item-owner-progress:{state.ref}:{target_thread_id}:"
             f"{owner}:{state.current_stage}"
         )
         if explicit_retry:
@@ -839,7 +869,7 @@ class WorkItemContinuityService:
                 "status": "duplicate",
                 "dispatched": False,
                 "owner": owner,
-                "thread_id": binding.thread_id,
+                "thread_id": target_thread_id,
                 "dispatch_key": dispatch_key,
             }
         self.record_watchdog_dispatch(dispatch_key)
@@ -856,7 +886,7 @@ class WorkItemContinuityService:
             writable_repository_resource_ids=(
                 writable_repository_resource_ids
             ),
-            require_idle=not explicit_retry,
+            require_idle=selected or not explicit_retry,
         )
         if pin is not None and result.get('queued'):
             self.owner_routing.clear_failure(pin)
@@ -866,7 +896,7 @@ class WorkItemContinuityService:
                 {
                     "type": "work_item_owner_progress_dispatch_skipped",
                     "ref": state.ref,
-                    "thread_id": binding.thread_id,
+                    "thread_id": target_thread_id,
                     "agent": owner,
                     "current_stage": state.current_stage,
                     "source": source,
@@ -878,7 +908,7 @@ class WorkItemContinuityService:
                 "status": skipped,
                 "dispatched": False,
                 "owner": owner,
-                "thread_id": binding.thread_id,
+                "thread_id": target_thread_id,
                 "dispatch_key": dispatch_key,
                 "dispatch": result,
             }
@@ -886,7 +916,7 @@ class WorkItemContinuityService:
             {
                 "type": "work_item_owner_progress_dispatched",
                 "ref": state.ref,
-                "thread_id": binding.thread_id,
+                "thread_id": target_thread_id,
                 "agent": owner,
                 "current_stage": state.current_stage,
                 "source": source,
@@ -898,7 +928,7 @@ class WorkItemContinuityService:
             "status": "dispatched",
             "dispatched": True,
             "owner": owner,
-            "thread_id": binding.thread_id,
+            "thread_id": target_thread_id,
             "dispatch_key": dispatch_key,
             "dispatch": result,
         }

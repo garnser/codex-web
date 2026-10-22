@@ -60,6 +60,18 @@ This explicit reconciliation is also the bounded repair path for implementation 
 
 `POST /api/work-items/{ref}/retry` is allowed only while the item is non-terminal, has an actionable owner, and has retry budget remaining. It increments the structured retry attempt through `WorkItemExecutionLifecycleService`, clears the previous failure classification, and enters the existing actionable-owner dispatch seam. It does not directly execute an agent or bypass dispatch policy.
 
+Owner steering keeps `expected_thread_id` bound to the canonical owner's original
+Bot binding. That compare-and-swap field is not the selected executor thread.
+Before activity, queue or replacement decisions, the shared actionable-owner
+path selects an existing compatible canonical recipient and validates its current
+custody. A selected recipient keeps its full write/read-only repository scope;
+its busy or retained-queue state blocks a new input even for explicit retry.
+Queue identity includes the read-only scope. Operator eligibility uses that same
+recipient queue while retaining the original binding thread as its CAS target.
+The original binding and reply destination are preserved; no generic thread
+replacement is attempted for selected custody. Existing final native guards
+still revalidate current authority and fence before sending input.
+
 These capability/lifecycle gates are deterministic. Later authority/RBAC milestones can add actor permission checks around the same canonical actions without changing their state model.
 
 A successful retry response confirms acceptance of the canonical retry update,
