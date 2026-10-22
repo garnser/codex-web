@@ -74,6 +74,14 @@ Activation is explicit canonical data, never bootstrap defaults:
    are never automatically followed by a second submission. The native authority
    guard independently rechecks the selected profile against fresh Home state.
    Saving a navigation-only shortcut retains the existing ordinary behavior.
+   Profile pins are omitted entirely for navigation-only references. Activated
+   profile-bound references require readers that understand these fields; mixed
+   older Home-binding writers are unsupported. Before rolling back to the
+   navigation-only engine, drain and reconcile the operator's inputs and actions,
+   then explicitly save the same shortcut as navigation-only through its current
+   revision. Do not drop the profile fields from live state or infer replay
+   permission from a rollback. Selecting a new profile does not transfer pending
+   requests or uncertain actions to that profile.
 5. The worker uses its existing authenticated assignment broker. Its operation
    catalog advertises inspection only while the declaration/selection is current;
    catalog visibility is not proof of a live lease or effective permission.
