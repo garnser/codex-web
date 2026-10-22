@@ -2406,7 +2406,7 @@ class ControlPlaneBrokerService:
                 )
             except TaskSourceProjectionError as exc:
                 raise ControlPlaneBrokerRequestError(exc.reason, status_code=409) from exc
-            result = {"ok": True, **self.operator.detail(resolved.target_ref)}
+            result = {"ok": True, **await asyncio.to_thread(self.operator.detail, resolved.target_ref)}
         elif operation.id == "work_item.reconcile":
             assert resolved.target_ref is not None
             result = await self.operator.reconcile(
