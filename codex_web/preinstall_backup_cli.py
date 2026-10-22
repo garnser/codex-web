@@ -245,7 +245,7 @@ def main(argv=None):
             service_instance_id=options.service_instance_id)
         if local_api(options.api, token, 'GET', '/api/version')['gitRevision'] != options.expected_runtime_revision:
             raise RuntimeError('Installed API source changed')
-        recovery_observation = local_api(options.api, token, 'GET', '/api/recovery')
+        recovery_observation = local_api(options.api, token, 'GET', '/api/recovery/status')
         executor = require_recovery_idle(recovery_observation)
         observed['plan'] = UpgradePlan.model_validate(local_api(options.api, token, 'POST',
             '/api/upgrades/' + quote(options.plan_id, safe='') + '/preflight')['item'])
