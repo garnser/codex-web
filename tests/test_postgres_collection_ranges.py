@@ -13,6 +13,47 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_projected_page_preserves_json_types_missing_null_and_exact_cursor_scope(self):
+        namespace = 'selected/雪:%'
+        records = {
+            'a': {'owner': 'dana', 'handoff': {'status': 'accepted'}, 'enabled': True,
+                  'disabled': False, 'ignored': 'large'},
+            'b': {'owner': None, 'handoff': None},
+            'c': {},
+            'd': [1, 2],
+            'e': 3,
+            'f': 'hello',
+            'g': 'null',
+            'h': '3',
+            'i': True,
+            'j': False,
+            'k': None,
+        }
+        self.backend.record_replace(namespace, records)
+        self.backend.record_replace(namespace + 'neighbor', {'foreign': {'owner': 'quinn'}})
+        result = {}; after = None
+        while True:
+            page, after = self.backend.record_page_projected(namespace,
+                fields=('owner', 'handoff', 'enabled', 'disabled'), after=after, limit=2)
+            result.update(page)
+            if after is None:
+                break
+        self.assertEqual(result, {'a': {'owner': 'dana', 'handoff': {'status': 'accepted'},
+            'enabled': True, 'disabled': False},
+            'b': {'owner': None, 'handoff': None}, 'c': {}, 'd': [1, 2], 'e': 3,
+            'f': 'hello', 'g': 'null', 'h': '3', 'i': True, 'j': False, 'k': None})
+        self.assertIs(result['a']['enabled'], True)
+        self.assertIs(result['a']['disabled'], False)
+        self.assertIs(result['i'], True)
+        self.assertIs(result['j'], False)
+        self.assertIsNone(result['k'])
+        self.assertEqual(self.backend.record_items(namespace), records)
+        for fields in ((), ('owner', 'owner'), ('x.y',), ('x; DROP TABLE state_documents',),
+                ('x' * 65,), tuple('x'+str(i) for i in range(33)), ({},)):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                self.backend.record_page_projected('not-created', fields=fields)
+        self.assertFalse(self.backend.record_collection_exists('not-created'))
+
     def test_cross_collection_bounded_transaction_is_atomic_and_preserves_unselected_rows(self):
         self.backend.record_replace('scope', {'owner': {'fence': 1}, 'unrelated': {'keep': True}})
         self.backend.record_replace('outbox', {'intent': {'attempt': 0}, 'foreign': {'keep': True}})

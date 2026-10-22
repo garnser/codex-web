@@ -18,6 +18,7 @@ from codex_web.storage.state_store import (
     state_record_marker,
     state_record_prefix,
     state_record_storage_key,
+    record_projection_fields,
 )
 
 
@@ -368,6 +369,19 @@ class SQLiteStateStore:
         after: str | None = None,
         limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
+        return self._record_page(namespace, key_prefix=key_prefix, after=after, limit=limit)
+
+    def record_page_projected(
+        self, namespace: str, *, fields: tuple[str, ...],
+        key_prefix: str | None = None, after: str | None = None, limit: int = 100,
+    ) -> tuple[dict[str, Any], str | None]:
+        return self._record_page(namespace, key_prefix=key_prefix, after=after,
+            limit=limit, fields=record_projection_fields(fields))
+
+    def _record_page(
+        self, namespace: str, *, key_prefix: str | None, after: str | None,
+        limit: int, fields: tuple[str, ...] | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
         page_size = max(1, min(int(limit), 1000))
         with self._connection() as connection:
             if not self._record_collection_exists_in_connection(
@@ -390,9 +404,23 @@ class SQLiteStateStore:
                 if after is not None
                 else lower
             )
+            projection = "payload"
+            parameters: tuple[Any, ...] = ()
+            if fields is not None:
+                slots = ",".join("?" for _ in fields)
+                projection = f"""CASE WHEN json_type(payload) = 'object' THEN
+                    (SELECT json_group_object(field.key,
+                        CASE field.type
+                            WHEN 'true' THEN json('true')
+                            WHEN 'false' THEN json('false')
+                            ELSE json_extract(state_documents.payload, '$.' || field.key)
+                        END)
+                     FROM json_each(state_documents.payload) AS field
+                     WHERE field.key IN ({slots})) ELSE payload END"""
+                parameters = fields
             rows = connection.execute(
-                """
-                SELECT namespace, payload
+                f"""
+                SELECT namespace, {projection}
                 FROM state_documents
                 WHERE namespace >= ?
                   AND namespace < ?
@@ -400,7 +428,7 @@ class SQLiteStateStore:
                 ORDER BY namespace
                 LIMIT ?
                 """,
-                (lower, upper, after_storage, page_size + 1),
+                (*parameters, lower, upper, after_storage, page_size + 1),
             ).fetchall()
 
         page: dict[str, Any] = {}

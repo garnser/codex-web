@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -80,8 +81,8 @@ class RuntimeHealthWorkItemProjectionTests(unittest.TestCase):
                 ),
                 patch.object(
                     store,
-                    "record_page",
-                    wraps=store.record_page,
+                    "record_page_projected",
+                    wraps=store.record_page_projected,
                 ) as page,
                 patch.object(
                     WorkItemState,
@@ -104,6 +105,43 @@ class RuntimeHealthWorkItemProjectionTests(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs["limit"] == 1000 for call in page.call_args_list)
         )
+
+    def test_health_does_not_transfer_or_decode_unrelated_large_record_bodies(self):
+        payload = {f"example/app#{i}": {
+            "project_id": "project-a", "current_owner": "james",
+            "current_stage": "implementation_active",
+            "execution": {"history": "UNRELATED_EXECUTION_HISTORY" * 10000},
+        } for i in range(4)}
+        original_loads = json.loads
+        returned_sizes = []
+
+        def selected_only(raw, *args, **kwargs):
+            if isinstance(raw, str):
+                self.assertNotIn("UNRELATED_EXECUTION_HISTORY", raw)
+                returned_sizes.append(len(raw))
+            return original_loads(raw, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository, store = self._repository(directory, payload)
+            with patch('codex_web.storage.sqlite_state.json.loads', side_effect=selected_only):
+                result = actionable_owner_projects(repository, owners=("james",),
+                    coerce_owner=_coerce_owner, actionable_stages=self.actionable_stages,
+                    page_size=2)
+            self.assertEqual(result, {"james": {"project-a"}})
+            self.assertTrue(returned_sizes)
+            self.assertLess(max(returned_sizes), 1000)
+            # This is a read optimization, not mutation or evidence erasure.
+            self.assertEqual(store.record_items("work_item_states"), payload)
+
+    def test_older_store_without_projection_keeps_same_health_semantics(self):
+        payload = {"a": {"project_id": "p", "current_owner": "james",
+            "handoff": {"status": "accepted"}, "execution": "ignored"}}
+        with tempfile.TemporaryDirectory() as directory:
+            repository, store = self._repository(directory, payload)
+            with patch.object(store, 'record_page_projected', None):
+                result = actionable_owner_projects(repository, owners=("james",),
+                    coerce_owner=_coerce_owner, actionable_stages=self.actionable_stages)
+        self.assertEqual(result, {"james": {"p"}})
 
     def test_projection_preserves_actionability_semantics(self) -> None:
         payload = {

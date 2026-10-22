@@ -16,6 +16,22 @@ from codex_web.canonical_json import canonical_json_bytes, canonical_json_chunks
 _RECORD_STORAGE_ROOT = "__codex_records__/"
 
 
+def record_projection_fields(fields: tuple[str, ...]) -> tuple[str, ...]:
+    """Bound code-owned top-level JSON field selection; never accept SQL paths."""
+    if (not isinstance(fields, tuple) or not 1 <= len(fields) <= 32
+            or any(not isinstance(name, str) or not name.isascii()
+                or not name.isidentifier() or len(name) > 64 for name in fields)
+            or len(set(fields)) != len(fields)):
+        raise ValueError("record projection requires 1–32 distinct field names")
+    return fields
+
+
+def project_record_fields(value: Any, fields: tuple[str, ...]) -> Any:
+    # Preserve missing versus null and non-object refusal semantics. A partial
+    # read is not validation or an authority/cache decision.
+    return {name: value[name] for name in fields if name in value} if isinstance(value, dict) else value
+
+
 class StorageOperationBudget:
     """Cooperative deadline for existing store/validation work, not a lease.
 
