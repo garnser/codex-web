@@ -157,3 +157,26 @@ test('runtime inspection suppresses results after Home selection changes', async
   await expect(page.locator('[data-operator-runtime]')).toContainText('Operator selection or runtime evidence changed');
   await expect(page.locator('[data-operator-runtime]')).not.toContainText('Queued: 0');
 });
+
+test('runtime inspection refuses an older assignment snapshot than the shared canonical cache', async ({ page }) => {
+  const now = Date.now() / 1000;
+  await page.route('**/api/home/operator', route => route.fulfill({ json: configured }));
+  await page.route('**/api/threads/same-thread/runner?project_id=home', route => route.fulfill({ json: {
+    id: 'same-thread', activity: { source: 'current_turn', state: 'active', turnId: 'old-turn' },
+    runner: { schemaVersion: '1.0', state: 'running', live: true, processRunning: true, leaseValid: true,
+      assignmentId: 'old', assignmentCreatedAt: now - 60, observedAt: now, leaseExpiresAt: now + 120 },
+  } }));
+  await page.route('**/api/threads/same-thread/queue?project_id=home', route => route.fulfill({
+    json: { threadId: 'same-thread', queueDepth: 0 },
+  }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  await page.evaluate(async now => {
+    const { applyRunner } = await import('/static/thread_runner_ui.js');
+    applyRunner({ id: 'same-thread', activity: { source: 'current_turn', state: 'active', turnId: 'new-turn' },
+      runner: { schemaVersion: '1.0', state: 'running', live: true, processRunning: true, leaseValid: true,
+        assignmentId: 'new', assignmentCreatedAt: now, observedAt: now, leaseExpiresAt: now + 5 } });
+  }, now);
+  await page.getByRole('button', { name: 'Inspect runner and queue' }).click();
+  await expect(page.locator('[data-operator-runtime]')).toContainText('Runner observation was superseded');
+  await expect(page.locator('[data-operator-runtime]')).not.toContainText('active work');
+});

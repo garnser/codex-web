@@ -31,7 +31,7 @@ export function appendHomeOperatorRuntime(host, state, { signal } = {}) {
           || !Number.isSafeInteger(queue.queueDepth) || queue.queueDepth < 0) {
         throw new Error('Operator selection or runtime evidence changed. Refresh Home.');
       }
-      applyRunner(thread);
+      if (!applyRunner(thread)) throw new Error('Runner observation was superseded. Inspect again for current state.');
       const status = runnerPresentation(threadId);
       observation.textContent = `${status.label} · Queued: ${queue.queueDepth}`;
       const failure = runnerFailureText(thread.runner);
