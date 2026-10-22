@@ -3378,6 +3378,8 @@ post_turn_readiness_service = PostTurnReadinessService(action_intent_service,
         gates=reconciliation_gate_service),
     ownership=replicated_ownership_service, append_event=bot_runtime_telemetry.append)
 turn_execution_service.post_turn_readiness = post_turn_readiness_service.settle
+turn_execution_service.readiness_terminal_events = bot_runtime_telemetry.recent
+turn_execution_service.readiness_intent_lookup = action_intent_service.store.get
 app.state.post_turn_readiness_service = post_turn_readiness_service
 turn_execution_service.session_custody = AgentSessionCustodyService(
     agent_session_service, execution_worker_service, thread_bootstrap_binding_service,
@@ -3789,6 +3791,7 @@ automation_approval_unsubscribe = canonical_event_bus.subscribe(
 app.state.automation_approval_unsubscribe = automation_approval_unsubscribe
 
 def _notify_automation_action_intent(intent):
+    turn_execution_service.notify_ready_status(intent)
     if intent.action_id != TASK_SOURCE_CREATE_ACTION_ID:
         return
     try:
