@@ -165,3 +165,19 @@ class HomeOperatorTests(unittest.TestCase):
             self.assertEqual(client.put('/api/home/operator', json={
                 'thread_id': None, 'expected_revision': 1}).status_code, 403)
         self.assertEqual(self.projects.get('home').home_operator.revision, 1)
+
+    def test_delayed_unrelated_project_save_cannot_overwrite_selection_or_clear(self):
+        other_writer = ProjectRepository(self.repository.path, store=self.store)
+        stale = other_writer.load()
+        self.select()
+        stale[0] = stale[0].model_copy(update={'model': 'delayed-model'})
+        other_writer.save(stale)
+        self.assertEqual(self.projects.get('home').home_operator.revision, 1)
+        self.assertEqual(self.projects.get('home').model, 'delayed-model')
+        stale = other_writer.load()
+        self.select(None, 1)
+        stale[0] = stale[0].model_copy(update={'model': 'another-model'})
+        other_writer.save(stale)
+        binding = self.projects.get('home').home_operator
+        self.assertIsNone(binding.thread_id)
+        self.assertEqual(binding.revision, 2)

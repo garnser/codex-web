@@ -161,7 +161,18 @@ class ProjectRepository:
                         item_id = str(item.get("id") or "")
                         if not item_id or item_id in deleted:
                             continue
-                        result.append(changed.get(item_id, item))
+                        updated = changed.get(item_id, item)
+                        # Navigation selection has its own CAS revision. An
+                        # unrelated writer loaded before that CAS must not
+                        # restore its stale copy of the binding.
+                        base_item = base_by_id.get(item_id, {})
+                        if updated is not item and updated.get('home_operator') == base_item.get('home_operator'):
+                            updated = dict(updated)
+                            if 'home_operator' in item:
+                                updated['home_operator'] = item['home_operator']
+                            else:
+                                updated.pop('home_operator', None)
+                        result.append(updated)
                         seen.add(item_id)
                     for item_id in payload_order:
                         if item_id in changed and item_id not in seen:
