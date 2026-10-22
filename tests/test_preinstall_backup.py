@@ -386,7 +386,14 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(token, 'private-fixture-token')
             if path == '/api/version':
                 return {'gitRevision': 'a'*40}
-            if path == '/api/recovery':
+            if path.startswith('/api/recovery'):
+                # Exercise the actual canonical router contract rather than
+                # letting this HTTP fixture invent an otherwise missing path.
+                from codex_web.api.recovery import build_recovery_router
+                routes = build_recovery_router(runtime.upgrades.recovery).routes
+                self.assertIn(path, {route.path for route in routes
+                    if 'GET' in getattr(route, 'methods', ())})
+            if path == '/api/recovery/status':
                 return {'scheduled_work': {'local_executor': {'accepting': True,
                     'waiting_or_running': 0, 'inflight_work': 0, 'quiescence_guard': False}}}
             self.assertEqual((method, path), ('POST', '/api/upgrades/'+self.plan.id+'/preflight'))
