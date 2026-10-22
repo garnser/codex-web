@@ -24,12 +24,17 @@ class HomeOperatorGoalInspection:
                       key=lambda row: (row.updated_at, row.id), reverse=True)
         # Deliberately project only bounded metadata, not objective context,
         # transcript, native storage, worker tokens or delegation authority.
+        try:
+            goals = {goal.id: goal for goal in self.bindings.goals.get_many(
+                tuple(row.goal_id for row in rows[:50]), scope=actor.tenant, project_id='home')}
+        except GoalNotFoundError as exc:
+            raise HomeOperatorConflict('Goal unavailable; inspect canonical Goals') from exc
         items = []
         for row in rows[:50]:
             try:
                 session = self.sessions.get(row.agent_session_id, actor)
-                goal = self.bindings.goals.get(row.goal_id, scope=actor.tenant, project_id='home')
-            except (AgentSessionNotFoundError, GoalNotFoundError) as exc:
+                goal = goals[row.goal_id]
+            except AgentSessionNotFoundError as exc:
                 raise HomeOperatorConflict('Goal binding or session unavailable; inspect canonical Goals') from exc
             if (session.project_id != 'home' or session.provider_native_session_id != thread_id
                     or session.provider_id != row.provider_id or session.runtime_id != row.runtime_id):

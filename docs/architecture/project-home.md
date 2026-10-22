@@ -139,6 +139,8 @@ availability are checked before and after the observation. A changed selection,
 missing Goal or incompatible Session refuses visibly without creating a successor.
 
 At most the latest 50 bindings are projected, with an explicit history indicator.
+Their Goals are resolved in one validated canonical snapshot; inspection does not
+reload Goal revisions and event history for every displayed binding.
 The projection exposes canonical Goal and binding status/revisions, checkpoint
 reference and stop reason. It does not retrieve native Goal storage, transcripts,
 objective context, credentials or model output. The UI labels this as a recorded

@@ -41,7 +41,7 @@ class HomeOperatorGoalTests(unittest.TestCase):
         self.sql = SQLiteStateStore(Path(temp.name) / 'state.db')
         self.store = GoalExecutionBindingStore(self.sql)
         self.replace([self.binding])
-        bindings = GoalExecutionBindingService(self.store, SimpleNamespace(get=self.get_goal))
+        bindings = GoalExecutionBindingService(self.store, SimpleNamespace(get_many=self.get_goals))
         self.operator = SimpleNamespace(status=lambda actor: copy.deepcopy(self.selection), clock=lambda: 123.)
         self.service = HomeOperatorGoalInspection(self.operator, bindings, SimpleNamespace(get=self.get_session))
 
@@ -50,6 +50,9 @@ class HomeOperatorGoalTests(unittest.TestCase):
         if self.goal is None:
             raise GoalNotFoundError('missing')
         return self.goal
+
+    def get_goals(self, keys, *, scope, project_id):
+        return tuple(self.get_goal(key, scope=scope, project_id=project_id) for key in dict.fromkeys(keys))
 
     def get_session(self, key, actor):
         self.assertEqual((key, actor), ('session', self.actor))
@@ -165,6 +168,12 @@ class HomeOperatorGoalTests(unittest.TestCase):
         from codex_web.storage.goals import GoalStore
         store = GoalStore(self.sql)
         self.service.bindings.goals = GoalService(store, SimpleNamespace(get=lambda *a: None), None)
+        original_load = store.load
+        loads = []
+        def count_load():
+            loads.append(True)
+            return original_load()
+        store.load = count_load
         for change, accepted in (({'work_graph_bindings': (GoalWorkGraphBinding(project_id='home'),)}, True),
                                  ({'work_graph_bindings': (GoalWorkGraphBinding(project_id='other'),)}, False),
                                  ({'organization_id': 'other'}, False)):
@@ -175,8 +184,18 @@ class HomeOperatorGoalTests(unittest.TestCase):
             before = store.load().model_dump()
             with self.subTest(change=change):
                 if accepted:
+                    self.replace([self.binding.model_copy(update={'id': f'binding-{i}'}) for i in range(50)])
+                    loads.clear()
                     self.assertEqual(self.inspect()['items'][0]['goal_id'], 'goal')
+                    self.assertEqual(len(loads), 1)
                 else:
                     with self.assertRaises(HomeOperatorConflict):
                         self.inspect()
                 self.assertEqual(store.load().model_dump(), before)
+
+    def test_goal_batch_limit_refuses_before_history_load(self):
+        from codex_web.services.goals import GoalService
+        service = GoalService(None, None, None)
+        with self.assertRaisesRegex(ValueError, 'at most 50'):
+            service.get_many(tuple(str(i) for i in range(51)), scope=self.actor.tenant)
+        self.assertEqual(service.get_many((), scope=self.actor.tenant), ())

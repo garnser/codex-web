@@ -255,6 +255,22 @@ class GoalService:
             project_id=project_id,
         )
 
+    def get_many(self, goal_ids: tuple[str, ...], *, scope: TenantScope,
+                 project_id: str | None = None) -> tuple[GoalRecord, ...]:
+        """Bounded canonical reads from one validated snapshot, without history reloads."""
+        ids = tuple(dict.fromkeys(goal_ids))
+        if len(ids) > 50:
+            raise ValueError('Goal inspection accepts at most 50 distinct Goals')
+        if not ids:
+            return ()
+        if project_id is not None:
+            self._require_project(project_id, scope)
+        state = self.store.load()
+        rows = tuple(self._goal(state, key, scope) for key in ids)
+        if project_id is not None and any(not self._project_visible(row, project_id) for row in rows):
+            raise GoalNotFoundError('goal not found')
+        return rows
+
     def list(
         self,
         *,
