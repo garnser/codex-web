@@ -1,4 +1,5 @@
 import { request, apiBase } from './api_client.js';
+import { appendHomeOperatorRuntime } from './home_operator_runtime.js';
 
 export async function renderHomeOperator(host, { signal } = {}) {
   const title = document.createElement('h3');
@@ -6,6 +7,7 @@ export async function renderHomeOperator(host, { signal } = {}) {
   host.replaceChildren(title);
   const detail = document.createElement('p');
   detail.setAttribute('role', 'status');
+    detail.dataset.operatorSelection = '';
   detail.textContent = 'Reading the saved conversation…';
   host.append(detail);
   try {
@@ -32,6 +34,7 @@ export async function renderHomeOperator(host, { signal } = {}) {
       open.className = 'primary-button';
       open.textContent = 'Open operator conversation';
       host.append(open);
+      appendHomeOperatorRuntime(host, state, { signal });
     }
     if (!state.can_configure) return;
     const choose = document.createElement('button');

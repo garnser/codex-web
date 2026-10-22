@@ -29,6 +29,14 @@ are never automatically retried. Administrators select a different conversation 
 after refreshing the canonical revision. Normal conversation naming, creation, profile
 selection, runner inspection and goal controls remain in their existing surfaces.
 
+Home's explicit runner/queue inspection reads the existing scoped Thread runner
+and queue routes without loading the transcript or contacting a model provider.
+It rechecks the Home selection before displaying results, uses the shared canonical
+runner presentation and failure metadata, and never treats a queued request as
+active execution. A live observation expires at the earlier lease or 60-second
+freshness boundary without another request. Refresh is user initiated; it creates
+no polling loop, runner, recovery request, authority grant or execution state.
+
 This contract is the durable entry-point slice of [#1669](https://github.com/garnser/codex-web/issues/1669).
 It does not establish host administration capability. The current execution profile
 schema explicitly forbids host mutation and network enablement; designating a Home

@@ -56,7 +56,7 @@ test('unknown save is never retried and stale replacement requires refresh', asy
   await page.getByRole('button', { name: 'Choose conversation' }).click();
   await page.getByLabel('Existing Home conversation').selectOption('same-thread');
   await page.getByRole('button', { name: 'Save Home shortcut' }).click();
-  await expect(page.getByRole('status')).toContainText('Refresh Home before trying again');
+  await expect(page.locator('[data-operator-selection]')).toContainText('Refresh Home before trying again');
   await expect(page.getByRole('button', { name: 'Save Home shortcut' })).toBeDisabled();
   expect(calls).toBe(1);
 });
@@ -117,4 +117,43 @@ test('ordinary project input makes no Home request and lookup failure does not f
     return { same: unchanged === payload, reads, error };
   });
   expect(result).toEqual({ same: true, reads: 1, error: 'lookup failed' });
+});
+
+test('Home runtime inspection reads canonical runner and queue; observation expires without polling', async ({ page }) => {
+  await page.clock.install();
+  let reads = 0;
+  const now = Date.now() / 1000;
+  await page.route('**/api/home/operator', route => route.fulfill({ json: configured }));
+  await page.route('**/api/threads/same-thread/runner?project_id=home', route => {
+    reads++;
+    return route.fulfill({ json: { id: 'same-thread', activity: { source: 'current_turn', state: 'active', turnId: 'real-turn' },
+      runner: { schemaVersion: '1.0', state: 'running', live: true, processRunning: true,
+        leaseValid: true, observedAt: now, leaseExpiresAt: now + 120 } } });
+  });
+  await page.route('**/api/threads/same-thread/queue?project_id=home', route => route.fulfill({
+    json: { threadId: 'same-thread', queueDepth: 2 },
+  }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  await page.getByRole('button', { name: 'Inspect runner and queue' }).click();
+  await expect(page.locator('[data-operator-runtime]')).toContainText('active work · Queued: 2');
+  await page.clock.fastForward(61_000);
+  await expect(page.locator('[data-operator-runtime]')).toContainText('observation expired');
+  expect(reads).toBe(1);
+});
+
+test('runtime inspection suppresses results after Home selection changes', async ({ page }) => {
+  let reads = 0;
+  await page.route('**/api/home/operator', route => route.fulfill({ json: {
+    ...configured, binding: { ...configured.binding, revision: reads++ ? 5 : 4 },
+  } }));
+  await page.route('**/api/threads/same-thread/runner?project_id=home', route => route.fulfill({
+    json: { id: 'same-thread', runner: { schemaVersion: '1.0', state: 'idle', live: false } },
+  }));
+  await page.route('**/api/threads/same-thread/queue?project_id=home', route => route.fulfill({
+    json: { threadId: 'same-thread', queueDepth: 0 },
+  }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  await page.getByRole('button', { name: 'Inspect runner and queue' }).click();
+  await expect(page.locator('[data-operator-runtime]')).toContainText('Operator selection or runtime evidence changed');
+  await expect(page.locator('[data-operator-runtime]')).not.toContainText('Queued: 0');
 });
