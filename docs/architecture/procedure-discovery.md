@@ -359,6 +359,24 @@ voluntary retirement; a callback refusal does not claim successful verification.
 Timeout or cancellation cancels the cooperative storage budget and joins the
 actual reconciliation owner before releasing the thread completion barrier.
 
+A READY result can arrive after native completion while the original callback
+still observes an executing action. Its existing canonical unresolved-status
+notification then wakes the same bounded settlement path on the runtime owner
+loop. It reads at most 200 existing terminal events, requires an exact
+assignment/execution/worker/fence and workspace match, and accepts only a terminal
+observation after this attempt started and no older than the smaller of the
+intent timeout and 300 seconds. Missing or stale observations preserve the
+unresolved action. A notification racing an owned completion task is coalesced
+until that task finishes; the existing turn-start lock and completion barrier
+protect the actual settlement. Busy native input is never interrupted. The
+notification does not recreate a native start, repair a failed checkpoint, or
+record a different business outcome. Current canonical intent/session lookups
+and all normal callback admission checks remain mandatory. The canonical intent
+point lookup uses the existing owned-operation helper with a five-second
+cooperative storage budget; cancellation joins its real storage owner. Duplicate delivery
+uses the existing durable terminal marker, including after a process restart;
+there is no startup scan, retry timer or provider write.
+
 Only already-attempted, unresolved READY actions are candidates. Before the normal
 64-entry limit, callback discoveries consume normal history slots. The same
 four-attempt/eight-decision ceiling counts marked callback attempts on both sides
