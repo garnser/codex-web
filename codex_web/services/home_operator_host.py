@@ -98,6 +98,9 @@ class HomeOperatorHostService:
                 or profile.host_mutation or profile.network_enabled):
             self.denied('Host inspection is not explicitly declared in the current Home Definition')
         pin = assignment.agent_profile
+        if operator.agent_profile_id and (operator.agent_profile_id != pin.profile_id
+                or operator.agent_profile_revision != pin.profile_revision):
+            self.denied('Selected Home operator Agent Profile changed')
         current, _ = profiles.agent_profiles.resolve_for_execution(pin.profile_id, actor=actor, project_id='home')
         if (current.lifecycle != 'active' or current.record_id != pin.profile_record_id
                 or current.revision != pin.profile_revision or current.execution_profile_id != assignment.execution_profile_id
@@ -150,6 +153,12 @@ class HomeOperatorHostService:
             if (agent.record_id != pin.profile_record_id or agent.revision != pin.profile_revision
                     or agent.execution_profile_id != profile.id or agent.lifecycle != 'active'):
                 raise AuthorizationError('Home operator Agent Profile changed')
+            operator = self.projects.get('home', current_actor.tenant).home_operator
+            if operator and operator.agent_profile_id and (
+                    operator.selected_by != actor.identity_id
+                    or operator.agent_profile_id != pin.profile_id
+                    or operator.agent_profile_revision != pin.profile_revision):
+                raise AuthorizationError('Selected Home operator Agent Profile changed')
             return True
         except AuthorizationError:
             raise
@@ -174,6 +183,8 @@ class HomeOperatorHostService:
 
         def current():
             try:
+                if self.projects.get('home', actor.tenant).home_operator != operator_snapshot:
+                    refuse()
                 assignment = self.broker.execution_workers.store.assignment(snapshot.id)
                 if assignment is None:
                     refuse()
@@ -206,6 +217,7 @@ class HomeOperatorHostService:
                 return None
         except (IdentityError, ValueError, LookupError):
             refuse()
+        operator_snapshot = self.projects.get('home', actor.tenant).home_operator
         return current
 
     def guard(self, snapshot, worker_actor, resolved, validator):

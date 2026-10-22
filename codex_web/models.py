@@ -236,12 +236,23 @@ class HomeOperatorBinding(BaseModel):
     selected_by: str
     revision: int = Field(ge=1)
     updated_at: float
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=200)
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+
+    @model_serializer(mode="wrap")
+    def serialize_profile(self, handler):
+        result = handler(self)
+        if self.agent_profile_id is None:
+            result.pop("agent_profile_id", None)
+            result.pop("agent_profile_revision", None)
+        return result
 
 
 class HomeOperatorUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     thread_id: str | None = Field(default=None, min_length=1, max_length=200)
     expected_revision: int = Field(ge=0)
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class Project(BaseModel):

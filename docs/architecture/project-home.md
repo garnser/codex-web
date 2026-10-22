@@ -66,8 +66,14 @@ Activation is explicit canonical data, never bootstrap defaults:
    queue/preflight claim, guarded Codex resume/start and reader receipts carry the
    same original; no new admission subsystem is introduced. Immediate/raw native
    transports without that retained send guard refuse for this declaration. The
-   current ordinary UI's immediate send is not a claim of operator activation;
-   complete operator UI integration remains in #1669.
+   Home selection can retain an explicitly selected Agent Profile and its exact
+   revision. The conversation composer reads the current Home selection and adds
+   these pins and `defer_start=true` to the same ordinary turn route. It refuses
+   unavailable/changed profiles and execution-setting mismatches before sending;
+   lookup errors do not fall back to unguarded input. Operator replacement replies
+   are never automatically followed by a second submission. The native authority
+   guard independently rechecks the selected profile against fresh Home state.
+   Saving a navigation-only shortcut retains the existing ordinary behavior.
 5. The worker uses its existing authenticated assignment broker. Its operation
    catalog advertises inspection only while the declaration/selection is current;
    catalog visibility is not proof of a live lease or effective permission.

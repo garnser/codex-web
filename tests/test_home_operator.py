@@ -73,6 +73,46 @@ class HomeOperatorTests(unittest.TestCase):
         self.assertEqual(self.store.get('projects'), before)
         self.assertFalse(self.service.status(member)['can_configure'])
 
+    def test_explicit_agent_profile_is_pinned_and_revalidated_without_changing_settings(self):
+        profile = SimpleNamespace(profile_id='operator-agent', revision=3, name='Trusted operator',
+                                  execution_profile_id='orchestration-admin')
+        calls = []
+        def resolve(profile_id, **kwargs):
+            calls.append((profile_id, kwargs))
+            return profile, None
+        self.service.agent_profiles = SimpleNamespace(resolve_for_execution=resolve)
+        before = dict(self.settings)
+        selected = self.service.configure(HomeOperatorUpdate(thread_id='operator', expected_revision=0,
+            agent_profile_id='operator-agent'), self.actor)
+        self.assertEqual(selected['agent_profile'], {'id': 'operator-agent', 'revision': 3, 'name': 'Trusted operator'})
+        self.assertEqual(self.projects.get('home').home_operator.agent_profile_revision, 3)
+        self.assertTrue(all(call[1] == {'actor': self.actor, 'project_id': 'home'} for call in calls))
+        self.assertEqual(self.settings, before)
+        reopened = self.reopen()
+        reopened.agent_profiles = self.service.agent_profiles
+        self.assertEqual(reopened.status(self.actor), selected)
+        profile.revision = 4
+        changed = reopened.status(self.actor)
+        self.assertEqual(changed['status'], 'profile_unavailable')
+        self.assertIsNone(changed['agent_profile'])
+        self.assertEqual(changed['binding']['agent_profile_revision'], 3)
+
+    def test_wrong_execution_profile_refuses_before_navigation_mutation(self):
+        self.service.agent_profiles = SimpleNamespace(resolve_for_execution=lambda *a, **kw: (
+            SimpleNamespace(profile_id='other', revision=1, execution_profile_id='repository-write'), None))
+        before = self.store.get('projects')
+        with self.assertRaisesRegex(HomeOperatorConflict, 'must match'):
+            self.service.configure(HomeOperatorUpdate(thread_id='operator', expected_revision=0,
+                agent_profile_id='other'), self.actor)
+        self.assertEqual(self.store.get('projects'), before)
+
+    def test_agent_profile_without_conversation_or_registry_refuses(self):
+        for payload in [HomeOperatorUpdate(expected_revision=0, agent_profile_id='operator-agent'),
+                        HomeOperatorUpdate(thread_id='operator', expected_revision=0, agent_profile_id='operator-agent')]:
+            with self.subTest(payload=payload), self.assertRaises(HomeOperatorConflict):
+                self.service.configure(payload, self.actor)
+        self.assertIsNone(self.projects.get('home').home_operator)
+
     def test_foreign_or_non_home_thread_refused_without_retarget(self):
         before = self.store.get('projects')
         with self.assertRaises(HTTPException):

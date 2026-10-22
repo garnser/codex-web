@@ -351,6 +351,27 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.current().model_dump(), before)
         self.inspector.assert_not_called()
 
+    async def test_home_selection_profile_change_refuses_inspection_and_native_input(self):
+        from codex_web.services.identity import AuthorizationError
+        before = self.current().model_dump()
+        guard = self.service.home_operator_host.prepare_native_input_guard(
+            project=self.projects.get('home'), actor=self.actor, execution_id=self.assignment.execution_id,
+            assignment_id=self.assignment.id, source='web')
+        guard()
+        self.projects.repository.update_home_operator(organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id, expected_revision=1,
+            binding=HomeOperatorBinding(thread_id='operator-thread', selected_by=self.actor.identity_id,
+                revision=2, updated_at=time.time(), agent_profile_id='different-profile', agent_profile_revision=1))
+        status, _, _ = await self._request('GET', '/api/operator/host')
+        self.assertEqual(status, 403)
+        with self.assertRaises(AuthorizationError):
+            self.service.home_operator_host.authorize_native_input(assignment=self.current(), actor=self.actor,
+                project=self.projects.get('home'), source='web')
+        with self.assertRaises(ExecutionPrestartRefusal):
+            guard()
+        self.assertEqual(self.current().model_dump(), before)
+        self.inspector.assert_not_called()
+
     async def test_admin_demotion_during_awaited_skill_preparation_prevents_all_native_input(self):
         from types import SimpleNamespace
         host, binding, sessions, runtime = turn_fixtures.TurnExecutionStartTests._service(self)

@@ -4869,6 +4869,7 @@ operator_ui_service = OperatorUiService(
 home_operator_service = HomeOperatorService(
     projects=project_service, thread_scope=thread_scope_service,
     thread_index=thread_index_repository, settings=thread_execution_settings_service,
+    agent_profiles=agent_profile_service,
 )
 control_plane_broker_service.home_operator_host = HomeOperatorHostService(
     broker=control_plane_broker_service, projects=project_service,
