@@ -120,6 +120,28 @@ class RecoveryMemoryProbeTests(unittest.TestCase):
             with self.assertRaisesRegex(RecoveryMemoryRefused, 'memory_insufficient'):
                 admit('capture_snapshot', 414579972*12 + 164898*512)
 
+    def test_explicit_helper_budget_never_overrides_actual_ancestor_or_host_headroom(self):
+        leaf = self.cg / 'parent/service'
+        (leaf / 'memory.max').write_text(str(8*1024**3))
+        (leaf / 'memory.swap.max').write_text('0')
+        (leaf / 'memory.current').write_text(str(128*1024**2))
+        with self.assertRaisesRegex(RecoveryMemoryRefused, 'limit_exceeded'):
+            self.require_limit()  # The existing six-GiB ceiling is unchanged.
+        observed = require_process_memory_limit(maximum_bytes=8*1024**3,
+            proc=self.proc, cgroup=self.cg)
+        self.assertEqual(observed.memory_max_bytes, 8*1024**3)
+        # The operation ceiling alone cannot admit the real conservative estimate.
+        estimate = 6466870152 - 512*1024**2
+        with patch('codex_web.services.recovery_memory.memory_headroom', side_effect=self.probe):
+            with self.assertRaisesRegex(RecoveryMemoryRefused, 'memory_insufficient'):
+                admit('capture_snapshot', estimate)
+            (self.cg / 'parent/memory.max').write_text(str(10*1024**3))
+            (self.cg / 'parent/memory.current').write_text(str(1024**3))
+            admit('capture_snapshot', estimate)
+            (self.proc / 'meminfo').write_text('MemAvailable: 1024 kB\nMemTotal: 16384000 kB\n')
+            with self.assertRaisesRegex(RecoveryMemoryRefused, 'memory_insufficient'):
+                admit('capture_snapshot', estimate)
+
     def test_invalid_declared_budget_refuses_before_reading_accounting(self):
         for maximum, swap in [(True, 0), (0, 0), (6*1024**3, -1)]:
             with self.subTest(maximum=maximum, swap=swap):

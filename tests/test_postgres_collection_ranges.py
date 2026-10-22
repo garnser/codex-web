@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import math
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from codex_web.storage.postgres_state import PostgresStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -13,6 +15,171 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def _evidence_point(self, raw, *, item_id="selected", organization_id="local", workspace_id="default"):
+        from codex_web.artifact_evidence import Evidence, EvidenceType, EvidenceResult
+        selected = Evidence(id=item_id, organization_id=organization_id, workspace_id=workspace_id,
+            evidence_type=EvidenceType.POLICY_EVALUATION, result=EvidenceResult.PASS,
+            producer_identity_id="fixture")
+        self.backend.put("artifact_evidence", raw(selected))
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        return ArtifactEvidenceStore(self.backend), selected
+
+    def test_evidence_point_read_is_scoped_and_does_not_decode_unrelated_catalog(self):
+        from codex_web.artifact_evidence import EvidenceLifecycle
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        from types import SimpleNamespace
+        def raw(selected):
+            selected.lifecycle = EvidenceLifecycle.INVALIDATED
+            selected.invalidated_at = 7
+            selected.retention_expires_at = 8
+            selected.metadata = {"exact": True, "bigint": 2**100 + 1, "signedzero": -0.0}
+            foreign = selected.model_copy(update={"organization_id": "foreign"})
+            unrelated = [selected.model_copy(update={"id": f"unrelated-{i}",
+                "summary": "ordinary retained history " * 200}).model_dump(mode="json") for i in range(100)]
+            return {"schema_version": "1.3", "evidence": [foreign.model_dump(mode="json"),
+                selected.model_dump(mode="json"), *unrelated], "artifacts": [], "verifications": []}
+        store, selected = self._evidence_point(raw)
+        with patch.object(store, "load", side_effect=AssertionError("whole Evidence catalog read")),                 patch.object(self.backend, "get", side_effect=AssertionError("whole document transfer")):
+            actual = ArtifactEvidenceService(store).get_evidence("selected",
+                actor=SimpleNamespace(organization_id="local", workspace_id="default"))
+        self.assertEqual(actual, selected)
+        self.assertIs(actual.metadata["exact"], True)
+        self.assertEqual(actual.metadata["bigint"], 2**100 + 1)
+        self.assertEqual(math.copysign(1, actual.metadata["signedzero"]), -1)
+        self.assertEqual(actual.lifecycle, EvidenceLifecycle.INVALIDATED)
+        self.assertEqual(actual.retention_expires_at, 8)
+
+    def test_evidence_point_preserves_legacy_schema_and_refuses_selected_malformed_body(self):
+        from pydantic import ValidationError
+        def raw(selected):
+            item = selected.model_dump(mode="json")
+            item.pop("resource_ids")
+            return {"schema_version": "1.0", "evidence": [item]}
+        store, selected = self._evidence_point(raw)
+        self.assertEqual(store.evidence_state("selected", organization_id="local", workspace_id="default").evidence,
+                         [selected])
+        for changed in ({"schema_version": "unsupported", "evidence": []},
+                        {"schema_version": "1.3", "evidence": "not-an-array"},
+                        {"schema_version": "1.3", "unexpected": True},
+                        {"schema_version": "1.3", "evidence": [{**selected.model_dump(mode="json"),
+                            "producer_identity_id": None}]}):
+            with self.subTest(shape=list(changed)):
+                self.backend.put("artifact_evidence", changed)
+                with self.assertRaises((ValueError, ValidationError)):
+                    store.evidence_state("selected", organization_id="local", workspace_id="default")
+
+    def test_evidence_point_legacy_json_fallback_keeps_caller_transaction_valid(self):
+        def raw(selected):
+            selected.metadata = {"nonfinite": float("nan"), "nul": "before\0after",
+                                 "surrogate": "before\ud800after"}
+            return {"schema_version": "1.3", "evidence": [selected.model_dump(mode="json")]}
+        store, selected = self._evidence_point(raw)
+        self.backend.put("transaction-sentinel", {"ok": False})
+        def update(current):
+            actual = store.evidence_state("selected", organization_id="local", workspace_id="default").evidence[0]
+            self.assertTrue(math.isnan(actual.metadata["nonfinite"]))
+            self.assertEqual(actual.metadata["nul"], "before\0after")
+            self.assertEqual(actual.metadata["surrogate"], "before\ud800after")
+            return {"ok": True}
+        self.backend.update("transaction-sentinel", update, default={})
+        self.assertEqual(self.backend.get("transaction-sentinel"), {"ok": True})
+
+    def test_evidence_point_retains_existing_keyed_document_backend_fallback(self):
+        store, selected = self._evidence_point(lambda selected: {"schema_version": "1.3",
+            "evidence": [selected.model_dump(mode="json")]})
+        raw = self.backend.get("artifact_evidence")
+        self.backend.delete("artifact_evidence")
+        self.backend.record_replace("artifact_evidence", raw)
+        self.assertEqual(store.evidence_state("selected", organization_id="local",
+            workspace_id="default").evidence, [selected])
+
+    def test_evidence_point_does_not_retry_unrelated_storage_failure(self):
+        class TransportFailure(RuntimeError):
+            sqlstate = "08006"
+        failure = (sqlite3.OperationalError("database is locked")
+                   if isinstance(self.backend, SQLiteStateStore) else TransportFailure())
+        connection = "_connection" if isinstance(self.backend, SQLiteStateStore) else "_read_connection"
+        with patch.object(self.backend, connection, side_effect=failure),                 patch.object(self.backend, "get") as fallback:
+            with self.assertRaises(type(failure)):
+                self.backend.document_array_item_envelope("artifact_evidence", "evidence", "selected",
+                    organization_id="local", workspace_id="default",
+                    collection_names=("artifacts", "evidence", "verifications"))
+            fallback.assert_not_called()
+
+    def test_evidence_point_wrong_scope_missing_and_legacy_backend(self):
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService, EvidenceNotFoundError
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from types import SimpleNamespace
+        store, selected = self._evidence_point(lambda selected: {"schema_version": "1.3",
+            "evidence": [selected.model_dump(mode="json")]})
+        actor = SimpleNamespace(organization_id="local", workspace_id="other")
+        with self.assertRaises(EvidenceNotFoundError):
+            ArtifactEvidenceService(store).get_evidence("selected", actor=actor)
+        with self.assertRaises(EvidenceNotFoundError):
+            ArtifactEvidenceService(store).get_evidence("missing",
+                actor=SimpleNamespace(organization_id="local", workspace_id="default"))
+        older_backend = SimpleNamespace(get=self.backend.get)
+        self.assertEqual(ArtifactEvidenceStore(older_backend).evidence_state("selected",
+            organization_id="local", workspace_id="default").evidence, [selected])
+
+    def test_projection_does_not_retry_unrelated_storage_failure(self):
+        class TransportFailure(RuntimeError):
+            sqlstate = '08006'
+        failure = (sqlite3.OperationalError('database is locked')
+                   if isinstance(self.backend, SQLiteStateStore) else TransportFailure())
+        if isinstance(self.backend, SQLiteStateStore) and sqlite3.sqlite_version_info < (3, 38, 0):
+            with patch.object(self.backend, 'record_page', side_effect=failure) as reader:
+                with self.assertRaises(type(failure)):
+                    self.backend.record_page_projected('scope', fields=('selected',))
+                reader.assert_called_once()
+            return
+        with patch.object(self.backend, '_record_page', side_effect=failure) as selected:
+            with patch.object(self.backend, 'record_page') as fallback:
+                with self.assertRaises(type(failure)):
+                    self.backend.record_page_projected('scope', fields=('selected',))
+                selected.assert_called_once()
+                fallback.assert_not_called()
+
+    def test_projection_preserves_legacy_nonfinite_values_and_escaped_nul(self):
+        self.backend.record_replace('legacy-json', {
+            'a': {'selected': float('nan'), 'ignored': float('inf')},
+            'b': {'selected': float('inf')},
+            'c': {'selected': float('-inf')},
+            'd': {'selected': 'before\0after'},
+            'e': float('nan'),
+            'f': {'selected': 'before\ud800after'},
+            'g': {'selected': 2**100 + 1},
+            'h': {'selected': -0.0},
+        })
+        result = {}; after = None
+        while True:
+            page, after = self.backend.record_page_projected('legacy-json',
+                fields=('selected',), after=after, limit=2)
+            result.update(page)
+            if after is None:
+                break
+        self.assertTrue(math.isnan(result['a']['selected']))
+        self.assertNotIn('ignored', result['a'])
+        self.assertEqual(result['b'], {'selected': float('inf')})
+        self.assertEqual(result['c'], {'selected': float('-inf')})
+        self.assertEqual(result['d'], {'selected': 'before\0after'})
+        self.assertTrue(math.isnan(result['e']))
+        self.assertEqual(result['f'], {'selected': 'before\ud800after'})
+        self.assertIs(type(result['g']['selected']), int)
+        self.assertEqual(result['g']['selected'], 2**100 + 1)
+        self.assertEqual(math.copysign(1.0, result['h']['selected']), -1.0)
+
+    def test_projection_fallback_does_not_abort_owning_transaction(self):
+        self.backend.record_replace('legacy-json', {'key': {'selected': float('inf')}})
+        self.backend.record_replace('mutation', {'counter': 0})
+        def update(rows):
+            page, cursor = self.backend.record_page_projected('legacy-json', fields=('selected',))
+            self.assertEqual(page, {'key': {'selected': float('inf')}})
+            self.assertIsNone(cursor)
+            return {'mutation': {'counter': rows['mutation']['counter'] + 1}}
+        self.backend.record_mutate_many({'mutation': ('counter',), 'legacy-json': ('key',)}, update)
+        self.assertEqual(self.backend.record_get('mutation', 'counter'), 1)
+
     def test_projected_page_preserves_json_types_missing_null_and_exact_cursor_scope(self):
         namespace = 'selected/雪:%'
         records = {
@@ -131,10 +298,46 @@ class CollectionRangeContract:
 
 
 class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
+    def test_evidence_point_python_allocation_does_not_scale_with_unrelated_bodies(self):
+        import tracemalloc
+        from types import SimpleNamespace
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        def raw(selected):
+            return {"schema_version": "1.3", "evidence": [selected.model_dump(mode="json"), *[
+                selected.model_copy(update={"id": f"retained-{i}", "summary": "ordinary metadata " * 300}).model_dump(mode="json")
+                for i in range(200)]]}
+        store, selected = self._evidence_point(raw)
+        def measured(call):
+            tracemalloc.start()
+            try:
+                result = call()
+                return result, tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+        entire, full_peak = measured(store.load)
+        self.assertEqual(len(entire.evidence), 201)
+        del entire
+        item, point_peak = measured(lambda: ArtifactEvidenceService(store).get_evidence("selected",
+            actor=SimpleNamespace(organization_id="local", workspace_id="default")))
+        self.assertEqual(item, selected)
+        self.allocation_observation = {"full_catalog_peak_bytes": full_peak, "point_read_peak_bytes": point_peak,
+                                       "synthetic_records": 201}
+        self.assertLess(point_peak * 8, full_peak,
+                        "The point lookup must not materialize unrelated Evidence bodies")
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.backend = SQLiteStateStore(Path(directory.name) / 'state.db')
+
+    def test_older_sqlite_uses_raw_page_without_json_token_operator(self):
+        self.backend.record_replace('legacy', {'a': {'selected': 2**100 + 1, 'ignored': True}})
+        with patch('codex_web.storage.sqlite_state.sqlite3.sqlite_version_info', (3, 37, 0)):
+            with patch.object(self.backend, '_record_page', wraps=self.backend._record_page) as reader:
+                result, cursor = self.backend.record_page_projected('legacy', fields=('selected',))
+                self.assertEqual(result, {'a': {'selected': 2**100 + 1}})
+                self.assertIsNone(cursor)
+                self.assertNotIn('fields', reader.call_args.kwargs)
 
     def test_batch_probe_uses_one_query_and_connection(self):
         from contextlib import contextmanager

@@ -562,9 +562,9 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(settled.last_verification_id)
         self.assertEqual(settled.request.model_dump(mode="json"), original_request)
         self.assertEqual(self.host.states[self.work_item.ref], original_work_item)
-        self.assertEqual(UpgradeService._active_action_count(
-            SimpleNamespace(action_intents=self.service), self.actor, service_wide=True,
-        ), 0)
+        upgrade = object.__new__(UpgradeService)
+        upgrade.action_intents = self.service
+        self.assertEqual(upgrade._active_action_count(self.actor, service_wide=True), 0)
         self.assertEqual(self.reference.values, {})
 
     async def test_stale_deferral_is_visible_without_provider_execution(self):

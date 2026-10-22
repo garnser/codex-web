@@ -10,6 +10,7 @@ from codex_web.action_intents import ActionIntentStatus
 from codex_web.autonomy import AutonomyScopedPauseCreate
 from codex_web.reconciliation_gates import ReconcilerDeclaration, ReconcilerStartupClass
 from codex_web.services.action_providers import ActionRequirementError
+from codex_web.services.local_execution_worker import RepositoryCheckpointBlockedError
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.post_turn_readiness import PostTurnReadinessService, require_post_turn_admission
 from codex_web.services.reconciliation_gates import ReconciliationGateService
@@ -186,6 +187,62 @@ class PostTurnReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.intents.store.get(self.intent_id).status, ActionIntentStatus.SUCCEEDED)
         self.assertTrue(self.runtime.intents.history(self.intent_id, self.admin)['verifications'][-1]['verified'])
         self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+
+    async def checkpoint_failure_completion(self, *, change_fence=False, paused=False):
+        await self.prepare()
+        before = self.runtime.intents.store.get(self.intent_id)
+        history = self.runtime.intents.history(self.intent_id, self.admin)
+        runtime, active = self.terminal_runtime()
+        manager, _ = runtime._session_for_assignment(active.assignment_id)
+        async def failed_checkpoint(_assignment_id):
+            if change_fence:
+                self.change_assignment(fence=self.assignment.fence + 1)
+            if paused:
+                self.controller.pause(actor_id=self.admin.identity_id)
+            raise RepositoryCheckpointBlockedError('private fixture checkpoint backend unavailable')
+        manager.checkpoint = AsyncMock(side_effect=failed_checkpoint)
+        calls = len(self.calls)
+        runtime._schedule_assignment_completion(active, succeeded=True,
+            message={'method': 'turn/completed', 'params': {'turn': {'id': active.turn_id}}})
+        await asyncio.gather(*runtime.assignment_completion_tasks.values())
+        manager.checkpoint.assert_awaited_once_with(active.assignment_id)
+        current = self.runtime.intents.store.get(self.intent_id)
+        self.assertEqual(current.last_receipt_id, before.last_receipt_id)
+        self.assertEqual(current.attempt, before.attempt)
+        self.assertEqual(sum(method == 'PUT' for method, _ in self.calls), 1)
+        self.assertEqual(self.workers.store.assignment(self.assignment.id).procedure_discoveries[:64],
+            self.originals)
+        completion = next(event for event in reversed(self.events)
+            if event['type'] == 'thread_bootstrap_turn_completed')
+        self.assertFalse(completion['succeeded'])
+        self.assertTrue(completion['session_retained'])
+        self.assertEqual(completion['repository_checkpoint_count'], 0)
+        self.assertEqual(completion['repository_checkpoint_error'],
+            'private fixture checkpoint backend unavailable')
+        self.assertFalse(runtime.thread_completion_tasks)
+        return before, current, history, calls
+
+    async def test_failed_repository_checkpoint_still_settles_actual_same_origin_ready(self):
+        before, current, history, calls = await self.checkpoint_failure_completion()
+        self.assertEqual(current.status, ActionIntentStatus.SUCCEEDED)
+        self.assertTrue(all(method == 'GET' for method, _ in self.calls[calls:]))
+        after = self.runtime.intents.history(self.intent_id, self.admin)
+        self.assertTrue(after['verifications'][-1]['verified'])
+        self.assertEqual(after['receipts'], history['receipts'])
+
+    async def test_failed_checkpoint_does_not_bypass_changed_origin_custody(self):
+        before, current, history, calls = await self.checkpoint_failure_completion(change_fence=True)
+        self.assertEqual(current.status, before.status)
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.runtime.intents.history(self.intent_id, self.admin), history)
+        self.assertTrue(any(event['type'] == 'post_turn_readiness_deferred' for event in self.events))
+
+    async def test_failed_checkpoint_does_not_bypass_automatic_recovery_pause(self):
+        before, current, history, calls = await self.checkpoint_failure_completion(paused=True)
+        self.assertEqual(current.status, before.status)
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.runtime.intents.history(self.intent_id, self.admin), history)
+        self.assertTrue(any(event['type'] == 'post_turn_readiness_deferred' for event in self.events))
 
     def terminal_runtime(self):
         host = SimpleNamespace(_append_bot_event=self.events.append)

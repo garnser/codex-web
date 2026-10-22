@@ -4331,6 +4331,7 @@ gitlab_work_item_runtime_dependencies = (
             project_resources=work_item_dependencies.resource_ids_for_project,
             project_lookup=project_runtime_service.get,
             action_registry=action_provider_registry, resources=resource_catalog_service),
+        owner_routing=owner_routing_service,
     )
 )
 gitlab_event_presentation = GitLabEventPresentationService(

@@ -167,3 +167,17 @@ class RecoveryObservationTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 cli.record(root, 'capture-started', {'plan_id': 'other'})
             self.assertEqual((root/'capture-started.json').read_bytes(), original)
+
+
+class OperationMemoryBudgetTests(unittest.TestCase):
+    def test_default_remains_six_gib_and_explicit_budget_is_only_a_byte_ceiling(self):
+        self.assertEqual(cli.DEFAULT_MEMORY_BUDGET_BYTES, 6 * 1024**3)
+        self.assertEqual(cli.memory_budget_bytes(str(8 * 1024**3)), 8 * 1024**3)
+        action = next(item for item in cli.parser()._actions if item.dest == 'memory_budget_bytes')
+        self.assertEqual(action.default, 6 * 1024**3)
+
+    def test_nonpositive_unbounded_and_malformed_budget_refuse(self):
+        import argparse
+        for raw in ('0', '-1', 'max', 'inf', '1.5', str(2**63), True, False, None):
+            with self.subTest(raw=raw), self.assertRaises(argparse.ArgumentTypeError):
+                cli.memory_budget_bytes(raw)

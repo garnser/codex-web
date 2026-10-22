@@ -19,6 +19,7 @@ from codex_web.storage.state_store import (
     state_record_prefix,
     state_record_storage_key,
     record_projection_fields,
+    project_record_fields,
 )
 
 
@@ -375,8 +376,23 @@ class SQLiteStateStore:
         self, namespace: str, *, fields: tuple[str, ...],
         key_prefix: str | None = None, after: str | None = None, limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
-        return self._record_page(namespace, key_prefix=key_prefix, after=after,
-            limit=limit, fields=record_projection_fields(fields))
+        fields = record_projection_fields(fields)
+        if sqlite3.sqlite_version_info < (3, 38, 0):
+            # Older libraries lack the token-preserving JSON arrow operator.
+            raw, cursor = self.record_page(namespace, key_prefix=key_prefix,
+                after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
+        try:
+            return self._record_page(namespace, key_prefix=key_prefix, after=after,
+                limit=limit, fields=fields)
+        except sqlite3.OperationalError as exc:
+            # JSON1 can emit invalid UTF-8 from a legacy escaped lone surrogate.
+            # Do not include the driver message (which may contain data) in logs.
+            if not str(exc).startswith("Could not decode to UTF-8 column"):
+                raise
+            raw, cursor = self.record_page(namespace, key_prefix=key_prefix,
+                after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
 
     def _record_page(
         self, namespace: str, *, key_prefix: str | None, after: str | None,
@@ -408,13 +424,10 @@ class SQLiteStateStore:
             parameters: tuple[Any, ...] = ()
             if fields is not None:
                 slots = ",".join("?" for _ in fields)
-                projection = f"""CASE WHEN json_type(payload) = 'object' THEN
+                projection = f"""CASE WHEN json_valid(payload) = 0 THEN payload
+                    WHEN json_type(payload) = 'object' THEN
                     (SELECT json_group_object(field.key,
-                        CASE field.type
-                            WHEN 'true' THEN json('true')
-                            WHEN 'false' THEN json('false')
-                            ELSE json_extract(state_documents.payload, '$.' || field.key)
-                        END)
+                        json(state_documents.payload -> ('$.' || field.key)))
                      FROM json_each(state_documents.payload) AS field
                      WHERE field.key IN ({slots})) ELSE payload END"""
                 parameters = fields
@@ -438,7 +451,8 @@ class SQLiteStateStore:
             )
             if parsed is None or parsed[1] is None:
                 continue
-            page[parsed[1]] = json.loads(payload)
+            value = json.loads(payload)
+            page[parsed[1]] = project_record_fields(value, fields) if fields is not None else value
         next_cursor = (
             next(reversed(page))
             if len(rows) > page_size and page
@@ -752,6 +766,42 @@ class SQLiteStateStore:
                     namespace,
                 )
             return None
+
+    def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
+                                     organization_id: str, workspace_id: str,
+                                     collection_names: tuple[str, ...]) -> Any | None:
+        """Read one scoped complete record plus its document schema envelope.
+
+        This is an optional read optimization, never a schema/authority decision.
+        Nonstandard legacy JSON and incompatible envelope shapes retain the full
+        document path so the canonical domain decoder can refuse them normally.
+        """
+        names = record_projection_fields(collection_names)
+        if array_name not in names or "schema_version" in names:
+            raise ValueError("selected array must belong to the canonical envelope")
+        allowed = ("schema_version", *names)
+        unexpected = ",".join("?" for _ in allowed)
+        arrays = " OR ".join("COALESCE(json_type(payload, ?), 'array') != 'array'" for _ in names)
+        query = f"""SELECT CASE WHEN json_valid(payload) = 0 THEN payload
+            WHEN json_type(payload) != 'object' THEN payload
+            WHEN EXISTS(SELECT 1 FROM json_each(payload) AS field WHERE field.key NOT IN ({unexpected})) THEN payload
+            WHEN {arrays} THEN payload
+            ELSE json_object('schema_version', COALESCE(json_extract(payload, '$.schema_version'), '0.0'),
+                ?, json(COALESCE((SELECT '[' || item.value || ']' FROM json_each(payload, ?) AS item
+                    WHERE item.type = 'object' AND json_extract(item.value, '$.id') = ?
+                      AND json_extract(item.value, '$.organization_id') = ?
+                      AND json_extract(item.value, '$.workspace_id') = ? LIMIT 1), '[]')))
+            END FROM state_documents WHERE namespace = ?"""
+        parameters = (*allowed, *(f"$.{name}" for name in names), array_name,
+                      f"$.{array_name}", item_id, organization_id, workspace_id, namespace)
+        try:
+            with self._connection() as connection:
+                row = connection.execute(query, parameters).fetchone()
+            return self._decode(row) if row is not None else self.get(namespace)
+        except sqlite3.OperationalError as exc:
+            if not str(exc).startswith("Could not decode to UTF-8 column"):
+                raise
+            return self.get(namespace)
 
     def document_array_item(
         self,

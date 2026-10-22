@@ -6,7 +6,7 @@ import math
 import time
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Iterator
 
 from codex_web.storage.state_store import (
@@ -17,6 +17,7 @@ from codex_web.storage.state_store import (
     state_record_prefix,
     state_record_storage_key,
     record_projection_fields,
+    project_record_fields,
 )
 
 
@@ -528,8 +529,19 @@ class PostgresStateStore:
         self, namespace: str, *, fields: tuple[str, ...],
         key_prefix: str | None = None, after: str | None = None, limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
-        return self._record_page(namespace, key_prefix=key_prefix, after=after,
-            limit=limit, fields=record_projection_fields(fields))
+        fields = record_projection_fields(fields)
+        try:
+            return self._record_page(namespace, key_prefix=key_prefix, after=after,
+                limit=limit, fields=fields)
+        except Exception as exc:
+            # TEXT storage historically accepts Python JSON nonfinite values and
+            # escaped strings which PostgreSQL JSON conversion may reject.
+            # Retry only that bounded read, never transport/transaction failures.
+            if getattr(exc, "sqlstate", None) not in {"22P02", "22003", "22P05"}:
+                raise
+            raw, cursor = self.record_page(namespace, key_prefix=key_prefix,
+                after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
 
     def _record_page(
         self, namespace: str, *, key_prefix: str | None, after: str | None,
@@ -563,24 +575,27 @@ class PostgresStateStore:
                 projection = "payload"
                 parameters: tuple[Any, ...] = ()
                 if fields is not None:
-                    projection = """(CASE WHEN jsonb_typeof(payload::jsonb) = 'object' THEN
-                        (SELECT COALESCE(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
-                         FROM jsonb_each(payload::jsonb) AS field
-                         WHERE field.key = ANY(%s)) ELSE payload::jsonb END)::text"""
+                    projection = """(CASE WHEN json_typeof(payload::json) = 'object' THEN
+                        (SELECT COALESCE(json_object_agg(field.key, field.value), '{}'::json)
+                         FROM json_each(payload::json) AS field
+                         WHERE field.key = ANY(%s)) ELSE payload::json END)::text"""
                     parameters = (list(fields),)
-                cursor.execute(
-                    f"""
-                    SELECT namespace, {projection}
-                    FROM codex_state_documents
-                    WHERE namespace COLLATE "C" >= %s
-                      AND namespace COLLATE "C" < %s
-                      AND namespace COLLATE "C" > %s
-                    ORDER BY namespace COLLATE "C"
-                    LIMIT %s
-                    """,
-                    (*parameters, lower, upper, after_storage, page_size + 1),
-                )
-                rows = cursor.fetchall()
+                # A strict-JSON conversion refusal must not abort a caller's
+                # canonical update transaction before the legacy TEXT fallback.
+                with connection.transaction() if fields is not None else nullcontext():
+                    cursor.execute(
+                        f"""
+                        SELECT namespace, {projection}
+                        FROM codex_state_documents
+                        WHERE namespace COLLATE "C" >= %s
+                          AND namespace COLLATE "C" < %s
+                          AND namespace COLLATE "C" > %s
+                        ORDER BY namespace COLLATE "C"
+                        LIMIT %s
+                        """,
+                        (*parameters, lower, upper, after_storage, page_size + 1),
+                    )
+                    rows = cursor.fetchall()
 
         page: dict[str, Any] = {}
         for storage_namespace, payload in rows[:page_size]:
@@ -902,6 +917,41 @@ class PostgresStateStore:
                 )
                 row = cursor.fetchone()
                 return self._decode(row) if row is not None else None
+
+    def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
+                                     organization_id: str, workspace_id: str,
+                                     collection_names: tuple[str, ...]) -> Any | None:
+        """Scoped complete record/schema read; optional, without a new index.
+
+        A savepoint protects an owning transaction from legacy TEXT JSON
+        conversion errors. Only those conversion errors use the full read path.
+        """
+        names = record_projection_fields(collection_names)
+        if array_name not in names or "schema_version" in names:
+            raise ValueError("selected array must belong to the canonical envelope")
+        arrays = " OR ".join("COALESCE(json_typeof(payload::json -> %s), 'array') != 'array'" for _ in names)
+        query = f"""SELECT (CASE WHEN json_typeof(payload::json) != 'object' THEN payload::json
+            WHEN EXISTS(SELECT 1 FROM json_each(payload::json) AS field WHERE NOT field.key = ANY(%s)) THEN payload::json
+            WHEN {arrays} THEN payload::json
+            ELSE json_build_object('schema_version', COALESCE(payload::json -> 'schema_version', '"0.0"'::json),
+                %s::text, COALESCE((SELECT json_agg(item.value) FROM
+                    (SELECT value FROM json_array_elements(payload::json -> %s) AS member(value)
+                     WHERE json_typeof(value) = 'object' AND value ->> 'id' = %s
+                       AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s LIMIT 1) AS item), '[]'::json))
+            END)::text FROM codex_state_documents WHERE namespace = %s"""
+        parameters = (["schema_version", *names], *names, array_name, array_name,
+                      item_id, organization_id, workspace_id, namespace)
+        try:
+            with self._read_connection() as connection:
+                with connection.transaction():
+                    with connection.cursor() as cursor:
+                        cursor.execute(query, parameters)
+                        row = cursor.fetchone()
+            return self._decode(row) if row is not None else self.get(namespace)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) not in {"22P02", "22003", "22P05"}:
+                raise
+            return self.get(namespace)
 
     def get(self, namespace: str) -> Any | None:
         with self._read_connection() as connection:

@@ -472,6 +472,35 @@ class UpgradeService:
     def _service_wide(self, plan: UpgradePlan) -> bool:
         return plan.maintenance_scope == UpgradeMaintenanceScope.SERVICE
 
+    def _service_action_intents(self):
+        reader = getattr(self.action_intents.store, "intent_page", None)
+        if not callable(reader):
+            yield from self.action_intents.store.load().intents
+            return
+        cursor = None
+        while True:
+            items, cursor = reader(after=cursor, limit=100)
+            yield from items
+            if cursor is None:
+                return
+
+    def _service_assignments(self):
+        store = self.workers.store
+        reader = getattr(store, "assignment_page", None)
+        if not callable(reader):
+            load = getattr(store, "load_execution_state", store.load)
+            yield from load().assignments
+            return
+        # Preserve current Worker validation too, without unrelated event and
+        # enrollment history. Assignment bodies remain fully validated per page.
+        store.list_workers()
+        cursor = None
+        while True:
+            items, cursor = reader(after=cursor, limit=100)
+            yield from items
+            if cursor is None:
+                return
+
     def _active_action_count(
         self,
         actor: AuthenticationActor,
@@ -479,7 +508,7 @@ class UpgradeService:
         service_wide: bool = False,
     ) -> int:
         items = (
-            self.action_intents.store.load().intents
+            self._service_action_intents()
             if service_wide
             else self.action_intents.list(actor)
         )
@@ -500,7 +529,7 @@ class UpgradeService:
         service_wide: bool = False,
     ) -> int:
         items = (
-            self.workers.store.load().assignments
+            self._service_assignments()
             if service_wide
             else self.workers.list_assignments(actor)
         )
@@ -523,11 +552,11 @@ class UpgradeService:
             )
         scopes.update(
             (item.organization_id, item.workspace_id)
-            for item in self.workers.store.load().assignments
+            for item in self._service_assignments()
         )
         scopes.update(
             (item.organization_id, item.workspace_id)
-            for item in self.action_intents.store.load().intents
+            for item in self._service_action_intents()
         )
         scopes.update(
             (item.organization_id, item.workspace_id)
@@ -758,7 +787,7 @@ class UpgradeService:
         )
 
         assignments = (
-            self.workers.store.load().assignments
+            self._service_assignments()
             if service_wide
             else self.workers.list_assignments(actor)
         )
