@@ -35,6 +35,9 @@ bounded output files. The child CLI has an earlier 1,100-second timeout. These
 are execution/resource bounds, not a claimed hard token or dollar quota; native
 CLI accounting remains the usage source. The monitor uses 256 MiB, a quarter CPU
 and a 90-second deadline. An unrecognized or missing unit state holds capacity.
+New investigations require at least 8 GiB free disk and 3 GiB available memory.
+At 500 retained jobs or 1,000 observation entries, new launches stop for audited
+retention management instead of discarding uncertain receipts.
 Positive inactive/failed state with PID zero releases global capacity but retains
 the interrupted issue for reconciliation; it never replays the same operation.
 

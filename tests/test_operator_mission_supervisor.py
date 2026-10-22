@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import redirect_stdout
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -185,6 +187,27 @@ class MissionSupervisorTests(unittest.TestCase):
         self.state["jobs"] = {str(i): {"created_at": 1, "issue_number": 7,
             "status": "investigation_finished"} for i in range(4)}
         self.assertIsNone(monitor.choose_signal(self.state, self.config, now=self.now))
+
+    def test_tick_recovers_checkpoint_and_counts_one_sample_per_observation(self):
+        self.config["automatic_investigations"] = False
+        monitor.atomic_json(self.root / "config.json", self.config)
+        snapshot = {"checked_at": self.now, "github_checked_at": self.now, "service": {"ActiveState": "inactive"},
+            "disk_free": 9 * 1024**3, "memory_available": 4 * 1024**3, "bugs": []}
+        with patch.object(monitor, "collect", return_value=snapshot), redirect_stdout(io.StringIO()):
+            monitor.tick(self.root, now=self.now)
+            self.assertEqual(monitor.load_state(self.root)["signals"]["host:web_service_inactive"]["samples"], 1)
+            monitor.tick(self.root, now=self.now + 60)
+        restored = monitor.load_state(self.root)
+        self.assertEqual(restored["signals"]["host:web_service_inactive"]["samples"], 2)
+        self.assertEqual(restored["jobs"], {})
+        self.assertEqual(monitor.read_json(self.root / "summary.json")["service_state"], "inactive")
+
+    def test_new_service_restart_is_not_conflated_with_initial_history(self):
+        snapshot = self.sample()
+        snapshot["service"]["NRestarts"] = "3"
+        self.assertEqual(monitor.observe(snapshot, {}, now=self.now), [])
+        previous = {"service": {"NRestarts": "2"}}
+        self.assertEqual([s.kind for s in monitor.observe(snapshot, previous, now=self.now)], ["new_service_restart"])
 
 
 if __name__ == "__main__":

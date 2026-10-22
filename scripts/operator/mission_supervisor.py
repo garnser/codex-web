@@ -49,6 +49,11 @@ def atomic_json(path: Path, value):
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @contextmanager
@@ -156,6 +161,8 @@ def choose_signal(state, config, *, now):
             or config.get("root_lease_until", 0) > now or config.get("maintenance_until", 0) > now):
         return None
     jobs = list(state["jobs"].values())
+    if len(jobs) >= 500 or len(state["signals"]) >= 1000:
+        return None  # Keep receipts; require explicit audited retention management.
     if any(job.get("status") in {"launch_requested", "running", "unknown"} for job in jobs):
         return None
     if sum(job.get("created_at", 0) > now - 86400 for job in jobs) >= config.get("max_daily_investigations", 6):
@@ -408,7 +415,9 @@ def tick(root, *, run=command, now=None):
         atomic_json(root / "latest.json", snapshot)
         atomic_json(root / "state.json", state)
         selected = (choose_signal(state, config, now=now)
-                    if now - snapshot.get("github_checked_at", 0) <= 600 else None)
+                    if now - snapshot.get("github_checked_at", 0) <= 600
+                    and snapshot["disk_free"] >= 8 * 1024**3
+                    and snapshot["memory_available"] >= 3 * 1024**3 else None)
         if selected:
             launch(root, state, selected, config, now=now, run=run)
         summary = {"checked_at": now, "mission_enabled": bool(config.get("mission_enabled")),
