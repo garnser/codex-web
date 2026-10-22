@@ -20,6 +20,12 @@ class CollectionRangeContract:
             sqlstate = '08006'
         failure = (sqlite3.OperationalError('database is locked')
                    if isinstance(self.backend, SQLiteStateStore) else TransportFailure())
+        if isinstance(self.backend, SQLiteStateStore) and sqlite3.sqlite_version_info < (3, 38, 0):
+            with patch.object(self.backend, 'record_page', side_effect=failure) as reader:
+                with self.assertRaises(type(failure)):
+                    self.backend.record_page_projected('scope', fields=('selected',))
+                reader.assert_called_once()
+            return
         with patch.object(self.backend, '_record_page', side_effect=failure) as selected:
             with patch.object(self.backend, 'record_page') as fallback:
                 with self.assertRaises(type(failure)):

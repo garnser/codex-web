@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -106,6 +107,8 @@ class RuntimeHealthWorkItemProjectionTests(unittest.TestCase):
             all(call.kwargs["limit"] == 1000 for call in page.call_args_list)
         )
 
+    @unittest.skipIf(sqlite3.sqlite_version_info < (3, 38, 0),
+        'Token projection unavailable; older SQLite raw compatibility is tested separately')
     def test_health_does_not_transfer_or_decode_unrelated_large_record_bodies(self):
         payload = {f"example/app#{i}": {
             "project_id": "project-a", "current_owner": "james",
