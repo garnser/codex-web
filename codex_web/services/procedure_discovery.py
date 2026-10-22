@@ -496,7 +496,7 @@ class NativeProcedureAdmissionService:
             from codex_web.services.identity import AuthorizationError
             try:
                 await asyncio.to_thread(self.input_authorizer, assignment=assignment,
-                    actor=actor if input_actor is _INPUT_ACTOR_UNSET else input_actor, project=project)
+                    actor=actor if input_actor is _INPUT_ACTOR_UNSET else input_actor, project=project, source=source)
             except AuthorizationError as exc:
                 raise ExecutionPrestartRefusal(status_code=403, detail={
                     'code': 'native_input_authority_denied', 'message': str(exc),

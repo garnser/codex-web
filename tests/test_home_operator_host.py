@@ -275,13 +275,13 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         # restrictive here; the actual host read still requires its designation.
         self.select(None, 1)
         self.service.home_operator_host.authorize_native_input(
-            assignment=self.assignment, actor=self.actor, project=self.projects.get('home'))
+            assignment=self.assignment, actor=self.actor, project=self.projects.get('home'), source='web')
         self.inspector.assert_not_called()
 
     async def test_service_input_cannot_borrow_original_administrator_assignment(self):
         with self.assertRaisesRegex(AuthorizationError, 'exact human administrator'):
             self.service.home_operator_host.authorize_native_input(
-                assignment=self.assignment, actor=self.worker_actor, project=self.projects.get('home'))
+                assignment=self.assignment, actor=self.worker_actor, project=self.projects.get('home'), source='web')
         self.inspector.assert_not_called()
 
     async def test_native_input_refreshes_membership_instead_of_trusting_old_admin_actor(self):
@@ -290,7 +290,7 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
             for m in state.memberships]}))
         with self.assertRaises(AuthorizationError):
             self.service.home_operator_host.authorize_native_input(
-                assignment=self.assignment, actor=self.actor, project=self.projects.get('home'))
+                assignment=self.assignment, actor=self.actor, project=self.projects.get('home'), source='web')
 
     async def test_ordinary_profile_does_not_acquire_new_input_restrictions(self):
         self.profile_payload['control_plane_operations'].remove(HOST_INSPECTION.id)
@@ -299,7 +299,7 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
             organization_id=self.actor.organization_id, workspace_id=self.actor.workspace_id, project_id='home')
         ordinary = self.assignment.model_copy(update={'execution_profile_definition': reference})
         self.service.home_operator_host.authorize_native_input(
-            assignment=ordinary, actor=self.worker_actor, project=self.projects.get('home'))
+            assignment=ordinary, actor=self.worker_actor, project=self.projects.get('home'), source='web')
         self.inspector.assert_not_called()
 
     async def test_common_native_start_denies_service_input_before_discovery_or_history(self):
@@ -341,7 +341,7 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_request_final_guard_rechecks_current_admin_and_profile(self):
         guard = self.service.home_operator_host.prepare_native_input_guard(
             project=self.projects.get('home'), actor=self.actor,
-            execution_id=self.assignment.execution_id, assignment_id=self.assignment.id)
+            execution_id=self.assignment.execution_id, assignment_id=self.assignment.id, source='web')
         guard()
         before = self.current().model_dump()
         self.profiles.update('home-operator', AgentProfileUpdate(name='revoked', reason='late revocation'), actor=self.actor)
@@ -362,7 +362,7 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         first_gate = Mock()
         async def initial_gate(**kwargs):
             self.service.home_operator_host.authorize_native_input(
-                assignment=self.assignment, actor=kwargs['input_actor'], project=kwargs['project'])
+                assignment=self.assignment, actor=kwargs['input_actor'], project=kwargs['project'], source=kwargs['source'])
             first_gate()
             return None, ''
         runtime.procedure_admission = initial_gate
@@ -401,7 +401,7 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         before = preflight.store.get(attempt.id).queued_turn_snapshot
         guard = self.service.home_operator_host.prepare_native_input_guard(
             project=self.projects.get('home'), actor=self.actor,
-            execution_id=self.assignment.execution_id, assignment_id=self.assignment.id)
+            execution_id=self.assignment.execution_id, assignment_id=self.assignment.id, source='web')
         capture = QueuedNativeStartCapture(preflight, attempt.id, claim, original.execution_id,
             original.thread_id, self.actor.identity_id, admission_validator=guard,
             require_send_guard=True).bind_assignment(self.assignment, worker_id=self.f.worker.id,
@@ -436,7 +436,7 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         runtime.native_input_guard_factory = self.service.home_operator_host.prepare_native_input_guard
         async def initial_gate(**kwargs):
             self.service.home_operator_host.authorize_native_input(
-                assignment=self.assignment, actor=kwargs['input_actor'], project=kwargs['project'])
+                assignment=self.assignment, actor=kwargs['input_actor'], project=kwargs['project'], source=kwargs['source'])
             return None, ''
         runtime.procedure_admission = initial_gate
         preflight = ExecutionPreflightService(ExecutionPreflightStore(self.f.sqlite))
@@ -463,4 +463,23 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(completed.queued_resume_correlation)
         self.assertIsNotNone(completed.queued_start_receipt)
         self.assertEqual(completed.queued_start_receipt.provider_native_turn_id, 'turn-1')
+        self.inspector.assert_not_called()
+
+
+    async def test_service_event_cannot_borrow_binding_resolved_human_administrator(self):
+        # Existing bot dispatch can resolve an Agent Profile owner as HUMAN.
+        # That canonical identity is not evidence of new human web ingress.
+        discovery, history = Mock(), Mock()
+        admission = NativeProcedureAdmissionService(discovery, self.f.workers, history, self.actor,
+                                                    self.f.execution_profiles)
+        admission.input_authorizer = self.service.home_operator_host.authorize_native_input
+        before = self.current().model_dump()
+        with self.assertRaises(ExecutionPrestartRefusal) as refused:
+            await admission(project=self.projects.get('home'), actor=self.actor, input_actor=self.actor,
+                thread_id='operator-thread', execution_id=self.assignment.execution_id,
+                assignment_id=self.assignment.id, sandbox=self.assignment.sandbox, source='gitlab')
+        self.assertEqual(refused.exception.detail['code'], 'native_input_authority_denied')
+        discovery.discover.assert_not_called()
+        history.record_procedure_discovery.assert_not_called()
+        self.assertEqual(self.current().model_dump(), before)
         self.inspector.assert_not_called()

@@ -108,7 +108,7 @@ class HomeOperatorHostService:
             self.denied('Host inspection Agent Profile or authority binding changed')
         return project, operator
 
-    def authorize_native_input(self, *, assignment, actor, project):
+    def authorize_native_input(self, *, assignment, actor, project, source=None):
         """Do not let a later non-admin input borrow the original human's worker.
 
         This is an admission restriction, never a host grant. It also covers
@@ -135,6 +135,8 @@ class HomeOperatorHostService:
                     or (actor.organization_id, actor.workspace_id) !=
                         (assignment.organization_id, assignment.workspace_id)):
                 raise AuthorizationError('Operator-profile native input requires its exact human administrator')
+            if source not in {'web', 'queued:web'}:
+                raise AuthorizationError('Home operator input requires canonical human web ingress')
             current_actor = self.broker.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
             IdentityService.require_admin(current_actor)
             current, reference = profiles.resolve(profile.id, organization_id=actor.organization_id,
@@ -155,7 +157,7 @@ class HomeOperatorHostService:
                 ValueError, LookupError):
             raise AuthorizationError('Current Home operator input authority is unavailable') from None
 
-    def prepare_native_input_guard(self, *, project, actor, execution_id, assignment_id):
+    def prepare_native_input_guard(self, *, project, actor, execution_id, assignment_id, source):
         """Same-request authority at the existing final native-send boundary.
 
         No discovery/history or native operation occurs in this callback. The
@@ -188,7 +190,7 @@ class HomeOperatorHostService:
                         or assignment.lease.expires_at <= now
                         or assignment.deadline_at is not None and assignment.deadline_at <= now):
                     refuse()
-                self.authorize_native_input(assignment=assignment, actor=actor, project=project)
+                self.authorize_native_input(assignment=assignment, actor=actor, project=project, source=source)
             except (IdentityError, ValueError, LookupError):
                 refuse()
 
@@ -200,7 +202,7 @@ class HomeOperatorHostService:
         if snapshot is None or snapshot.execution_id != execution_id:
             refuse()
         try:
-            if not self.authorize_native_input(assignment=snapshot, actor=actor, project=project):
+            if not self.authorize_native_input(assignment=snapshot, actor=actor, project=project, source=source):
                 return None
         except (IdentityError, ValueError, LookupError):
             refuse()

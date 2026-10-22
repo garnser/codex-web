@@ -3065,7 +3065,7 @@ class TurnExecutionService:
             if self.native_input_guard_factory is not None:
                 input_admission_validator = await asyncio.to_thread(self.native_input_guard_factory,
                     project=project, actor=actor, execution_id=canonical_execution_id,
-                    assignment_id=assignment_id)
+                    assignment_id=assignment_id, source=source)
 
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(

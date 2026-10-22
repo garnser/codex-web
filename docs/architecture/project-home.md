@@ -84,6 +84,10 @@ or expired lease refuses without silently choosing a successor or granting acces
 The existing common native procedure-admission boundary also checks input to a
 profile declaring this operation. The current input actor must be the assignment's
 same human requester and remain an administrator with the current profile.
+This slice also requires the server-generated `web`/`queued:web` ingress route.
+A bot binding's resolved human owner is not evidence of a new human request;
+provider/system event sources refuse even when that owner is an administrator.
+The HTTP TurnCreate body cannot supply or replace this internal ingress source.
 A later member prompt or generic service event cannot borrow the original
 administrator's assignment. A missing ingress actor remains missing instead of
 being elevated from the fallback control actor. The hook runs before discovery/history/native input
