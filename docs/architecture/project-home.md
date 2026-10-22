@@ -60,7 +60,15 @@ Activation is explicit canonical data, never bootstrap defaults:
 3. The administrator uses ordinary thread creation/admission, names and selects
    the same conversation in Home. Selection must belong to the assignment's
    human requester; a shortcut selected by another identity confers no authority.
-4. The worker uses its existing authenticated assignment broker. Its operation
+4. Human input uses the existing retained turn route:
+   `POST /api/threads/{thread_id}/turns` with `defer_start=true`, the explicitly
+   selected Agent Profile, and the original authenticated administrator. Existing
+   queue/preflight claim, guarded Codex resume/start and reader receipts carry the
+   same original; no new admission subsystem is introduced. Immediate/raw native
+   transports without that retained send guard refuse for this declaration. The
+   current ordinary UI's immediate send is not a claim of operator activation;
+   complete operator UI integration remains in #1669.
+5. The worker uses its existing authenticated assignment broker. Its operation
    catalog advertises inspection only while the declaration/selection is current;
    catalog visibility is not proof of a live lease or effective permission.
 
@@ -80,7 +88,10 @@ A later member prompt or generic service event cannot borrow the original
 administrator's assignment. A missing ingress actor remains missing instead of
 being elevated from the fallback control actor. The hook runs before discovery/history/native input
 and is shared by queued/resumed turns and the existing provider-neutral session
-boundary. Ordinary profiles without this declaration retain their existing path.
+boundary. The exact same request is revalidated after awaited context preparation
+and through the existing synchronous guarded native transport immediately before
+resume/input send. This does not repeat procedure discovery or consume history.
+A host-enabled input refuses transports without that canonical send guard. Ordinary profiles without this declaration retain their existing path.
 It creates no provenance from message text and no extra continuation owner.
 Explicit, server-derived cross-project/system delegation remains separate work;
 generic bot/service input is not implicitly elevated to the operator's human.

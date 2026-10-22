@@ -148,11 +148,63 @@ class HomeOperatorHostService:
             if (agent.record_id != pin.profile_record_id or agent.revision != pin.profile_revision
                     or agent.execution_profile_id != profile.id or agent.lifecycle != 'active'):
                 raise AuthorizationError('Home operator Agent Profile changed')
+            return True
         except AuthorizationError:
             raise
         except (IdentityError, AgentProfileError, DefinitionConflictError, DefinitionCompatibilityError,
                 ValueError, LookupError):
             raise AuthorizationError('Current Home operator input authority is unavailable') from None
+
+    def prepare_native_input_guard(self, *, project, actor, execution_id, assignment_id):
+        """Same-request authority at the existing final native-send boundary.
+
+        No discovery/history or native operation occurs in this callback. The
+        exact assignment incarnation remains pinned while current input authority
+        is checked again after awaited context preparation and at transport send.
+        """
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+
+        def refuse():
+            raise ExecutionPrestartRefusal(status_code=403, detail={
+                'code': 'native_input_authority_denied',
+                'message': 'Current Home operator input authority or custody changed',
+            })
+
+        def current():
+            try:
+                assignment = self.broker.execution_workers.store.assignment(snapshot.id)
+                if assignment is None:
+                    refuse()
+                if any(getattr(assignment, key) != getattr(snapshot, key) for key in (
+                        'id', 'fence', 'assigned_worker_id', 'execution_id', 'created_by',
+                        'organization_id', 'workspace_id', 'project_id', 'subject',
+                        'execution_workspace_id', 'execution_profile_id', 'execution_profile_definition',
+                        'agent_profile', 'resource_ids', 'resource_context', 'runtime_binding')):
+                    refuse()
+                now = self.broker._clock()
+                if (assignment.status not in {'claimed', 'running'} or not assignment.lease
+                        or assignment.lease.fence != assignment.fence
+                        or assignment.lease.worker_id != assignment.assigned_worker_id
+                        or assignment.lease.expires_at <= now
+                        or assignment.deadline_at is not None and assignment.deadline_at <= now):
+                    refuse()
+                self.authorize_native_input(assignment=assignment, actor=actor, project=project)
+            except (IdentityError, ValueError, LookupError):
+                refuse()
+
+        if not assignment_id:
+            return None
+        # This lookup is an existing control-plane read, never a claimed ingress
+        # identity. The native input actor is independently checked above/below.
+        snapshot = self.broker.execution_workers.store.assignment(assignment_id)
+        if snapshot is None or snapshot.execution_id != execution_id:
+            refuse()
+        try:
+            if not self.authorize_native_input(assignment=snapshot, actor=actor, project=project):
+                return None
+        except (IdentityError, ValueError, LookupError):
+            refuse()
+        return current
 
     def guard(self, snapshot, worker_actor, resolved, validator):
         if validator is None:

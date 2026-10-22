@@ -4877,6 +4877,9 @@ control_plane_broker_service.home_operator_host = HomeOperatorHostService(
 turn_execution_service.procedure_admission.input_authorizer = (
     control_plane_broker_service.home_operator_host.authorize_native_input
 )
+turn_execution_service.native_input_guard_factory = (
+    control_plane_broker_service.home_operator_host.prepare_native_input_guard
+)
 home_overview_service = HomeOverviewService(
     projects=project_service,
     work_items=work_item_service,

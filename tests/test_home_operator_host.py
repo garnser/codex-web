@@ -35,6 +35,7 @@ from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from tests import test_control_plane_broker as broker_fixtures
 from tests import test_turn_execution_binding as binding_fixtures
+from tests import test_turn_execution as turn_fixtures
 
 
 class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
@@ -334,4 +335,132 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refused.exception.detail['code'], 'native_input_authority_denied')
         discovery.discover.assert_not_called()
         history.record_procedure_discovery.assert_not_called()
+        self.inspector.assert_not_called()
+
+
+    async def test_same_request_final_guard_rechecks_current_admin_and_profile(self):
+        guard = self.service.home_operator_host.prepare_native_input_guard(
+            project=self.projects.get('home'), actor=self.actor,
+            execution_id=self.assignment.execution_id, assignment_id=self.assignment.id)
+        guard()
+        before = self.current().model_dump()
+        self.profiles.update('home-operator', AgentProfileUpdate(name='revoked', reason='late revocation'), actor=self.actor)
+        with self.assertRaises(ExecutionPrestartRefusal) as refused:
+            guard()
+        self.assertEqual(refused.exception.detail['code'], 'native_input_authority_denied')
+        self.assertEqual(self.current().model_dump(), before)
+        self.inspector.assert_not_called()
+
+    async def test_admin_demotion_during_awaited_skill_preparation_prevents_all_native_input(self):
+        from types import SimpleNamespace
+        host, binding, sessions, runtime = turn_fixtures.TurnExecutionStartTests._service(self)
+        binding.prepare = binding.prepare_bootstrap = lambda **kw: SimpleNamespace(
+            assignment_id=self.assignment.id, workspace_id=self.assignment.execution_workspace_id,
+            execution_id=self.assignment.execution_id, skill_refs=('synthetic-private-context',))
+        sessions.session.workspace_path = Path(self.f.workspaces.store.workspace(self.assignment.execution_workspace_id).path)
+        runtime.native_input_guard_factory = self.service.home_operator_host.prepare_native_input_guard
+        first_gate = Mock()
+        async def initial_gate(**kwargs):
+            self.service.home_operator_host.authorize_native_input(
+                assignment=self.assignment, actor=kwargs['input_actor'], project=kwargs['project'])
+            first_gate()
+            return None, ''
+        runtime.procedure_admission = initial_gate
+        def prepare_skill(*args):
+            first_gate.assert_called_once()
+            self.f.identity.store.update(lambda state: state.model_copy(update={'memberships': [
+                m.model_copy(update={'roles': [MembershipRole.MEMBER]}) if m.identity_id == self.actor.identity_id else m
+                for m in state.memberships]}))
+            return SimpleNamespace(text='Prepared private context')
+        runtime.skill_context_resolver = Mock(side_effect=prepare_skill)
+        before = self.current().model_dump()
+        with self.assertRaises(ExecutionPrestartRefusal) as refused:
+            await runtime.start_thread_turn_now('operator-thread', project=self.projects.get('home'),
+                message='Original human request retained unchanged', sandbox='workspace-write',
+                approval_policy='on-request', source='web', execution_id=self.assignment.execution_id,
+                execution_profile_id='orchestration-only', actor=self.actor)
+        self.assertEqual(refused.exception.detail['code'], 'native_input_authority_denied')
+        runtime.skill_context_resolver.assert_called_once()
+        self.assertEqual(sessions.session.requests, [])
+        self.assertEqual(self.current().model_dump(), before)
+        self.inspector.assert_not_called()
+
+    async def test_actual_send_guard_refuses_late_revocation_without_changing_retained_original(self):
+        from codex_web.models import QueuedTurn
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_start import QueuedNativeStartCapture, NativeStartAdmissionRefused
+        from codex_web.storage.execution_preflight import ExecutionPreflightStore
+        preflight = ExecutionPreflightService(ExecutionPreflightStore(self.f.sqlite))
+        original = QueuedTurn(id='private-host-request', execution_id=self.assignment.execution_id,
+            thread_id='operator-thread', project_id='home', message='Preserve this exact operator input',
+            agent_profile_actor_id=self.actor.identity_id, execution_profile_id='orchestration-only', created_at=time.time())
+        attempt = preflight.retain_queued(original, organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id)
+        _, claim = preflight.claim_queued_admission(attempt.id)
+        preflight.begin_queued_start(attempt.id, claim_id=claim)
+        before = preflight.store.get(attempt.id).queued_turn_snapshot
+        guard = self.service.home_operator_host.prepare_native_input_guard(
+            project=self.projects.get('home'), actor=self.actor,
+            execution_id=self.assignment.execution_id, assignment_id=self.assignment.id)
+        capture = QueuedNativeStartCapture(preflight, attempt.id, claim, original.execution_id,
+            original.thread_id, self.actor.identity_id, admission_validator=guard,
+            require_send_guard=True).bind_assignment(self.assignment, worker_id=self.f.worker.id,
+                fence=self.assignment.fence, validator=self.current)
+        correlation = capture.prepare(generation='private-test', rpc_request_id='private-request',
+            native_session_id='operator-thread')
+        self.f.identity.store.update(lambda state: state.model_copy(update={'memberships': [
+            m.model_copy(update={'roles': [MembershipRole.MEMBER]}) if m.identity_id == self.actor.identity_id else m
+            for m in state.memberships]}))
+        with self.assertRaises(NativeStartAdmissionRefused):
+            capture.validate_before_send(correlation)
+        after = preflight.store.get(attempt.id)
+        self.assertEqual(after.queued_turn_snapshot, before)
+        self.assertIsNone(after.queued_start_receipt)
+        self.assertIsNone(after.queued_start_evidence)
+        self.inspector.assert_not_called()
+
+
+    async def test_retained_human_input_uses_real_guarded_resume_and_start_transport(self):
+        from types import SimpleNamespace
+        from codex_web.models import QueuedTurn
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.storage.execution_preflight import ExecutionPreflightStore
+        host, binding, sessions, runtime = turn_fixtures.TurnExecutionStartTests._service(self)
+        binding.prepare = binding.prepare_bootstrap = lambda **kw: SimpleNamespace(
+            assignment_id=self.assignment.id, workspace_id=self.assignment.execution_workspace_id,
+            execution_id=self.assignment.execution_id)
+        sessions.session.assignment = self.assignment
+        sessions.session.validate_current = self.current
+        sessions.session.status = lambda: SimpleNamespace(worker_id=self.f.worker.id, fence=self.assignment.fence)
+        sessions.session.workspace_path = Path(self.f.workspaces.store.workspace(self.assignment.execution_workspace_id).path)
+        runtime.native_input_guard_factory = self.service.home_operator_host.prepare_native_input_guard
+        async def initial_gate(**kwargs):
+            self.service.home_operator_host.authorize_native_input(
+                assignment=self.assignment, actor=kwargs['input_actor'], project=kwargs['project'])
+            return None, ''
+        runtime.procedure_admission = initial_gate
+        preflight = ExecutionPreflightService(ExecutionPreflightStore(self.f.sqlite))
+        runtime.queued_preflight = preflight
+        original = QueuedTurn(id='real-retained-human', execution_id=self.assignment.execution_id,
+            thread_id='operator-thread', project_id='home', message='Inspect through the explicit operator broker',
+            source='web', sandbox='workspace-write', approval_policy='on-request',
+            agent_profile_actor_id=self.actor.identity_id, execution_profile_id='orchestration-only', created_at=time.time())
+        attempt = preflight.retain_queued(original, organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id)
+        _, claim = preflight.claim_queued_admission(attempt.id)
+        preflight.begin_queued_start(attempt.id, claim_id=claim)
+        before = preflight.store.get(attempt.id).queued_turn_snapshot
+        response = await runtime.start_thread_turn_now('operator-thread', project=self.projects.get('home'),
+            message=original.message, sandbox=original.sandbox, approval_policy=original.approval_policy,
+            source='queued:web', execution_id=self.assignment.execution_id,
+            execution_profile_id='orchestration-only', actor=self.actor,
+            queued_admission_attempt_id=attempt.id, queued_admission_claim_id=claim)
+        self.assertEqual(response['turn']['id'], 'turn-1')
+        self.assertEqual([method for method, _ in sessions.session.requests], ['thread/resume', 'turn/start'])
+        completed = preflight.store.get(attempt.id)
+        self.assertEqual(completed.status, 'started')
+        self.assertEqual(completed.queued_turn_snapshot, before)
+        self.assertIsNotNone(completed.queued_resume_correlation)
+        self.assertIsNotNone(completed.queued_start_receipt)
+        self.assertEqual(completed.queued_start_receipt.provider_native_turn_id, 'turn-1')
         self.inspector.assert_not_called()
