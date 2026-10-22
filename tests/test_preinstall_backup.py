@@ -208,7 +208,7 @@ class PreinstallBackupTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(missing_keys.exists())
         self.assertFalse(missing_backups.exists())
 
-    async def test_factory_uses_existing_identity_and_real_encrypted_restore(self):
+    async def test_factory_uses_existing_identity_and_real_encrypted_restore(self, *, revoke_before_association=False):
         from pathlib import Path
         from tests import test_recovery as recovery_fixture
         from codex_web.identity import TenantScope
@@ -254,8 +254,35 @@ class PreinstallBackupTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fixture.state.get(IdentityStateStore.namespace), before)
             recovery = runtime.upgrades.recovery
             try:
-                manifest = await recovery.run_manual(lambda actor: recovery.create_backup(actor=actor),
-                    authenticate=runtime.authenticate, identity=runtime.identity)
+                # Exercise the actual bootstrap and its identity-locked plan
+                # association, not just Recovery with a constant mock actor.
+                runtime.upgrades.store.update(lambda state: state.model_copy(
+                    update={'plans': {self.plan.id: self.plan}}))
+                runtime.upgrades.releases = self.releases
+                runtime.upgrades.evidence = self.service.evidence
+                runtime.refresh = lambda: runtime.upgrades.get(self.plan.id,
+                    actor=runtime.authenticate())
+                runtime.clock = lambda: 1000.0
+                observations = []
+                authenticate = runtime.authenticate
+                def current_actor():
+                    actor = authenticate()  # Real token lookup/revocation check.
+                    observations.append(actor.authenticated_at)
+                    return actor
+                runtime.authenticate = current_actor
+                if revoke_before_association:
+                    runtime.journal = lambda kind, _: identity.revoke_service_token(
+                        credential.token_id) if kind == 'manifest-created' else None
+                    with self.assertRaises(AuthenticationError):
+                        await runtime.capture_once()
+                    self.assertEqual(len(recovery.store.load().backups), 1)
+                    self.assertIsNone(runtime.upgrades.store.load().plans[
+                        self.plan.id].pre_upgrade_backup_id)
+                    return
+                captured = await runtime.capture_once()
+                manifest = recovery.store.load().backups[captured.pre_upgrade_backup_id]
+                self.assertGreaterEqual(len(observations), 5)
+                self.assertEqual(observations, sorted(set(observations)))
                 target = SQLiteStateStore(Path(fixture.temp.name)/'isolated.sqlite3')
                 verified = recovery.restore_into_isolated(manifest.id, target,
                     actor=runtime.authenticate())
@@ -268,6 +295,10 @@ class PreinstallBackupTests(unittest.IsolatedAsyncioTestCase):
                 await recovery.stop()
         finally:
             fixture.tearDown()
+
+    async def test_real_token_revoked_after_capture_cannot_associate_manifest(self):
+        await self.test_factory_uses_existing_identity_and_real_encrypted_restore(
+            revoke_before_association=True)
 
     def offline_runtime(self):
         import hashlib

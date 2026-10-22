@@ -382,7 +382,7 @@ class UpgradeService:
                 self.require_operator(current_actor)
                 from codex_web.services.recovery_reconciliation import require_operator
                 require_operator(current_actor)
-                if current_actor != actor:
+                if not current_actor.has_same_authority(actor):
                     raise UpgradeConflictError('Authenticated operator changed before backup association')
                 updated = apply(self.store._decode(rows[self.store.namespace][None]))
                 return {self.store.namespace: {None: updated.model_dump(mode='json')}}

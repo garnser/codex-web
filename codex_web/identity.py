@@ -292,6 +292,17 @@ class AuthenticationActor(BaseModel):
     service_scopes: tuple[str, ...] = ()
     authenticated_at: float = Field(default_factory=time.time)
 
+    def has_same_authority(self, other: AuthenticationActor) -> bool:
+        """Compare freshly authenticated claims, not their observation times.
+
+        Callers must still authenticate again; this does not establish token
+        validity. All current and future actor fields except authenticated_at
+        remain part of the authority comparison.
+        """
+        return (isinstance(other, AuthenticationActor)
+            and self.model_dump(exclude={'authenticated_at'})
+                == other.model_dump(exclude={'authenticated_at'}))
+
     @property
     def tenant(self) -> TenantScope:
         return TenantScope(
