@@ -8,6 +8,49 @@ const configured = {
     href: '/projects/home?thread=same-thread#workspace/threads' },
 };
 
+test('Home goal inspection shows retained checkpoint and opens existing Goal controls without mutation', async ({ page }) => {
+  const reads = [];
+  await page.route('**/api/home/operator', route => route.fulfill({ json: configured }));
+  await page.route('**/api/home/operator/goals?expected_revision=4', route => {
+    reads.push(route.request().method());
+    return route.fulfill({ json: { thread_id: 'same-thread', binding_revision: 4, items: [{
+      goal_id: 'goal-existing', title: '<script>untrusted</script>', goal_status: 'active',
+      status: 'blocked', goal_revision: 3, binding_goal_revision: 2,
+      checkpoint_ref: 'artifact-kept', stop_reason: 'CI pending',
+    }] } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  expect(reads).toEqual([]);
+  await page.evaluate(() => window.addEventListener('codex:open-goal', event => {
+    window.__openedGoal = event.detail.goalId;
+  }));
+  await page.getByRole('button', { name: 'Inspect goals and checkpoints' }).click();
+  const result = page.locator('[data-operator-goals]');
+  await expect(result).toContainText('Checkpoint: artifact-kept');
+  await expect(result).toContainText('Blocker: CI pending');
+  await expect(result).toContainText('Goal revision changed');
+  await expect(result).toContainText('<script>untrusted</script>');
+  await expect(result.locator('script')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Open goal and controls' }).click();
+  await expect.poll(() => page.evaluate(() => window.__openedGoal)).toBe('goal-existing');
+  expect(reads).toEqual(['GET']);
+});
+
+test('Home goal inspection suppresses a response when selection changes while reading', async ({ page }) => {
+  let state = structuredClone(configured);
+  await page.route('**/api/home/operator', route => route.fulfill({ json: state }));
+  await page.route('**/api/home/operator/goals?expected_revision=4', route => {
+    state.binding.revision = 5;
+    return route.fulfill({ json: { thread_id: 'same-thread', binding_revision: 4,
+      items: [{ goal_id: 'stale-goal', title: 'Never display this old result' }] } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  await page.getByRole('button', { name: 'Inspect goals and checkpoints' }).click();
+  await expect(page.locator('[data-operator-goals]')).toContainText('Operator selection changed');
+  await expect(page.getByText('Never display this old result')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open goal and controls' })).toHaveCount(0);
+});
+
 test('Home shortcut opens the same thread and saves with canonical revision without changing authority', async ({ page }) => {
   const mutations = [];
   let state = structuredClone(configured);

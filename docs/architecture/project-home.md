@@ -127,3 +127,22 @@ or filesystem access. Privileged host mutation, native Goal lifecycle, deploymen
 checkpoint/resume and full live UI qualification remain tracked by #1669 and the
 native Goal control contract. No runtime capabilities or live profiles are
 activated by merely installing this source.
+
+## Canonical Goal observations
+
+An administrator can explicitly inspect the selected conversation's persisted
+Goal bindings through `GET /api/home/operator/goals?expected_revision=...`.
+The read uses the existing tenant-scoped Goal binding service, restricts bindings
+to Home and the selected native thread, and verifies each canonical Session's
+Project, native identity, provider and runtime. The Home selection and profile
+availability are checked before and after the observation. A changed selection,
+missing Goal or incompatible Session refuses visibly without creating a successor.
+
+At most the latest 50 bindings are projected, with an explicit history indicator.
+The projection exposes canonical Goal and binding status/revisions, checkpoint
+reference and stop reason. It does not retrieve native Goal storage, transcripts,
+objective context, credentials or model output. The UI labels this as a recorded
+observation and opens the existing Goal surface for supported controls. Inspection
+does not claim an active runner, resume a binding, settle an unknown result, or
+create a continuation owner. There is no timer or model call. Native Goal controls
+remain subject to their separate capability and qualification contract.

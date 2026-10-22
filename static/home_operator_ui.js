@@ -1,5 +1,6 @@
 import { request, apiBase } from './api_client.js';
 import { appendHomeOperatorRuntime } from './home_operator_runtime.js';
+import { appendHomeOperatorGoals } from './home_operator_goals.js';
 
 export async function renderHomeOperator(host, { signal } = {}) {
   const title = document.createElement('h3');
@@ -35,6 +36,7 @@ export async function renderHomeOperator(host, { signal } = {}) {
       open.textContent = 'Open operator conversation';
       host.append(open);
       appendHomeOperatorRuntime(host, state, { signal });
+      appendHomeOperatorGoals(host, state, { signal });
     }
     if (!state.can_configure) return;
     const choose = document.createElement('button');

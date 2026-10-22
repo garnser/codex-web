@@ -12,7 +12,7 @@ from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.projects import ProjectNotFoundError
 
 
-def build_home_router(service: HomeOverviewService, operator=None) -> APIRouter:
+def build_home_router(service: HomeOverviewService, operator=None, operator_goals=None) -> APIRouter:
     router = APIRouter(prefix="/api/home", tags=["home"])
 
     @router.get("/operator")
@@ -34,6 +34,19 @@ def build_home_router(service: HomeOverviewService, operator=None) -> APIRouter:
             raise identity_http_error(exc) from exc
         except ProjectNotFoundError as exc:
             raise HTTPException(404, "Home Project not found") from exc
+        except HomeOperatorConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.get("/operator/goals")
+    def inspect_operator_goals(request: Request, expected_revision: int = Query(ge=1)):
+        if operator_goals is None:
+            raise HTTPException(503, 'Home operator Goal inspection unavailable')
+        try:
+            return operator_goals.inspect(request_actor(request), expected_revision=expected_revision)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        except ProjectNotFoundError as exc:
+            raise HTTPException(404, 'Home Project not found') from exc
         except HomeOperatorConflict as exc:
             raise HTTPException(409, str(exc)) from exc
 
