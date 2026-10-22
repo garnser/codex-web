@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import math
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from codex_web.storage.postgres_state import PostgresStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -14,6 +15,18 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_projection_does_not_retry_unrelated_storage_failure(self):
+        class TransportFailure(RuntimeError):
+            sqlstate = '08006'
+        failure = (sqlite3.OperationalError('database is locked')
+                   if isinstance(self.backend, SQLiteStateStore) else TransportFailure())
+        with patch.object(self.backend, '_record_page', side_effect=failure) as selected:
+            with patch.object(self.backend, 'record_page') as fallback:
+                with self.assertRaises(type(failure)):
+                    self.backend.record_page_projected('scope', fields=('selected',))
+                selected.assert_called_once()
+                fallback.assert_not_called()
+
     def test_projection_preserves_legacy_nonfinite_values_and_escaped_nul(self):
         self.backend.record_replace('legacy-json', {
             'a': {'selected': float('nan'), 'ignored': float('inf')},
@@ -21,6 +34,7 @@ class CollectionRangeContract:
             'c': {'selected': float('-inf')},
             'd': {'selected': 'before\0after'},
             'e': float('nan'),
+            'f': {'selected': 'before\ud800after'},
         })
         result = {}; after = None
         while True:
@@ -35,6 +49,7 @@ class CollectionRangeContract:
         self.assertEqual(result['c'], {'selected': float('-inf')})
         self.assertEqual(result['d'], {'selected': 'before\0after'})
         self.assertTrue(math.isnan(result['e']))
+        self.assertEqual(result['f'], {'selected': 'before\ud800after'})
 
     def test_projection_fallback_does_not_abort_owning_transaction(self):
         self.backend.record_replace('legacy-json', {'key': {'selected': float('inf')}})

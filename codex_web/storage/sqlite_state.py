@@ -376,8 +376,18 @@ class SQLiteStateStore:
         self, namespace: str, *, fields: tuple[str, ...],
         key_prefix: str | None = None, after: str | None = None, limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
-        return self._record_page(namespace, key_prefix=key_prefix, after=after,
-            limit=limit, fields=record_projection_fields(fields))
+        fields = record_projection_fields(fields)
+        try:
+            return self._record_page(namespace, key_prefix=key_prefix, after=after,
+                limit=limit, fields=fields)
+        except sqlite3.OperationalError as exc:
+            # JSON1 can emit invalid UTF-8 from a legacy escaped lone surrogate.
+            # Do not include the driver message (which may contain data) in logs.
+            if not str(exc).startswith("Could not decode to UTF-8 column"):
+                raise
+            raw, cursor = self.record_page(namespace, key_prefix=key_prefix,
+                after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
 
     def _record_page(
         self, namespace: str, *, key_prefix: str | None, after: str | None,
