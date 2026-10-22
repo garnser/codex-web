@@ -125,6 +125,34 @@ class AutonomyService:
             # this same preparation outcome, never start another worker after
             # an uncertain or failed replacement.
             prepared = binding
+            routing = getattr(self.runtime, "owner_routing", None)
+            if work_item is not None and routing is not None:
+                from codex_web.owner_routing import OwnerRoutingError
+                recipient = (work_item.handoff.to_agent
+                    if work_item.handoff is not None and work_item.handoff.status == "pending"
+                    else actionable_owner_value(work_item))
+                try:
+                    pin = await asyncio.to_thread(routing.compatible_pin,
+                        work_item, binding, recipient,
+                        writable_repository_ids=dispatch_context.get("writable_repository_resource_ids", ()))
+                except OwnerRoutingError as exc:
+                    await asyncio.to_thread(routing.record_failure, work_item, exc)
+                    return {"ok": False, "reason": "owner_routing_blocked", "code": str(exc),
+                        "threadId": binding.thread_id}
+                if pin.recipient is not None:
+                    target = pin.recipient.thread_id
+                    def selected_busy():
+                        return ((not allow_active and self.runtime.thread_is_active(target))
+                            or self.runtime.thread_queue_depth(target) >= queue_limit)
+                    if await asyncio.to_thread(selected_busy):
+                        return {"ok": True, "ignored": True, "reason": "owner_lane_busy", "threadId": target}
+                    # This witness already requires live exact custody. Never
+                    # replace its source binding or rebuild a reduced scope.
+                    if recovery_reason is not None:
+                        self.runtime.record_watchdog_dispatch(cycle_key)
+                    result = await self.runtime.dispatch_event(binding, text, source,
+                        **dispatch_context, owner_routing_pin=pin)
+                    return {**result, "threadId": target}
             native_recovery = getattr(self.runtime, "owner_lane_recovery", None)
             if native_recovery is not None:
                 prepared = await asyncio.to_thread(native_recovery.resolve_binding, binding)
