@@ -503,7 +503,7 @@ class WorkItemOperatorService:
                 source="operator-retry",
                 actor=actor,
             )
-        return self.detail(ref)
+        return await asyncio.to_thread(self.detail, ref)
 
     async def reconcile(
         self,
@@ -561,7 +561,7 @@ class WorkItemOperatorService:
                 payload={"source_type": state.source_identity.source_type if state.source_identity else None},
             )
         )
-        return self.detail(ref)
+        return await asyncio.to_thread(self.detail, ref)
 
     async def sync_project(
         self,
