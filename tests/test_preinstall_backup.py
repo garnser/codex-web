@@ -366,7 +366,7 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = PreinstallBackupTests.asyncTearDown
     runtime = PreinstallBackupTests.runtime
 
-    def invoke(self, clean_stop):
+    def invoke(self, clean_stop, *, memory_budget=None, observed_cap=None, cap_after_capture=None):
         from dataclasses import dataclass
         import os
         from pathlib import Path
@@ -380,11 +380,16 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
             policy=RecoveryPolicy(backup_key_id='private-fixture-key'))))
         runtime = self.runtime()
         original_capture = self.recovery.create_backup
+        actual_cap = observed_cap
         def budgeted_capture(**kwargs):
+            nonlocal actual_cap
             from codex_web.storage.state_store import storage_operation_budget
             self.assertIsNotNone(storage_operation_budget.get())
             self.assertLessEqual(storage_operation_budget.get().remaining(), 600)
-            return original_capture(**kwargs)
+            manifest = original_capture(**kwargs)
+            if cap_after_capture is not None:
+                actual_cap = cap_after_capture
+            return manifest
         self.recovery.create_backup = budgeted_capture
         async def stop():
             pass
@@ -398,7 +403,14 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
         class PrivateMemoryRefused(RuntimeError):
             pass
         memory.RecoveryMemoryRefused = PrivateMemoryRefused
-        memory.require_process_memory_limit = lambda **_: Cap()
+        self.memory_checks = []
+        def require_cap(**kwargs):
+            self.memory_checks.append(kwargs)
+            actual = actual_cap if actual_cap is not None else kwargs['maximum_bytes']
+            if actual > kwargs['maximum_bytes'] or kwargs['maximum_swap_bytes'] != 0:
+                raise PrivateMemoryRefused('private fixture actual cap exceeds operation ceiling')
+            return Cap(memory_max_bytes=actual)
+        memory.require_process_memory_limit = require_cap
         class Host:
             def __init__(host, *_):
                 host.initial = {'InvocationID': 'private-fixture-invocation'}
@@ -446,6 +458,8 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
             '--backup-directory', str(root/'backups'), '--journal-directory', str(root/'journal'),
             '--qualification-lock', str(root/'qualification.lock'), '--expected-runtime-pid', '123',
             '--operator-token-fd', str(read_fd), '--execute']
+        if memory_budget is not None:
+            args.extend(['--memory-budget-bytes', str(memory_budget)])
         try:
             with patch.object(cli, 'LOCAL_DEPLOY_LOCK', root/'deploy.lock'), \
                     patch.object(cli, 'OfflineHostGuard', Host), patch.object(cli, 'local_api', api), \
@@ -466,12 +480,51 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, 0)
         self.assertEqual(self.recovery.backup_count, 1)
         from pathlib import Path
+        import json
+        proof = json.loads((Path(self.temp.name)/'journal/pre-stop-qualified.json').read_text())
+        self.assertEqual(proof['memory_budget_bytes'], 6*1024**3)
+        self.assertEqual(proof['memory_cap']['memory_max_bytes'], 6*1024**3)
         files = {item.name for item in (Path(self.temp.name)/'journal').iterdir()}
         self.assertTrue({'pre-stop-qualified.json', 'service-stopped.json',
             'capture-started.json', 'manifest-created.json', 'associated.json',
             'capture-completed.json'}.issubset(files))
         self.assertNotIn('private-fixture-token', ''.join(item.read_text()
             for item in (Path(self.temp.name)/'journal').iterdir()))
+
+    async def test_explicit_operation_budget_is_observed_at_every_capture_boundary(self):
+        import asyncio
+        import json
+        from pathlib import Path
+        budget = 8 * 1024**3
+        self.assertEqual(await asyncio.to_thread(self.invoke, True, memory_budget=budget), 0)
+        self.assertGreaterEqual(len(self.memory_checks), 3)
+        self.assertTrue(all(check == {'maximum_bytes': budget, 'maximum_swap_bytes': 0}
+                            for check in self.memory_checks))
+        proof = json.loads((Path(self.temp.name)/'journal/pre-stop-qualified.json').read_text())
+        self.assertEqual(proof['memory_budget_bytes'], budget)
+        self.assertEqual(proof['memory_cap']['memory_max_bytes'], budget)
+        completed = json.loads((Path(self.temp.name)/'journal/capture-completed.json').read_text())
+        self.assertEqual(completed['memory_budget_bytes'], budget)
+
+    async def test_actual_cap_change_after_capture_preserves_manifest_without_association(self):
+        import asyncio
+        from pathlib import Path
+        self.assertEqual(await asyncio.to_thread(self.invoke, True,
+            memory_budget=8*1024**3, cap_after_capture=9*1024**3), 2)
+        self.assertEqual(self.recovery.backup_count, 1)
+        self.assertIsNone(self.service.get(self.plan.id, actor=self.actor).pre_upgrade_backup_id)
+        files = {item.name for item in (Path(self.temp.name)/'journal').iterdir()}
+        self.assertIn('manifest-created.json', files)
+        self.assertNotIn('associated.json', files)
+        self.assertNotIn('capture-completed.json', files)
+
+    async def test_default_budget_refuses_a_larger_actual_helper_before_capture(self):
+        import asyncio
+        from pathlib import Path
+        self.assertEqual(await asyncio.to_thread(self.invoke, True, observed_cap=8*1024**3), 2)
+        self.assertEqual(self.memory_checks, [{'maximum_bytes': 6*1024**3, 'maximum_swap_bytes': 0}])
+        self.assertEqual(self.recovery.backup_count, 0)
+        self.assertFalse((Path(self.temp.name)/'journal/capture-started.json').exists())
 
     async def test_private_executable_never_captures_without_clean_stop(self):
         import asyncio
