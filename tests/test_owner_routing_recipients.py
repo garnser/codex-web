@@ -4,7 +4,7 @@ import asyncio
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from codex_web.execution_workers import ExecutionAssignment, AssignmentLease, AssignmentStatus
 from codex_web.models import WorkItemHandoff, WorkItemHandoffDelivery, WorkItemAckCreate
@@ -85,6 +85,39 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.binding.model_dump(mode='json'), self.binding_before)
         self.validate(pin)
         self.assertEqual(self.service.context_for_pin(pin, self.f.binding), (self.f.profile, self.f.actor))
+
+    async def test_canonical_continuity_uses_compatible_readonly_recipient_without_replacement(self):
+        assignment = self.assignments['assignment-platform-thread']
+        assignment.repository_scope = assignment.repository_scope.model_copy(
+            update={'read_only_repository_ids': ('core',)})
+        self.assertIsNone(self.continuity._alias_intent(self.state, 'orchestrator'))
+        before = assignment.model_dump(mode='json')
+        with patch.object(self.continuity.policy, 'handoff_continuity_delay', return_value=0):
+            await self.continuity.run_handoff_continuity_check(self.state.ref,
+                expected_recipient='orchestrator', expected_requested_at=1, source='handoff-continuity')
+        self.fixture.dispatch.assert_awaited_once()
+        pin = self.fixture.dispatch.call_args.kwargs['owner_routing_pin']
+        self.assertEqual(pin.recipient.thread_id, 'platform-thread')
+        self.assertEqual(pin.handoff_requested_at, 1)
+        self.assertEqual(self.service.repository_scope_for_pin(pin, self.f.binding).read_only_repository_ids, ('core',))
+        self.continuity.replace_nonperforming_thread.assert_not_called()
+        self.assertEqual(assignment.model_dump(mode='json'), before)
+        self.assertEqual(self.f.binding.model_dump(mode='json'), self.binding_before)
+        self.assertEqual(self.assignments['assignment-existing-thread'].model_dump(mode='json'), self.source_before)
+        self.validate(pin)
+
+    async def test_canonical_continuity_refuses_unavailable_compatible_recipient_without_replacement(self):
+        self.assignments['assignment-platform-thread'].status = AssignmentStatus.CANCELLED
+        with patch.object(self.continuity.policy, 'handoff_continuity_delay', return_value=0):
+            await self.continuity.run_handoff_continuity_check(self.state.ref,
+                expected_recipient='orchestrator', expected_requested_at=1, source='handoff-continuity')
+        self.fixture.dispatch.assert_not_awaited()
+        self.continuity.replace_nonperforming_thread.assert_not_called()
+        state = self.f.env.states.get(self.state.ref)
+        self.assertEqual(state.owner_routing_blocker.code, 'owner_recipient_compatible_lane_unavailable')
+        self.assertEqual(state.handoff.requested_at, 1)
+        self.assertEqual(state.handoff.delivery.status, 'awaiting_dispatch')
+        self.assertIsNone(state.handoff.acknowledged_at)
 
     async def test_data_write_core_readonly_pin_survives_real_rpc_capture_without_grant_or_ack(self):
         assignment = self.assignments['assignment-platform-thread']
