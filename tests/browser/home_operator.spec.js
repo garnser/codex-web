@@ -86,14 +86,18 @@ test('explicit Agent Profile selection pins queued input; changed revision refus
   await page.getByRole('button', { name: 'Save Home shortcut' }).click();
   await expect.poll(() => saved).toEqual({ thread_id: 'same-thread', expected_revision: 4, agent_profile_id: 'operator-profile' });
   const result = await page.evaluate(async () => {
-    const { prepareHomeOperatorInput } = await import('/static/home_operator_input.js');
+    const { prepareHomeOperatorInput, assertHomeOperatorReplacement } = await import('/static/home_operator_input.js');
     const original = { message: 'Inspect host', execution_profile_id: 'orchestration-admin' };
     const payload = await prepareHomeOperatorInput('home', 'same-thread', original);
-    return { payload, original };
+    let replacementError;
+    try { assertHomeOperatorReplacement(payload); } catch (e) { replacementError = e.message; }
+    assertHomeOperatorReplacement(original);
+    return { payload, original, replacementError };
   });
   expect(result.payload).toEqual({ ...result.original, defer_start: true,
     agent_profile_id: 'operator-profile', agent_profile_revision: 3 });
   expect(result.original).not.toHaveProperty('defer_start');
+  expect(result.replacementError).toContain('inspect the original request before sending again');
   state.agent_profile.revision = 4;
   const error = await page.evaluate(async () => {
     const { prepareHomeOperatorInput } = await import('/static/home_operator_input.js');

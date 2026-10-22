@@ -24,7 +24,7 @@ import{createHeaderUsageController}from"./usage_refresh.js";
 import{renderUsageResources}from"./usage_resources.js";
 import{careScope}from"./care_composer.js";
 import{installContextPickers}from"./ux_brief_picker.js";
-import { prepareHomeOperatorInput } from './home_operator_input.js';
+import { prepareHomeOperatorInput, assertHomeOperatorReplacement } from './home_operator_input.js';
 let ux=null;
 let careComposer=null;
 
@@ -1349,7 +1349,6 @@ async function sendPrompt() {
   try {
     turnPayload = await prepareHomeOperatorInput(state.projectId, threadId, turnPayload);
     if (!current()) throw new Error('Conversation changed before submission; no message was sent.');
-    const operatorInput = turnPayload.defer_start && turnPayload.agent_profile_id;
     let targetThreadId = threadId;
     let response;
     try {
@@ -1360,7 +1359,7 @@ async function sendPrompt() {
     } catch (error) {
       const replacement = replacementFrom(error);
       if (!replacement) throw error;
-      if (operatorInput) throw new Error('Operator conversation was replaced. Refresh Home before sending to a different identity.');
+      assertHomeOperatorReplacement(turnPayload);
       await applyThreadReplacement(replacement.oldThreadId, replacement.newThreadId);
       targetThreadId = replacement.newThreadId;
       response = await api(`/api/threads/${targetThreadId}/turns`, {
@@ -1370,7 +1369,7 @@ async function sendPrompt() {
     }
     const replacement = replacementFrom(response);
     if (replacement) {
-      if (operatorInput) throw new Error('Operator conversation was replaced. Refresh Home to inspect the original request before sending again.');
+      assertHomeOperatorReplacement(turnPayload);
       await applyThreadReplacement(replacement.oldThreadId, replacement.newThreadId);
       targetThreadId = replacement.newThreadId;
       response = await api(`/api/threads/${targetThreadId}/turns`, {

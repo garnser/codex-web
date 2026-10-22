@@ -1,5 +1,11 @@
 import { request } from './api_client.js';
 
+export function assertHomeOperatorReplacement(payload) {
+  if (payload.defer_start && payload.agent_profile_id) {
+    throw new Error('Operator conversation was replaced. Refresh Home to inspect the original request before sending again.');
+  }
+}
+
 // Selection supplies explicit request pins; server-side admission remains the
 // authority boundary. No input is sent, retried or redirected by this reader.
 export async function prepareHomeOperatorInput(projectId, threadId, payload, read = request) {
