@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -364,7 +366,7 @@ def build_work_items_router(
     @router.get("/api/work-items/{ref:path}/operator")
     async def get_work_item_operator_detail(ref: str, request: Request) -> dict[str, Any]:
         require_item_scope(ref, request)
-        payload = operator.detail(ref)
+        payload = await asyncio.to_thread(operator.detail, ref)
         if agent_teams is not None:
             payload["history"]["teamDelegations"] = agent_teams.work_item_history(
                 ref, actor=request.state.identity_actor)
@@ -391,7 +393,7 @@ def build_work_items_router(
             )
         except TaskSourceProjectionError as exc:
             raise HTTPException(status_code=409, detail={"code": exc.reason}) from exc
-        return {"ok": True, **operator.detail(ref)}
+        return {"ok": True, **await asyncio.to_thread(operator.detail, ref)}
 
     @router.post("/api/work-items/{ref:path}/reconcile")
     async def reconcile_work_item(

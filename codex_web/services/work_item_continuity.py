@@ -437,7 +437,7 @@ class WorkItemContinuityService:
                 _, writable_ids = self._dispatch_repository_scope(state)
                 pin = self.owner_routing.compatible_pin(state, binding,
                     actionable_owner_value(state), writable_repository_ids=writable_ids)
-                if pin.recipient is not None:
+                if pin is not None and pin.recipient is not None:
                     target_thread_id = pin.recipient.thread_id
                     readonly_ids = self.owner_routing.repository_scope_for_pin(pin, binding).read_only_repository_ids
             except OwnerRoutingError as exc:

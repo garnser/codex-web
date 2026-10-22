@@ -138,3 +138,51 @@ class OwnerSteerRecipientTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result['dispatched'])
         self.assertIn(result['status'], ('stale_state', 'owner_routing_blocked'))
         self.fixture.fixture.dispatch.assert_not_awaited()
+
+    async def test_duplicate_selected_dispatch_keeps_cooldown_without_replacement(self):
+        self.continuity.watchdog_dispatch_allowed = lambda key: False
+        result = await self.steer()
+        self.assertEqual(result['status'], 'duplicate')
+        self.assertIn(':platform-thread:', result['dispatch_key'])
+        self.continuity.record_watchdog_dispatch.assert_not_called()
+        self.fixture.fixture.dispatch.assert_not_awaited()
+        self.continuity.replace_nonperforming_thread.assert_not_called()
+
+    async def test_unavailable_selected_queue_context_refuses_without_guessing(self):
+        self.continuity.thread_queue_depth = lambda thread: int(thread == 'platform-thread')
+        self.continuity.thread_queue = lambda thread: None
+        result = await self.steer()
+        self.assertEqual(result['status'], 'owner_queue_context_unavailable')
+        self.fixture.fixture.dispatch.assert_not_awaited()
+        self.continuity.record_watchdog_dispatch.assert_not_called()
+
+    async def test_legacy_no_pin_projection_keeps_original_cas(self):
+        with patch.object(self.fixture.service, 'compatible_pin', return_value=None):
+            projection = self.continuity.owner_dispatch_projection(self.state)
+        self.assertTrue(projection['eligible'])
+        self.assertEqual(projection['expected_thread_id'], 'existing-thread')
+
+
+class OperatorProjectionThreadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_operator_detail_runs_off_event_loop(self):
+        import threading
+        from starlette.requests import Request
+        from codex_web.api.work_items import build_work_items_router
+        loop_thread = threading.get_ident()
+        observed = []
+        state = SimpleNamespace(organization_id='org', workspace_id='ws', project_id='project')
+        service = SimpleNamespace(state_machine=SimpleNamespace(_work_item_state=lambda ref: state),
+            work_items=SimpleNamespace())
+        def detail(ref):
+            observed.append(threading.get_ident())
+            return {'item': {'ref': ref}}
+        with patch('codex_web.api.work_items.WorkItemOperatorService',
+                return_value=SimpleNamespace(detail=detail)):
+            router = build_work_items_router(service)
+        endpoint = next(route.endpoint for route in router.routes
+            if route.path == '/api/work-items/{ref:path}/operator')
+        request = Request({'type': 'http', 'query_string': b'',
+            'state': {'tenant_scope': SimpleNamespace(organization_id='org', workspace_id='ws')}})
+        self.assertEqual(await endpoint('item', request), {'item': {'ref': 'item'}})
+        self.assertEqual(len(observed), 1)
+        self.assertNotEqual(observed[0], loop_thread)
