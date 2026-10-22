@@ -191,7 +191,7 @@ class PreinstallBackupRuntime:
             def qualify(binding=None):
                 self.check_runtime()
                 fresh_actor = self.authenticate()
-                if fresh_actor != actor:
+                if not fresh_actor.has_same_authority(actor):
                     raise UpgradeConflictError('Authenticated operator changed during capture')
                 observed = self.refresh()
                 self.check_runtime()

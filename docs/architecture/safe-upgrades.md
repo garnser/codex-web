@@ -459,3 +459,10 @@ existing CLI version arguments are not changed by this prerequisite. No Profile,
 Definition or grant may infer qualified support from a version string or adapter
 method. Preserve original native Goal/objective/accounting through drain, migration
 and post-verification before any separately authorised installation.
+
+Fresh authentication observations are compared by canonical actor authority,
+excluding only `authenticated_at`. The stopped-service capture still reauthenticates
+before capture and at the identity-locked association writer; changed identity,
+tenant, roles, teams, assurance, session/token reference or scopes refuses. A
+revoked credential cannot associate a captured manifest. The observation-time
+comparison does not grant authority or qualify a backup or deployment.
