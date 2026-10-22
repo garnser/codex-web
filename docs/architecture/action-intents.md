@@ -433,6 +433,13 @@ to current canonical state throughout readiness admission. The assignment broker
 requires this exact origin for readiness receipt inspection and reconciliation.
 Existing actions retain their existing control paths.
 
+Execution and independent-verification checkpoints reload repository scope from
+the exact engine-produced origin assignment ID. They do not repeatedly scan the
+retained assignment catalog to rediscover that origin. Each checkpoint still
+reads current assignment, execution association, tenant, requester, worker, fence,
+lease and Definition state; this is not a cached admission decision. Calls with
+no canonical origin retain their existing execution-to-assignment resolution.
+
 Migration `1.5 → 1.6` preserves all prior intents, receipts, procedure and recovery
 history. Legacy origins remain absent; migration never invents ownership or
 authority. A missing readiness origin fails closed. Older readers/writers must
