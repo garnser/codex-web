@@ -23,4 +23,3 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/@USER@/.local/state/codex-web-mission-monitor
-
