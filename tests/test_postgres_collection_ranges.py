@@ -35,6 +35,8 @@ class CollectionRangeContract:
             'd': {'selected': 'before\0after'},
             'e': float('nan'),
             'f': {'selected': 'before\ud800after'},
+            'g': {'selected': 2**100 + 1},
+            'h': {'selected': -0.0},
         })
         result = {}; after = None
         while True:
@@ -50,6 +52,9 @@ class CollectionRangeContract:
         self.assertEqual(result['d'], {'selected': 'before\0after'})
         self.assertTrue(math.isnan(result['e']))
         self.assertEqual(result['f'], {'selected': 'before\ud800after'})
+        self.assertIs(type(result['g']['selected']), int)
+        self.assertEqual(result['g']['selected'], 2**100 + 1)
+        self.assertEqual(math.copysign(1.0, result['h']['selected']), -1.0)
 
     def test_projection_fallback_does_not_abort_owning_transaction(self):
         self.backend.record_replace('legacy-json', {'key': {'selected': float('inf')}})
@@ -184,6 +189,15 @@ class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.backend = SQLiteStateStore(Path(directory.name) / 'state.db')
+
+    def test_older_sqlite_uses_raw_page_without_json_token_operator(self):
+        self.backend.record_replace('legacy', {'a': {'selected': 2**100 + 1, 'ignored': True}})
+        with patch('codex_web.storage.sqlite_state.sqlite3.sqlite_version_info', (3, 37, 0)):
+            with patch.object(self.backend, '_record_page', wraps=self.backend._record_page) as reader:
+                result, cursor = self.backend.record_page_projected('legacy', fields=('selected',))
+                self.assertEqual(result, {'a': {'selected': 2**100 + 1}})
+                self.assertIsNone(cursor)
+                self.assertNotIn('fields', reader.call_args.kwargs)
 
     def test_batch_probe_uses_one_query_and_connection(self):
         from contextlib import contextmanager

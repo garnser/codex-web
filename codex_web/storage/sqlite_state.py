@@ -377,6 +377,11 @@ class SQLiteStateStore:
         key_prefix: str | None = None, after: str | None = None, limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
         fields = record_projection_fields(fields)
+        if sqlite3.sqlite_version_info < (3, 38, 0):
+            # Older libraries lack the token-preserving JSON arrow operator.
+            raw, cursor = self.record_page(namespace, key_prefix=key_prefix,
+                after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
         try:
             return self._record_page(namespace, key_prefix=key_prefix, after=after,
                 limit=limit, fields=fields)
@@ -422,11 +427,7 @@ class SQLiteStateStore:
                 projection = f"""CASE WHEN json_valid(payload) = 0 THEN payload
                     WHEN json_type(payload) = 'object' THEN
                     (SELECT json_group_object(field.key,
-                        CASE field.type
-                            WHEN 'true' THEN json('true')
-                            WHEN 'false' THEN json('false')
-                            ELSE json_extract(state_documents.payload, '$.' || field.key)
-                        END)
+                        json(state_documents.payload -> ('$.' || field.key)))
                      FROM json_each(state_documents.payload) AS field
                      WHERE field.key IN ({slots})) ELSE payload END"""
                 parameters = fields

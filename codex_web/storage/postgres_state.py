@@ -535,7 +535,7 @@ class PostgresStateStore:
                 limit=limit, fields=fields)
         except Exception as exc:
             # TEXT storage historically accepts Python JSON nonfinite values and
-            # escaped NUL/surrogates which PostgreSQL jsonb cannot represent.
+            # escaped strings which PostgreSQL JSON conversion may reject.
             # Retry only that bounded read, never transport/transaction failures.
             if getattr(exc, "sqlstate", None) not in {"22P02", "22003", "22P05"}:
                 raise
@@ -575,12 +575,12 @@ class PostgresStateStore:
                 projection = "payload"
                 parameters: tuple[Any, ...] = ()
                 if fields is not None:
-                    projection = """(CASE WHEN jsonb_typeof(payload::jsonb) = 'object' THEN
-                        (SELECT COALESCE(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
-                         FROM jsonb_each(payload::jsonb) AS field
-                         WHERE field.key = ANY(%s)) ELSE payload::jsonb END)::text"""
+                    projection = """(CASE WHEN json_typeof(payload::json) = 'object' THEN
+                        (SELECT COALESCE(json_object_agg(field.key, field.value), '{}'::json)
+                         FROM json_each(payload::json) AS field
+                         WHERE field.key = ANY(%s)) ELSE payload::json END)::text"""
                     parameters = (list(fields),)
-                # A strict-jsonb conversion refusal must not abort a caller's
+                # A strict-JSON conversion refusal must not abort a caller's
                 # canonical update transaction before the legacy TEXT fallback.
                 with connection.transaction() if fields is not None else nullcontext():
                     cursor.execute(
