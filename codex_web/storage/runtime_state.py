@@ -11,7 +11,9 @@ from pydantic import BaseModel
 
 from codex_web.models import ActiveThreadTurn, ThreadRunSettings, WorkItemState
 from codex_web.storage.json_files import atomic_write_text
-from codex_web.storage.state_store import OperationTimingMetrics, StateStore
+from codex_web.storage.state_store import (
+    OperationTimingMetrics, StateStore, record_projection_fields, project_record_fields,
+)
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -155,6 +157,25 @@ class ModelMapRepository(Generic[T]):
             },
             cursor,
         )
+
+    def projected_page(
+        self, *, fields: tuple[str, ...], key_prefix: str | None = None,
+        after: str | None = None, limit: int = 100,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Read selected fields without transferring unrelated record bodies.
+
+        Older StateStore implementations keep the ordinary read/fallback; this
+        optional optimization introduces no record, index or schema migration.
+        """
+        fields = record_projection_fields(fields)
+        reader = getattr(self.store, "record_page_projected", None)
+        if not callable(reader):
+            raw, cursor = self.raw_page(key_prefix=key_prefix, after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
+        self._ensure_records()
+        raw, cursor = reader(self.namespace, fields=fields,
+            key_prefix=key_prefix, after=after, limit=limit)
+        return {key: value for key, value in raw.items() if self._included(key)}, cursor
 
     def page(
         self,

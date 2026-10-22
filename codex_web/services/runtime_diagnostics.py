@@ -64,11 +64,13 @@ def actionable_owner_projects(
 
     cursor: str | None = None
     bounded_page_size = max(1, min(int(page_size), 1000))
+    projected = getattr(repository, "projected_page", None)
+    fields = ("project_id", "current_owner", "next_owner", "current_stage", "handoff", "closed_at")
     while True:
-        raw, next_cursor = repository.raw_page(
-            after=cursor,
-            limit=bounded_page_size,
-        )
+        if callable(projected):
+            raw, next_cursor = projected(fields=fields, after=cursor, limit=bounded_page_size)
+        else:
+            raw, next_cursor = repository.raw_page(after=cursor, limit=bounded_page_size)
         for value in raw.values():
             state = _WorkItemHealthProjection.model_validate(value)
             owner = coerce_owner(state.current_owner or state.next_owner)

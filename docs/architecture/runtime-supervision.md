@@ -88,6 +88,15 @@ Queue, validation/identity/resource, renewal and total wait timings distinguish
 executor admission delay from work duration; they do not diagnose historical
 CPU, GIL, OOM or database corruption without evidence.
 
+Periodic actionable-owner health reads project their six top-level Work Item
+fields inside the existing SQLite/PostgreSQL keyed-record page query. Unrelated
+execution history is neither transferred nor JSON-decoded in the control-plane
+process for this count. Pagination, namespace/key filtering, selected-field
+validation and missing/null semantics are unchanged. Older store adapters use
+the full-read compatibility fallback. This is an optional read optimization,
+not a cache, authority decision, new index or persisted schema migration; it
+does not extend the native supervision deadline or attribute past timeouts.
+
 Cancellation propagates a cooperative operation budget through existing store
 locks, SQLite busy/progress/commit checks, PostgreSQL pool/statement/commit
 checks and resource traversal. Start, completion and renewal use the existing
