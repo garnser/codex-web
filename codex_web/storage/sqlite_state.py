@@ -19,6 +19,7 @@ from codex_web.storage.state_store import (
     state_record_prefix,
     state_record_storage_key,
     record_projection_fields,
+    project_record_fields,
 )
 
 
@@ -408,7 +409,8 @@ class SQLiteStateStore:
             parameters: tuple[Any, ...] = ()
             if fields is not None:
                 slots = ",".join("?" for _ in fields)
-                projection = f"""CASE WHEN json_type(payload) = 'object' THEN
+                projection = f"""CASE WHEN json_valid(payload) = 0 THEN payload
+                    WHEN json_type(payload) = 'object' THEN
                     (SELECT json_group_object(field.key,
                         CASE field.type
                             WHEN 'true' THEN json('true')
@@ -438,7 +440,8 @@ class SQLiteStateStore:
             )
             if parsed is None or parsed[1] is None:
                 continue
-            page[parsed[1]] = json.loads(payload)
+            value = json.loads(payload)
+            page[parsed[1]] = project_record_fields(value, fields) if fields is not None else value
         next_cursor = (
             next(reversed(page))
             if len(rows) > page_size and page

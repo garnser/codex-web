@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,39 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_projection_preserves_legacy_nonfinite_values_and_escaped_nul(self):
+        self.backend.record_replace('legacy-json', {
+            'a': {'selected': float('nan'), 'ignored': float('inf')},
+            'b': {'selected': float('inf')},
+            'c': {'selected': float('-inf')},
+            'd': {'selected': 'before\0after'},
+            'e': float('nan'),
+        })
+        result = {}; after = None
+        while True:
+            page, after = self.backend.record_page_projected('legacy-json',
+                fields=('selected',), after=after, limit=2)
+            result.update(page)
+            if after is None:
+                break
+        self.assertTrue(math.isnan(result['a']['selected']))
+        self.assertNotIn('ignored', result['a'])
+        self.assertEqual(result['b'], {'selected': float('inf')})
+        self.assertEqual(result['c'], {'selected': float('-inf')})
+        self.assertEqual(result['d'], {'selected': 'before\0after'})
+        self.assertTrue(math.isnan(result['e']))
+
+    def test_projection_fallback_does_not_abort_owning_transaction(self):
+        self.backend.record_replace('legacy-json', {'key': {'selected': float('inf')}})
+        self.backend.record_replace('mutation', {'counter': 0})
+        def update(rows):
+            page, cursor = self.backend.record_page_projected('legacy-json', fields=('selected',))
+            self.assertEqual(page, {'key': {'selected': float('inf')}})
+            self.assertIsNone(cursor)
+            return {'mutation': {'counter': rows['mutation']['counter'] + 1}}
+        self.backend.record_mutate_many({'mutation': ('counter',), 'legacy-json': ('key',)}, update)
+        self.assertEqual(self.backend.record_get('mutation', 'counter'), 1)
+
     def test_projected_page_preserves_json_types_missing_null_and_exact_cursor_scope(self):
         namespace = 'selected/雪:%'
         records = {

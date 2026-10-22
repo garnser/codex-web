@@ -6,7 +6,7 @@ import math
 import time
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Iterator
 
 from codex_web.storage.state_store import (
@@ -17,6 +17,7 @@ from codex_web.storage.state_store import (
     state_record_prefix,
     state_record_storage_key,
     record_projection_fields,
+    project_record_fields,
 )
 
 
@@ -528,8 +529,19 @@ class PostgresStateStore:
         self, namespace: str, *, fields: tuple[str, ...],
         key_prefix: str | None = None, after: str | None = None, limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
-        return self._record_page(namespace, key_prefix=key_prefix, after=after,
-            limit=limit, fields=record_projection_fields(fields))
+        fields = record_projection_fields(fields)
+        try:
+            return self._record_page(namespace, key_prefix=key_prefix, after=after,
+                limit=limit, fields=fields)
+        except Exception as exc:
+            # TEXT storage historically accepts Python JSON nonfinite values and
+            # escaped NUL/surrogates which PostgreSQL jsonb cannot represent.
+            # Retry only that bounded read, never transport/transaction failures.
+            if getattr(exc, "sqlstate", None) not in {"22P02", "22003", "22P05"}:
+                raise
+            raw, cursor = self.record_page(namespace, key_prefix=key_prefix,
+                after=after, limit=limit)
+            return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
 
     def _record_page(
         self, namespace: str, *, key_prefix: str | None, after: str | None,
@@ -568,19 +580,22 @@ class PostgresStateStore:
                          FROM jsonb_each(payload::jsonb) AS field
                          WHERE field.key = ANY(%s)) ELSE payload::jsonb END)::text"""
                     parameters = (list(fields),)
-                cursor.execute(
-                    f"""
-                    SELECT namespace, {projection}
-                    FROM codex_state_documents
-                    WHERE namespace COLLATE "C" >= %s
-                      AND namespace COLLATE "C" < %s
-                      AND namespace COLLATE "C" > %s
-                    ORDER BY namespace COLLATE "C"
-                    LIMIT %s
-                    """,
-                    (*parameters, lower, upper, after_storage, page_size + 1),
-                )
-                rows = cursor.fetchall()
+                # A strict-jsonb conversion refusal must not abort a caller's
+                # canonical update transaction before the legacy TEXT fallback.
+                with connection.transaction() if fields is not None else nullcontext():
+                    cursor.execute(
+                        f"""
+                        SELECT namespace, {projection}
+                        FROM codex_state_documents
+                        WHERE namespace COLLATE "C" >= %s
+                          AND namespace COLLATE "C" < %s
+                          AND namespace COLLATE "C" > %s
+                        ORDER BY namespace COLLATE "C"
+                        LIMIT %s
+                        """,
+                        (*parameters, lower, upper, after_storage, page_size + 1),
+                    )
+                    rows = cursor.fetchall()
 
         page: dict[str, Any] = {}
         for storage_namespace, payload in rows[:page_size]:
