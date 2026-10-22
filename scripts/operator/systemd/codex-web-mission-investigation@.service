@@ -1,0 +1,20 @@
+[Unit]
+Description=Bounded codex-web engineering investigation %i
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 %h/.local/lib/codex-web-mission-monitor/mission_supervisor.py --state-dir %h/.local/state/codex-web-mission-monitor investigate %i
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+MemoryMax=2G
+MemorySwapMax=0
+CPUQuota=100%
+TasksMax=256
+RuntimeMaxSec=1200
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=60
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+Restart=no

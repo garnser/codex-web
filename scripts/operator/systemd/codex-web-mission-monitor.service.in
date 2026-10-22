@@ -1,0 +1,24 @@
+[Unit]
+Description=Bounded external codex-web health and bug observation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus
+Environment=PATH=/home/@USER@/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/@USER@/.local/lib/codex-web-mission-monitor/mission_supervisor.py --state-dir /home/@USER@/.local/state/codex-web-mission-monitor tick
+TimeoutStartSec=90
+MemoryMax=256M
+MemorySwapMax=0
+CPUQuota=25%
+TasksMax=32
+LimitCORE=0
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/@USER@/.local/state/codex-web-mission-monitor

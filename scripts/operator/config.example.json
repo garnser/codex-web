@@ -1,0 +1,11 @@
+{
+  "mission_enabled": true,
+  "automatic_investigations": false,
+  "root_lease_until": 0,
+  "maintenance_until": 0,
+  "max_daily_investigations": 6,
+  "launch_backoff_seconds": 1800,
+  "repository_path": "/absolute/path/to/codex-web",
+  "observer_snapshot": "/absolute/path/to/existing-observer/latest.json",
+  "codex_executable": "/absolute/path/to/codex"
+}
