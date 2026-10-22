@@ -9,6 +9,7 @@ from codex_web.api.identity import request_actor
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.local_installation_inspector import LocalInstallationInspector
 from codex_web.services.artifact_evidence import ArtifactEvidenceError
+from codex_web.services.recovery import RecoveryError, RecoveryConflictError
 from codex_web.services.releases import ReleaseError
 from codex_web.services.upgrades import (
     UpgradeConflictError,
@@ -36,8 +37,10 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
         return actor
 
     def error(exc: Exception) -> HTTPException:
-        if isinstance(exc, (UpgradeConflictError, UpgradePreflightError)):
+        if isinstance(exc, (UpgradeConflictError, UpgradePreflightError, RecoveryConflictError)):
             return HTTPException(status_code=409, detail=str(exc))
+        if isinstance(exc, RecoveryError):
+            return HTTPException(status_code=400, detail=str(exc))
         if isinstance(exc, UpgradeError):
             return HTTPException(status_code=404, detail=str(exc))
         if isinstance(exc, AuthorizationError):
@@ -175,7 +178,7 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
-            if isinstance(exc, (UpgradeError, AuthorizationError)):
+            if isinstance(exc, (UpgradeError, RecoveryError, AuthorizationError)):
                 raise error(exc) from exc
             raise
 

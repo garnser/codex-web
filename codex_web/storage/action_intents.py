@@ -458,6 +458,17 @@ class ActionIntentStore:
             if item is not None:
                 yield item
 
+    def intent_page(self, *, after: str | None = None, limit: int = 100):
+        """Read complete validated intents without receipt/verification history.
+
+        Canonical intent rows, including terminal rows, are still fully validated.
+        No pending/lease alias can stand in for unsettled or uncertain intents.
+        """
+        self._ensure_records()
+        rows, cursor = self.store.record_page(self.records_namespace,
+            key_prefix="intents:", after=after, limit=limit)
+        return [ActionIntent.model_validate(raw) for raw in rows.values() if raw is not None], cursor
+
     def load(self, *, intent_id: str | None = None) -> ActionIntentState:
         self._ensure_records()
         if intent_id is None:

@@ -1549,12 +1549,22 @@ class TurnExecutionService:
                     return
 
                 async def checkpoint_retained_session() -> None:
+                    checkpoint_error = None
                     try:
-                        values = await checkpoint(assignment_id) if callable(checkpoint) else ()
+                        values = ()
+                        try:
+                            values = await checkpoint(assignment_id) if callable(checkpoint) else ()
+                        except Exception as exc:
+                            checkpoint_error = str(exc)[:500]
+                        # Checkpoint failure is a separate outcome. The existing
+                        # same-origin read-only callback must still run under its
+                        # current custody/authority/pause guards before releasing
+                        # this completion barrier; it cannot repair the checkpoint.
                         await self._settle_post_turn_readiness(active, manager)
-                        record_bootstrap_result(checkpoint_count=len(values))
+                        record_bootstrap_result(checkpoint_count=len(values),
+                            checkpoint_error=checkpoint_error)
                     except Exception as exc:
-                        record_bootstrap_result(checkpoint_error=str(exc)[:500])
+                        record_bootstrap_result(checkpoint_error=checkpoint_error or str(exc)[:500])
                     finally:
                         current_task = asyncio.current_task()
                         if self.assignment_completion_tasks.get(assignment_id) is current_task:

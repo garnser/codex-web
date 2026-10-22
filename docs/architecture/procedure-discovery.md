@@ -338,6 +338,15 @@ outcome is unknown, inspect the same canonical intent before any further action.
 
 #### Automatic post-turn read-only settlement
 
+For retained bootstrap sessions, an ordinary repository-checkpoint failure does
+not suppress the separate same-origin read-only settlement attempt. The runtime
+keeps the completion barrier until the existing callback finishes; current
+custody, authority, pause policy and finite recovery-budget guards still apply.
+The original checkpoint error and failed checkpoint/business outcome remain
+visible even if READY verification succeeds. Settlement neither repairs the
+repository checkpoint nor permits another provider write. Cancellation and loss
+of current custody are not reclassified as successful work.
+
 The existing terminal-turn completion task invokes bounded READY settlement after
 the retained bootstrap's repository checkpoint, or before ordinary assignment
 completion. The thread's existing completion barrier prevents queued native input
