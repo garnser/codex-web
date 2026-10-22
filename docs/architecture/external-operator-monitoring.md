@@ -38,8 +38,16 @@ and a 90-second deadline. An unrecognized or missing unit state holds capacity.
 New investigations require at least 8 GiB free disk and 3 GiB available memory.
 At 500 retained jobs or 1,000 observation entries, new launches stop for audited
 retention management instead of discarding uncertain receipts.
-Positive inactive/failed state with PID zero releases global capacity but retains
+Positive inactive/failed state with PID zero and no queued systemd job releases
+global capacity (including when a finished receipt already exists), but retains
 the interrupted issue for reconciliation; it never replays the same operation.
+Current mission, automatic-launch, coordinator-lease and maintenance controls are
+rechecked before checkout and again before model startup. If startup is deferred
+with a positive `model_not_started` receipt and no started marker, the original
+receipt remains. After controls permit work, backoff elapses and a fresh exact
+unit read proves it is reaped, that signal may qualify one new investigation
+identity under the same daily/per-issue bounds. Started or unknown sessions never
+use this path.
 
 The adapter writes a launch identity before starting its exact systemd unit.
 Unknown start outcomes are read back using that same unit. A retained start file
@@ -52,7 +60,10 @@ is treated as proof of successful business work.
 Private JSON checkpoints hold observation metadata and launch/session/result
 receipts. Message text, thread names, arbitrary runner diagnostics and secrets
 are excluded from the reduced observer snapshot. Checkpoints are atomically
-replaced under a file lock. Retained uncertain receipts must not be deleted by
+replaced with file and directory synchronization under a file lock. Canonical
+identifiers, enum states, booleans and counts are validated by type and shape;
+provider error text is omitted. Public issue metadata is filtered independently.
+Retained uncertain receipts must not be deleted by
 routine cleanup. Inactive observation entries without writes/jobs can be pruned;
 checkouts and investigation audit files require explicit retention management.
 Disk pressure inhibits useful operation through its tracked signal rather than

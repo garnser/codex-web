@@ -153,9 +153,100 @@ class MissionSupervisorTests(unittest.TestCase):
         self.state["jobs"]["a"] = job
         monitor.atomic_json(self.root / "jobs/a/finished.json", {
             "status": "investigation_finished", "finished_at": 123, "result": {"status": "fixed"}})
-        monitor.reconcile_jobs(self.root, self.state, run=lambda _: self.fail("must use retained receipt"))
+        def run(argv):
+            return subprocess.CompletedProcess(argv, 0, "ActiveState=inactive\nMainPID=0\nLoadState=loaded\nJob=\n", "")
+        monitor.reconcile_jobs(self.root, self.state, run=run)
         self.assertEqual(job["status"], "investigation_finished")
         self.assertNotIn("issue_closed", job)
+
+    def test_finished_receipt_waits_for_unit_cleanup_before_releasing_capacity(self):
+        self.state["jobs"]["a"] = {"id": "a", "status": "running", "unit": "same.service", "created_at": 1}
+        monitor.atomic_json(self.root / "jobs/a/finished.json", {
+            "job_id": "a", "status": "investigation_finished", "finished_at": 123, "result": {"status": "fixed"}})
+        def run(argv):
+            return subprocess.CompletedProcess(argv, 0, "ActiveState=deactivating\nMainPID=0\nLoadState=loaded\nJob=123\n", "")
+        monitor.reconcile_jobs(self.root, self.state, run=run)
+        self.assertEqual(self.state["jobs"]["a"]["status"], "running")
+        monitor.retain_signals(self.state, [monitor.Signal("bug:7", "open_bug", {}, 7)], now=self.now)
+        self.assertIsNone(monitor.choose_signal(self.state, self.config, now=self.now))
+
+    def test_start_rechecks_mission_and_root_lease_before_checkout(self):
+        job_id = "a" * 32
+        directory = self.root / "jobs" / job_id
+        monitor.atomic_json(directory / "request.json", {"id": job_id, "issue_number": 7})
+        self.config["root_lease_until"] = monitor.time.time() + 900
+        monitor.atomic_json(self.root / "config.json", self.config)
+        monitor.investigate(self.root, job_id, run=lambda _: self.fail("must not checkout under Root lease"))
+        self.assertFalse((directory / "started.json").exists())
+        self.assertTrue(monitor.read_json(directory / "finished.json")["model_not_started"])
+
+    def test_maintenance_arriving_during_checkout_prevents_model_start(self):
+        job_id = "a" * 32
+        directory = self.root / "jobs" / job_id
+        monitor.atomic_json(directory / "request.json", {"id": job_id, "issue_number": 7})
+        self.config["repository_path"] = str(self.root)
+        monitor.atomic_json(self.root / "config.json", self.config)
+        def run(argv):
+            Path(argv[-2]).mkdir()
+            self.config["maintenance_until"] = monitor.time.time() + 3600
+            monitor.atomic_json(self.root / "config.json", self.config)
+        with patch.object(monitor.subprocess, "run", side_effect=AssertionError("model must not start")):
+            monitor.investigate(self.root, job_id, run=run)
+        self.assertFalse((directory / "started.json").exists())
+        self.assertEqual(monitor.read_json(directory / "finished.json")["status"], "deferred_before_model")
+
+    def test_untyped_private_metadata_cannot_reach_issue_body(self):
+        tid = "01a16582-cf57-7003-84d1-159c324e70f7"
+        value = {"checked_at": 1, "threads": {tid: {"runner": {"assignmentId": "private raw provider error", "fence": "private"},
+            "progress": {"turn_id": {"text": "private"}, "error_code": "private"}}}}
+        reduced = monitor.reduce_observer(value)
+        self.assertNotIn("private", json.dumps(reduced))
+        item = {"kind": "new_native_failure", "samples": 3, "metadata": {
+            "thread_id": tid, "turn_id": "private", "assignment_id": "private", "error_code": "private"}}
+        body = monitor.issue_body("key", item, "marker")
+        self.assertNotIn('"private"', body)
+        self.assertIn(tid, body)
+
+    def test_known_no_model_deferral_requalifies_once_after_root_lease_expires(self):
+        old_id = "a" * 32
+        monitor.retain_signals(self.state, [monitor.Signal("bug:7", "open_bug", {}, 7)], now=self.now)
+        self.state["signals"]["bug:7"]["job_id"] = old_id
+        job = {"id": old_id, "status": "deferred_before_model", "signal_key": "bug:7",
+            "unit": "same.service", "created_at": self.now - 2000, "issue_number": 7}
+        self.state["jobs"][old_id] = job
+        monitor.atomic_json(self.root / "jobs" / old_id / "finished.json", {
+            "job_id": old_id, "finished_at": self.now - 1000,
+            "status": "deferred_before_model", "model_not_started": True})
+        self.config["root_lease_until"] = self.now + 1
+        monitor.requalify_known_deferrals(self.root, self.state, self.config, now=self.now,
+            run=lambda _: self.fail("must not requalify under current Root lease"))
+        self.assertEqual(self.state["signals"]["bug:7"]["job_id"], old_id)
+        calls = []
+        def run(argv):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=\n", "")
+        monitor.requalify_known_deferrals(self.root, self.state, self.config, now=self.now + 2, run=run)
+        self.assertNotIn("job_id", self.state["signals"]["bug:7"])
+        new_id = monitor.launch(self.root, self.state, "bug:7", self.config, now=self.now + 2, run=run)
+        self.assertNotEqual(new_id, old_id)
+        monitor.requalify_known_deferrals(self.root, self.state, self.config, now=self.now + 3, run=run)
+        self.assertEqual(sum("start" in argv for argv in calls), 1)
+        self.assertIsNone(monitor.choose_signal(self.state, self.config, now=self.now + 3000))
+        self.assertTrue((self.root / "jobs" / old_id / "finished.json").is_file())
+
+    def test_unknown_or_started_job_never_enters_known_deferral_requalification(self):
+        for status, started in (("unknown", False), ("deferred_before_model", True)):
+            job_id = "b" * 32
+            monitor.retain_signals(self.state, [monitor.Signal("bug:7", "open_bug", {}, 7)], now=self.now)
+            self.state["signals"]["bug:7"]["job_id"] = job_id
+            self.state["jobs"][job_id] = {"id": job_id, "status": status, "signal_key": "bug:7",
+                "unit": "same.service", "created_at": self.now - 2000}
+            monitor.atomic_json(self.root / "jobs" / job_id / "finished.json", {"model_not_started": True})
+            if started:
+                monitor.atomic_json(self.root / "jobs" / job_id / "started.json", {"started_at": 1})
+            monitor.requalify_known_deferrals(self.root, self.state, self.config, now=self.now,
+                run=lambda _: self.fail("must not retry uncertain/started job"))
+            self.assertEqual(self.state["signals"]["bug:7"]["job_id"], job_id)
 
     def test_ci_continuation_requires_current_positive_required_checks(self):
         self.state["jobs"]["a"] = {"id": "a", "created_at": 1, "issue_number": 7,
