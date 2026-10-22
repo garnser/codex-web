@@ -223,6 +223,8 @@ class TurnExecutionService:
         self.procedure_admission = None
         self.readiness_origin_blocker = None
         self.post_turn_readiness = None
+        self.readiness_terminal_events = None
+        self.readiness_intent_lookup = None
         self.session_custody = None
         self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
@@ -1630,6 +1632,9 @@ class TurnExecutionService:
                         "turn_id": active.turn_id,
                         "execution_id": active.execution_id,
                         "assignment_id": assignment_id,
+                        "execution_workspace_id": active.execution_workspace_id,
+                        "worker_id": active.worker_id,
+                        "fence": active.fence,
                         "error": str(exc)[:500],
                     }
                 )
@@ -1657,6 +1662,10 @@ class TurnExecutionService:
         )
         self.assignment_completion_tasks[assignment_id] = task
         self.thread_completion_tasks[active.thread_id] = task
+
+    def notify_ready_status(self, intent) -> None:
+        from codex_web.runtime.readiness_completion import notify_ready_status
+        notify_ready_status(self, intent)
 
     async def _settle_post_turn_readiness(self, active, manager) -> None:
         callback = self.post_turn_readiness
