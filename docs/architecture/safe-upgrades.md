@@ -269,6 +269,27 @@ scoped upgrade service authority and the complete-hosted-scope checks. A CLI
 guard must perform this request under the deployment lock at the one-shot
 verification boundary; a previously saved response is not an install grant.
 
+## Bounded durable drain reads
+
+Whole-service drain counts and hosted-scope enumeration page the canonical
+`intents:` records and assignment records instead of decoding retained receipt,
+verification, inbox, event and enrollment catalogs. Each visited ActionIntent and
+Assignment is still fully validated, including terminal rows; current Worker
+records are validated too. Every page is read fresh from the existing StateStore.
+No cached count, lease-only alias or pending-only index can establish zero work:
+claimed, executing, uncertain and reconciliation-required actions all remain
+active, across every hosted tenant/workspace. Legacy backend/service interfaces
+retain their existing full validated reader fallback.
+
+The ordinary Upgrade backup endpoint maps expected Recovery conflicts, including
+cooperative memory refusal, to the existing JSON 409 response contract (other
+Recovery errors remain JSON 400). Unexpected errors remain failures. A refusal
+response is not proof of a missing manifest: inspect the same canonical plan,
+catalog and retained journal. It never permits automatic capture replay.
+These read changes do not change memory estimates, cgroup limits, source pins,
+authority, maintenance/drain fencing, crypto or isolated restore requirements.
+Actual production capture and restore must still pass their unchanged guards.
+
 ## Offline pre-install backup capture
 
 When the installed backup implementation needs a reviewed source correction

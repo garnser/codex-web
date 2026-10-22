@@ -65,6 +65,20 @@ class ArtifactEvidenceStore:
         ARTIFACT_EVIDENCE_CONTRACT.require(payload.get("schema_version", ""))
         return ArtifactEvidenceState.model_validate(payload)
 
+    def evidence_state(self, evidence_id: str, *, organization_id: str, workspace_id: str) -> ArtifactEvidenceState:
+        """Validate the canonical envelope and complete selected Evidence.
+
+        Explicit full-state/transactional callers retain load(). Older backends
+        keep the full decoder path; no alternate authority or persisted index is
+        introduced. Unrelated historical catalog bodies are not point-read data.
+        """
+        reader = getattr(self.store, "document_array_item_envelope", None)
+        if not callable(reader):
+            return self.load()
+        return self._decode(reader(self.namespace, "evidence", evidence_id,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=("artifacts", "evidence", "verifications")))
+
     def load(self) -> ArtifactEvidenceState:
         return self._decode(self.store.get(self.namespace))
 

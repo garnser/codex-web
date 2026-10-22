@@ -918,6 +918,41 @@ class PostgresStateStore:
                 row = cursor.fetchone()
                 return self._decode(row) if row is not None else None
 
+    def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
+                                     organization_id: str, workspace_id: str,
+                                     collection_names: tuple[str, ...]) -> Any | None:
+        """Scoped complete record/schema read; optional, without a new index.
+
+        A savepoint protects an owning transaction from legacy TEXT JSON
+        conversion errors. Only those conversion errors use the full read path.
+        """
+        names = record_projection_fields(collection_names)
+        if array_name not in names or "schema_version" in names:
+            raise ValueError("selected array must belong to the canonical envelope")
+        arrays = " OR ".join("COALESCE(json_typeof(payload::json -> %s), 'array') != 'array'" for _ in names)
+        query = f"""SELECT (CASE WHEN json_typeof(payload::json) != 'object' THEN payload::json
+            WHEN EXISTS(SELECT 1 FROM json_each(payload::json) AS field WHERE NOT field.key = ANY(%s)) THEN payload::json
+            WHEN {arrays} THEN payload::json
+            ELSE json_build_object('schema_version', COALESCE(payload::json -> 'schema_version', '"0.0"'::json),
+                %s::text, COALESCE((SELECT json_agg(item.value) FROM
+                    (SELECT value FROM json_array_elements(payload::json -> %s) AS member(value)
+                     WHERE json_typeof(value) = 'object' AND value ->> 'id' = %s
+                       AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s LIMIT 1) AS item), '[]'::json))
+            END)::text FROM codex_state_documents WHERE namespace = %s"""
+        parameters = (["schema_version", *names], *names, array_name, array_name,
+                      item_id, organization_id, workspace_id, namespace)
+        try:
+            with self._read_connection() as connection:
+                with connection.transaction():
+                    with connection.cursor() as cursor:
+                        cursor.execute(query, parameters)
+                        row = cursor.fetchone()
+            return self._decode(row) if row is not None else self.get(namespace)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) not in {"22P02", "22003", "22P05"}:
+                raise
+            return self.get(namespace)
+
     def get(self, namespace: str) -> Any | None:
         with self._read_connection() as connection:
             with connection.cursor() as cursor:

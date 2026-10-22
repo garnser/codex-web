@@ -286,7 +286,9 @@ class ArtifactEvidenceService:
         actor: AuthenticationActor,
         state: ArtifactEvidenceState | None = None,
     ) -> Evidence:
-        return self._evidence(state if state is not None else self.store.load(), evidence_id, actor)
+        current = state if state is not None else self.store.evidence_state(evidence_id,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        return self._evidence(current, evidence_id, actor)
 
     def list_artifacts(
         self,

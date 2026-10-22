@@ -252,3 +252,25 @@ must commit before admission (then refuse) or serialize after the append transac
 Only metadata is inspected/locked; credential values never enter Verification or
 broker output. The ScheduleRecord tenant field is `tenant_id`, paired with its
 `workspace_id`; it must match the actual verifier's organization/workspace.
+
+
+## Scoped Evidence point reads
+
+A normal `get_evidence` point lookup can use the StateStore's optional document
+array projection to transfer the canonical schema envelope and first matching
+complete Evidence record for its exact ID, organization and workspace. The normal
+Artifact/Evidence decoder still applies supported schema versions, legacy
+migrations and full validation of that selected record. Lifecycle, retention,
+metadata, digest and resource references are unchanged; each consumer still
+performs its existing validity, freshness and authority checks. A missing or
+foreign record does not become valid evidence.
+
+This is a fresh canonical read, not a cache, index, new authority store or state
+migration. It avoids materializing unrelated historical artifacts, Evidence and
+verifications for one lookup; it is not a catalog-wide integrity scan. Explicit
+full-state/transactional callers keep their supplied state. Older backends,
+nonstandard legacy JSON and incompatible document-envelope shapes keep the full
+canonical decoder path. PostgreSQL conversion fallback is isolated by a savepoint
+so it cannot poison a surrounding writer transaction; unrelated storage failures
+propagate. All normal writes, snapshots and restore bytes retain their existing
+canonical paths.
