@@ -673,9 +673,9 @@ class WorkItemContinuityService:
             or self.thread_recently_active(binding.thread_id)
         ):
             return
-        if self._alias_intent(state, handoff.to_agent) is not None:
-            # Share capture/revalidation and retained native admission with the
-            # original dispatch; continuity cannot send an unpinned alias.
+        if self.owner_routing is not None:
+            # Canonical roles and aliases share the original dispatch's exact
+            # compatible-recipient witness, including its read-only custody.
             await self.dispatch_structured_handoff(state, source=source)
             return
         binding = await self.replace_nonperforming_thread(binding, source)
