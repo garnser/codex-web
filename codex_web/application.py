@@ -4151,6 +4151,7 @@ turn_execution_service.owner_lane_recovery = owner_lane_recovery_service
 app.state.owner_lane_recovery_service = owner_lane_recovery_service
 
 autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
+    owner_routing=owner_routing_service,
     owner_lane_recovery=owner_lane_recovery_service,
     schedule_current_work_item_writeback=(
         work_item_service.schedule_current_task_source_writeback

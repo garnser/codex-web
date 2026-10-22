@@ -54,11 +54,15 @@ class AutonomyRuntimeDependencies:
     update_work_item_state: Callable[..., Any] | None = None
     schedule_current_work_item_writeback: Callable[[str], Any] | None = None
     owner_lane_recovery: Any | None = None
+    owner_routing: Any | None = None
     handoff_delivery_timeout_seconds: Callable[[], float] = lambda: 3600.0
 
     @classmethod
     def from_host(cls, host: Any) -> "AutonomyRuntimeDependencies":
         return cls(
+            owner_routing=getattr(
+                getattr(getattr(host, "app", None), "state", None),
+                "owner_routing_service", None),
             handoff_delivery_timeout_seconds=getattr(host, "_work_item_handoff_delivery_timeout_seconds", lambda: 3600.0),
             schedule_current_work_item_writeback=getattr(
                 host, "_schedule_current_work_item_writeback", None,
