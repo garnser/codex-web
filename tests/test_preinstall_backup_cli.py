@@ -51,6 +51,33 @@ class OfflineHostGuardTests(unittest.TestCase):
         self.check()
         self.check({**self.stopped, 'InvocationID': 'original-invocation'})
 
+    def test_successful_sigterm_stop_is_accepted_with_same_runtime_proof(self):
+        # A Root-requested systemd stop can report CLD_KILLED/SIGTERM even
+        # after uvicorn finishes its normal shutdown; Result remains success.
+        stopped = {**self.stopped, 'ExecMainCode': '2', 'ExecMainStatus': '15'}
+        self.check(stopped)
+        self.check({**stopped, 'InvocationID': 'original-invocation'})
+        with patch.object(self.guard, 'service', return_value=stopped), \
+                patch.object(cli.time, 'time', return_value=100):
+            self.guard.wait_stopped(101)
+
+    def test_sigterm_cannot_hide_failure_replacement_or_a_live_original_process(self):
+        stopped = {**self.stopped, 'ExecMainCode': '2', 'ExecMainStatus': '15'}
+        for changes in ({'Result': 'timeout'}, {'ActiveState': 'failed'},
+                {'InvocationID': 'replacement'}, {'ExecMainPID': '123'},
+                {'ExecMainStartTimestampMonotonic': '1001'},
+                {'ExecMainExitTimestampMonotonic': '0'}):
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError):
+                self.check({**stopped, **changes})
+        with patch.object(cli.Path, 'exists', return_value=True), self.assertRaises(RuntimeError):
+            self.check(stopped)
+
+    def test_forced_kill_crash_and_other_exit_pairs_are_refused(self):
+        for code, status in (('2', '9'), ('2', '11'), ('3', '15'), ('1', '15'),
+                ('2', '0'), ('1', '1')):
+            with self.subTest(code=code, status=status), self.assertRaises(RuntimeError):
+                self.check({**self.stopped, 'ExecMainCode': code, 'ExecMainStatus': status})
+
     def test_restart_crash_failed_stop_or_different_main_process_refuses(self):
         for changes in ({'InvocationID': 'new-invocation'}, {'MainPID': '123'},
                 {'ExecMainPID': '123'}, {'ExecMainStartTimestampMonotonic': '1001'},

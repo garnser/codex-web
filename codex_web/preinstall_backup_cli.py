@@ -116,10 +116,15 @@ class OfflineHostGuard:
                 or current.get('ExecMainStartTimestampMonotonic') != self.initial['ExecMainStartTimestampMonotonic']):
             raise RuntimeError('Pinned service invocation changed')
         if self.stopped:
+            # Uvicorn re-raises a captured shutdown signal after cleanup.
+            # systemd therefore reports a successful requested SIGTERM stop
+            # as CLD_KILLED/15, alongside the ordinary CLD_EXITED/0 case.
+            successful_exit = (current.get('Result') == 'success'
+                and (current.get('ExecMainCode'), current.get('ExecMainStatus'))
+                    in {('1', '0'), ('2', '15')})
             if (current.get('ActiveState') != 'inactive' or current.get('MainPID') != '0'
                     or current.get('InvocationID') not in {'', self.initial['InvocationID']}
-                    or current.get('Result') != 'success' or current.get('ExecMainCode') != '1'
-                    or current.get('ExecMainStatus') != '0'
+                    or not successful_exit
                     or not current.get('ExecMainExitTimestampMonotonic', '').isdigit()
                     or int(current['ExecMainExitTimestampMonotonic']) < int(self.initial['ExecMainStartTimestampMonotonic'])
                     or Path('/proc', str(options.expected_runtime_pid)).exists()):
