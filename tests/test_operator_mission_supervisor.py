@@ -104,7 +104,7 @@ class MissionSupervisorTests(unittest.TestCase):
     def test_positive_reaping_retains_same_signal_without_blocking_unrelated_work(self):
         self.state["jobs"]["a"] = {"id": "a", "status": "running", "unit": "same.service", "created_at": 1}
         def run(argv):
-            return subprocess.CompletedProcess(argv, 0, "ActiveState=failed\nMainPID=0\nLoadState=loaded\n", "")
+            return subprocess.CompletedProcess(argv, 0, "ActiveState=failed\nMainPID=0\nLoadState=loaded\nJob=\n", "")
         monitor.reconcile_jobs(self.root, self.state, run=run)
         self.assertEqual(self.state["jobs"]["a"]["status"], "interrupted_requires_reconciliation")
         monitor.retain_signals(self.state, [monitor.Signal("bug:7", "open_bug", {}, 7)], now=self.now)
@@ -116,6 +116,15 @@ class MissionSupervisorTests(unittest.TestCase):
             raise RuntimeError("bus_unavailable")
         monitor.reconcile_jobs(self.root, self.state, run=run)
         self.assertEqual(self.state["jobs"]["a"]["status"], "unknown")
+
+    def test_inactive_unit_with_queued_start_job_still_owns_capacity(self):
+        self.state["jobs"]["a"] = {"id": "a", "status": "launch_requested", "unit": "same.service", "created_at": 1}
+        def run(argv):
+            return subprocess.CompletedProcess(argv, 0, "ActiveState=inactive\nMainPID=0\nLoadState=loaded\nJob=123\n", "")
+        monitor.reconcile_jobs(self.root, self.state, run=run)
+        self.assertEqual(self.state["jobs"]["a"]["status"], "unknown")
+        monitor.retain_signals(self.state, [monitor.Signal("bug:7", "open_bug", {}, 7)], now=self.now)
+        self.assertIsNone(monitor.choose_signal(self.state, self.config, now=self.now))
 
     def test_github_outage_retains_host_collection_and_last_inventory(self):
         config = {"repository_path": str(self.root), "observer_snapshot": str(self.root / "missing"),

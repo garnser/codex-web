@@ -377,7 +377,7 @@ def reconcile_jobs(root, state, *, run=command):
                        session_id=receipt.get("session_id"), result=receipt.get("result"))
             continue
         try:
-            result = run(["systemctl", "--user", "show", job["unit"], "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "LoadState"])
+            result = run(["systemctl", "--user", "show", job["unit"], "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "LoadState", "-p", "Job"])
         except (RuntimeError, OSError, subprocess.TimeoutExpired):
             job["status"] = "unknown"
             continue
@@ -385,7 +385,7 @@ def reconcile_jobs(root, state, *, run=command):
         if unit.get("ActiveState") in {"activating", "active", "deactivating", "reloading"}:
             job["status"] = "running"
         elif (unit.get("LoadState") == "loaded" and unit.get("ActiveState") in {"inactive", "failed"}
-              and unit.get("MainPID") == "0"):
+              and unit.get("MainPID") == "0" and unit.get("Job") in {"", "0"}):
             # Positive process reaping releases global capacity, but this signal
             # remains associated with the original job. Never replay its effects.
             job["status"] = "interrupted_requires_reconciliation"
