@@ -803,7 +803,8 @@ class ActionIntentService:
                 reference = self.execution.secret_broker.metadata(request.credential_ref, actor=actor, require_use=True)
                 if reference.status().value != "active":
                     raise ActionRequirementError("Readiness credential reference is no longer active")
-            self._validate_execution_repository_scope(intent.execution_id, request, requester)
+            self._validate_execution_repository_scope(intent.execution_id, request, requester,
+                assignment_id=origin.assignment_id)
             assignment = self._ready_assignment(intent.execution_id, request, requester, origin.assignment_id)
             if (assignment.id, assignment.fence, assignment.assigned_worker_id, assignment.execution_profile_definition) != pin:
                 raise ActionRequirementError("Readiness originating assignment changed")
@@ -1959,7 +1960,8 @@ class ActionIntentService:
                     or readiness_binding_checksum(binding, provider) != origin.binding_checksum
                     or provider.contract.locator_for_resource(self.execution.resources.get(request.resource_ids[0], actor)) != origin.repository):
                 raise ActionRequirementError("Readiness verification binding or repository changed")
-            self._validate_execution_repository_scope(intent.execution_id, request, requester)
+            self._validate_execution_repository_scope(intent.execution_id, request, requester,
+                assignment_id=origin.assignment_id)
             decision = self._canonical_authority_snapshot(
                 definition=definition, request=request, actor=requester, execution_id=intent.execution_id)
             if (decision.outcome != ActionDecisionOutcome.ALLOW
