@@ -306,9 +306,28 @@ The operator first completes a reviewed whole-service drain and preserves all
 unknown inputs and origins. The helper runs under the existing deploy lock and
 the operator qualification lock, with exact clean installed/producer revisions,
 service instance, PID and invocation pins. A separately supervised cgroup must
-actually cap this helper at no more than 6 GiB with zero swap; claimed arguments
-are insufficient. Canonical Recovery headroom admission remains independently
-required and can refuse even under that cap.
+actually cap this helper at no more than its explicit operation budget with zero
+swap. `--memory-budget-bytes` defaults to 6 GiB; a separately reviewed operation
+may select a different finite byte ceiling through the existing authenticated
+operator procedure. This configures only the supervised capture/restore helper,
+never the production service or an ordinary execution profile. The existing
+upgrade/recovery administrator authority, protected operation configuration and
+supervisor own this choice; repository/model content cannot grant or select it.
+The helper does not set a cgroup limit. It observes the actual finite current
+cgroup at entry and at both capture boundaries, refusing an unknown/unlimited
+cap, a cap above the selected ceiling or nonzero swap. Claimed arguments are
+insufficient. Canonical Recovery host and every visible ancestor headroom check,
+and its conservative allocation estimates, remain unchanged and can refuse even
+under the selected cap.
+
+`pre-stop-qualified.json` records `memory_budget_bytes` separately from its actual
+`memory_cap` observation; capture completion and refusal retain the selected
+budget. A separate cold restore verifier must bind that exact same operation
+budget to the immutable capture proof and observe its own real cap and current
+headroom. A budget mismatch refuses verification. Raising a number neither
+reserves memory nor establishes backup/restore qualification. Capacity planning
+must account for the stopped service, helper, host and ancestor limits, while
+retaining the original finite offline deadline and positive-writer-exit rule.
 The runtime data directory and its database, key and backup paths are frozen
 from the pinned installation's `data` layout and rechecked at both boundaries.
 An alternate destination cannot register a `local` manifest which only the

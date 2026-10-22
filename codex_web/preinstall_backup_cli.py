@@ -183,6 +183,22 @@ def recovery_custody(store):
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+DEFAULT_MEMORY_BUDGET_BYTES = 6 * 1024**3
+
+
+def memory_budget_bytes(value: str) -> int:
+    """An explicit finite operation ceiling, never an observed capacity."""
+    if type(value) is not str:
+        raise argparse.ArgumentTypeError('memory budget must be an integer byte count')
+    try:
+        amount = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('memory budget must be an integer byte count') from error
+    if not 0 < amount <= 2**63 - 1:
+        raise argparse.ArgumentTypeError('memory budget must be a positive finite byte count')
+    return amount
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     for name in ('plan-id', 'service-instance-id', 'expected-runtime-revision', 'expected-producer-revision'):
@@ -194,6 +210,9 @@ def parser():
     result.add_argument('--api', default='http://127.0.0.1:8765')
     result.add_argument('--expected-runtime-pid', type=int, required=True)
     result.add_argument('--operator-token-fd', type=int, required=True)
+    result.add_argument('--memory-budget-bytes', type=memory_budget_bytes,
+        default=DEFAULT_MEMORY_BUDGET_BYTES,
+        help='Reviewed ceiling for this supervised helper only (default: 6 GiB); actual finite cgroup and headroom checks remain required')
     result.add_argument('--execute', action='store_true', required=True)
     return result
 
@@ -222,12 +241,13 @@ def main(argv=None):
         token = os.read(options.operator_token_fd, 16385).decode().strip()
         if not token or len(token) > 16384 or '\n' in token or '\r' in token:
             raise ValueError('Existing operator credential is unavailable')
-        # Reuse the canonical actual-cgroup guard; never infer a 6 GiB limit
-        # from command-line intent or relax a memory admission estimate.
+        # The explicit reviewed operation ceiling is not capacity or a grant.
+        # Require an actual finite cgroup at entry and each guarded boundary;
+        # canonical host/ancestor headroom and Recovery estimates are unchanged.
         from codex_web.services.recovery_memory import require_process_memory_limit, RecoveryMemoryRefused
         from codex_web.services.recovery import RecoveryMemoryConflictError
         memory_errors = (RecoveryMemoryRefused, RecoveryMemoryConflictError)
-        cap = require_process_memory_limit(maximum_bytes=6 * 1024**3, maximum_swap_bytes=0)
+        cap = require_process_memory_limit(maximum_bytes=options.memory_budget_bytes, maximum_swap_bytes=0)
         from codex_web.storage.state_store import build_state_store, StorageOperationBudget, storage_operation_budget
         store = build_state_store(sqlite_path=options.sqlite_path,
             backend=os.environ.get('CODEX_WEB_STATE_BACKEND', 'sqlite'),
@@ -238,7 +258,7 @@ def main(argv=None):
         custody = None
         def guard():
             host.check()
-            require_process_memory_limit(maximum_bytes=6 * 1024**3, maximum_swap_bytes=0)
+            require_process_memory_limit(maximum_bytes=options.memory_budget_bytes, maximum_swap_bytes=0)
             if custody is not None and recovery_custody(store) != custody:
                 raise RuntimeError('Canonical Recovery custody changed')
         runtime = compose_capture_runtime(store, operator_token=token,
@@ -264,7 +284,8 @@ def main(argv=None):
         record(options.journal_directory, 'pre-stop-qualified', {
             'pre_stop_plan': observed['plan'].model_dump(mode='json'),
             'historical_observation_at': prepared_at, 'recovery_executor': executor,
-            'recovery_custody_sha256': custody, 'memory_cap': asdict(cap),
+            'recovery_custody_sha256': custody, 'memory_budget_bytes': options.memory_budget_bytes,
+            'memory_cap': asdict(cap),
             'runtime_pid': options.expected_runtime_pid, 'service_invocation': host.initial['InvocationID'],
             'runtime_revision': options.expected_runtime_revision,
             'producer_revision': options.expected_producer_revision,
@@ -288,11 +309,13 @@ def main(argv=None):
         finally:
             storage_operation_budget.reset(budget_token)
         record(options.journal_directory, 'capture-completed', {'plan_id': plan.id,
-            'backup_id': plan.pre_upgrade_backup_id, 'restore_qualification_claimed': False,
+            'backup_id': plan.pre_upgrade_backup_id, 'memory_budget_bytes': options.memory_budget_bytes,
+            'restore_qualification_claimed': False,
             'deployment_qualification_claimed': False, 'operator_must_restore_service': True})
         return 0
     except Exception as error:
         record(options.journal_directory, 'stopped', {'stage': stage,
+            'memory_budget_bytes': options.memory_budget_bytes,
             'exception_type': type(error).__name__, 'retry_authorized': False,
             # Only these canonical types contain bounded capacity codes and
             # numbers. Other exception strings/causes may expose credentials.
