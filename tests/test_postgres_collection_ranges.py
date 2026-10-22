@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import math
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from codex_web.storage.postgres_state import PostgresStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -13,6 +15,64 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_projection_does_not_retry_unrelated_storage_failure(self):
+        class TransportFailure(RuntimeError):
+            sqlstate = '08006'
+        failure = (sqlite3.OperationalError('database is locked')
+                   if isinstance(self.backend, SQLiteStateStore) else TransportFailure())
+        if isinstance(self.backend, SQLiteStateStore) and sqlite3.sqlite_version_info < (3, 38, 0):
+            with patch.object(self.backend, 'record_page', side_effect=failure) as reader:
+                with self.assertRaises(type(failure)):
+                    self.backend.record_page_projected('scope', fields=('selected',))
+                reader.assert_called_once()
+            return
+        with patch.object(self.backend, '_record_page', side_effect=failure) as selected:
+            with patch.object(self.backend, 'record_page') as fallback:
+                with self.assertRaises(type(failure)):
+                    self.backend.record_page_projected('scope', fields=('selected',))
+                selected.assert_called_once()
+                fallback.assert_not_called()
+
+    def test_projection_preserves_legacy_nonfinite_values_and_escaped_nul(self):
+        self.backend.record_replace('legacy-json', {
+            'a': {'selected': float('nan'), 'ignored': float('inf')},
+            'b': {'selected': float('inf')},
+            'c': {'selected': float('-inf')},
+            'd': {'selected': 'before\0after'},
+            'e': float('nan'),
+            'f': {'selected': 'before\ud800after'},
+            'g': {'selected': 2**100 + 1},
+            'h': {'selected': -0.0},
+        })
+        result = {}; after = None
+        while True:
+            page, after = self.backend.record_page_projected('legacy-json',
+                fields=('selected',), after=after, limit=2)
+            result.update(page)
+            if after is None:
+                break
+        self.assertTrue(math.isnan(result['a']['selected']))
+        self.assertNotIn('ignored', result['a'])
+        self.assertEqual(result['b'], {'selected': float('inf')})
+        self.assertEqual(result['c'], {'selected': float('-inf')})
+        self.assertEqual(result['d'], {'selected': 'before\0after'})
+        self.assertTrue(math.isnan(result['e']))
+        self.assertEqual(result['f'], {'selected': 'before\ud800after'})
+        self.assertIs(type(result['g']['selected']), int)
+        self.assertEqual(result['g']['selected'], 2**100 + 1)
+        self.assertEqual(math.copysign(1.0, result['h']['selected']), -1.0)
+
+    def test_projection_fallback_does_not_abort_owning_transaction(self):
+        self.backend.record_replace('legacy-json', {'key': {'selected': float('inf')}})
+        self.backend.record_replace('mutation', {'counter': 0})
+        def update(rows):
+            page, cursor = self.backend.record_page_projected('legacy-json', fields=('selected',))
+            self.assertEqual(page, {'key': {'selected': float('inf')}})
+            self.assertIsNone(cursor)
+            return {'mutation': {'counter': rows['mutation']['counter'] + 1}}
+        self.backend.record_mutate_many({'mutation': ('counter',), 'legacy-json': ('key',)}, update)
+        self.assertEqual(self.backend.record_get('mutation', 'counter'), 1)
+
     def test_projected_page_preserves_json_types_missing_null_and_exact_cursor_scope(self):
         namespace = 'selected/雪:%'
         records = {
@@ -135,6 +195,15 @@ class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.backend = SQLiteStateStore(Path(directory.name) / 'state.db')
+
+    def test_older_sqlite_uses_raw_page_without_json_token_operator(self):
+        self.backend.record_replace('legacy', {'a': {'selected': 2**100 + 1, 'ignored': True}})
+        with patch('codex_web.storage.sqlite_state.sqlite3.sqlite_version_info', (3, 37, 0)):
+            with patch.object(self.backend, '_record_page', wraps=self.backend._record_page) as reader:
+                result, cursor = self.backend.record_page_projected('legacy', fields=('selected',))
+                self.assertEqual(result, {'a': {'selected': 2**100 + 1}})
+                self.assertIsNone(cursor)
+                self.assertNotIn('fields', reader.call_args.kwargs)
 
     def test_batch_probe_uses_one_query_and_connection(self):
         from contextlib import contextmanager

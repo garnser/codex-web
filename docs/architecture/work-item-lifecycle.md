@@ -130,6 +130,16 @@ Legacy `1.0` pins serialize exactly their original shape without a recipient
 field, preserving retained snapshot comparison. Actual matching native delivery
 is still required before ordinary recipient ACK; routing itself never ACKs.
 
+After intake is accepted, GitLab provider callbacks to the current owner use
+the same compatible-recipient selection and native custody witness. The
+original conversation binding remains reply provenance; the provider event pin
+continues to attest the exact canonical event and message. Both pins remain on
+the ordinary retained single input, without relaxing provider-notification batch
+eligibility. Missing, ambiguous or changed custody records the existing visible
+owner-routing blocker rather than dispatching to the incompatible bound thread.
+This callback does not create a new handoff or ACK, and nonterminal pipeline
+progress still records deterministically without selecting or starting a model.
+
 A committed native-start observer also projects exact late positive delivery
 after a waiter times out or an earlier metadata projection fails. It reuses the
 canonical snapshot-digest/correlation checks, exact response evidence and

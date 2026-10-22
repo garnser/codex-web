@@ -89,11 +89,18 @@ executor admission delay from work duration; they do not diagnose historical
 CPU, GIL, OOM or database corruption without evidence.
 
 Periodic actionable-owner health reads project their six top-level Work Item
-fields inside the existing SQLite/PostgreSQL keyed-record page query. Unrelated
-execution history is neither transferred nor JSON-decoded in the control-plane
-process for this count. Pagination, namespace/key filtering, selected-field
+fields inside the existing SQLite/PostgreSQL keyed-record page query. For
+ordinary JSON, unrelated execution history is neither transferred nor
+JSON-decoded in the control-plane process for this count. Pagination, namespace/key filtering, selected-field
 validation and missing/null semantics are unchanged. Older store adapters use
-the full-read compatibility fallback. This is an optional read optimization,
+the full-read compatibility fallback. Legacy Python JSON values such as
+nonfinite floats, or escaped characters unsupported by SQL JSON conversion, also
+use the bounded full-page read and Python field projection. PostgreSQL isolates
+the strict conversion in a savepoint so this fallback does not abort an owning
+canonical update transaction. Selected JSON tokens retain large integers and
+signed zero instead of being coerced through SQL scalar types. Only conversion errors qualify; transport,
+deadline and other storage failures still propagate without retry.
+This is an optional read optimization,
 not a cache, authority decision, new index or persisted schema migration; it
 does not extend the native supervision deadline or attribute past timeouts.
 
