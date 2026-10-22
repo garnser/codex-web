@@ -148,6 +148,8 @@ class AutonomyService:
                         return {"ok": True, "ignored": True, "reason": "owner_lane_busy", "threadId": target}
                     # This witness already requires live exact custody. Never
                     # replace its source binding or rebuild a reduced scope.
+                    if recovery_reason is not None:
+                        self.runtime.record_watchdog_dispatch(cycle_key)
                     result = await self.runtime.dispatch_event(binding, text, source,
                         **dispatch_context, owner_routing_pin=pin)
                     return {**result, "threadId": target}
