@@ -16,7 +16,6 @@ MemorySwapMax=0
 CPUQuota=25%
 TasksMax=32
 LimitCORE=0
-LimitFSIZE=16M
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

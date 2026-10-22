@@ -17,8 +17,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 from urllib.error import HTTPError
 from urllib.request import urlopen
@@ -26,6 +28,7 @@ from urllib.request import urlopen
 SCHEMA = "1.0"
 REPOSITORY = "garnser/codex-web"
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_INVESTIGATION_OUTPUT = 16 * 1024 * 1024
 SAFE_ID = re.compile(r"^[a-f0-9]{32}$")
 ISSUE_URL = re.compile(r"^https://github\.com/garnser/codex-web/issues/([1-9][0-9]*)$")
 PULL_URL = re.compile(r"^https://github\.com/garnser/codex-web/pull/([1-9][0-9]*)$")
@@ -209,16 +212,100 @@ def requalify_known_deferrals(root, state, config, *, now, run=None):
             job["deferral_requalified"] = True
 
 
+def bounded_process(argv, *, output, errors, timeout, maximum, prompt=b"", env=None, cwd=None):
+    """Bound our pipes, not a tool's internal database or legitimate test files."""
+    exceeded = threading.Event()
+    io_failed = threading.Event()
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=env, cwd=cwd, start_new_session=True)
+
+    def stop(signum=signal.SIGINT):
+        # The session leader may already have exited while descendants hold pipes.
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    def drain(pipe, destination):
+        written = 0
+        try:
+            with pipe:
+                while chunk := pipe.read(65536):
+                    allowed = max(0, maximum - written)
+                    destination.write(chunk[:allowed])
+                    destination.flush()
+                    written += min(len(chunk), allowed)
+                    if len(chunk) > allowed:
+                        exceeded.set()
+                        stop()
+                        break
+        except OSError:
+            io_failed.set()
+            stop()
+
+    def feed():
+        try:
+            with process.stdin:
+                process.stdin.write(prompt)
+        except BrokenPipeError:
+            pass
+        except OSError:
+            io_failed.set()
+            stop()
+
+    threads = [threading.Thread(target=drain, args=(process.stdout, output), daemon=True),
+               threading.Thread(target=drain, args=(process.stderr, errors), daemon=True),
+               threading.Thread(target=feed, daemon=True)]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or exceeded.is_set() or io_failed.is_set():
+            timed_out = remaining <= 0
+            stop()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                stop(signal.SIGKILL)
+                process.wait(timeout=5)
+            # Reaping the leader alone cannot prove its descendants stopped.
+            stop(signal.SIGKILL)
+            break
+        try:
+            process.wait(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            pass
+    # Even a normally exited leader can leave a descendant without inherited
+    # pipes. No member of this command's created group may outlive its owner.
+    stop(signal.SIGKILL)
+    process.wait(timeout=5)
+    def join_io():
+        deadline = time.monotonic() + 5
+        for thread in threads:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+    join_io()
+    if any(thread.is_alive() for thread in threads):
+        stop(signal.SIGKILL)
+        process.wait(timeout=5)
+        join_io()
+    return {"returncode": process.returncode, "output_bound_exceeded": exceeded.is_set(),
+            "timed_out": timed_out, "io_complete": not io_failed.is_set() and not any(t.is_alive() for t in threads)}
+
+
 def command(argv, *, timeout=15, check=True):
-    # Spool rather than capture arbitrary subprocess output in monitor memory.
-    # The service's file-size and time limits bound temporary disk consumption.
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-        process = subprocess.run(argv, stdout=output, stderr=errors, timeout=timeout, check=False)
+        process = bounded_process(argv, output=output, errors=errors, timeout=timeout, maximum=MAX_FILE_BYTES)
+        if process["timed_out"]:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        if process["output_bound_exceeded"] or not process["io_complete"]:
+            raise ValueError("command_output_bound_or_io_incomplete")
         output.seek(0)
         stdout = output.read(MAX_FILE_BYTES + 1)
         if len(stdout) > MAX_FILE_BYTES:
             raise ValueError("command_output_bound_exceeded")
-        result = subprocess.CompletedProcess(argv, process.returncode, stdout.decode(), "")
+        result = subprocess.CompletedProcess(argv, process["returncode"], stdout.decode(), "")
     if check and result.returncode:
         raise RuntimeError(f"command_failed:{Path(argv[0]).name}:{result.returncode}")
     return result
@@ -560,9 +647,11 @@ This is at most one bounded investigation round. If this is a continuation, reus
             return
         atomic_json(directory / "started.json", {"job_id": job_id, "started_at": time.time(), "workspace": str(workspace)})
         with (directory / "events.private.jsonl").open("xb") as events, (directory / "stderr.private.log").open("xb") as errors:
-            process = subprocess.run(investigation_command(config, workspace, directory), input=prompt.encode(),
-                stdout=events, stderr=errors, cwd=workspace, env=environment, timeout=1100, check=False)
-        result = read_json(directory / "result.json") if process.returncode == 0 else None
+            process = bounded_process(investigation_command(config, workspace, directory), prompt=prompt.encode(),
+                output=events, errors=errors, cwd=workspace, env=environment, timeout=1100, maximum=MAX_INVESTIGATION_OUTPUT)
+        process_ok = (process["returncode"] == 0 and not process["timed_out"]
+                      and not process["output_bound_exceeded"] and process["io_complete"])
+        result = read_json(directory / "result.json") if process_ok else None
         session_id = None
         with (directory / "events.private.jsonl").open() as events:
             for _, line in zip(range(100), events):
@@ -581,7 +670,8 @@ This is at most one bounded investigation round. If this is a continuation, reus
                  and result.get("issue_url") == f"https://github.com/{REPOSITORY}/issues/{job['issue_number']}"
                  and (not result.get("pull_request_url") or PULL_URL.fullmatch(result["pull_request_url"])))
         atomic_json(directory / "finished.json", {"job_id": job_id, "finished_at": time.time(),
-            "status": "investigation_finished" if valid else "failed", "exit_code": process.returncode,
+            "status": "investigation_finished" if valid else "failed", "exit_code": process["returncode"],
+            "process_io": process,
             "session_id": session_id, "result": result if valid else None})
 
 

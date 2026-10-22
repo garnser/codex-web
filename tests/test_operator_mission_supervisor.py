@@ -4,10 +4,12 @@ import importlib.util
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -190,7 +192,7 @@ class MissionSupervisorTests(unittest.TestCase):
             Path(argv[-2]).mkdir()
             self.config["maintenance_until"] = monitor.time.time() + 3600
             monitor.atomic_json(self.root / "config.json", self.config)
-        with patch.object(monitor.subprocess, "run", side_effect=AssertionError("model must not start")):
+        with patch.object(monitor, "bounded_process", side_effect=AssertionError("model must not start")):
             monitor.investigate(self.root, job_id, run=run)
         self.assertFalse((directory / "started.json").exists())
         self.assertEqual(monitor.read_json(directory / "finished.json")["status"], "deferred_before_model")
@@ -308,6 +310,64 @@ class MissionSupervisorTests(unittest.TestCase):
         self.assertEqual(monitor.observe(snapshot, {}, now=self.now), [])
         previous = {"service": {"NRestarts": "2"}}
         self.assertEqual([s.kind for s in monitor.observe(snapshot, previous, now=self.now)], ["new_service_restart"])
+
+    def child(self, source, *, maximum=4096, prompt=b"", timeout=5):
+        output, errors = io.BytesIO(), io.BytesIO()
+        result = monitor.bounded_process([sys.executable, "-c", source], output=output,
+            errors=errors, prompt=prompt, timeout=timeout, maximum=maximum)
+        return result, output.getvalue(), errors.getvalue()
+
+    def test_stream_bounds_allow_legitimate_internal_files_larger_than_log_limit(self):
+        state_file = self.root / "private-tool-state"
+        source = f"from pathlib import Path; Path({str(state_file)!r}).write_bytes(b'x' * (20 * 1024 * 1024)); print('ok')"
+        result, output, _ = self.child(source, maximum=64)
+        self.assertEqual(result["returncode"], 0)
+        self.assertTrue(result["io_complete"])
+        self.assertFalse(result["output_bound_exceeded"])
+        self.assertEqual(output, b"ok\n")
+        self.assertEqual(state_file.stat().st_size, 20 * 1024 * 1024)
+
+    def test_stdout_and_stderr_have_separate_output_bounds(self):
+        for descriptor in (1, 2):
+            result, output, errors = self.child(f"import os; os.write({descriptor}, b'x' * 10000)", maximum=512)
+            self.assertTrue(result["output_bound_exceeded"])
+            self.assertEqual(len(output if descriptor == 1 else errors), 512)
+            self.assertLessEqual(len(output), 512)
+            self.assertLessEqual(len(errors), 512)
+
+    def test_bounded_process_feeds_stdin_without_losing_structured_output(self):
+        result, output, _ = self.child("import sys; print(sys.stdin.buffer.read().decode().upper())", prompt=b"checkpoint")
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(output, b"CHECKPOINT\n")
+        self.assertTrue(result["io_complete"])
+
+    def test_bounded_process_timeout_reaps_the_child(self):
+        result, _, _ = self.child("import time; time.sleep(10)", timeout=0.15)
+        self.assertTrue(result["timed_out"])
+        self.assertIsNotNone(result["returncode"])
+        self.assertTrue(result["io_complete"])
+
+    def test_exited_leader_cannot_leave_sigint_ignoring_descendant_holding_pipes(self):
+        pid_file = self.root / "descendant.pid"
+        child = ("import os,signal,time; from pathlib import Path; "
+            "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+            f"Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)")
+        parent = ("import subprocess,sys,time; from pathlib import Path; "
+            f"subprocess.Popen([sys.executable,'-c',{child!r}]); "
+            f"p=Path({str(pid_file)!r}); "
+            "\nfor _ in range(200):\n if p.exists(): break\n time.sleep(0.01)\n")
+        result, _, _ = self.child(parent)
+        self.assertTrue(result["io_complete"])
+        descendant = int(pid_file.read_text())
+        # PID 1 owns final orphan reaping; require actual disappearance.
+        for _ in range(200):
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("owned descendant survived process-group cleanup")
 
 
 if __name__ == "__main__":

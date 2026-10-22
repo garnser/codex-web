@@ -15,7 +15,6 @@ KillMode=control-group
 KillSignal=SIGINT
 TimeoutStopSec=60
 LimitCORE=0
-LimitFSIZE=16M
 NoNewPrivileges=yes
 PrivateTmp=yes
 Restart=no

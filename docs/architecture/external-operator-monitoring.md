@@ -32,6 +32,12 @@ The default limit is one automatic investigation at a time, six launches per
 rolling day, at least 30 minutes between launches, and four investigation rounds
 per issue. Each unit has a 20-minute lifetime, 2 GiB memory, no swap, one CPU and
 bounded output files. The child CLI has an earlier 1,100-second timeout. These
+output limits apply separately to supervisor-owned stdout/stderr pipes, not to
+legitimate CLI state databases or files created by engineering tools. Do not
+apply a blanket `LimitFSIZE` to the CLI. Timeout, overflow or incomplete pipe
+cleanup signals the created process group and escalates to group SIGKILL before
+reaping the leader and joining I/O. Existing unit control-group cleanup remains
+the outer ownership boundary for independently detached descendants. These
 are execution/resource bounds, not a claimed hard token or dollar quota; native
 CLI accounting remains the usage source. The monitor uses 256 MiB, a quarter CPU
 and a 90-second deadline. An unrecognized or missing unit state holds capacity.
