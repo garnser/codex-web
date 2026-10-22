@@ -36,3 +36,57 @@ operator does not override those invariants. Trusted host-access execution, same
 Goal lifecycle, delegated completion follow-up and deployment checkpoint/resume require
 their canonical execution/authority contracts and separate qualification. The feature
 issue remains open until its full UI and live acceptance is satisfied.
+
+## Explicit host metadata inspection
+
+The assignment-bound control-plane broker recognizes `operator.host.inspect`
+(`GET /api/operator/host`, no query or body). This is a fixed read projection:
+current process ID, Python version/implementation, platform release/machine,
+and capacity of the filesystem containing the configured Home path. It accepts
+no caller paths, shell commands, environment-variable requests or file reads.
+Results appear through the normal conversation tool result and broker audit;
+there is no second worker, command runner, event loop or scheduler.
+
+Activation is explicit canonical data, never bootstrap defaults:
+
+1. An administrator publishes an exact Home-scoped execution-profile catalog
+   whose existing `orchestration-only` profile declares `operator.host.inspect`.
+   Scratch/no-repository execution, network-disabled and `host_mutation=False`
+   remain enforced; ordinary/global declarations do not activate host inspection.
+2. The administrator selects a published Agent Profile with that execution
+   profile and an explicit current authority Role. That Role must grant the
+   `operator.host.inspect` READ capability through normal authority evaluation.
+   This change creates no new binding, wildcard grant or administrator identity.
+3. The administrator uses ordinary thread creation/admission, names and selects
+   the same conversation in Home. Selection must belong to the assignment's
+   human requester; a shortcut selected by another identity confers no authority.
+4. The worker uses its existing authenticated assignment broker. Its operation
+   catalog advertises inspection only while the declaration/selection is current;
+   catalog visibility is not proof of a live lease or effective permission.
+
+Every inspection revalidates the current requester membership, Home selection,
+canonical thread/bootstrap association, execution and Agent Profile revisions,
+authority Role and operation, assigned registered service worker, credential
+metadata when present, fence/deadline/lease, and isolated scratch workspace/lease.
+These checks run again after the metadata read; revocation or reselection during
+inspection suppresses the result. The configured Home path is rechecked too.
+A missing/archived/replaced thread, stale definition, wrong tenant, lost worker
+or expired lease refuses without silently choosing a successor or granting access.
+
+The existing common native procedure-admission boundary also checks input to a
+profile declaring this operation. The current input actor must be the assignment's
+same human requester and remain an administrator with the current profile.
+A later member prompt or generic service event cannot borrow the original
+administrator's assignment. A missing ingress actor remains missing instead of
+being elevated from the fallback control actor. The hook runs before discovery/history/native input
+and is shared by queued/resumed turns and the existing provider-neutral session
+boundary. Ordinary profiles without this declaration retain their existing path.
+It creates no provenance from message text and no extra continuation owner.
+Explicit, server-derived cross-project/system delegation remains separate work;
+generic bot/service input is not implicitly elevated to the operator's human.
+
+This metadata capability is a useful inspection step, not arbitrary host shell
+or filesystem access. Privileged host mutation, native Goal lifecycle, deployment
+checkpoint/resume and full live UI qualification remain tracked by #1669 and the
+native Goal control contract. No runtime capabilities or live profiles are
+activated by merely installing this source.

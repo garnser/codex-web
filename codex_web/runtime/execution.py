@@ -3051,7 +3051,7 @@ class TurnExecutionService:
             procedure_discovery = None
             if self.procedure_admission is not None:
                 procedure_discovery, procedure_text = await self.procedure_admission(
-                    project=project, actor=actor or self.control_actor,
+                    project=project, actor=actor or self.control_actor, input_actor=actor,
                     thread_id=thread_id, execution_id=canonical_execution_id,
                     assignment_id=assignment_id, sandbox=effective_sandbox,
                     source=source, request_checksum=hashlib.sha256(message.encode()).hexdigest(),

@@ -359,6 +359,7 @@ from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
 from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.home_operator import HomeOperatorService
+from codex_web.services.home_operator_host import HomeOperatorHostService
 from codex_web.services.metrics import MetricService
 from codex_web.services.outcome_metrics import OutcomeMetricService
 from codex_web.services.ux_telemetry import UxTelemetryService
@@ -4867,6 +4868,14 @@ operator_ui_service = OperatorUiService(
 home_operator_service = HomeOperatorService(
     projects=project_service, thread_scope=thread_scope_service,
     thread_index=thread_index_repository, settings=thread_execution_settings_service,
+)
+control_plane_broker_service.home_operator_host = HomeOperatorHostService(
+    broker=control_plane_broker_service, projects=project_service,
+    thread_scope=thread_scope_service, thread_index=thread_index_repository,
+    bootstrap_bindings=thread_bootstrap_binding_service,
+)
+turn_execution_service.procedure_admission.input_authorizer = (
+    control_plane_broker_service.home_operator_host.authorize_native_input
 )
 home_overview_service = HomeOverviewService(
     projects=project_service,
