@@ -302,7 +302,11 @@ other compatibility, authority, scheduled-owner or recovery failures still refus
 It durably writes `pre-stop-qualified.json`. Only then may the reviewed operator
 procedure stop the positively drained service. The helper waits at most 30
 seconds for that same invocation to exit cleanly, and refuses a replacement,
-crash, failed stop or expired pre-stop observation. The helper itself never stops,
+crash, failed stop or expired pre-stop observation. A successful systemd stop
+accepts either ordinary exit code 0 or the expected SIGTERM signal after Uvicorn
+shutdown, with the same process/start/exit-time and PID-absence checks. Forced
+kill, segmentation fault and non-success service results remain ineligible.
+The helper itself never stops,
 starts, installs or rolls back a service. The operator procedure must independently
 own service restoration, including helper interruption or an unknown result.
 
