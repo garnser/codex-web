@@ -138,4 +138,3 @@ class GitLabRecipientCustodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(queued.get('handoff_requested_at'))
         dispatch.execution.schedule_queue_drain.assert_called_once_with('platform-thread')
         dispatch.service.bindings.upsert.assert_not_called()
-
