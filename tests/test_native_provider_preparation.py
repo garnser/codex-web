@@ -146,6 +146,14 @@ class NativeProviderPreparationTests(unittest.IsolatedAsyncioTestCase):
             refused,_=f.discovery.discover(context)
         self.assertFalse(refused.admitted)
         validator.assert_not_called()
+        # An inherited nested discovery cannot borrow a valid outer proof even
+        # when the required Definition refs happen to match.
+        copied_context=replace(context)
+        with native_provider_preparation(NativeProviderPreparation((self.reference,),"same-pins",validator,
+                context=copied_context)):
+            refused,_=f.discovery.discover(context)
+        self.assertFalse(refused.admitted)
+        validator.assert_not_called()
         refused,_=f.discovery.discover(context)
         self.assertEqual(refused.outcome,"unsupported_enforcement")
 
