@@ -51,9 +51,41 @@ class WorkGraphService:
         self,
         store: WorkGraphStore,
         work_items: Callable[[], dict[str, WorkItemState] | Iterable[WorkItemState]],
+        *,
+        snapshot_items: Callable[[str, TenantScope], dict[str, WorkItemState]] | None = None,
     ) -> None:
         self.store = store
         self._work_items = work_items
+        self._snapshot_items = snapshot_items
+
+    @staticmethod
+    def projected_snapshot_items(repository, project_id: str, scope: TenantScope) -> dict[str, WorkItemState]:
+        """Read the complete graph headers, not unrelated Work Item histories.
+
+        This is an uncached canonical read through the existing repository's
+        projected-page owner. Mutations and ordinary item reads still use full
+        records. Every field used by snapshot/readiness is retained, including
+        tenant attribution and blocker findings; pagination never truncates a
+        graph or turns a missing dependency into a successful dependency.
+        """
+        fields = ('ref', 'organization_id', 'workspace_id', 'project_id', 'title',
+                  'current_stage', 'terminal_outcome', 'blocker', 'blocking_findings',
+                  'last_meaningful_update_at', 'updated_at', 'created_at')
+        result = {}
+        after = None
+        while True:
+            rows, cursor = repository.projected_page(fields=fields, after=after, limit=1000)
+            for key, raw in rows.items():
+                item = WorkItemState.model_validate(raw)
+                if WorkGraphService._scope_matches(item, scope) and item.project_id == project_id:
+                    if key in result:
+                        raise WorkGraphError('duplicate Work Item in graph snapshot')
+                    result[key] = item
+            if cursor is None:
+                return result
+            if after is not None and cursor <= after:
+                raise WorkGraphError('Work Item graph pagination did not advance')
+            after = cursor
 
     def _all_items(self) -> dict[str, WorkItemState]:
         raw = self._work_items()
@@ -84,9 +116,11 @@ class WorkGraphService:
         project_id: str,
         scope: TenantScope,
     ) -> dict[str, WorkItemState]:
+        items = (self._snapshot_items(project_id, scope)
+                 if self._snapshot_items is not None else self._all_items())
         return {
             ref: item
-            for ref, item in self._all_items().items()
+            for ref, item in items.items()
             if self._scope_matches(item, scope) and item.project_id == project_id
         }
 
