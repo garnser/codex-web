@@ -2753,6 +2753,10 @@ executive_management_service = ExecutiveManagementService(
 )
 app.state.executive_activation_store = executive_activation_store
 app.state.executive_management_service = executive_management_service
+from codex_web.services.assignment_reasoning_broker import AssignmentReasoningBroker
+control_plane_broker_service.assignment_reasoning = AssignmentReasoningBroker(
+    control_plane_broker_service, procedures=procedure_execution_service,
+    executives=executive_management_service)
 app.include_router(build_executive_management_router(executive_management_service))
 
 company_operations_service = CompanyOperationsService(

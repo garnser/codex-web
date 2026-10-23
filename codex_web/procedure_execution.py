@@ -5,6 +5,11 @@ from codex_web.definitions import DefinitionReference
 from codex_web.authority import AuthorityDecision
 
 
+class ProcedureStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    definition: DefinitionReference
+    input_snapshot_id: str = Field(min_length=1, max_length=200)
+
 class ProcedureStepCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["pending", "running", "awaiting_approval", "waiting", "reconciliation_required", "succeeded", "failed", "verification_failed", "skipped"] = "pending"

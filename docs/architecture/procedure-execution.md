@@ -159,3 +159,55 @@ Role authority and canonical approval quorum are required separately, including
 at ActionIntent creation and provider dispatch. Provider binding security policy
 still constrains filesystem, process and network effects. Expired fences, revoked
 worker identities or changed scope cannot be overridden by a stored policy allow.
+
+### Assignment-bound procedure and Executive adapters
+
+The assignment control-plane broker exposes `procedure.read`, `procedure.start`
+and `procedure.advance` through the existing assignment procedure routes. The
+path assignment must be the current broker assignment. Start takes the canonical
+exact Skill Definition reference and input Artifact ID; the procedure owner still
+checks published applicability, governed input, isolated workspace, worker lease,
+fence, budgets and checkpoint CAS. Advance executes one existing interpreter
+step, without an independent controller or automatic retry.
+
+`executive.activation.create`, `.read` and `.consult` use the canonical Executive
+activation service. Read on `/api/executive/activations` returns only this exact
+assignment origin, so a lost create response does not require another activation.
+The origin is `assignment:<assignment_id>:fence:<fence>`. This initial native
+adapter deliberately supports one activation per assignment/fence. Create must
+supply that exact `trigger_ref`, explicit `requested_role_ids` and matching
+`max_roles`. Its canonical activation ID is deterministically derived from tenant
+and origin; the existing store's ID uniqueness prevents concurrent duplicate
+creation. Reusing the origin with different canonical request content refuses.
+Creation does not consult or materialize proposals. A completed consultation can
+be read again; a concurrently reserved or failed consultation is not retried.
+
+Every operation requires an explicit allowlist entry in the current pinned
+Execution Profile, current requester authority, authenticated worker identity and
+live canonical assignment/resource lease. No identity, assurance, tenant,
+resource, provider or scope override is accepted. Service requesters additionally
+retain the canonical `executive:consult`/`executive:admin` scope requirement.
+Credential-free requester refresh does not borrow human MFA from the worker.
+Executive context references must remain inside the assignment project and
+resource envelope. For `orchestration-admin` only, the existing current pinned
+`administrative_repository_ids` declaration can supply an explicit target envelope:
+every referenced repository is reauthorized through the canonical administrative
+target checks and ordinary authority. Empty assignment resources never mean all
+resources. This administrative expansion does not apply to procedure execution;
+an MR procedure needs its actual compatible repository assignment and lease. Automatically included WorkGraph nodes are checked against
+that envelope. Business and Memory projections without an assignment Resource
+proof are unsupported in this native adapter and fail closed; human Executive
+management remains a separate canonical authority boundary.
+
+Executive preparation is bounded to five seconds before persistence; its existing
+finite role/call/token/cost budgets govern consultation. Consultation reserves
+PLANNED status, revision and budget inside the canonical store critical section
+before invoking a model. Routine facts, routing and MR transitions remain
+deterministic; the adapter does not require an Executive call for each MR.
+
+These adapters do not make arbitrary ActionProviders procedure-compatible.
+GitLab's ordinary flat ActionResult and provider receipt are not the typed
+`outputs`/canonical `evidence` map required by procedure execution. A workflow
+must use a registered adapter that satisfies that contract before publishing an
+enforced operational procedure. Existing procedure trace and Executive management
+UI continue to inspect the same canonical records.

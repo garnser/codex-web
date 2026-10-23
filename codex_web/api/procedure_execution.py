@@ -3,14 +3,10 @@ import asyncio
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from codex_web.api.identity import request_actor
-from codex_web.definitions import DefinitionReference
 from codex_web.services.procedure_execution import ProcedureExecutionError
 from codex_web.services.procedure_discovery import ProcedureAdmissionError
 
-class ProcedureStart(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    definition: DefinitionReference
-    input_snapshot_id: str = Field(min_length=1, max_length=200)
+from codex_web.procedure_execution import ProcedureStart
 
 class ProcedureDeviationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
