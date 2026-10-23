@@ -361,6 +361,7 @@ from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.home_operator import HomeOperatorService
 from codex_web.services.home_operator_goals import HomeOperatorGoalInspection
 from codex_web.services.home_operator_host import HomeOperatorHostService
+from codex_web.services.home_operator_followup import HomeOperatorFollowup
 from codex_web.services.metrics import MetricService
 from codex_web.services.outcome_metrics import OutcomeMetricService
 from codex_web.services.ux_telemetry import UxTelemetryService
@@ -4880,6 +4881,16 @@ control_plane_broker_service.home_operator_host = HomeOperatorHostService(
     thread_scope=thread_scope_service, thread_index=thread_index_repository,
     bootstrap_bindings=thread_bootstrap_binding_service,
 )
+home_operator_followup = HomeOperatorFollowup(
+    runs=automation_run_service, operator=home_operator_service,
+    identity=identity_service, events=canonical_event_store, turns=turn_service,
+    controller=autonomy_controller, authority=authority_role_service,
+    event_triggers=automation_event_trigger_service, workers=execution_worker_service,
+    bootstrap_bindings=thread_bootstrap_binding_service,
+)
+turn_execution_service.retained_turn_outcome_recorder = home_operator_followup.record_terminal
+automation_execution_service.home_operator_followup = home_operator_followup
+control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input
 turn_execution_service.procedure_admission.input_authorizer = (
     control_plane_broker_service.home_operator_host.authorize_native_input
 )

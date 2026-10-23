@@ -148,3 +148,75 @@ observation and opens the existing Goal surface for supported controls. Inspecti
 does not claim an active runner, resume a binding, settle an unknown result, or
 create a continuation owner. There is no timer or model call. Native Goal controls
 remain subject to their separate capability and qualification contract.
+
+## Explicit event follow-up in the saved conversation
+
+Automation Definition schema `1.1` adds the opt-in `home_operator` target over the
+existing canonical Automation engine. No subscription, profile, Role or worker is
+created or activated by installing the source. The existing Automations editor
+shows the target's native Home thread ID, Home selection revision and exact Agent
+Profile revision. Its ordinary run history retains the canonical event, immutable
+Definition reference, delivery result and original requested execution reference.
+Manual "Run now" is unavailable for this event-only target; normal human requests
+continue through the conversation composer.
+
+An administrator explicitly publishes an enabled Automation whose owner is the
+same current administrator who selected the profile-bound Home conversation.
+The target ID is that exact Agent Profile. The current authority catalog must
+allow `operator.event.followup` at EXECUTE in Home; publishing a task description
+or receiving a provider event does not grant that capability. Normal profile
+invocation rights and host operation checks remain separate. Credential-free
+identity resolution rechecks membership; it does not authenticate a new human
+request or manufacture MFA/session assurance. Policies requiring stronger current
+assurance still refuse. Generic service or bot input cannot borrow this grant.
+
+The Automation uses an existing canonical/provider event trigger with explicit
+filters, such as CI terminal status, delegated completion or failure. Project-
+scoped Home Definitions see only events in their scope; an explicitly published
+workspace Definition can select other Projects' events within that same workspace.
+Filters and instructions remain versioned Definition data, not another code-owned
+routing catalog. Administrators should filter meaningful terminal changes rather
+than intermediate status traffic. Canonical event ingress and AutomationRun
+idempotency deduplicate the same event. The existing autonomy controller applies
+pause, scoped/exclusive gates, cooldown and reasoning-cycle budgets; no idle model
+poll, scheduler or Goal continuation owner is added.
+
+The target requires one attempt, concurrency one, finite configured token/duration
+budgets and `reuse_only` work policy. Unlike repository Automations, this input
+needs no Work Item creation: its subject is the retained operator conversation.
+Only bounded identifier references are appended to the published instructions;
+raw event bodies, logs, transcripts and credentials are excluded. The new message
+contribution is conservatively bounded by its byte length against the configured
+input-token allocation. Existing native history/model limits and Automation usage
+accounting still apply; this input bound is not a new whole-transcript estimator.
+
+Before enqueueing, an atomic transition of the existing AutomationRun records its
+original delivery claim and requested execution ID. At most one Home delivery may
+remain unresolved in a workspace. The existing TurnService enters a deferred turn
+in the **same** selected conversation without assignment replacement or renewal.
+Human queue policy remains authoritative. Current publication, owner membership,
+explicit capability, selection and Profile pins are rechecked at queue admission,
+after awaited input preparation and immediately before the guarded native send.
+That final guard additionally checks the original event message checksum and
+requested execution ID, along with the existing native bootstrap/worker/fence/
+lease checks. A changed pointer, disabled/superseded Definition, expired duration,
+revoked authority, pause or lost custody refuses rather than retargeting.
+
+A lost queue/native response or interrupted delivery leaves the original run and
+execution reference visible as unconfirmed. Restarting, seeing the same event or
+calling launch again cannot send another input. Missing receipts are not proof of
+no effect. Explicit custody recovery and reconciliation use the existing retained
+queue/runner mechanisms; this slice does not resurrect cancelled assignments,
+resume a native Goal or duplicate an uncertain external action.
+
+Retained threads keep their assignment alive after a turn, so assignment-terminal
+Automation reconciliation alone cannot settle these runs. The existing runtime
+checkpoint barrier reports the actual native terminal outcome to the Automation
+ledger, without creating another execution. It validates the original run/thread/
+Profile and current bootstrap/fence/lease; checkpoint failure remains failure.
+A duplicate callback cannot overwrite the first terminal fact. Historical outcome
+recording grants no new input and does not change pause state or provider receipts.
+A missing or incompatible terminal witness remains unresolved for reconciliation.
+Browser disconnection does not own delivery or settlement: both use canonical
+persisted records. This implements the event-delivery engine, not the full #1669
+live UI/restart/lease-expiry qualification or privileged host mutation capability.

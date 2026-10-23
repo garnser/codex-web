@@ -476,16 +476,14 @@ class AutomationScheduleMaterializer:
 def install_automation_definitions(
     registry: DefinitionRegistryService,
 ) -> AutomationDefinitionService:
-    if not any(
-        item["kind"] == AUTOMATION_KIND
-        and item["schema_version"] == AUTOMATION_SCHEMA_VERSION
-        for item in registry.schemas.metadata()
-    ):
-        registry.register_schema(
-            DefinitionKindSchema(
-                kind=AUTOMATION_KIND,
-                schema_version=AUTOMATION_SCHEMA_VERSION,
-                validate=validate_automation_definition,
-            )
-        )
+    for version in ("1.0", AUTOMATION_SCHEMA_VERSION):
+        if not any(item["kind"] == AUTOMATION_KIND and item["schema_version"] == version
+                   for item in registry.schemas.metadata()):
+            def validate(payload, version=version):
+                value = validate_automation_definition(payload)
+                if version == "1.0" and value["target"]["kind"] == "home_operator":
+                    raise ValueError("Home operator targets require Automation schema 1.1")
+                return value
+            registry.register_schema(DefinitionKindSchema(
+                kind=AUTOMATION_KIND, schema_version=version, validate=validate))
     return AutomationDefinitionService(registry)

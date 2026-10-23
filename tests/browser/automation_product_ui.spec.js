@@ -356,3 +356,60 @@ test("Automation workspace remains usable on phone layout", async ({ page }) => 
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.width).toBeLessThanOrEqual(390);
 });
+
+test('Home event Automation editor preserves explicit same-conversation revision pins', async ({ page }) => {
+  const writes = [];
+  await page.route('**/api/**', async route => {
+    const req = route.request();
+    const url = new URL(req.url());
+    if (req.method() === 'POST') {
+      writes.push({ path: url.pathname, body: req.postDataJSON() });
+      await route.fulfill({ json: { record: { record_id: 'home-event-draft' } } });
+      return;
+    }
+    await route.fulfill({ json: { items: url.pathname === '/api/automations' ? [scopedAutomation('home')] : [] } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+  await switchAutomationProject(page, 'home');
+  const card = page.locator('[data-automation-product]');
+  await card.locator('[data-automation-edit]').click();
+  const form = card.locator('[data-automation-editor]');
+  await form.locator('[name=target_kind]').selectOption('home_operator');
+  await form.locator('[name=target_id]').fill('trusted-home-profile');
+  await form.locator('[name=home_thread_id]').fill('same-permanent-home');
+  await form.locator('[name=home_binding_revision]').fill('7');
+  await form.locator('[name=agent_profile_revision]').fill('3');
+  await form.locator('[name=trigger_type]').selectOption('canonical_event');
+  await form.locator('[name=event_type]').fill('ci.pipeline');
+  await form.locator('[name=owner_identity_id]').fill('admin');
+  await form.locator('[name=max_input_tokens]').fill('1000');
+  await form.locator('[name=max_output_tokens]').fill('500');
+  await form.locator('[name=max_duration_seconds]').fill('60');
+  await form.locator('[name=retry_max_attempts]').fill('1');
+  await form.locator('[name=work_item_policy]').selectOption('reuse_only');
+  await expect(form).toContainText('uncertain delivery is never replayed');
+  await form.locator('button[type=submit]').click();
+  await resolveAction(page);
+  await expect.poll(() => writes.length).toBeGreaterThan(0);
+  expect(writes[0].body.definition.target).toEqual({ kind: 'home_operator', id: 'trusted-home-profile',
+    home_thread_id: 'same-permanent-home', home_binding_revision: 7, agent_profile_revision: 3 });
+  expect(writes[0].body.definition.trigger).toEqual({ type: 'canonical_event', event_type: 'ci.pipeline', event_filter: {} });
+});
+
+test('Saved Home event target exposes pins and disables manual event replay', async ({ page }) => {
+  const item = scopedAutomation('home');
+  item.definition.target = { kind: 'home_operator', id: 'trusted-home-profile', home_thread_id: 'permanent-home',
+    home_binding_revision: 7, agent_profile_revision: 3 };
+  item.definition.trigger = { type: 'canonical_event', event_type: 'ci.pipeline' };
+  await page.route('**/api/**', route => route.fulfill({ json: { items:
+    new URL(route.request().url()).pathname === '/api/automations' ? [item] : [] } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+  await switchAutomationProject(page, 'home');
+  const card = page.locator('[data-automation-product]');
+  await card.getByText('Exact provenance and limits').click();
+  await expect(card).toContainText('permanent-home · selection 7 · Agent Profile revision 3');
+  await expect(card).toContainText('unknown deliveries retain their original run');
+  await expect(card.locator('[data-automation-run-now]')).toBeDisabled();
+});

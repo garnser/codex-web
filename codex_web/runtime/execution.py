@@ -1530,6 +1530,15 @@ class TurnExecutionService:
                         "repository_checkpoint_error": checkpoint_error,
                     }
                 )
+                retained_outcome = getattr(self, "retained_turn_outcome_recorder", None)
+                if retained_outcome is not None:
+                    # Observational settlement after the same checkpoint/readiness
+                    # barrier; it cannot send native input or retry an action.
+                    try:
+                        retained_outcome(active, succeeded=succeeded and checkpoint_succeeded)
+                    except Exception:
+                        self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
+                            "thread_id": active.thread_id, "turn_id": active.turn_id})
                 if (
                     completion_work_item_ref
                     and self.work_item_outcome_recorder is not None
@@ -3084,7 +3093,10 @@ class TurnExecutionService:
             if self.native_input_guard_factory is not None:
                 input_admission_validator = await asyncio.to_thread(self.native_input_guard_factory,
                     project=project, actor=actor, execution_id=canonical_execution_id,
-                    assignment_id=assignment_id, source=source)
+                    assignment_id=assignment_id, source=source,
+                    **({"request_checksum": hashlib.sha256(message.encode()).hexdigest(),
+                        "input_execution_id": requested_execution_id}
+                       if source.removeprefix("queued:").startswith("home-operator-automation:") else {}))
 
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(

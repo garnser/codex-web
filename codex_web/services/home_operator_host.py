@@ -49,6 +49,7 @@ class HomeOperatorHostService:
         self.thread_index = thread_index
         self.bootstrap_bindings = bootstrap_bindings
         self.inspector = inspector
+        self.event_input_authorizer = None
 
     @staticmethod
     def denied(message):
@@ -111,13 +112,25 @@ class HomeOperatorHostService:
             self.denied('Host inspection Agent Profile or authority binding changed')
         return project, operator
 
-    def authorize_native_input(self, *, assignment, actor, project, source=None):
+    def authorize_native_input(self, *, assignment, actor, project, source=None, request_checksum=None, input_execution_id=None):
         """Do not let a later non-admin input borrow the original human's worker.
 
         This is an admission restriction, never a host grant. It also covers
         bootstrap before a native thread can be selected in Home. Ordinary
         undeclared profiles retain their existing admission path.
         """
+        event_source = (source.removeprefix('queued:') if isinstance(source, str) else '')
+        if event_source.startswith('home-operator-automation:'):
+            try:
+                if actor is None or assignment is None or self.event_input_authorizer is None:
+                    raise ValueError('Home event input authority is unavailable')
+                self.event_input_authorizer(source=source, assignment=assignment, actor=actor, project=project,
+                    request_checksum=request_checksum, input_execution_id=input_execution_id)
+                self._authorize_context(assignment, actor)
+                return True
+            except (IdentityError, AgentProfileError, DefinitionConflictError, DefinitionCompatibilityError,
+                    ThreadBootstrapBindingError, ValueError, LookupError, RuntimeError, HTTPException):
+                raise AuthorizationError('Current Home event delegation is unavailable') from None
         if assignment is None or assignment.execution_profile_definition is None:
             return
         profiles = self.broker.execution_profiles
@@ -166,7 +179,8 @@ class HomeOperatorHostService:
                 ValueError, LookupError):
             raise AuthorizationError('Current Home operator input authority is unavailable') from None
 
-    def prepare_native_input_guard(self, *, project, actor, execution_id, assignment_id, source):
+    def prepare_native_input_guard(self, *, project, actor, execution_id, assignment_id, source,
+                                   request_checksum=None, input_execution_id=None):
         """Same-request authority at the existing final native-send boundary.
 
         No discovery/history or native operation occurs in this callback. The
@@ -201,10 +215,14 @@ class HomeOperatorHostService:
                         or assignment.lease.expires_at <= now
                         or assignment.deadline_at is not None and assignment.deadline_at <= now):
                     refuse()
-                self.authorize_native_input(assignment=assignment, actor=actor, project=project, source=source)
+                self.authorize_native_input(assignment=assignment, actor=actor, project=project, source=source,
+                    request_checksum=request_checksum, input_execution_id=input_execution_id)
             except (IdentityError, ValueError, LookupError):
                 refuse()
 
+        event_source = source.removeprefix('queued:') if isinstance(source, str) else ''
+        if event_source.startswith('home-operator-automation:') and (request_checksum is None or input_execution_id is None):
+            refuse()
         if not assignment_id:
             return None
         # This lookup is an existing control-plane read, never a claimed ingress
@@ -213,7 +231,8 @@ class HomeOperatorHostService:
         if snapshot is None or snapshot.execution_id != execution_id:
             refuse()
         try:
-            if not self.authorize_native_input(assignment=snapshot, actor=actor, project=project, source=source):
+            if not self.authorize_native_input(assignment=snapshot, actor=actor, project=project, source=source,
+                    request_checksum=request_checksum, input_execution_id=input_execution_id):
                 return None
         except (IdentityError, ValueError, LookupError):
             refuse()
