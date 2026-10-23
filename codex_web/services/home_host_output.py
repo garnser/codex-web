@@ -180,7 +180,7 @@ class HomeHostOutputService:
             data.extend(chunk)
         return bytes(data)
 
-    def _decrypt_source(self, source, origin):
+    def _source_envelope(self, source, origin):
         if source.content.size_bytes > 2 * 1024 * 1024:
             self.denied('Host output envelope exceeds its hard bound')
         _, chunks = self.artifacts.open_artifact_content(source.id, actor=origin.requester)
@@ -189,6 +189,13 @@ class HomeHostOutputService:
             self.denied('Host output content changed')
         context = HomeHostActionProvider._output_context(origin.assignment, origin.envelope.host_resource_id, source.id)
         envelope = EncryptedEnvelope.model_validate_json(cipher)
+        if (envelope.key_id != source.content.encryption_key_ref
+                or envelope.context_digest != self.crypto._context_digest(context)):
+            self.denied('Source output envelope key or context changed')
+        return envelope, context
+
+    def _decrypt_source(self, source, origin):
+        envelope, context = self._source_envelope(source, origin)
         clear = self.crypto.decrypt(envelope, context, actor=origin.requester)
         if len(clear) > 1024 * 1024:
             self.denied('Host output plaintext exceeds its hard bound')
@@ -324,7 +331,8 @@ class HomeHostOutputService:
         if not manual:
             policy, policy_ref = self._rule(origin, argv, receipt, selection)
             classification, reason = policy.classification, 'Explicit current Home command-output release policy'
-        output, source_context, _ = self._decrypt_source(source, origin)
+        output, source_context, source_envelope = self._decrypt_source(source, origin)
+        self._current_decryption_key(source_envelope, source_context, origin)
         selected = self._select(output, selection)
         if len(selected) > origin.envelope.max_output_bytes:
             self.denied()
@@ -403,6 +411,11 @@ class HomeHostOutputService:
             self.denied('Reviewed output Home origin changed')
         source, intent, receipt, argv, command_digest = self._source(proof.source_artifact_id, origin)
         context = HomeHostActionProvider._output_context(origin.assignment, origin.envelope.host_resource_id, source.id)
+        # An active derivative version cannot launder revocation of the version
+        # that encrypted the original source. Its canonical ciphertext digest
+        # binds this parsed envelope; no source plaintext is needed here.
+        source_envelope, source_context = self._source_envelope(source, origin)
+        self._current_decryption_key(source_envelope, source_context, origin)
         if (source.digest.value != proof.source_content_sha256 or source.governance_record_id != proof.source_record_id
                 or intent.id != proof.source_intent_id or receipt.id != proof.source_receipt_id
                 or source.content.encryption_key_ref != proof.source_key_id

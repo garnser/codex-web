@@ -267,6 +267,32 @@ class HomeHostOutputTests(HomeHostActionIntentTests):
             response=await client.get('/api/home/operator/host-outputs?expected_home_revision=1')
             self.assertEqual(response.status_code,403)
 
+    async def test_revoked_source_version_cannot_release_through_new_active_derivative_version(self):
+        self.configure_policy();source=await self.command_output()
+        self.crypto.rotate(self.output_key.id,actor=self.actor);decrypt=self.crypto.decrypt
+        def changed(*args,**kwargs):
+            value=decrypt(*args,**kwargs)
+            if args[0].key_version == 1:
+                self.crypto.revoke_version(self.output_key.id,1,'Private source revocation fixture',actor=self.actor)
+            return value
+        self.crypto.decrypt=changed
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.release(source,self.selection(),snapshot=self.assignment,worker_actor=self.worker_actor)
+        self.assertEqual(len(self.artifacts.list_artifacts(self.actor)),1)
+
+    async def test_source_version_revocation_denies_already_released_newer_version_derivative(self):
+        self.configure_policy();source=await self.command_output()
+        self.crypto.rotate(self.output_key.id,actor=self.actor)
+        released=self.outputs.release(source,self.selection(),snapshot=self.assignment,worker_actor=self.worker_actor)
+        self.assertEqual(self.outputs.read(self.assignment,released['artifact_id'],worker_actor=self.worker_actor)['text'],
+            'ordinary source/test output')
+        self.crypto.revoke_version(self.output_key.id,1,'Private original version revocation',actor=self.actor)
+        record=self.artifacts.governance.get_record(released['governance_record_id'],self.actor)
+        filtered=self.artifacts.governance.filter_context(ContextFilterRequest(record_ids=(record.id,)),actor=self.actor)
+        self.assertEqual(filtered.allowed_record_ids,())
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.read(self.assignment,released['artifact_id'],worker_actor=self.worker_actor)
+
 
 class HomeOutputPolicyTests(unittest.TestCase):
     def test_governance_state_migrates_legacy_but_old_contract_refuses_release_reader(self):

@@ -331,7 +331,11 @@ remain denied even when their output is empty.
 
 Human preview revalidates its original source/receipt and current key/version
 after decrypting, so a revocation during the read suppresses plaintext. The
-human-only no-store output list exposes at most twenty current-assignment
+release validator also parses the digest-bound original ciphertext envelope and
+checks its actual key version on every future context/read edge. Encrypting a
+derivative under a newer active version cannot bypass revocation of the original
+source version; validation does not decrypt the original plaintext again.
+The human-only no-store output list exposes at most twenty current-assignment
 Artifact/receipt references and process-result metadata, never argv or output.
 It reuses the existing intent catalog read and bounds matching history fanout;
 it does not introduce a bounded storage index. The Home operator panel mounts
