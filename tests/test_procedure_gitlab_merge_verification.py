@@ -176,7 +176,8 @@ class MergeVerificationProcedureTests(ProcedureExecutionTests):
         # This direct canonical scope check has no Procedure checkpoint to
         # reject revocation later. It must independently reread binding state.
         self.registry.set_enabled(self.binding.id,False,actor=self.actor)
-        with self.assertRaisesRegex(ActionIntentConflictError,"provider contract"):
+        from codex_web.services.action_providers import ActionResolutionError
+        with self.assertRaisesRegex(ActionResolutionError,"binding is disabled"):
             self.intents._validate_execution_repository_scope(assignment.execution_id,request,self.actor,binding_id=self.binding.id)
         self.registry.set_enabled(self.binding.id,True,actor=self.actor)
         self.provider.contract_version="1.1"
