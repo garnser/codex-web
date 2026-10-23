@@ -141,7 +141,7 @@ def mutation_guard(provider, binding, request):
                 raise ActionRequirementError('Current Recovery procedure admission changed')
             required_procedures = discovered.selected
             for reference in discovered.selected:
-                service.procedure_discovery.skills.validate_reference(reference, actor=operator)
+                service.procedure_discovery.skills.validate_reference(reference, actor=operator, project_id=current.project_id)
         mediated = False
         if service.procedure_execution is not None:
             mediated = service.procedure_execution.provider_admission_current(current, operator, 'execute')
