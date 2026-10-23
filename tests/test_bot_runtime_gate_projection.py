@@ -71,6 +71,7 @@ class BotRuntimeGateProjectionTests(unittest.TestCase):
         result = self.status()
         self.assertFalse(result['gateEligible'])
         self.assertEqual(result['gateReason'], 'bot_runtime_gate_unavailable')
+        self.assertEqual(result['gateReasonSource'], 'unavailable')
 
     def test_removed_connection_is_not_eligible_or_resolved_as_another_project(self):
         self.telemetry.set_status(self.connection, 'connected')
@@ -78,6 +79,7 @@ class BotRuntimeGateProjectionTests(unittest.TestCase):
         result = self.status()
         self.assertFalse(result['gateEligible'])
         self.assertEqual(result['gateReason'], 'bot_runtime_connection_unavailable')
+        self.assertEqual(result['gateReasonSource'], 'unavailable')
         self.assertEqual(self.calls, [])
 
     def test_each_status_read_rechecks_canonical_gate_without_mutating_telemetry(self):
@@ -120,3 +122,25 @@ class BotRuntimeGateProjectionTests(unittest.TestCase):
         self.assertIsNone(current['gateReason'])
         self.assertEqual(current['lastObservedGateReason'], 'operator_paused')
         self.assertEqual(current['status'], 'connected')
+
+
+class BotRuntimeStatusRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_gate_status_projection_runs_outside_event_loop_thread(self):
+        import threading
+        import httpx
+        from fastapi import FastAPI
+        from codex_web.api.bots import build_bots_router
+        event_loop_thread = threading.get_ident()
+        observed = []
+        def status():
+            observed.append(threading.get_ident())
+            return {'runtimeStatus': []}
+        app = FastAPI()
+        app.include_router(build_bots_router(SimpleNamespace(status=status)))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url='http://fixture') as client:
+            response = await client.get('/api/bots')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'runtimeStatus': []})
+        self.assertEqual(len(observed), 1)
+        self.assertNotEqual(observed[0], event_loop_thread)

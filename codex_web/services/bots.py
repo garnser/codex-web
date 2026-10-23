@@ -109,7 +109,9 @@ class BotService:
                 row["lastObservedGateReasonAt"] = row.pop("gateReasonObservedAt", None)
             row.update(projectId=connection.project_id if connection else None,
                        gateReason=reason, gateEligible=reason is None,
-                       gateReasonSource="canonical_project_reconciliation",
+                       gateReasonSource=("canonical_project_reconciliation"
+                                         if connection is not None and reason != "bot_runtime_gate_unavailable"
+                                         else "unavailable"),
                        gateObservedAt=observed_at)
             result.append(row)
         return result
