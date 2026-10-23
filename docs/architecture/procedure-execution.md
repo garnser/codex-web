@@ -153,6 +153,34 @@ judgment proof names its actual invocation. Stale/cross-step/foreign proof refus
 An adapter without this result/Evidence contract fails explicitly; installing the
 interpreter does not claim arbitrary existing operational adapters are supported.
 
+An optional implementation adapter registered with the existing ActionProvider
+registry can project an exact provider/action/contract's legacy result into this
+contract. GitLab contract 1.2 supports typed READY and merge receipt projections;
+the stored flat `ActionResult` remains unchanged for verification/reconciliation.
+The procedure owner requires the same succeeded canonical intent, current receipt,
+attempt, request/key, tenant/Project/execution and Resource attribution. Supported
+outputs are fixed by that adapter, never inferred from arbitrary output keys.
+READY outputs contain its exact head/base target and `draft=false`; merge outputs
+contain the PR number, observed head and merge commit. READY does not prove review,
+approval or merge, and must not be repeated for an already non-Draft MR.
+
+These steps declare Evidence names `receipt` (kind `provider_receipt`) and/or
+`verification` (kind `verification`). Receipt Evidence retains the actual original
+receipt/result identity and timestamp. Verification additionally requires the same
+intent's canonical successful provider-verification record; execution success is
+insufficient. Canonical Evidence idempotency keeps these point writes stable across
+an interrupted checkpoint save and rejects different content under the same key.
+The usual governed immutable output Artifact and all subsequent proof checks remain
+mandatory. UNKNOWN, missing/foreign/malformed proof or changed provider contract
+refuses; projection itself never invokes execute, verify, reconcile or a model.
+Unregistered providers retain the existing strict `outputs`/`evidence` contract.
+
+This adapter adds no read-only MR or Work Item ActionProvider operation, native
+procedure enforcement, publication, Profile activation or autonomous step timer.
+Canonical broker facts may inform a separately admitted step's inputs; provider
+mutation still performs its ordinary current protected-fact/policy checks. A full
+workflow requires separately supported operations and actual live qualification.
+
 The step policy snapshot attributes the exact published definition and live
 assignment checks; it grants no Role authority or provider capability. Current
 Role authority and canonical approval quorum are required separately, including

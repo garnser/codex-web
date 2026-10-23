@@ -78,6 +78,7 @@ class ActionProviderRegistry:
             ActionProvider,
         ] = {}
         self.conformance = ActionProviderConformanceSuite()
+        self._procedure_result_adapters: dict[int, dict[str, Any]] = {}
 
     @staticmethod
     def _provider_key(
@@ -102,6 +103,18 @@ class ActionProviderRegistry:
         )
         if not provider_type or not provider_instance:
             raise ValueError("action provider type and instance are required")
+        adapters = {}
+        actions = {action.action_id for action in provider.actions()}
+        for adapter in getattr(provider, "procedure_result_adapters", ()):
+            if (adapter.provider_type != provider_type
+                or adapter.contract_version != provider.contract_version
+                or not callable(adapter.project)):
+                raise ValueError("procedure result adapter provider contract mismatch")
+            for action_id in adapter.action_ids:
+                if action_id not in actions or action_id in adapters:
+                    raise ValueError("procedure result adapter action mismatch")
+                adapters[action_id] = adapter
+        self._procedure_result_adapters[id(provider)] = adapters
         if tenant_scope is None:
             self.providers[(provider_type, provider_instance)] = provider
             return
@@ -174,6 +187,15 @@ class ActionProviderRegistry:
             )
         ACTION_PROVIDER_CONTRACT.require(provider.contract_version)
         return provider
+
+    def procedure_result_adapter(self, provider_type, provider_instance, action_id,
+                                 contract_version, *, actor):
+        # Resolve the current tenant registration, never another tenant's or a
+        # superseded implementation's adapter. This is not execution authority.
+        provider = self.provider(provider_type, provider_instance, actor=actor)
+        if provider.contract_version != contract_version:
+            raise ValueError("procedure result adapter contract changed")
+        return self._procedure_result_adapters.get(id(provider), {}).get(action_id)
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
