@@ -619,6 +619,11 @@ class ThreadService:
             manager = self._manager_for_binding(getattr(assignment, "runtime_binding", None))
             session = manager.get(assignment.id)
             local = session.status() if session is not None else None
+            if session is None:
+                observe_unowned = getattr(manager, "unowned_lost_observation", None)
+                ownership = observe_unowned(assignment) if callable(observe_unowned) else None
+                if ownership is not None:
+                    process_observation = {"processOwnershipObservation": ownership}
             if local and local.fence == assignment.fence and local.worker_id == assignment.assigned_worker_id:
                 process_observation = {"processRunning": local.running,
                     "diagnosticState": getattr(local, "diagnostic_state", "none"),

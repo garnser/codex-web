@@ -1473,6 +1473,7 @@ class AssignmentBoundAgentProcessSessionManager:
         self.credential_provider = credential_provider
         self.runtime_binding = runtime_binding
         self.sessions: dict[str, AssignmentBoundAgentProcessSession] = {}
+        self.started_at = time.time()
         self._lock = asyncio.Lock()
         self._assignment_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
@@ -1510,6 +1511,39 @@ class AssignmentBoundAgentProcessSessionManager:
 
     def get(self, assignment_id: str) -> AssignmentBoundAgentProcessSession | None:
         return self.sessions.get(assignment_id)
+
+    def unowned_lost_observation(self, assignment: ExecutionAssignment) -> dict | None:
+        """Observe this manager's ownership, NEVER an old process's outcome.
+
+        A new manager cannot reconstruct an old process/executor observation.
+        It can distinguish that absence from a failed lookup, for preservation
+        only. Starting, resuming and retiring assignments retain their existing
+        canonical lease/fence and asynchronous lifecycle guards.
+        """
+        worker = self.local_worker.worker
+        if (worker is None or self.runtime_binding is None
+                or assignment.status != AssignmentStatus.LOST or assignment.lease is not None
+                or assignment.assigned_worker_id != worker.id
+                or (assignment.organization_id, assignment.workspace_id) !=
+                   (worker.organization_id, worker.workspace_id)
+                or assignment.runtime_binding != self.runtime_binding
+                or not assignment.updated_at < self.started_at):
+            return None
+        lifecycle = self._assignment_locks.get(assignment.id)
+        if self.get(assignment.id) is not None or (lifecycle is not None and lifecycle.locked()):
+            return None
+        # Use the same canonical assignment owner as start/stop. A stale caller
+        # snapshot, unavailable read or a new claimant cannot attest absence.
+        if self.local_worker.worker_service.store.assignment(assignment.id) != assignment:
+            return None
+        lifecycle = self._assignment_locks.get(assignment.id)
+        if self.get(assignment.id) is not None or (lifecycle is not None and lifecycle.locked()):
+            return None
+        return {'schema_version': '1.0', 'state': 'unowned_lost',
+            'assignment_id': assignment.id, 'fence': assignment.fence,
+            'worker_id': worker.id, 'execution_id': assignment.execution_id,
+            'execution_workspace_id': assignment.execution_workspace_id,
+            'manager_started_at': self.started_at}
 
     async def cancel_bootstrap(self, assignment_id: str, *, reason: str) -> ExecutionAssignment:
         async with self._assignment_lock(assignment_id):

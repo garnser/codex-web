@@ -127,7 +127,7 @@ class HomeUpgradeCheckpointService:
             return None
         return binding,requester
 
-    def _dormant_snapshot(self, binding, requester, *, require_process=True):
+    def _dormant_snapshot(self, binding, requester, *, require_process=True, process_evidence=None):
         """Supervisor metadata only; never a Host grant or native completion."""
         from codex_web.storage.state_store import check_operation_budget
         bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
@@ -147,10 +147,26 @@ class HomeUpgradeCheckpointService:
                 or observed.get('leaseValid') is not False):
             self.refused('home_upgrade_dormant_custody_changed')
         if require_process:
-            if (observed.get('processRunning') is not False
-                    or type(observed.get('pendingExecutorWork')) is not int
-                    or observed['pendingExecutorWork'] != 0):
-                self.refused('home_upgrade_dormant_process_unsettled')
+            if (observed.get('processRunning') is False
+                    and type(observed.get('pendingExecutorWork')) is int
+                    and observed['pendingExecutorWork'] == 0):
+                proof = {'state':'stopped_observed', 'process_running':False, 'pending_executor_work':0}
+            else:
+                ownership = observed.get('processOwnershipObservation')
+                if (observed.get('processRunning') is not None or observed.get('pendingExecutorWork') is not None
+                        or not isinstance(ownership, dict)
+                        or ownership.get('schema_version') != '1.0' or ownership.get('state') != 'unowned_lost'
+                        or (ownership.get('assignment_id'), ownership.get('fence'), ownership.get('worker_id'),
+                            ownership.get('execution_id'), ownership.get('execution_workspace_id')) !=
+                           (assignment.id, assignment.fence, assignment.assigned_worker_id,
+                            assignment.execution_id, assignment.execution_workspace_id)
+                        or type(ownership.get('manager_started_at')) not in (int,float)
+                        or not assignment.updated_at < ownership['manager_started_at'] <= time.time()):
+                    self.refused('home_upgrade_dormant_process_unsettled')
+                proof = {'state':'unowned_lost', 'process_running':None, 'pending_executor_work':None,
+                    'manager_started_at':ownership['manager_started_at']}
+            if process_evidence is not None:
+                process_evidence.update(proof)
         elif ((observed.get('processRunning') is not None and observed.get('processRunning') is not False)
                 or (observed.get('pendingExecutorWork') is not None and
                     (type(observed['pendingExecutorWork']) is not int or observed['pendingExecutorWork'] != 0))):
@@ -218,11 +234,16 @@ class HomeUpgradeCheckpointService:
             if self.artifacts.find_idempotent_artifact(actor=requester,
                     source='home-upgrade-checkpoint', idempotency_key=plan_id) is not None:
                 self.refused('home_upgrade_preservation_ambiguous')
-            snapshot = self._dormant_snapshot(binding, requester)
-            raw = encoded({'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
+            process = {}
+            snapshot = self._dormant_snapshot(binding, requester, process_evidence=process)
+            preservation = {'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
                 'release_id':plan.release_id, 'source_revision':source, 'target_revision':target,
                 'target_version':plan.target_app_version, 'snapshot':snapshot,
-                'stopped_process_observed':True, 'pending_executor_work_observed':0})
+                'stopped_process_observed':True, 'pending_executor_work_observed':0}
+            if process['state'] == 'unowned_lost':
+                preservation.update(schema_version='1.1', stopped_process_observed=None,
+                    pending_executor_work_observed=None, process_ownership=process)
+            raw = encoded(preservation)
             prior = self._dormant_artifact(plan_id, requester)
             if prior is not None:
                 if (prior.lifecycle != 'active' or prior.source != 'home-upgrade-dormant-preservation'
@@ -238,7 +259,9 @@ class HomeUpgradeCheckpointService:
             artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
                 execution_id=snapshot['assignment']['execution_id'],
                 execution_workspace_id=snapshot['assignment']['execution_workspace_id'],
-                artifact_type='report', name='Dormant Home preserved; native outcome UNKNOWN; no continuation',
+                artifact_type='report', name=('Unowned LOST Home preserved; process/executor UNKNOWN; no continuation'
+                    if process['state'] == 'unowned_lost' else
+                    'Dormant Home preserved; native outcome UNKNOWN; no continuation'),
                 provider='codex-web', source='home-upgrade-dormant-preservation', external_id=plan.id,
                 digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
                 metadata={'dormant_preservation':raw}), actor=requester, idempotency_key=plan.id)
@@ -296,7 +319,7 @@ class HomeUpgradeCheckpointService:
                     or dormant.source != 'home-upgrade-dormant-preservation'
                     or dormant.retention_expires_at is not None and dormant.retention_expires_at <= time.time()
                     or dormant.digest is None or dormant.digest.value != sha(raw)
-                    or saved['schema_version'] != '1.0' or saved['plan_id'] != plan.id
+                    or saved['schema_version'] not in {'1.0','1.1'} or saved['plan_id'] != plan.id
                     or saved['plan_created_at'] != plan.created_at or saved['release_id'] != plan.release_id
                     or plan.status != 'completed' or plan.maintenance_mode
                     or plan.post_upgrade_evidence_id is None or self.source_revision() != saved['target_revision']

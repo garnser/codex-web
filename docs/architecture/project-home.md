@@ -541,6 +541,30 @@ remain mandatory. Older readers ignore this distinct metadata source and cannot
 interpret it as a checkpoint or authorization. No core schema migration or Session,
 Goal, queue, lease or action-outcome mutation is introduced by this disposition.
 
+After a service replacement, the new assignment-bound process manager may have
+no registered owner for an older LOST/unleased assignment. Successful lookup of
+that exact local worker/runtime/assignment, no in-flight start/stop lock, a LOST
+transition predating this manager, and a fresh unchanged canonical assignment
+can establish **unowned custody**, separately from an unavailable lookup. The
+runner then exposes `processOwnershipObservation.state=unowned_lost`; process
+running and pending executor-work fields remain omitted/UNKNOWN. A registered
+owner, lifecycle in progress, current lease, stale snapshot, wrong worker/runtime
+or lookup error cannot establish that observation. It authorizes preservation
+only, never input, resume, teardown, provider actions or lease changes.
+
+This case writes the same governed report source using metadata version `1.1`,
+with explicit `process_ownership`, `stopped_process_observed=null` and
+`pending_executor_work_observed=null`. The report name visibly says unowned LOST,
+process/executor UNKNOWN, and no continuation. Version `1.0` stopped-observation
+serialization is unchanged. Readers predating `1.1` reject its post-upgrade
+preservation validation instead of interpreting it as a checkpoint or process
+zero; a target handling such a report must include the `1.1` reader. This is a
+versioned Artifact metadata boundary, not a core-store migration. Current Human,
+Profile, Session, selection, Goal, queue, active-input and held-action checks all
+remain mandatory; actual aggregate-zero drain and clean stopped-service/cgroup
+proof still belong to the canonical Upgrade/capture supervisor. Unknown native
+outcomes and old action receipts remain unchanged.
+
 The same supervisor's post-verification callback point-reads that plan's immutable
 checkpoint, verifies actual target source, SAME completed plan and current valid
 PASS evidence, then retains one continuation in the SAME native conversation.
