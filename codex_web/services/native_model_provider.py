@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import contextvars
 import asyncio
+import hashlib
+import json
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Protocol
 
@@ -22,7 +26,13 @@ from codex_web.services.codex_reasoning_policy import NativeReasoningPolicyError
 class NativeProcessOwnership:
     """Ephemeral join handle, never permission, idempotency or result authority."""
     assignment_id: str | None = None
+    deadline_at: float | None = None
+    cancelled: threading.Event = field(default_factory=threading.Event, repr=False)
     stop: Callable | None = field(default=None, repr=False)
+
+    def validate_current(self):
+        if self.cancelled.is_set() or self.deadline_at is None or time.monotonic() >= self.deadline_at:
+            raise NativeReasoningPolicyError('Native invocation cancelled or deadline expired')
 
     def attach(self, assignment_id, stop):
         if self.assignment_id is not None or not callable(stop):
@@ -42,6 +52,8 @@ class NativeModelInvocationContext:
     max_input_tokens: int
     max_output_tokens: int
     validate_current: Callable[[], None] = field(repr=False, compare=False)
+    requester: AuthenticationActor | None = field(default=None, repr=False, compare=False)
+    input_message_sha256: str | None = None
     max_duration_seconds: float = 120.0
     process_owner: NativeProcessOwnership | None = field(default=None, repr=False, compare=False)
     concrete_model: str | None = None
@@ -103,6 +115,13 @@ class NativeCodexModelProviderAdapter:
                                                                 actor=actor, context=context):
             raise ModelProviderAdapterError('Native reasoning entitlement/context not qualified')
         from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        owner = NativeProcessOwnership(deadline_at=time.monotonic() + request.timeout_seconds)
+        original_guard = context.validate_current
+        def invocation_current():
+            owner.validate_current()
+            original_guard()
+            owner.validate_current()
+        context = replace(context, validate_current=invocation_current)
         try:
             await PostTurnReadinessService._run_owned(
                 lambda: asyncio.to_thread(context.validate_current),
@@ -112,7 +131,10 @@ class NativeCodexModelProviderAdapter:
         # Caller-context binding is pure. Blocking canonical validation belongs
         # in the bridge's owned off-loop preparation and final native guards.
         context = replace(context, concrete_model=model.concrete_model, system_prompt=request.system_prompt,
-                          process_owner=NativeProcessOwnership())
+                          process_owner=owner, requester=actor,
+                          input_message_sha256=hashlib.sha256(json.dumps(
+                              [item.model_dump(mode='json') for item in request.messages],
+                              ensure_ascii=False, separators=(',', ':')).encode()).hexdigest())
         token = _current_native_model_invocation.set(context)
         try:
             return await self.bridge.invoke(provider, model, request, actor=actor, context=context)

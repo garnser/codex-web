@@ -39,11 +39,17 @@ class NativeExecutiveContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guards,['current-origin'])
         self.assertEqual(len(f.gateway.requests),1)
 
-    async def test_unconfigured_context_is_noop_and_projectless_native_refuses(self):
+    async def test_native_optin_preserves_ordinary_projectless_consultation(self):
         f=self.fixture
         activation=f.service.create(ExecutiveActivationCreate(subject='Architecture migration',
             request='Assess one bounded architecture migration decision',requested_role_ids=('cto',)),actor=f.actor)
         self.assertEqual(f.service._native_context(activation,'cto',f.actor,1000,1000),{})
         f.service.native_invocation_authorizer=lambda activation,actor:lambda:None
-        with self.assertRaises(ExecutiveConsultationError):
-            f.service._native_context(activation,'cto',f.actor,1000,1000)
+        self.assertEqual(f.service._native_context(activation,'cto',f.actor,1000,1000),{})
+        # The existing ordinary gateway accepts no native-only keyword/context.
+        # Native opt-in must not break a legitimate projectless consultation.
+        f.service.native_invocation_authorizer=lambda *args: (_ for _ in ()).throw(
+            AssertionError('ordinary HTTP route borrowed native requester guard'))
+        completed=await f.service.consult(activation.id,actor=f.actor)
+        self.assertEqual(completed.status,'completed')
+        self.assertEqual(len(f.gateway.requests),1)

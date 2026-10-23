@@ -47,7 +47,7 @@ def restricted_model_catalog(catalog: dict, concrete_model: str) -> dict:
 
 def reasoning_config_arguments() -> tuple[str, ...]:
     values = [*(f'features.{name}=false' for name in DISABLED_FEATURES),
-        'web_search="disabled"', 'forced_login_method="chatgpt"',
+        'web_search="disabled"', 'forced_login_method="chatgpt"', 'model_provider="openai"',
         'model_catalog_json=' + json.dumps(str(REASONING_CATALOG)),
         'project_doc_max_bytes=0']
     return tuple(part for value in values for part in ('--config', value))
@@ -67,7 +67,8 @@ def verify_reasoning_config(config: dict) -> None:
     if (config.get('web_search') != 'disabled'
             or config.get('model_catalog_json') != str(REASONING_CATALOG)
             or config.get('forced_login_method') != 'chatgpt'
-            or config.get('project_doc_max_bytes') != 0):
+            or config.get('project_doc_max_bytes') != 0
+            or config.get('model_provider') != 'openai'):
         raise NativeReasoningPolicyError('Native reasoning effective config changed')
 
 
@@ -91,6 +92,20 @@ class ReasoningOnlyCodexRuntime(CodexRuntime):
             return
         await super()._handle_message(message)
 
+    async def _send(self, message, *, expected_generation=None, start_guard=None):
+        if message.get('method') in {'thread/start', 'thread/resume', 'turn/start'}:
+            from codex_web.services.native_model_provider import current_native_model_invocation
+            context = current_native_model_invocation()
+            previous = start_guard
+            def reasoning_guard():
+                context.validate_current()
+                if previous is not None:
+                    previous()
+                context.validate_current()
+            start_guard = reasoning_guard
+        return await super()._send(message, expected_generation=expected_generation,
+                                   start_guard=start_guard)
+
     async def request(self, method, params=None, *, start_capture=None):
         if method in {'thread/start', 'thread/resume', 'turn/start'}:
             from codex_web.services.native_model_provider import current_native_model_invocation
@@ -107,10 +122,13 @@ class ReasoningOnlyCodexRuntime(CodexRuntime):
                 raise NativeReasoningPolicyError('Native reasoning transport is not qualified')
             response = await super().request('config/read', {'includeLayers': False})
             verify_reasoning_config(response.get('config'))
-            params = {**(params or {}), 'developerInstructions': context.system_prompt,
-                      'model': context.concrete_model}
+            params = {**(params or {}), 'baseInstructions': context.system_prompt,
+                      'developerInstructions': None, 'model': context.concrete_model,
+                      'modelProvider': 'openai'}
             if method == 'thread/start':
                 params.update(dynamicTools=[], environments=[], allowProviderModelFallback=False)
+        if method == 'turn/start':
+            params = {**(params or {}), 'model': context.concrete_model}
         return await super().request(method, params, start_capture=start_capture)
 
 

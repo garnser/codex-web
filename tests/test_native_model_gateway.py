@@ -132,7 +132,7 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
     def config(self):
         return {'features': dict.fromkeys(DISABLED_FEATURES, False), 'mcp_servers': {},
             'web_search': 'disabled', 'model_catalog_json': str(REASONING_CATALOG),
-            'forced_login_method': 'chatgpt', 'project_doc_max_bytes': 0}
+            'forced_login_method': 'chatgpt', 'project_doc_max_bytes': 0, 'model_provider':'openai'}
 
     def test_effective_mcp_inherited_entry_cannot_be_hidden_by_empty_override(self):
         config = self.config()

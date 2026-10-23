@@ -362,3 +362,15 @@ failures before thread-create returns. Missing/delayed/ambiguous usage, unexpect
 tools, scope drift and unknown native outcomes do not become successful model
 results. This contract does not claim a live consultation until the opt-in
 composition, current authentication and actual bounded inference are qualified.
+
+The invocation owns one monotonic deadline and cancellation witness shared by
+its reservation guard, canonical queue preparation and the actual native stdin
+writer. Waiting for a thread/turn response or writer lock does not preserve
+permission after cancellation. The writer composes this check with the original
+queued START guard, then writes only under the existing transport-generation
+lock. Cancellation retains the original queue/preflight state and joins its
+owned process; it does not classify a timed-out input as NOT-SENT. A configured
+native adapter does not change projectless ordinary priced consultations: native
+caller authorization is evaluated only if a scoped native route is selected.
+Native completed commentary and final answers remain separate; only a bounded
+completed final answer is returned as the model result.

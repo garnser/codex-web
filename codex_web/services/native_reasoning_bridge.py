@@ -36,6 +36,36 @@ class NativeReasoningBinding:
             raise ValueError('Exact bounded native reasoning binding required')
 
 
+class NativeReasoningText:
+    """Bounded native response parsing; commentary is not the final answer."""
+    def __init__(self, max_bytes):
+        self.max_bytes, self.observed_bytes = max_bytes, 0
+        self.completed = []
+
+    def observe(self, method, params):
+        if method == 'item/agentMessage/delta':
+            value = params.get('delta')
+            if isinstance(value, str):
+                self.observed_bytes += len(value.encode())
+        elif method == 'item/completed':
+            item = params.get('item') or {}
+            if item.get('type') == 'agentMessage':
+                value = item.get('text')
+                if not isinstance(value, str) or len(self.completed) >= 64:
+                    raise ValueError('Native completed answer unavailable or oversized')
+                self.observed_bytes += len(value.encode())
+                self.completed.append((item.get('phase'), value))
+        if self.observed_bytes > self.max_bytes:
+            raise ValueError('Native output observation limit exceeded')
+
+    def result(self):
+        final = [text for phase,text in self.completed if phase in {'final_answer', 'final'}]
+        eligible = [text for phase,text in self.completed if phase != 'commentary']
+        if len(final) > 1 or not (final or eligible):
+            raise ValueError('Native final answer missing or ambiguous')
+        return final[0] if final else eligible[-1]
+
+
 class CanonicalNativeReasoningBridge:
     """Opt-in composition; attestation must inspect the actual serving session."""
 
@@ -144,14 +174,19 @@ class CanonicalNativeReasoningBridge:
         owner = asyncio.create_task(self._invoke_owned(provider, model, request,
             actor=actor, context=context, cancelled=cancelled), name='canonical-native-model-owner')
         try:
-            return await asyncio.shield(owner)
+            # wait() never propagates cancellation into this owned task. Unlike
+            # a detached shield Future, its exception is observed by this owner.
+            await asyncio.wait((owner,))
+            return owner.result()
         except asyncio.CancelledError:
             cancelled.set()
+            if context is not None and context.process_owner is not None:
+                context.process_owner.cancelled.set()
             # Preparation may own an actual worker process before returning its
             # thread DTO. Join it; its cancellation edge forbids the first input.
             while not owner.done():
                 try:
-                    await asyncio.shield(owner)
+                    await asyncio.wait((owner,))
                 except asyncio.CancelledError:
                     cancelled.set()
                 except Exception:
@@ -172,8 +207,7 @@ class CanonicalNativeReasoningBridge:
         usage_ready = None
         thread_id = None
         terminal = asyncio.get_running_loop().create_future()
-        text_parts = []
-        byte_count = 0
+        text = NativeReasoningText(b.max_output_bytes)
         loop = asyncio.get_running_loop()
 
         def finish(value=None, error=None):
@@ -181,7 +215,6 @@ class CanonicalNativeReasoningBridge:
                 terminal.set_exception(error) if error is not None else terminal.set_result(value)
 
         def observe_on_loop(event):
-            nonlocal byte_count
             if event.get('type') != 'codex.event' or terminal.done():
                 return
             message = event.get('message') or {}
@@ -190,21 +223,16 @@ class CanonicalNativeReasoningBridge:
             if (params.get('threadId') or turn.get('threadId')) != thread_id:
                 return
             method = message.get('method')
-            if method == 'item/started':
+            try:
+                text.observe(method, params)
+            except ValueError:
+                finish(error=ModelProviderOutcomeUnknownError('Native output observation refused'))
+                return
+            if method in {'item/started','item/completed'}:
                 item = params.get('item') or {}
                 if item.get('type') not in {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction'}:
                     finish(error=ModelProviderOutcomeUnknownError(
                         'Unexpected native operational item refused'))
-            elif method == 'item/agentMessage/delta':
-                delta = params.get('delta')
-                if not isinstance(delta, str):
-                    return
-                byte_count += len(delta.encode())
-                if byte_count > b.max_output_bytes:
-                    loop.call_soon_threadsafe(finish, None,
-                        ModelProviderOutcomeUnknownError('Native output observation limit exceeded'))
-                    return
-                text_parts.append(delta)
             elif method == 'thread/tokenUsage/updated':
                 from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
                 measured = AgentRuntimeTelemetryService._usage_fields(message)
@@ -272,7 +300,7 @@ class CanonicalNativeReasoningBridge:
                 await asyncio.shield(completion)
             return await self._owned(lambda: self._result(context=context, actor=actor,
                 session=session, assignment=assignment, thread_id=thread_id,
-                turn_id=turn_id, queued_id=queued_id, text=''.join(text_parts)))
+                turn_id=turn_id, queued_id=queued_id, text=text.result()))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

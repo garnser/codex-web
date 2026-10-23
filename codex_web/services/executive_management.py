@@ -1375,16 +1375,17 @@ class ExecutiveManagementService:
         return output
 
     def _native_context(self, activation, role_id, actor, max_input, max_output, origin_guard=None):
-        if self.native_invocation_authorizer is None:
+        if self.native_invocation_authorizer is None or not activation.project_id:
             return {}
         from codex_web.services.native_model_provider import NativeModelInvocationContext
         # This configured owner must validate the original authenticated caller
         # (including broker custody where applicable), never actor labels alone.
-        caller_guard = self.native_invocation_authorizer(activation, actor)
-        if not callable(caller_guard) or not activation.project_id:
-            raise ExecutiveConsultationError('Native consultation authorization unavailable')
-
         def validate_current():
+            # Ordinary priced adapters never execute this native-only validator.
+            # Resolve the configured caller owner lazily under its storage budget.
+            caller_guard = self.native_invocation_authorizer(activation, actor)
+            if not callable(caller_guard):
+                raise ExecutiveConsultationError('Native consultation authorization unavailable')
             caller_guard()
             if origin_guard is not None:
                 origin_guard()
