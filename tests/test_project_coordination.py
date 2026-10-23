@@ -61,7 +61,7 @@ from codex_web.execution_profile_seed import execution_profile_catalog_seed_payl
 from tests import test_turn_execution_binding as binding_tests, test_control_plane_broker as broker_tests
 from tests.test_control_plane_broker import _WorkItems, _Operator
 from tests.test_turn_execution import _Host
-from tests.test_turn_service import _Settings, _Recovery, _Resume, _Bindings
+from tests.turn_service_fixture_helpers import _Settings, _Recovery, _Resume, _Bindings
 from codex_web.models import IndexedThread
 
 
