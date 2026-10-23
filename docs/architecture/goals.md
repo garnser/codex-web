@@ -282,3 +282,13 @@ to a 1.1-only binary after any such write. Cold backup/restore composition must 
 write binding state before restoring an older service. Rollback then requires a
 qualified compatible reader or an explicitly reviewed data migration; dropping
 Home proof or clearing uncertain inputs is not a rollback operation.
+
+Home Goal restart uses the existing HomeRestart continuation owner and strict
+proof1.5, not a generic service grant. Every recovery input reserves another
+finite Goal call before queueing. Exact original and recovery usage is attributed
+and accounted once; any missing/UNKNOWN usage holds the original delivery. The
+existing pause, stop, Goal revision and exclusive-continuation controls remain
+authoritative at the final writer. See project-home's active Goal restart contract
+for recovery-record1.1 compatibility and lease proof requirements. The existing
+Goal binding UI controls remain the operator surface; no new controller or
+independent Goal completion state is introduced.

@@ -97,6 +97,9 @@ class GoalContinuationEventService:
                 item
                 for item in rows
                 if item.last_turn_id == event.provider_native_turn_id
+                or (getattr(item,"home_continuation",None) is not None
+                    and getattr(self.continuation,"home_continuation",None) is not None
+                    and self.continuation.home_continuation.matches_terminal_event(item,event))
             ]
         if len(rows) != 1:
             return None

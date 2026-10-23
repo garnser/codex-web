@@ -22,7 +22,7 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         await super().asyncSetUp()
         self.goals = GoalService(GoalStore(self.f.sqlite), self.projects, _Graph())
         draft = self.goals.create(GoalCreate(title='Real bounded Home mission', description='Resolve current accepted bugs and prioritize existing VDO MRs.',
-            owner_identity_id=self.actor.identity_id, budget=GoalBudget(max_input_tokens=4000,max_output_tokens=1000,max_model_calls=2 if self._testMethodName=='test_fast_terminal_then_late_queue_response_preserves_next_delivery' else 1,max_retries=0,max_handoffs=1),
+            owner_identity_id=self.actor.identity_id, budget=GoalBudget(max_input_tokens=4000,max_output_tokens=1000,max_model_calls=getattr(self,'GOAL_MODEL_CALLS',2 if self._testMethodName=='test_fast_terminal_then_late_queue_response_preserves_next_delivery' else 1),max_retries=0,max_handoffs=1),
             success_criteria=(GoalSuccessCriterion(description='Independent qualified acceptance'),),
             work_graph_bindings=(GoalWorkGraphBinding(project_id='home'),)),scope=self.actor.tenant,actor_id=self.actor.identity_id)
         self.goal = self.goals.transition(draft.id,GoalTransitionRequest(status='active',reason='Explicit purposeful user mission'),scope=self.actor.tenant,actor_id=self.actor.identity_id)

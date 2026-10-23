@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from codex_web.execution_workers import (
     AssignmentStatus,
@@ -37,6 +37,7 @@ RecoveryActionState = Literal["observed", "planned", "applied"]
 class ActiveTurnRecoveryRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     thread_id: str
     recovery_id: str
     source_updated_at: float
@@ -50,6 +51,21 @@ class ActiveTurnRecoveryRecord(BaseModel):
     resolved_at: float | None = None
     updated_at: float
     prior: tuple[dict[str, Any], ...] = ()
+
+
+    @model_validator(mode='after')
+    def goal_version_boundary(self):
+        evidence=self.evidence.get('home_restart',{})
+        goal=bool(evidence.get('goal_origin') is not None or evidence.get('proof',{}).get('schema_version')=='1.5')
+        if goal != (self.schema_version=='1.1'):
+            raise ValueError('Goal recovery requires explicit record schema1.1')
+        return self
+
+    @model_serializer(mode='wrap')
+    def omit_legacy_version(self,handler):
+        value=handler(self)
+        if self.schema_version=='1.0':value.pop('schema_version',None)
+        return value
 
 
 class ActiveTurnRecoveryMeta(BaseModel):

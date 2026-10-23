@@ -4981,6 +4981,8 @@ home_goal_continuation = HomeGoalContinuation(continuation=goal_continuation_ser
     home_host=control_plane_broker_service.home_operator_host, turns=turn_service,
     preflight=execution_preflight_service, usage=agent_runtime_usage_store)
 goal_continuation_service.home_continuation = home_goal_continuation
+home_restart_recovery_service.goal_continuation = home_goal_continuation
+home_goal_continuation.restart_recovery = home_restart_recovery_service
 control_plane_broker_service.home_operator_host.goal_input_authorizer = home_goal_continuation.authorize_input
 def _project_home_goal_native_start(attempt):
     try:
