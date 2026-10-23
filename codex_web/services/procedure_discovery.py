@@ -307,7 +307,7 @@ class ProcedureDiscoveryService:
                 return result()
             if selected:
                 outcome = "matched"
-                selection = self.skills.context_for_refs(tuple(selected), actor=actor,
+                selection = self.skills.context_for_refs(tuple(selected), actor=actor, project_id=context.project_id,
                     objective=context.operation or context.task or "", max_chars=self.max_context_characters)
                 # Consult the declarative contract as well as ordinary Skill
                 # instructions. The selected operation's dependencies remain

@@ -1137,11 +1137,12 @@ class SkillService:
         references: tuple[DefinitionReference, ...],
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
         objective: str,
         max_chars: int = SKILL_MAX_CONTEXT_CHARS,
     ) -> SkillContextSelection:
         validated = tuple(
-            self.validate_reference(reference, actor=actor)
+            self.validate_reference(reference, actor=actor, project_id=project_id)
             for reference in references
         )
         return self._context_for_valid_refs(

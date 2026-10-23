@@ -18,6 +18,7 @@ from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.skill_security import SkillSecurityStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.workspaces import WorkspaceMapper
 
 
 class PassingScanner:
@@ -33,7 +34,8 @@ class ProjectScopedSkillTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.state = SQLiteStateStore(self.root / 'state.sqlite3')
         self.definitions = DefinitionRegistryService(DefinitionRegistryStore(self.state))
-        repository = ProjectRepository(self.root / 'projects.json', store=self.state)
+        repository = ProjectRepository(self.root / 'projects.json', store=self.state,
+            workspace_mapper=WorkspaceMapper(root=self.root))
         repository.save([
             Project(id='vdo', name='VDO', path=str(self.root), organization_id='org-a', workspace_id='workspace-a'),
             Project(id='home', name='Home', path=str(self.root), organization_id='org-a', workspace_id='workspace-a'),
