@@ -115,6 +115,11 @@ class HomeUpgradeCheckpointTests(HomeRestartRecoveryTests):
         started=self.preflight.store.get(attempt)
         self.assertEqual(started.status,'started');self.assertEqual(started.queued_turn_snapshot,before)
         self.assertEqual(started.queued_start_receipt.provider_native_turn_id,'turn-1')
+        actual_active=host.active['operator-thread']
+        checkpoint,requester=self.planned.validate_started_origin(actual_active,queued,started)
+        self.assertEqual(checkpoint.thread_id,'operator-thread');self.assertEqual(requester.identity_id,self.actor.identity_id)
+        with self.assertRaises(ExecutionPrestartRefusal):
+            self.planned.validate_started_origin(actual_active.model_copy(update={'turn_id':'different-turn'}),queued,started)
         with self.assertRaises(ExecutionPrestartRefusal):self.planned.resume(artifact.id,operator_actor=self.operator)
         self.assertEqual(len(self.queue.get('operator-thread')),1)
         self.assertEqual(self.effects,0)

@@ -226,6 +226,64 @@ class HomeUpgradeCheckpointService:
         self.recovery.execution.schedule_queue_drain(checkpoint.thread_id)
         return queued
 
+    def _validate_proof(self, queued, attempt):
+        proof = queued.home_restart_input
+        if not isinstance(proof, HomeUpgradeInputProof):
+            self.refused('home_upgrade_retained_proof_unavailable')
+        actor = self.home.broker.identity.actor_for_identity(proof.requested_by,
+            scope=TenantScope(organization_id=attempt.organization_id,workspace_id=attempt.workspace_id))
+        artifact, checkpoint = self._checkpoint(proof.checkpoint_id,actor)
+        plan, completion = self._completed(checkpoint,actor)
+        if plan.completed_at < artifact.created_at or completion.observed_at < artifact.created_at:
+            self.refused('home_upgrade_old_completion_cannot_resume')
+        actor = self._requester(checkpoint)
+        receipt = self.artifacts.get_evidence(proof.resume_evidence_id,actor=actor)
+        if (proof.checkpoint_sha256 != artifact.digest.value or proof.upgrade_plan_id != plan.id
+                or proof.completion_evidence_id != completion.id or proof.requested_by != checkpoint.requester_id
+                or queued.thread_id != checkpoint.thread_id
+                or proof.thread_id != checkpoint.thread_id or queued.source != 'upgrade-recovery:home'
+                or queued.project_id != 'home' or queued.execution_id != 'home-upgrade-'+artifact.id
+                or queued.canonical_ingress_id is not None or queued.agent_profile_actor_id != actor.identity_id
+                or sha(queued.message) != proof.message_sha256 or receipt.lifecycle != 'valid'
+                or receipt.source != 'home-upgrade-resume' or receipt.result != 'info'
+                or receipt.artifact_ids != (artifact.id,) or receipt.producer_identity_id != actor.identity_id
+                or receipt.metadata.get('upgrade_plan_id') != plan.id
+                or receipt.metadata.get('completion_evidence_id') != completion.id
+                or receipt.metadata.get('checkpoint_sha256') != artifact.digest.value
+                or receipt.metadata.get('message_sha256') != proof.message_sha256):
+            self.refused('home_upgrade_retained_input_changed')
+        return checkpoint,actor
+    def validate_started_origin(self, active, queued, attempt):
+        """Read-only provenance for a genuinely STARTED planned continuation.
+
+        Returns (checkpoint, fresh requester). No new input or replay is
+        authorized: current restart recovery separately owns its retained claim.
+        """
+        current = self.recovery.preflight.store.get(attempt.id)
+        if current != attempt or current.status != 'started':
+            self.refused('home_upgrade_started_origin_unavailable')
+        receipt, correlation, evidence = (current.queued_start_receipt,
+            current.queued_start_correlation, current.queued_start_evidence)
+        if (receipt is None or correlation is None or evidence is None
+                or current.queued_turn_snapshot is None
+                or {k:v for k,v in current.queued_turn_snapshot.items() if k != 'attempts'} !=
+                   {k:v for k,v in queued.model_dump(mode='json').items() if k != 'attempts'}
+                or active.source not in {'upgrade-recovery:home','queued:upgrade-recovery:home'}
+                or (active.thread_id,active.turn_id,active.execution_id) !=
+                   (receipt.provider_native_session_id,receipt.provider_native_turn_id,receipt.execution_id)
+                or receipt.thread_id != queued.thread_id or receipt.requested_execution_id != queued.execution_id
+                or receipt.admission_claim_id != current.queued_admission_claim_id
+                or (correlation.assignment_id,correlation.worker_id,correlation.fence,correlation.execution_id) !=
+                   (active.assignment_id,active.worker_id,active.fence,active.execution_id)
+                or correlation.admission_claim_id != receipt.admission_claim_id
+                or correlation.requested_execution_id != queued.execution_id
+                or (correlation.runtime_generation,correlation.rpc_request_id) !=
+                   (evidence.runtime_generation,evidence.rpc_request_id)
+                or (evidence.provider_native_session_id,evidence.provider_native_turn_id) !=
+                   (receipt.provider_native_session_id,receipt.provider_native_turn_id)):
+            self.refused('home_upgrade_started_origin_changed')
+        return self._validate_proof(queued,current)
+
     def input_context(self, queued, *, attempt_id, claim_id):
         service = self
         def validate():
@@ -238,29 +296,7 @@ class HomeUpgradeCheckpointService:
                     or {k:v for k,v in attempt.queued_turn_snapshot.items() if k != 'attempts'} !=
                        {k:v for k,v in queued.model_dump(mode='json').items() if k != 'attempts'}):
                 service.refused('home_upgrade_current_native_admission_unavailable')
-            actor = service.home.broker.identity.actor_for_identity(proof.requested_by,
-                scope=TenantScope(organization_id=attempt.organization_id,workspace_id=attempt.workspace_id))
-            artifact, checkpoint = service._checkpoint(proof.checkpoint_id,actor)
-            plan, completion = service._completed(checkpoint,actor)
-            if plan.completed_at < artifact.created_at or completion.observed_at < artifact.created_at:
-                service.refused('home_upgrade_old_completion_cannot_resume')
-            actor = service._requester(checkpoint)
-            receipt = service.artifacts.get_evidence(proof.resume_evidence_id,actor=actor)
-            if (proof.checkpoint_sha256 != artifact.digest.value or proof.upgrade_plan_id != plan.id
-                    or proof.completion_evidence_id != completion.id or proof.requested_by != checkpoint.requester_id
-                    or queued.thread_id != checkpoint.thread_id
-                    or proof.thread_id != checkpoint.thread_id or queued.source != 'upgrade-recovery:home'
-                    or queued.project_id != 'home' or queued.execution_id != 'home-upgrade-'+artifact.id
-                    or queued.canonical_ingress_id is not None or queued.agent_profile_actor_id != actor.identity_id
-                    or sha(queued.message) != proof.message_sha256 or receipt.lifecycle != 'valid'
-                    or receipt.source != 'home-upgrade-resume' or receipt.result != 'info'
-                    or receipt.artifact_ids != (artifact.id,) or receipt.producer_identity_id != actor.identity_id
-                    or receipt.metadata.get('upgrade_plan_id') != plan.id
-                    or receipt.metadata.get('completion_evidence_id') != completion.id
-                    or receipt.metadata.get('checkpoint_sha256') != artifact.digest.value
-                    or receipt.metadata.get('message_sha256') != proof.message_sha256):
-                service.refused('home_upgrade_retained_input_changed')
-            return checkpoint,actor
+            return service._validate_proof(queued, attempt)
         class Authorizer:
             def validate_input(self,assignment,actor,project,source):
                 checkpoint,current = validate()
