@@ -82,6 +82,70 @@ class RepeatedHomeRestartTests(HomeRestartRecoveryTests):
                 project=self.host._project('home'),actor=self.actor)
         self.assertEqual(len(self.records.get('operator-thread').prior),1)
 
+    def record_web_usage(self, active, *, outcome='succeeded'):
+        from codex_web.agent_runtime_usage import AgentRuntimeUsage
+        from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
+        usage=AgentRuntimeUsageStore(self.f.sqlite)
+        if self.restart.event_followup is None:
+            self.restart.event_followup=NS(sessions=self.sessions.store,runtime_usage=usage)
+        session=self.sessions.store.find_by_native_id(active.thread_id,organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,provider_id='openai',runtime_id='codex')
+        return usage.upsert(AgentRuntimeUsage(id='runtime-usage-'+hashlib.sha256(f'{session.id}\n{active.turn_id}'.encode()).hexdigest()[:32],
+            organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id,assignment_id=self.assignment.id,
+            execution_id=self.assignment.execution_id,provider_id='openai',runtime_id='codex',runtime_type='native',
+            provider_native_session_id=active.thread_id,provider_native_turn_id=active.turn_id,input_tokens=10,output_tokens=5,
+            terminal_outcome=outcome,started_at=time.time()-1,completed_at=time.time()))
+
+    def human_input(self, turn):
+        queued=self.execution.enqueue_turn(thread_id='operator-thread',project_id='home',message='Fresh independently authorized human request '+turn,
+            source='web',execution_profile_id=self.assignment.execution_profile_id,
+            agent_profile_id=self.assignment.agent_profile.profile_id,agent_profile_revision=self.assignment.agent_profile.profile_revision,
+            agent_profile_actor_id=self.actor.identity_id)
+        return self.start_input(queued,turn)
+
+    async def test_over_twenty_settled_independent_human_cycles_archive_without_lifetime_ceiling(self):
+        from codex_web.action_intents import ActionIntentStatus
+        intent=self.create()
+        self.intents.store.update(lambda state:state.model_copy(update={'intents':[row.model_copy(update={'status':ActionIntentStatus.UNCERTAIN,
+            'execution_started_at':time.time(),'attempt':1,'lease':None}) if row.id==intent.id else row for row in state.intents]}),intent_ids=(intent.id,))
+        original=self.intents.store.get(intent.id).model_dump(mode='json')
+        active=self.interrupted
+        for cycle in range(23):
+            queued=self.restart.retain_startup(active,project=self.host._project('home'),actor=self.actor)
+            self.assertIn(intent.id,queued.message)
+            resumed=self.start_input(queued,'settled-restart-'+str(cycle))
+            self.record_web_usage(resumed)
+            active=self.human_input('new-human-'+str(cycle))
+        saved=self.records.get('operator-thread')
+        self.assertEqual(saved.prior,())
+        archived=self.records.archived(saved.evidence['home_restart']['previous_history_id'])
+        self.assertIsNotNone(archived)
+        self.assertEqual(archived.original.turn_id,'new-human-20')
+        self.assertEqual(self.intents.store.get(intent.id).model_dump(mode='json'),original)
+        self.assertEqual(self.effects,0)
+
+    async def test_twenty_unsettled_consecutive_generations_refuse_without_dropping_proof(self):
+        active=self.interrupted
+        for cycle in range(21):
+            queued=self.restart.retain_startup(active,project=self.host._project('home'),actor=self.actor)
+            active=self.start_input(queued,'unsettled-restart-'+str(cycle))
+        before=self.records.get('operator-thread')
+        self.assertEqual(len(before.prior),20)
+        with self.assertRaises(ExecutionPrestartRefusal):
+            self.restart.retain_startup(active,project=self.host._project('home'),actor=self.actor)
+        self.assertEqual(self.records.get('operator-thread'),before)
+        self.assertEqual(before.prior[0]['original'],self.interrupted.model_dump(mode='json'))
+
+    async def test_unknown_previous_usage_cannot_be_reset_by_new_human_source(self):
+        queued=self.restart.retain_startup(self.interrupted,project=self.host._project('home'),actor=self.actor)
+        resumed=self.start_input(queued,'unknown-previous-native')
+        self.record_web_usage(resumed,outcome='unknown')
+        fresh=self.human_input('new-independent-human')
+        before=self.records.get('operator-thread')
+        with self.assertRaises(ExecutionPrestartRefusal):
+            self.restart.retain_startup(fresh,project=self.host._project('home'),actor=self.actor)
+        self.assertEqual(self.records.get('operator-thread'),before)
+
     def event(self):
         self.actor=self.f.identity.actor_for_identity(self.actor.identity_id,scope=self.actor.tenant)
         from codex_web.services.automation_definitions import install_automation_definitions,AutomationEventTriggerService

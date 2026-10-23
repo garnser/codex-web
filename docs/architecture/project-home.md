@@ -526,8 +526,13 @@ An interrupted Home restart continuation can create a later recovery generation
 only when its exact queued input has the canonical positive native START receipt,
 correlation and actual active native-turn/custody identity. An UNKNOWN original
 start never authorizes a new submission. The same thread, pending human queue and
-all previous recovery originals are retained; twenty archived generations is a
-visible fail-closed bound rather than permission to discard earlier proofs.
+all previous recovery originals are retained. Twenty inline generations bounds
+one unsettled continuation chain, never lifetime use of the conversation. A new
+independent human chain requires its own positive START and the prior
+continuation's actual terminal usage (plus terminal event accounting when
+applicable). The complete previous chain is archived immutably through the
+existing recovery store before resetting its current CAS. Original ActionIntent
+and preflight UNKNOWN records are unchanged; history links require no scan.
 
 An active Home event additionally retains the original Automation grant, event,
 selection and custody evidence and revalidates current administrator, Role,

@@ -36,6 +36,7 @@ class HomeRestartRecoveryService:
         self.intents, self.preflight = intents, preflight
         self.planned_restart = None
         self.event_followup = None
+        self.planned_restart = None
 
     def refused(self, reason):
         from codex_web.runtime.execution import ExecutionPrestartRefusal
@@ -106,6 +107,49 @@ class HomeRestartRecoveryService:
             self.refused('home_restart_positive_native_start_required')
         return matches[0]
 
+    def _settled_chain(self, previous):
+        evidence = previous.evidence.get('home_restart')
+        if evidence is None or self.event_followup is None:
+            self.refused('home_restart_previous_terminal_usage_unavailable')
+        matches = []
+        for attempt in self.preflight.store.for_thread(previous.thread_id,limit=200):
+            snapshot = attempt.queued_turn_snapshot
+            if snapshot is None or snapshot.get('id') != evidence.get('queued_id'):
+                continue
+            receipt, correlation = attempt.queued_start_receipt, attempt.queued_start_correlation
+            if receipt is None or correlation is None:
+                continue
+            active = previous.original.model_copy(update={'source':'queued:restart-recovery:home',
+                'turn_id':receipt.provider_native_turn_id,'execution_id':correlation.execution_id,
+                'assignment_id':correlation.assignment_id,'worker_id':correlation.worker_id,'fence':correlation.fence,
+                'execution_workspace_id':self._assignment(correlation.assignment_id).execution_workspace_id})
+            self._started_input(active,queued_id=evidence['queued_id'],
+                proof=HomeRestartInputProof.model_validate(evidence['proof']))
+            assignment = self._assignment(active.assignment_id)
+            runtime = assignment.runtime_binding
+            session = self.event_followup.sessions.find_by_native_id(active.thread_id,
+                organization_id=assignment.organization_id,workspace_id=assignment.workspace_id,
+                provider_id=runtime.provider_id,runtime_id=runtime.runtime_id)
+            if session is None or session.assignment_id != active.assignment_id or session.execution_id != active.execution_id:
+                self.refused('home_restart_previous_terminal_usage_unavailable')
+            usage_id = 'runtime-usage-' + hashlib.sha256(f'{session.id}\n{active.turn_id}'.encode()).hexdigest()[:32]
+            usage = self.event_followup.runtime_usage.get(usage_id)
+            if (usage is None or usage.terminal_outcome == 'unknown' or usage.completed_at is None
+                    or (usage.organization_id,usage.workspace_id,usage.assignment_id,usage.execution_id,
+                        usage.provider_native_session_id,usage.provider_native_turn_id) !=
+                        (assignment.organization_id,assignment.workspace_id,active.assignment_id,active.execution_id,active.thread_id,active.turn_id)):
+                self.refused('home_restart_previous_terminal_usage_unavailable')
+            if evidence.get('event_origin') is not None:
+                origin = ActiveThreadTurn.model_validate(evidence['event_origin']['active'])
+                run_id = origin.source.removeprefix('queued:').removeprefix('home-operator-automation:')
+                run = self.event_followup.runs.store.get(run_id,organization_id=assignment.organization_id,
+                    workspace_id=assignment.workspace_id)
+                if run.status not in {'succeeded','failed','cancelled','expired'} or run.home_terminal is None:
+                    self.refused('home_restart_previous_event_accounting_pending')
+            matches.append(attempt.id)
+        if len(matches) != 1:
+            self.refused('home_restart_previous_terminal_usage_unavailable')
+
     def _origin(self, active, assignment, actor, project, previous):
         source = (active.source or '').removeprefix('queued:')
         if source == 'web':
@@ -124,6 +168,10 @@ class HomeRestartRecoveryService:
             if origin is not None:
                 self._validate_event_origin(origin, actor, project)
             return origin
+        if source == 'upgrade-recovery:home' and self.planned_restart is not None:
+            attempt, queued = self._started_input(active)
+            self.planned_restart.validate_started_origin(active, queued, attempt)
+            return None
         if source.startswith('home-operator-automation:') and self.event_followup is not None:
             attempt, queued = self._started_input(active)
             self.event_followup.restart_origin(active, assignment=assignment, actor=actor, project=project,
@@ -170,6 +218,13 @@ class HomeRestartRecoveryService:
             self.refused('home_restart_selected_conversation_changed')
         previous = self.store.get(active.thread_id)
         origin = self._origin(active, assignment, actor, project, previous)
+        fresh_chain = bool(previous and previous.evidence.get('home_restart')
+            and (active.source or '').removeprefix('queued:') == 'web')
+        archive_id = None
+        if fresh_chain:
+            self._started_input(active)
+            self._settled_chain(previous)
+            archive_id = self.store.archive(previous)
         execution_ids = {assignment.execution_id}
         if previous and (active.source or '').removeprefix('queued:') == 'restart-recovery:home':
             execution_ids.update(row['original']['execution_id'] for row in (*previous.prior, previous.model_dump(mode='json'))
@@ -187,7 +242,10 @@ class HomeRestartRecoveryService:
             reason_code='home_restart_retained_input', actor_id=actor.identity_id, original=active,
             evidence={'home_restart':{'proof':proof.model_dump(mode='json'),
                 'source_assignment':assignment.model_dump(mode='json'), 'held_action_ids':[key for key,status in held],
-                **({'event_origin':origin} if origin is not None else {}), 'state':'reserved'}}, updated_at=now)
+                **({'event_origin':origin} if origin is not None else {}),
+                **({'previous_history_id':archive_id} if archive_id is not None else
+                   {'previous_history_id':previous.evidence['home_restart']['previous_history_id']}
+                   if previous and previous.evidence.get('home_restart', {}).get('previous_history_id') else {}), 'state':'reserved'}}, updated_at=now)
         observed = previous.model_dump(mode='json') if previous else None
         def reserve(raw):
             if raw != observed:
@@ -198,11 +256,11 @@ class HomeRestartRecoveryService:
                 if prior and (previous.original.turn_id == active.turn_id
                         and previous.original.execution_id == active.execution_id):
                     self.refused('home_restart_original_already_retained')
-                if len(previous.prior) >= 20:
+                if not fresh_chain and len(previous.prior) >= 20:
                     self.refused('home_restart_generation_bound_exceeded')
                 if previous.outcome == 'blocked' and previous.action_state != 'applied':
                     self.refused('home_restart_prior_recovery_blocked')
-                proposed.prior = (*previous.prior, previous.model_dump(mode='json', exclude={'prior'}))
+                proposed.prior = () if fresh_chain else (*previous.prior, previous.model_dump(mode='json', exclude={'prior'}))
             return proposed.model_dump(mode='json')
         self.store.store.record_update(self.store.RECORD_NAMESPACE, active.thread_id, reserve, default=None)
         queued = self.execution.enqueue_turn(thread_id=active.thread_id, project_id='home', message=message,
