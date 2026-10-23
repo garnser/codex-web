@@ -65,10 +65,20 @@ hidden scan retry is introduced.
 Scanner failure Evidence retains the observed local execution phase separately
 from scan acceptance. `before_backend` means the worker did not enter its backend
 call; `backend_unresolved` does not establish whether a process started or exited.
-Only a returned backend result supplies exit code, elapsed time, timeout, limit
-and truncation metadata. A later lease/poll or completion failure preserves that
-observation with `scanner_completion_returned=false`; it does not fabricate a
-terminal assignment or accepted scan. A returned canonical completion rejected
+A returned backend result supplies exit code, elapsed time, timeout, limit and
+truncation metadata. If an owner poll fails after spawn, the existing backend
+kills the process group and joins that same process. Only a successful join may
+supply `backend_stopped_after_error`, with the actual observed wait status,
+elapsed time and already-known wall/limit flags. That status can describe our
+cleanup signal; it is not proof of the scanner's natural outcome. Output is not
+read on this error path, so truncation remains null. A failed join retains the
+unresolved phase and unknown status. The original refusal or cancellation still
+propagates; even an observed exit zero cannot become an accepted scan.
+A later lease/poll or completion failure preserves the observation with
+`scanner_completion_returned=false`; it does not fabricate a terminal assignment
+or accepted scan. Ordinary backend callers omit the optional in-memory observer
+and retain their existing error behavior. This adds no persisted state version,
+scan controller, retry, deadline extension or authority bypass. A returned canonical completion rejected
 by the transport is identified separately. Raw stdout/stderr, command arguments
 and exception text are excluded from this failure metadata. Historical failures
 without these observations remain unknown; installing the reader does not

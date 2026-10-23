@@ -82,6 +82,21 @@ class LocalExecutionResult:
         return self.exit_code == 0 and not self.timed_out and self.limit_breach is None
 
 
+@dataclass(frozen=True, slots=True)
+class LocalExecutionStoppedObservation:
+    """Safe facts observed after ownership cleanup; never successful output.
+
+    A negative exit code may be caused by our cleanup signal. Output was not
+    inspected on this error path, so truncation remains explicitly unknown.
+    """
+
+    exit_code: int
+    duration_seconds: float
+    timed_out: bool
+    limit_breach: str | None
+    output_truncated: bool | None = None
+
+
 class BubblewrapExecutionBackend:
     """Run one assignment command inside an OS-enforced local sandbox.
 
@@ -866,6 +881,7 @@ class BubblewrapExecutionBackend:
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
         trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
         additional_disk_bytes: int = 0,
+        failure_observer: Callable[[LocalExecutionStoppedObservation], None] | None = None,
     ) -> LocalExecutionResult:
         status = self.probe()
         if not status.ready:
@@ -945,7 +961,21 @@ class BubblewrapExecutionBackend:
                 # work behind. This is the shared worker boundary, not a private
                 # procedure process supervisor.
                 self._kill_process_group(process)
-                process.wait()
+                stopped_exit_code = process.wait()
+                if failure_observer is not None:
+                    # Publish facts only after a positive join. The original
+                    # refusal/cancellation still propagates; never accept output.
+                    try:
+                        failure_observer(LocalExecutionStoppedObservation(
+                            exit_code=stopped_exit_code,
+                            duration_seconds=max(0.0, time.monotonic() - started),
+                            timed_out=timed_out, limit_breach=limit_breach,
+                        ))
+                    except BaseException:
+                        # Instrumentation runs only inside an already-refused
+                        # operation. Preserve its original error/cancellation,
+                        # including when the observer itself is cancelled.
+                        pass
                 raise
             disk_bytes = current_disk_bytes()
             if limit_breach is None and exit_code < 0:

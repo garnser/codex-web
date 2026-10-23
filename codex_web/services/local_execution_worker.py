@@ -915,6 +915,8 @@ class LocalExecutionWorkerRuntime:
                 run_kwargs["additional_disk_bytes"] = readonly_disk_bytes
             if scanner_observer is not None:
                 scanner_observer("backend_unresolved")
+                run_kwargs["failure_observer"] = lambda stopped: scanner_observer(
+                    "backend_stopped_after_error", stopped)
             result = self.backend.run(
                 current["assignment"],
                 **run_kwargs,
