@@ -132,10 +132,15 @@ class HomeUpgradeCheckpointTests(HomeRestartRecoveryTests):
         self.assertEqual(recovered.thread_id, 'operator-thread')
         next_attempt, next_claim = self.claim(recovered)
         with self.restart.input_context(recovered, attempt_id=next_attempt, claim_id=next_claim):
-            self.service.home_operator_host.prepare_native_input_guard(project=self.host._project('home'), actor=self.actor,
+            restart_guard = self.service.home_operator_host.prepare_native_input_guard(project=self.host._project('home'), actor=self.actor,
                 execution_id=self.assignment.execution_id, assignment_id=self.assignment.id,
-                source='queued:restart-recovery:home')()
+                source='queued:restart-recovery:home')
+            restart_guard()
         self.assertEqual(self.queue.get('operator-thread'), [recovered])
+        self.artifacts.invalidate_evidence(self.plan.post_upgrade_evidence_id,
+            'Original planned restart verification revoked', actor=self.actor)
+        with self.assertRaises(ExecutionPrestartRefusal):
+            restart_guard()
         self.assertEqual(self.effects, 0)
 
     async def test_no_completed_or_old_plan_or_wrong_running_source_can_resume(self):
