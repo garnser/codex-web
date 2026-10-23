@@ -23,14 +23,14 @@ from codex_web.services.native_model_provider import NativeCodexModelProviderAda
 from codex_web.services.native_reasoning_bridge import CanonicalNativeReasoningBridge,NativeReasoningBinding
 from codex_web.services.threads import ThreadService
 from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
-from tests.test_home_coordination_canonical_send import HomeCanonicalSendTests
+from tests import test_home_coordination_canonical_send as canonical_fixtures
 from tests.test_codex_worker_session import _FakeDelegationService
 from tests.test_codex_runtime import _Host as CodexHost
 
 
 class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_thread_turn_original_start_and_usage_complete_once(self):
-        f=HomeCanonicalSendTests()
+        f=canonical_fixtures.HomeCanonicalSendTests()
         self.addAsyncCleanup(self.cleanup,f)
         await f.asyncSetUp()
         # The shared fixture simplifies this to the UI sandbox spelling.

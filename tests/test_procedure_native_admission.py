@@ -27,7 +27,7 @@ class NativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 # not task text. This fixture has no required procedures, but
                 # mutable native tools still cannot enforce a future mutation
                 # check; the required typed unsupported result is explicit.
-                assignment = SimpleNamespace(id='assignment-1', resource_ids=(), fence=1,
+                assignment = SimpleNamespace(id='assignment-1', resource_ids=(), fence=1, runtime_binding=None,
                     network=SimpleNamespace(enabled=False), sandbox='read-only')
                 recorded = []
                 workers = SimpleNamespace(assignment_for_execution=lambda *a, **k: assignment,
