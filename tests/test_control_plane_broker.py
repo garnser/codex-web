@@ -2230,8 +2230,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
         self.assertEqual([item for item in result.json()["items"]
-                          if not item["id"].startswith("project.")
-                          and item["id"] not in {"repository.pull-request.ready", "operator.host.inspect"}],
+                          if not item["id"].startswith(("project.", "operator."))
+                          and item["id"] != "repository.pull-request.ready"],
                          self.service.public_assignment_capability(self.assignment)["operations"])
         # Engine recognition in the operator catalog is not an opt-in declaration.
         self.assertTrue(any(item["id"] == "operator.host.inspect" for item in result.json()["items"]))
@@ -2240,6 +2240,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item["id"] == "repository.pull-request.ready" for item in
                              self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertFalse(any(item["id"].startswith("project.") for item in
+                             self.service.public_assignment_capability(self.assignment)["operations"]))
+        self.assertFalse(any(item["id"].startswith("operator.") for item in
                              self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertNotIn("assignment_context", result.json())
 

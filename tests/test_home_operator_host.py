@@ -512,6 +512,8 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         helper.setUp()
         self.addCleanup(helper.doCleanups)
         helper.actor = self.actor
+        helper.followup.workers = self.f.workers
+        helper.followup.bootstrap_bindings = self.bindings
         pin = self.assignment.agent_profile
         binding = HomeOperatorBinding(thread_id='operator-thread', selected_by=self.actor.identity_id,
             revision=2, updated_at=time.time(), agent_profile_id=pin.profile_id,
@@ -525,7 +527,8 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
             home_binding_revision=2, agent_profile_revision=pin.profile_revision)
         helper.publish(publisher=self.actor.identity_id)
         run = helper.admit().run
-        await helper.launch(run)
+        result = await helper.launch(run)
+        self.assertEqual(len(helper.calls), 1, result.model_dump(mode='json'))
         _, payload, request = helper.calls[0]
         host = self.service.home_operator_host
         host.event_input_authorizer = helper.followup.authorize_input
