@@ -545,7 +545,11 @@ After a service replacement, the new assignment-bound process manager may have
 no registered owner for an older LOST/unleased assignment. Successful lookup of
 that exact local worker/runtime/assignment, no in-flight start/stop lock, a LOST
 transition predating this manager, and a fresh unchanged canonical assignment
-can establish **unowned custody**, separately from an unavailable lookup. The
+can establish **unowned custody**, separately from an unavailable lookup. Both
+runtime bindings must exist; the existing canonical identity comparison matches
+provider, runtime and capability revision while tolerating routing-enriched
+sandbox/authentication facts. The complete assignment snapshot still must match
+the fresh canonical read. The
 runner then exposes `processOwnershipObservation.state=unowned_lost`; process
 running and pending executor-work fields remain omitted/UNKNOWN. A registered
 owner, lifecycle in progress, current lease, stale snapshot, wrong worker/runtime

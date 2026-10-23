@@ -1526,7 +1526,9 @@ class AssignmentBoundAgentProcessSessionManager:
                 or assignment.assigned_worker_id != worker.id
                 or (assignment.organization_id, assignment.workspace_id) !=
                    (worker.organization_id, worker.workspace_id)
-                or assignment.runtime_binding != self.runtime_binding
+                or assignment.runtime_binding is None
+                or not runtime_binding_identity_matches(
+                    assignment.runtime_binding, self.runtime_binding)
                 or not assignment.updated_at < self.started_at):
             return None
         lifecycle = self._assignment_locks.get(assignment.id)

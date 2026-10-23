@@ -57,6 +57,37 @@ class UnownedHomeUpgradeTests(DormantHomeUpgradeTests):
         self.completed();self.assertIsNone(self.planned.resume_completed(self.plan.id,operator_actor=self.operator))
         self.assertEqual(self.preserved(),before);self.assertEqual(self.effects,0)
 
+    async def test_routed_enrichment_matches_production_manager_identity(self):
+        def enrich(state):
+            state.assignments = [a.model_copy(update={'runtime_binding':
+                a.runtime_binding.model_copy(update={'sandbox_profiles':('workspace-write',)})})
+                if a.id == self.assignment.id else a for a in state.assignments]
+            return state
+        self.f.workers.store.transition_assignment(self.f.worker.id,self.assignment.id,enrich)
+        self.lose()
+        # application.py constructs the Codex manager with identity only, while
+        # SelectedRuntime.execution_binding retains routing sandbox facts.
+        self.manager.runtime_binding=ExecutionRuntimeBinding(
+            provider_id='openai',runtime_id='codex',capability_revision=1)
+        before=self.preserved()
+        self.assertTrue(self.drain().maintenance_mode)
+        self.assertEqual(self.preserved(),before)
+        self.assertNotIn('processRunning',self.observe('operator-thread'))
+
+    async def test_runtime_identity_drift_and_missing_bindings_refuse(self):
+        self.lose();a=self.current()
+        for binding in (None,
+                a.runtime_binding.model_copy(update={'provider_id':'other'}),
+                a.runtime_binding.model_copy(update={'runtime_id':'other'}),
+                a.runtime_binding.model_copy(update={'capability_revision':2})):
+            with self.subTest(binding=binding):
+                self.manager.runtime_binding=binding
+                self.assertIsNone(self.manager.unowned_lost_observation(a))
+                with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        self.manager.runtime_binding=a.runtime_binding
+        self.assertIsNone(self.manager.unowned_lost_observation(
+            a.model_copy(update={'runtime_binding':None})))
+
     async def test_failed_owner_lookup_never_becomes_absence(self):
         self.lose()
         with patch.object(self.manager,'get',side_effect=RuntimeError('private unavailable lookup')):
