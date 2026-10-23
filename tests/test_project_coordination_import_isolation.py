@@ -13,7 +13,7 @@ import importlib.abc
 import sys
 class DenyApplication(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in ('codex_web.application', 'codex_web.server'):
+        if fullname in ('codex_web.application', 'codex_web.server', 'server'):
             raise ImportError('fixture must not import ' + fullname)
 sys.meta_path.insert(0, DenyApplication())
 import tests.test_project_coordination

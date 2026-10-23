@@ -12,4 +12,9 @@ async def stop_owned_broker(broker, *, timeout=8):
     # A failed cleanup is a failed test, not a positively joined handler.
     if pending:
         raise AssertionError('owned coordination broker handlers did not settle')
-    await asyncio.gather(*done, return_exceptions=True)
+    results = await asyncio.gather(*done, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise AssertionError(
+                'owned coordination broker handler failed: ' + type(result).__name__
+            ) from result
