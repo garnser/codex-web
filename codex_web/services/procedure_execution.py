@@ -502,6 +502,91 @@ class ProcedureExecutionService:
                 # unbounded/sensitive output or label this as an unstarted action.
                 raise RuntimeError("procedure provider output boundary rejected the response; reconcile the effect")
 
+    def _provider_result(self, assignment, step, intent, receipt, history, actor):
+        """Project a registered legacy receipt without executing or verifying it.
+
+        Evidence point writes are deterministic and idempotent, so an interrupted
+        checkpoint save can re-use the SAME original receipt and proof.
+        """
+        adapter = self.intents.execution.registry.procedure_result_adapter(
+            step.action.provider_type, step.action.provider_instance,
+            step.action.action_id, step.action.provider_contract_version, actor=actor)
+        if adapter is None:
+            return receipt.result.output
+        import math
+        result = receipt.result
+        request = intent.request
+        if (intent.status != "succeeded" or result is None or result.status != "succeeded"
+            or (intent.organization_id, intent.workspace_id, intent.project_id, intent.execution_id)
+                != (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.execution_id)
+            or intent.work_item_ref != assignment.work_item_ref
+            or intent.requested_by != assignment.procedure_checkpoint.actor_identity_id
+            or intent.binding_id != result.provider_binding_id
+            or (intent.provider_type, intent.provider_instance, intent.action_id)
+                != (step.action.provider_type, step.action.provider_instance, step.action.action_id)
+            or (request.organization_id, request.workspace_id, request.project_id, request.action_id)
+                != (intent.organization_id, intent.workspace_id, intent.project_id, intent.action_id)
+            or set(request.resource_ids) != set(intent.resource_ids)
+            or not request.resource_ids or set(request.resource_ids) - set(assignment.resource_ids)
+            or receipt.id != intent.last_receipt_id or receipt.intent_id != intent.id
+            or receipt.attempt != intent.attempt or receipt.outcome != "completed"
+            or (receipt.provider_type, receipt.provider_instance, receipt.action_id,
+                receipt.idempotency_key, receipt.correlation_id)
+                != (intent.provider_type, intent.provider_instance, intent.action_id,
+                    intent.idempotency_key, intent.correlation_id)
+            or request.idempotency_key != intent.idempotency_key
+            or intent.idempotency_key != f"procedure:{assignment.id}:{assignment.procedure_checkpoint.definition.checksum}:{step.id}"
+            or not all(math.isfinite(v) for v in (result.started_at, result.completed_at, receipt.received_at))
+            or result.completed_at < result.started_at):
+            raise ProcedureExecutionError("procedure_provider_result_origin_mismatch")
+        try:
+            outputs = adapter.project(request, result)
+        except ValueError as exc:
+            raise ProcedureExecutionError("procedure_provider_result_projection_invalid") from exc
+        self._values(step.outputs, outputs, actor, assignment)
+        proofs = {}
+        for requirement in step.expected_evidence:
+            if (requirement.name, requirement.kind) == ("receipt", "provider_receipt"):
+                evidence_type, observed_at, verification_id = "provider_receipt", result.completed_at, None
+            elif (requirement.name, requirement.kind) == ("verification", "verification"):
+                verification = next((v for v in history.verifications if v.id == intent.last_verification_id), None)
+                if (verification is None or verification.intent_id != intent.id
+                    or not verification.verified or verification.provider_verification is None
+                    or not verification.provider_verification.verified
+                    or not math.isfinite(verification.verified_at)
+                    or verification.verified_at < max(result.completed_at, receipt.received_at)):
+                    raise ProcedureExecutionError("procedure_provider_verification_missing")
+                evidence_type, observed_at, verification_id = "artifact_verification", verification.verified_at, verification.id
+            else:
+                raise ProcedureExecutionError("procedure_provider_evidence_contract_unsupported")
+            payload = EvidenceCreate(project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+                execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
+                resource_ids=request.resource_ids, evidence_type=evidence_type, result="pass",
+                provider=intent.provider_type, source=f"action-intent:{intent.id}",
+                external_id=receipt.id, observed_at=observed_at,
+                summary="Canonical originating provider receipt" if verification_id is None else "Canonical originating provider verification",
+                metadata={"intent_id": intent.id, "receipt_id": receipt.id, "attempt": intent.attempt,
+                    "provider_result_id": result.execution_id, "action_id": intent.action_id,
+                    "provider_instance": intent.provider_instance, "provider_contract_version": adapter.contract_version,
+                    "verification_id": verification_id})
+            evidence = self.evidence.create_evidence(payload, actor=actor,
+                idempotency_key=f"procedure-result:{receipt.id}:{requirement.name}")
+            self._evidence(evidence.id, actor, assignment)
+            proofs[requirement.name] = evidence.id
+        return {"outputs": outputs, "evidence": proofs}
+
+    async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
+        # Projection includes canonical Evidence writes. Keep that blocking work
+        # off the shared loop, and join the actual owner before cancellation can
+        # release the procedure's caller. Existing cooperative store budgets
+        # bound the operation and prevent a cancelled owner making later commits.
+        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        async def operation():
+            return await asyncio.to_thread(self._provider_result,
+                assignment, step, intent, receipt, history, actor)
+        return await PostTurnReadinessService._run_owned(operation, seconds=5.,
+            name="procedure-provider-result-" + intent.id)
+
     def creation_discovery(self, payload, actor):
         if not payload.execution_id:
             return None
@@ -755,7 +840,7 @@ class ProcedureExecutionService:
                 receipt = next((r for r in history.receipts if r.id == intent.last_receipt_id), None)
                 if receipt is None or receipt.result is None:
                     raise ProcedureExecutionError("procedure_action_receipt_missing")
-                result = receipt.result.output
+                result = await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
             elif step.worker:
                 if state.attempts >= step.max_attempts:
                     raise ProcedureExecutionError("procedure_diagnostic_retry_exhausted")

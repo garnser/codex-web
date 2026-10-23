@@ -88,6 +88,8 @@ class GitLabActionProvider:
         if urlparse(self.web_base).netloc != provider_instance:
             raise ValueError("GitLab Web base must match provider_instance")
         self.branch_publisher = branch_publisher
+        from codex_web.services.procedure_provider_results import CodeHostProcedureResultAdapter
+        self.procedure_result_adapters = (CodeHostProcedureResultAdapter(),)
         self.contract = CodeHostActionContract(
             resources,
             workspaces,
