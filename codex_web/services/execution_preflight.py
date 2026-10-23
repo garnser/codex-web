@@ -223,8 +223,11 @@ class ExecutionPreflightService:
                 return current
             if claim_id is not None and current.queued_admission_claim_id != claim_id:
                 return current
+            # A committed writer-lock refusal can already have returned the
+            # original to queued. Its captured successful resume must still be
+            # archived before restoring that SAME no-input original.
             if (preinput_refusal and claim_id is not None
-                    and current.status == 'reconciliation_required' and status in {'queued', 'blocked'}
+                    and current.status in {'queued', 'reconciliation_required'} and status in {'queued', 'blocked'}
                     and current.queued_resume_correlation is not None
                     and current.queued_start_correlation is None
                     and current.queued_start_evidence is None and current.queued_start_receipt is None

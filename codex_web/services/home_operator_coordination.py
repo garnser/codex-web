@@ -44,6 +44,8 @@ class HomeProjectMessage(BaseModel):
 
 
 class HomeProjectEffect(BaseModel):
+    # Internal admission identity is not provider effect-idempotency support.
+    admission_key: str = Field(min_length=1, max_length=500)
     model_config = ConfigDict(extra="forbid", frozen=True)
     assignment_id: str = Field(min_length=1, max_length=200)
     fence: int = Field(ge=1)
@@ -172,7 +174,8 @@ class HomeOperatorCoordinationService:
         params = intent.request.parameters
         # UNCERTAIN never unlocks a possibly accepted queued input. Reconcile the
         # same intent first; neither a new key nor another native input is made.
-        if (intent.action_id != MESSAGE_ACTION or intent.status not in {"executing", "succeeded"}
+        if (intent.idempotency_key != params.get("admission_key")
+                or intent.action_id != MESSAGE_ACTION or intent.status not in {"executing", "succeeded"}
                 or (intent.provider_type, intent.provider_instance) != (PROVIDER, "canonical")
                 or intent.resource_ids != (envelope.host_resource_id,)
                 or intent.requested_by != actor.identity_id or intent.execution_id != current.execution_id
@@ -217,14 +220,14 @@ class HomeOperatorCoordinationService:
             and b.credential_ref is None]
         if len(candidates) != 1:
             denied("Exactly one explicit Home coordination provider binding is required")
-        effect = HomeProjectEffect(assignment_id=current.id, fence=current.fence,
+        key = f"home-coordinate:{current.id}:{current.fence}:{data.idempotency_key}"
+        effect = HomeProjectEffect(admission_key=key, assignment_id=current.id, fence=current.fence,
             home_revision=home.revision, definition_record_id=current.execution_profile_definition.record_id,
             target_assignment_id=target.id, target_fence=target.fence,
             project_id=data.project_id, thread_id=data.thread_id, message=data.message)
-        key = f"home-coordinate:{current.id}:{current.fence}:{data.idempotency_key}"
         request = ActionRequest(action_id=MESSAGE_ACTION, organization_id=actor.organization_id,
             workspace_id=actor.workspace_id, project_id="home", resource_ids=(envelope.host_resource_id,),
-            requested_by=actor.identity_id, idempotency_key=key, parameters=effect.model_dump(mode="json"))
+            requested_by=actor.identity_id, parameters=effect.model_dump(mode="json"))
         from codex_web.services.action_intents import ActionIntentConflictError
         try:
             intent = intents.create(ActionIntentCreate(binding_id=candidates[0].id, request=request,
@@ -287,7 +290,7 @@ class HomeOperatorCoordinationActionProvider:
         started = time.time()
         data, current, actor, home, envelope, target, profile = self.context(request, binding)
         intent = self.service.broker.action_intents.store.find_idempotent(
-            actor.organization_id, actor.workspace_id, binding.id, MESSAGE_ACTION, request.idempotency_key)
+            actor.organization_id, actor.workspace_id, binding.id, MESSAGE_ACTION, data.admission_key)
         if (intent is None or intent.status != "executing" or intent.request != request
                 or intent.execution_id != current.execution_id or intent.attempt != 1):
             denied("Exactly one executing canonical Home action is required before input admission")
@@ -303,7 +306,7 @@ class HomeOperatorCoordinationActionProvider:
             original = self.service.broker.action_intents.get(intent.id, actor)
             if (original.status != "executing" or original.request != request or original.attempt != 1
                     or original.execution_id != current.execution_id or original.lease is None
-                    or original.lease.worker_id != f"control-plane-broker:{current.assigned_worker_id}"
+                    or original.lease.owner != f"control-plane-broker:{current.assigned_worker_id}"
                     or original.lease.expires_at <= self.service.broker._clock()
                     or original.execution_started_at is None
                     or original.execution_started_at + original.timeout_seconds <= self.service.broker._clock()):

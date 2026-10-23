@@ -45,10 +45,10 @@ class HomeCoordinationTests(unittest.TestCase):
             execution_profile_id="repository-write", repository_resource_id="resource-data",
             writable_repository_resource_ids=("resource-data",), read_only_repository_resource_ids=("resource-core",),
             project_coordination_dispatch=self.proof)
-        self.intent = NS(id="intent", binding_id="binding", action_id="operator.project.thread.message", status="succeeded",
+        self.intent = NS(id="intent", idempotency_key="home-coordinate:origin:2:one-original", binding_id="binding", action_id="operator.project.thread.message", status="succeeded",
             provider_type="home-operator-coordination", provider_instance="canonical", resource_ids=("resource-host",),
             requested_by="admin", execution_id="origin-execution", organization_id="local", workspace_id="default", project_id="home",
-            request=NS(parameters={"assignment_id":"origin", "fence":2, "home_revision":4,
+            request=NS(parameters={"admission_key":"home-coordinate:origin:2:one-original", "assignment_id":"origin", "fence":2, "home_revision":4,
                 "definition_record_id":"home-definition", "target_assignment_id":"target", "target_fence":3,
                 "project_id":"data", "thread_id":"quinn-thread", "message":self.message}))
         self.broker = NS(execution_workers=NS(store=NS(assignment=self.assignments.get, worker=lambda key:self.worker)),
@@ -131,13 +131,13 @@ class HomeCoordinationProviderTests(unittest.IsolatedAsyncioTestCase):
             provider_instance="canonical", enabled=True)
         self.broker.action_intents.execution.registry.binding = lambda key, actor:self.provider_binding
         self.request = ActionRequest(action_id="operator.project.thread.message", organization_id="local", workspace_id="default",
-            project_id="home", resource_ids=("resource-host",), requested_by="admin", idempotency_key="one-original",
-            parameters={"assignment_id":"origin", "fence":2, "home_revision":4, "definition_record_id":"home-definition",
+            project_id="home", resource_ids=("resource-host",), requested_by="admin",
+            parameters={"admission_key":"home-coordinate:origin:2:one-original", "assignment_id":"origin", "fence":2, "home_revision":4, "definition_record_id":"home-definition",
                 "target_assignment_id":"target", "target_fence":3, "project_id":"data", "thread_id":"quinn-thread", "message":self.message})
         self.intent.request = self.request
         self.intent.status = "executing"
         self.intent.attempt = 1
-        self.intent.lease = NS(worker_id="control-plane-broker:worker-home",expires_at=150)
+        self.intent.lease = NS(owner="control-plane-broker:worker-home",expires_at=150)
         self.intent.execution_started_at = 95
         self.intent.timeout_seconds = 120
         self.broker.action_intents.store = NS(find_idempotent=lambda *args:self.intent)

@@ -3330,6 +3330,17 @@ class TurnExecutionService:
                     "remediation_route": "/api/threads/" + thread_id + "/preflight-attempts",
                 })
             if not initial_turn_pending:
+                delegated_input = (TurnQueuePolicy.source_origin(source) in {
+                    "project-coordination", "home-operator-coordination"}
+                    and operator_admission_validator is not None)
+                if (delegated_input or input_admission_validator is not None or owner_routing_pin is not None) and (
+                        not isinstance(runtime_adapter, CodexAgentRuntimeAdapter)
+                        or not callable(getattr(runtime_adapter.transport, "request_with_start_capture", None))):
+                    refusal = AutomatedAdmissionPaused if delegated_input else ExecutionPrestartRefusal
+                    raise refusal(status_code=409, detail={
+                        "code": "project_delegation_transport_unsupported" if delegated_input else "operator_input_transport_unsupported",
+                        "message": "Pinned input requires the canonical guarded resume/start transport",
+                        "retryable": False})
                 resume_options = {}
                 try:
                     custody_before = None
