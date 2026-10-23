@@ -673,6 +673,7 @@ class ExecutiveManagementService:
                             "conflict": resolution.conflict,
                             "conflict_fact_ids": resolution.conflict_fact_ids,
                             "candidate_fact_ids": resolution.candidate_fact_ids,
+                            "source_governance_record_ids": governance_ids,
                             "stale_fact_ids": resolution.stale_fact_ids,
                             "revoked_source_fact_ids": resolution.revoked_source_fact_ids,
                             "classification": classification.value,
@@ -801,6 +802,8 @@ class ExecutiveManagementService:
                         "id": definition.id,
                         "key": definition.key,
                         "name": definition.name,
+                        "source_governance_record_ids": tuple(item.governance_record_id for item in source_facts
+                                                              if item.governance_record_id),
                         "domain": definition.domain.value,
                         "classification": classification.value,
                         "kpi_revision": definition.revision,
@@ -951,6 +954,7 @@ class ExecutiveManagementService:
                 {
                     "citation": f"[memory:{item.knowledge_id}@v{item.version}]",
                     "knowledge_id": item.knowledge_id,
+                    "governance_record_id": getattr(item, "governance_record_id", None),
                     "logical_key": item.logical_key,
                     "version": item.version,
                     "object_type": item.object_type.value,
@@ -1374,6 +1378,49 @@ class ExecutiveManagementService:
             )
         return output
 
+    def _validate_native_context_sources(self, activation, role_id, catalog, actor):
+        """Recheck exact retained source metadata, never replace it with fresher data.
+
+        All source IDs were retained by the existing governed activation builder.
+        No business/memory catalog scan occurs at a native input boundary.
+        """
+        roles = ([catalog.role_map[selection.role_id] for selection in activation.selections]
+                 if role_id == 'synthesis' else [catalog.role_map[role_id]])
+        for role in roles:
+            context = self._filter_context(activation.context, role)
+            references = []
+            for key in ('business_entities', 'business_facts', 'business_kpis', 'memory'):
+                rows = context.get(key, ())
+                if len(rows) > 64:
+                    raise ExecutiveConsultationError('Native governed context source bound exceeded')
+                for row in rows:
+                    ids = list(row.get('source_governance_record_ids') or ())
+                    ids.extend((row.get('provenance') or {}).get('source_governance_record_ids') or ())
+                    direct = row.get('governance_record_id')
+                    if direct:
+                        ids.append(direct)
+                    if key == 'business_facts':
+                        selected = row.get('selected') or {}
+                        if selected.get('governance_record_id'):
+                            ids.append(selected['governance_record_id'])
+                    # A numeric KPI is derived from original fact records. Older
+                    # contexts lacking their IDs must be recreated, not guessed.
+                    descriptive = ((key == 'business_kpis' and (row.get('current') or {}).get('value') is None)
+                                   or (key == 'business_facts' and row.get('selected') is None
+                                       and not row.get('candidate_fact_ids')))
+                    if not ids and not descriptive:
+                        raise ExecutiveConsultationError('Native context lacks original governed source references')
+                    if any(not isinstance(value, str) or not value for value in ids):
+                        raise ExecutiveConsultationError('Native governed context source reference invalid')
+                    references.extend(ids)
+            references = tuple(dict.fromkeys(references))
+            if len(references) > 256:
+                raise ExecutiveConsultationError('Native governed context source bound exceeded')
+            decisions = self._governed_context_decisions(references, actor=actor,
+                                                        max_classification=role.max_data_classification)
+            if any(value not in decisions or not decisions[value].allowed for value in references):
+                raise ExecutiveConsultationError('Native context original governance permission changed')
+
     def _native_context(self, activation, role_id, actor, max_input, max_output, origin_guard=None):
         if self.native_invocation_authorizer is None or not activation.project_id:
             return {}
@@ -1394,9 +1441,10 @@ class ExecutiveManagementService:
             if (current.status != ExecutiveActivationStatus.CONSULTING
                     or current != activation):
                 raise ExecutiveConsultationError('Native consultation reservation changed')
-            _catalog, reference = self._catalog(actor=actor, project_id=current.project_id)
+            catalog, reference = self._catalog(actor=actor, project_id=current.project_id)
             if reference != activation.role_catalog:
                 raise ExecutiveConsultationError('Native consultation role catalog changed')
+            self._validate_native_context_sources(current, role_id, catalog, actor)
 
         return {'native_context': NativeModelInvocationContext(
             organization_id=actor.organization_id, workspace_id=actor.workspace_id,

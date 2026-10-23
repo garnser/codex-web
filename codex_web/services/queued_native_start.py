@@ -174,7 +174,18 @@ class QueuedNativeStartCapture:
         if assignment is None:
             raise ValueError('native start capture requires a validated assignment')
         binding = assignment.runtime_binding
-        if binding is not None and (binding.provider_id, binding.runtime_id) != ('openai', 'codex'):
+        reasoning = binding is not None and (binding.provider_id, binding.runtime_id) == ('openai', 'codex-reasoning')
+        if reasoning:
+            from codex_web.services.native_model_provider import current_native_model_invocation
+            context = current_native_model_invocation()
+            context.validate_current()
+            if (context.process_owner is None or context.process_owner.assignment_id != assignment.id
+                    or (context.organization_id, context.workspace_id, context.project_id,
+                        context.execution_id, context.actor_id) !=
+                       (assignment.organization_id, assignment.workspace_id, assignment.project_id,
+                        self.requested_execution_id, self.actor_identity_id)):
+                raise ValueError('Native reasoning original invocation capture unavailable')
+        elif binding is not None and (binding.provider_id, binding.runtime_id) != ('openai', 'codex'):
             raise ValueError('native start capture runtime mismatch')
         correlation = None
         def prepare(current):
@@ -211,6 +222,7 @@ class QueuedNativeStartCapture:
                         or set(current.read_only_repository_resource_ids) != set(scope.read_only_repository_ids)))):
                 raise ValueError('native start assignment does not match the retained admission')
             correlation = self.correlation_type(
+                **({'schema_version':'1.1','runtime_id':'codex-reasoning'} if reasoning else {}),
                 **({"runtime_version": runtime_version} if self.rpc_method == "thread/resume" else {}),
                 **{name:getattr(current, name) for name in (
                     'organization_id', 'workspace_id', 'project_id', 'agent_profile_actor_id',

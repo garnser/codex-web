@@ -1,4 +1,7 @@
-"""Canonical queued START/session/usage validation, with fake native wire only."""
+"""Common result checks on original canonical Codex evidence, never relabeled.
+
+The separate canonical-bridge fixture proves the restricted 1.1 runtime path.
+"""
 import unittest
 import inspect
 from dataclasses import replace
@@ -7,6 +10,12 @@ from types import SimpleNamespace
 from codex_web.services.native_model_provider import NativeModelInvocationContext
 from codex_web.services.native_reasoning_bridge import CanonicalNativeReasoningBridge, NativeReasoningBinding
 from tests import test_home_child_terminal_event as canonical
+
+
+class OriginalCodexResultBoundary(CanonicalNativeReasoningBridge):
+    # Retain the genuine original runtime identity. This tests common result
+    # validation and never manufactures a restricted-runtime START receipt.
+    runtime_id='codex'
 
 
 class NativeOriginalResultTests(unittest.IsolatedAsyncioTestCase):
@@ -22,9 +31,9 @@ class NativeOriginalResultTests(unittest.IsolatedAsyncioTestCase):
             organization_id=actor.organization_id, workspace_id=actor.workspace_id,
             provider_id='openai', runtime_id='codex')
         measured = self.fixture.final_usage(self.active)
-        self.session = self.fixture.sessions.store.upsert(original.model_copy(update={'runtime_id':'codex-reasoning'}))
+        self.session = original
         self.usage = measured.model_copy(update={
-            'agent_session_id': self.session.id, 'runtime_id':'codex-reasoning', 'model_call_count':1})
+            'agent_session_id': self.session.id, 'model_call_count':1})
         self.fixture.usage.upsert(self.usage)
         self.context = NativeModelInvocationContext(organization_id=actor.organization_id,
             workspace_id=actor.workspace_id, actor_id=actor.identity_id, project_id=self.active.project_id,
@@ -32,7 +41,7 @@ class NativeOriginalResultTests(unittest.IsolatedAsyncioTestCase):
             execution_id=self.fixture.execution.queued_preflight.store.get(
                 self.active.queued_admission_attempt_id).execution_id,
             max_input_tokens=100, max_output_tokens=100, validate_current=lambda:None)
-        self.bridge = CanonicalNativeReasoningBridge(binding=NativeReasoningBinding(
+        self.bridge = OriginalCodexResultBoundary(binding=NativeReasoningBinding(
             provider_id='native', model_id='native-model', concrete_model='configured-model',
             agent_profile_id='configured-profile', agent_profile_revision=1,
             execution_profile_id='configured-scratch', worker_id=self.active.worker_id),

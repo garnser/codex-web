@@ -411,3 +411,50 @@ same final native writer guard. Default-disabled composition is inert and makes
 no model call. Actual subscription authentication, complete effective tool
 restrictions, bounded usage and a genuine consultation still require qualified
 runtime evidence before enabling this route.
+
+The native bridge creates additional durable copies of the rendered request in
+ordinary canonical ThreadHistory and the existing native worker rollout. It does
+not have the HTTP adapter's hash-only prompt-metadata retention. The input is a
+role-filtered subset of the retained Executive activation context, plus its
+published role instructions; source IDs/citations remain in that rendering. The
+logical Executive activation/role ID is retained by the original queued attempt,
+and its START receipt binds the actual native session/turn and physical custody.
+Existing Executive activation/revision reads are tenant-scoped; ThreadScope also
+checks its canonical Project. An execution Profile is not an additional
+transcript-read ACL. This component does not claim inherited source retention or
+governed deletion of thread/native-rollout payloads: those domains have not yet
+adopted the DataGovernance payload-handler interface. Existing governance actions
+must continue to report an unavailable domain adapter as blocked, never deleted.
+The planned lifecycle adoption is tracked separately in [#1747](https://github.com/garnser/codex-web/issues/1747).
+
+Native inference does re-evaluate the existing DataGovernance context filter at
+its current reservation and final writer edges. It uses exact governance IDs
+retained in the original role-filtered business/memory context, including source
+fact IDs' governance references; it does not reload a newer business value or
+silently replace an original version. Missing legacy source provenance, a denied
+source or classification drift refuses native input. Work-only context needs no
+additional governed-source read. This current-input check is distinct from
+inherited payload-retention/deletion enforcement.
+
+### Queued START correlation compatibility
+
+Ordinary `openai/codex` START/resume correlations retain exactly the existing
+`1.0` representation. Restricted `openai/codex-reasoning` correlations use explicit
+`1.1`; the version/runtime pairing is validated, with the same original queued
+snapshot, worker/assignment/fence, guarded writer, reader evidence and receipt.
+The capture owner additionally requires the private current invocation and its
+exact original logical ID, requester and physical assignment owner. A runtime
+label is insufficient. The result validates the exact runtime attribution too.
+A positively completed and measured inference finishes/releases its ephemeral
+scratch assignment through the existing canonical manager; unknown originals
+remain held and are only stopped/joined.
+
+Readers predating `1.1` reject these retained correlations visibly. No old
+correlation is rewritten and no existing unknown is discarded. Deployment must
+drain older writers before enabling the opt-in and declare the state migration
+boundary. Once the first `1.1` correlation is durable, rollback to an older reader
+is unavailable, even after the invocation completes, because canonical history
+is retained. A release enabling this path must set `stateMigrationRequired=true`
+and must not claim older-source rollback; a reviewed forward-compatible release
+or explicit supported migration is required. Disabled registration before any
+`1.1` write does not itself create such a correlation.

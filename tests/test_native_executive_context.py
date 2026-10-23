@@ -53,3 +53,40 @@ class NativeExecutiveContextTests(unittest.IsolatedAsyncioTestCase):
         completed=await f.service.consult(activation.id,actor=f.actor)
         self.assertEqual(completed.status,'completed')
         self.assertEqual(len(f.gateway.requests),1)
+
+    async def test_governed_source_revoked_after_reservation_refuses_final_native_context(self):
+        from pathlib import Path
+        from codex_web.data_governance import GovernedDataCreate
+        from codex_web.services.data_governance import DataGovernanceService
+        from codex_web.storage.data_governance import DataGovernanceStore
+        from codex_web.storage.sqlite_state import SQLiteStateStore
+        f=self.fixture
+        governance=DataGovernanceService(DataGovernanceStore(SQLiteStateStore(Path(f.temp.name)/'governance.sqlite')))
+        f.service.data_governance=governance
+        source=governance.register_domain_record(GovernedDataCreate(object_type='knowledge',object_id='source',
+            category='memory',classification='internal'),actor=f.actor)
+        activation=f.service.create(ExecutiveActivationCreate(subject='Architecture migration',
+            request='Assess one bounded migration',requested_role_ids=('cto',)),actor=f.actor)
+        context=activation.context.model_copy(update={'memory':({'knowledge_id':'source','version':1,
+            'classification':'internal','governance_record_id':source.id,'summary':'Bounded source'},)})
+        def pin(state,current):
+            updated=current.model_copy(update={'project_id':'project','context':context})
+            state.activations=[updated if row.id==current.id else row for row in state.activations]
+            return state,updated
+        activation=f.store.update(activation.id,pin)
+        catalog,_=f.service._catalog(actor=f.actor,project_id='project')
+        self.assertTrue(f.service._filter_context(context,catalog.role_map['cto'])['memory'])
+        f.service.native_invocation_authorizer=lambda *args,**kwargs:lambda:None
+        async def invoke(request,*,actor,native_context):
+            native_context.validate_current()  # The same original is initially allowed.
+            def revoke(state):
+                state.records=[row.model_copy(update={'deny_model_context':True}) if row.id==source.id else row
+                               for row in state.records]
+                return state
+            governance.store.update(revoke)
+            native_context.validate_current()  # Simulates the fresh native writer edge.
+            self.fail('Revoked source reached inference')
+        f.gateway.invoke=invoke
+        with self.assertRaisesRegex(ExecutiveConsultationError,'governance permission changed'):
+            await f.service.consult(activation.id,actor=f.actor)
+        self.assertEqual(f.gateway.requests,[])

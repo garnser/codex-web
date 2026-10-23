@@ -138,6 +138,8 @@ class CanonicalNativeReasoningBridge:
             (context.organization_id, context.workspace_id, context.project_id,
              context.execution_id, thread_id, thread_id, turn_id, assignment.id,
              assignment.assigned_worker_id, assignment.fence)
+                or (correlation.provider_id,correlation.runtime_id,receipt.provider_id,receipt.runtime_id) !=
+                   ('openai',self.runtime_id,'openai',self.runtime_id)
                 or receipt.execution_id != assignment.execution_id
                 or correlation.execution_id != assignment.execution_id
                 or evidence.provider_native_turn_id != turn_id
@@ -298,9 +300,13 @@ class CanonicalNativeReasoningBridge:
             completion = self.execution.thread_completion_tasks.get(thread_id)
             if completion is not None:
                 await asyncio.shield(completion)
-            return await self._owned(lambda: self._result(context=context, actor=actor,
+            result = await self._owned(lambda: self._result(context=context, actor=actor,
                 session=session, assignment=assignment, thread_id=thread_id,
                 turn_id=turn_id, queued_id=queued_id, text=text.result()))
+            # Only a positively attributed completed inference can release its
+            # ephemeral scratch custody. Unknown originals remain held.
+            await manager.complete(assignment.id, succeeded=True)
+            return result
         except asyncio.CancelledError:
             raise
         except Exception as exc:
