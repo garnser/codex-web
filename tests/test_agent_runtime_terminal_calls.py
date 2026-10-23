@@ -79,6 +79,40 @@ class ObservedTerminalCallTests(AgentRuntimeTelemetryTests):
             result=self.service.observe_event('anthropic','claude-code',event)
         self.assertEqual(result,newer)
 
+    def test_duplicate_counter_repair_notifies_exactly_the_atomic_winner(self):
+        event=AgentRuntimeEvent(event_type='turn/completed',provider_native_session_id='native-session-1',
+            provider_native_turn_id='notify-repair',payload={'usage':{'input_tokens':17,'output_tokens':9}})
+        row=self.service.observe_event('anthropic','claude-code',event)
+        self.usage.upsert(row.model_copy(update={'model_call_count':None}))
+        notified=[]
+        self.service.observation_notifier=notified.append
+        fixed=self.service.observe_event('anthropic','claude-code',event)
+        self.assertEqual(notified,[fixed])
+        self.service.observe_event('anthropic','claude-code',event)
+        self.assertEqual(notified,[fixed])
+
+    def test_unchanged_and_concurrent_duplicate_repairs_do_not_notify(self):
+        from unittest.mock import patch
+        bare=AgentRuntimeEvent(event_type='turn/completed',provider_native_session_id='native-session-1',
+            provider_native_turn_id='notify-bare')
+        self.service.observe_event('anthropic','claude-code',bare)
+        notified=[]
+        self.service.observation_notifier=notified.append
+        self.service.observe_event('anthropic','claude-code',bare)
+        self.assertEqual(notified,[])
+        event=AgentRuntimeEvent(event_type='turn/completed',provider_native_session_id='native-session-1',
+            provider_native_turn_id='notify-concurrent',payload={'usage':{'input_tokens':17,'output_tokens':9}})
+        row=self.service.observe_event('anthropic','claude-code',event)
+        self.usage.upsert(row.model_copy(update={'model_call_count':None}))
+        notified.clear()
+        reconcile=self.usage.reconcile_observed_call_count
+        def concurrent(*args,**kwargs):
+            self.usage.upsert(row.model_copy(update={'model_call_count':3}))
+            return reconcile(*args,**kwargs)
+        with patch.object(self.usage,'reconcile_observed_call_count',side_effect=concurrent):
+            self.assertEqual(self.service.observe_event('anthropic','claude-code',event).model_call_count,3)
+        self.assertEqual(notified,[])
+
 
 def load_tests(loader,tests,pattern):
     return unittest.TestSuite(ObservedTerminalCallTests(name) for name in ObservedTerminalCallTests.__dict__ if name.startswith('test_'))

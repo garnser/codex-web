@@ -651,8 +651,14 @@ class AgentRuntimeTelemetryService:
             if existing.model_call_count is None:
                 # A genuine redelivery can settle old retained NULL without
                 # replaying observations or overwriting newer canonical fields.
-                return self.store.reconcile_observed_call_count(record_id,fingerprint,
+                repaired,changed = self.store.reconcile_observed_call_count(record_id,fingerprint,
                     event_has_usage=any(value is not None for value in self._usage_fields(event.payload).values()))
+                if changed and self.observation_notifier is not None:
+                    try:
+                        self.observation_notifier(repaired)
+                    except Exception:
+                        pass  # Same observational isolation as ordinary persistence.
+                return repaired
             return existing
 
         now = self.clock()
