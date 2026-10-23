@@ -66,6 +66,9 @@ def build_ui_router(service: OperatorUiService) -> APIRouter:
             project_id=project_id,
             page="overview",
         )
+        # Existing conversation/deep-link selectors remain data on the same
+        # canonical destination; rebuilding the route must not discard them.
+        url = url.replace(query=request.url.query)
         return RedirectResponse(url=str(url), status_code=307)
 
     @router.get("/projects/{project_id}/{page}", name="project_page")
