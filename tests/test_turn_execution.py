@@ -2721,6 +2721,38 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         host._thread_queue.assert_called()
         self.assertEqual(service.thread_completion_tasks, {})
 
+    async def test_retained_event_outcome_waits_for_original_checkpoint_barrier(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def checkpoint(_assignment):
+            entered.set()
+            await release.wait()
+            return ()
+        sessions.checkpoint = checkpoint
+        outcomes = []
+        service.retained_turn_outcome_recorder = lambda active, *, succeeded: outcomes.append((active.turn_id, succeeded))
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1', source='queued:home-operator-automation:original')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(outcomes, [])
+        release.set()
+        await asyncio.gather(*service.assignment_completion_tasks.values())
+        self.assertEqual(outcomes, [('turn-1', True)])
+        self.assertEqual(sessions.completed, [])
+
+    async def test_retained_event_failure_observation_preserves_checkpoint_error(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
+        sessions.checkpoint = AsyncMock(side_effect=RuntimeError('checkpoint failed'))
+        outcomes = []
+        service.retained_turn_outcome_recorder = lambda active, *, succeeded: outcomes.append(succeeded)
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': 't1', 'turn': {'id': 'turn-1'}}})
+        await asyncio.gather(*service.assignment_completion_tasks.values())
+        self.assertEqual(outcomes, [False])
+        self.assertTrue(any(event.get('repository_checkpoint_error') == 'checkpoint failed' for event in host.events))
+
     async def test_successful_checkpoint_keeps_its_result_when_readiness_callback_refuses(self):
         host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
         sessions.local_worker = SimpleNamespace(worker_actor=object())

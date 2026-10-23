@@ -5,6 +5,9 @@ export function automationEditorErrors(form) {
     : kind === 'one_shot_schedule' ? ['due_at']
       : kind === 'provider_event' ? ['event_type', 'provider_id']
         : kind === 'canonical_event' ? ['event_type'] : [];
+  if (form.elements.target_kind?.value === "home_operator") {
+    required.push("home_thread_id", "home_binding_revision", "agent_profile_revision");
+  }
   return required.filter(name => !form.elements[name].value.trim()).map(name => ({
     field: name,
     message: `Enter ${name.replaceAll('_', ' ')} for the selected trigger.`,
@@ -17,6 +20,9 @@ export const automationErrorFields = {
   'definition.instructions': 'instructions',
   'definition.target.id': 'target_id',
   'definition.target.kind': 'target_kind',
+  'definition.target.home_thread_id': 'home_thread_id',
+  'definition.target.home_binding_revision': 'home_binding_revision',
+  'definition.target.agent_profile_revision': 'agent_profile_revision',
   'definition.trigger.type': 'trigger_type',
   'definition.trigger.cron': 'cron',
   'definition.trigger.timezone': 'timezone',

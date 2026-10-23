@@ -3,13 +3,13 @@ from __future__ import annotations
 from enum import StrEnum
 from string import Formatter
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.definitions import DefinitionReference
 
 
 AUTOMATION_KIND = "automation"
-AUTOMATION_SCHEMA_VERSION = "1.0"
+AUTOMATION_SCHEMA_VERSION = "1.1"
 
 
 class AutomationTriggerType(StrEnum):
@@ -23,6 +23,7 @@ class AutomationTriggerType(StrEnum):
 class AutomationTargetKind(StrEnum):
     AGENT_PROFILE = "agent_profile"
     TEAM = "team"
+    HOME_OPERATOR = "home_operator"
 
 
 class AutomationLifecycle(StrEnum):
@@ -65,6 +66,27 @@ class AutomationTarget(BaseModel):
 
     kind: AutomationTargetKind
     id: str = Field(min_length=1)
+    home_thread_id: str | None = Field(default=None, min_length=1, max_length=200)
+    home_binding_revision: int | None = Field(default=None, ge=1)
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+
+    @model_serializer(mode="wrap")
+    def omit_home_pins(self, handler):
+        result = handler(self)
+        if self.kind != AutomationTargetKind.HOME_OPERATOR:
+            for key in ('home_thread_id', 'home_binding_revision', 'agent_profile_revision'):
+                result.pop(key, None)
+        return result
+
+    @model_validator(mode="after")
+    def home_selection(self):
+        pins = (self.home_thread_id, self.home_binding_revision, self.agent_profile_revision)
+        if self.kind == AutomationTargetKind.HOME_OPERATOR:
+            if not all(value is not None for value in pins):
+                raise ValueError("Home follow-up requires exact thread, selection and Agent Profile revisions")
+        elif any(value is not None for value in pins):
+            raise ValueError("Home selection pins require the Home operator target")
+        return self
 
 
 class AutomationBudget(BaseModel):
@@ -108,6 +130,14 @@ class AutomationDefinition(BaseModel):
 
     @model_validator(mode="after")
     def validate_automation(self) -> "AutomationDefinition":
+        if self.target.kind == AutomationTargetKind.HOME_OPERATOR:
+            if (self.trigger.type not in {AutomationTriggerType.CANONICAL_EVENT, AutomationTriggerType.PROVIDER_EVENT}
+                    or self.retry.max_attempts != 1 or self.budget.max_concurrency != 1
+                    or self.work_item_policy != "reuse_only" or not self.owner_identity_id
+                    or self.budget.max_input_tokens is None or self.budget.max_output_tokens is None
+                    or self.budget.max_duration_seconds is None
+                    or self.budget.max_input_tokens <= 0 or self.budget.max_output_tokens <= 0):
+                raise ValueError("Home event follow-up requires an owner, event trigger, finite budgets, reuse_only and one attempt/concurrency")
         refs = [
             *self.skill_refs,
             *(
