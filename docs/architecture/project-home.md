@@ -148,3 +148,56 @@ observation and opens the existing Goal surface for supported controls. Inspecti
 does not claim an active runner, resume a binding, settle an unknown result, or
 create a continuation owner. There is no timer or model call. Native Goal controls
 remain subject to their separate capability and qualification contract.
+
+### Explicit trusted host action engine (schema 1.3)
+
+The optional project-scoped execution-profile schema `1.3` adds a
+`home_operator` envelope to `orchestration-only`. It names an existing host
+Environment resource, explicit trusted worker IDs, an explicit `true`
+`host_network_access` acknowledgment, bounded command duration/output, and an
+existing Artifact-purpose `host_output_key_id`. Optional `project_targets` pin
+specific Projects and child Agent Profile revisions; absent targets grant
+nothing. Legacy schema readers reject this envelope. No seed profile, worker,
+key, binding, Role or host backend is enabled by publication of this code.
+Deploy compatible readers before publishing 1.3; drain/reconcile Home inputs
+and unresolved host actions before removing or rolling back this support.
+
+`operator.host.command` is a critical canonical ActionIntent action. Its provider
+requires a separate explicitly enabled `TrustedHostActionBackend` on the
+existing local worker, the configured OS UID, and that worker's explicit
+`home-host-command/1.0` contract. The native Home assignment retains its isolated
+scratch/Bubblewrap/network-disabled contract and its original lease. A command
+uses the existing process execution engine as a nonterminal suboperation;
+its ActionIntent receipt owns the command outcome, never parent completion.
+
+The selected administrator, Home selection revision, current Profile/Definition,
+Role capability, host Environment, binding/security policy, action attempt,
+worker/token, assignment fence and scratch lease are checked before execution
+and during execution. Commands accept bounded argv with an absolute executable;
+there is no inherited environment, automatic root/sudo or credential injection.
+Host filesystem, process and network access deliberately use the configured OS
+principal's existing permissions. The canonical security policy must explicitly
+allow host read/write roots, process/shell execution and network access. The
+engine bounds duration, CPU/memory/process limits and retained output and reaps
+the owned process group. Workspace disk accounting is not a whole-host disk
+quota, and host network access is not egress-isolated.
+
+This action has one attempt and advertises neither idempotency nor functional
+effect verification. Exit zero is process completion, not proof that a service,
+deploy or arbitrary host mutation achieved its desired state. Lost custody or
+revocation after spawn retains possible effects as an unknown outcome; there
+is no automatic retry. Cancellation joins the owned operation before returning.
+Reconcile the original intent and artifacts rather than submitting its command
+again to resolve uncertainty.
+
+Output is bounded, encrypted with the existing canonical Artifact-purpose key,
+and stored through Artifact content and DataGovernance as SECRET with
+`deny_model_context=true`. Receipts contain only process metadata, command digest
+and the artifact reference. An authorized human can use the canonical Artifact
+and Crypto operations to inspect/decrypt it. This first engine slice does not
+expose raw output to the native model: a usable model-readable source/test/log
+path still requires an explicit current-Admin governed output selection/review
+adapter with fresh custody and provenance checks. Never relabel arbitrary stdout
+as safe. The engine and its tests therefore do not by themselves close #1669;
+Root's broker/startup/UI integration, explicit activation and governed output
+access remain part of that issue's delivery.

@@ -92,10 +92,13 @@ class LocalExecutionWorkerRuntime:
         playwright_browser_root: Path | None = None,
         heartbeat_interval_seconds: float = 30.0,
         renew_margin_seconds: float = 45.0,
+        trusted_host_backend=None,
     ) -> None:
         self.worker_service = worker_service
         self.workspace_service = workspace_service
         self.backend = backend
+        # Separate explicit deployment opt-in. Never replace the native sandbox.
+        self.trusted_host_backend = trusted_host_backend
         self.worker = worker
         self.worker_actor = worker_actor
         self.control_actor = control_actor
@@ -954,6 +957,76 @@ class LocalExecutionWorkerRuntime:
             evidence_id=evidence_id,
         )
 
+
+    def execute_trusted_host_operation(self, assignment, argv, *, admission_guard,
+                                       timeout_seconds, max_output_bytes):
+        """Nonterminal operation: preserve the current native Home assignment.
+
+        The canonical ActionIntent owns the effect receipt. This method neither
+        claims/completes the parent nor rewrites its lease; native renewal remains
+        authoritative. A current guard is checked before spawn and every poll.
+        """
+        from codex_web.execution_profiles import HOME_HOST_COMMAND_CONTRACT
+        from codex_web.execution_workers import NetworkPolicy, WorkerCapability
+        backend = self.trusted_host_backend
+        if (backend is None or backend.worker_id != self.worker.id
+                or assignment.assigned_worker_id != self.worker.id
+                or not callable(admission_guard)):
+            raise LocalExecutionWorkerRuntimeError("Explicit trusted host worker is unavailable")
+        if (type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 600
+                or type(max_output_bytes) is not int or not 1024 <= max_output_bytes <= 65536):
+            raise LocalExecutionWorkerRuntimeError("Host operation bounds are incompatible")
+
+        def current():
+            from codex_web.storage.state_store import check_operation_budget
+            check_operation_budget()
+            admission_guard()
+            live = self.worker_service.store.assignment(assignment.id)
+            worker = self.worker_service.store.worker(self.worker.id)
+            now = time.time()
+            stable = ('id', 'execution_id', 'created_by', 'organization_id', 'workspace_id',
+                'project_id', 'subject', 'fence', 'assigned_worker_id', 'execution_workspace_id',
+                'execution_profile_id', 'execution_profile_definition', 'agent_profile',
+                'resource_ids', 'resource_context', 'runtime_binding')
+            if (live is None or any(getattr(live, k) != getattr(assignment, k) for k in stable)
+                    or live.status not in {'claimed', 'running'} or live.lease is None
+                    or assignment.lease is None or live.lease.lease_token != assignment.lease.lease_token
+                    or live.lease.fence != live.fence or live.lease.worker_id != self.worker.id
+                    or live.lease.expires_at <= now or live.deadline_at is not None and live.deadline_at <= now
+                    or worker is None or worker.lifecycle != 'active'
+                    or worker.service_identity_id != self.worker_actor.identity_id
+                    or (worker.organization_id, worker.workspace_id) != (live.organization_id, live.workspace_id)
+                    or HOME_HOST_COMMAND_CONTRACT not in worker.supported_execution_contract_versions
+                    or not {WorkerCapability.COMMAND_EXECUTION, WorkerCapability.NETWORK}.issubset(worker.capabilities)):
+                raise LocalExecutionWorkerRuntimeError("Current trusted host custody is unavailable")
+            self.worker_service._require_worker_actor(worker, self.worker_actor)
+            workspace = self._workspace(live)
+            lease = self.workspace_service.store.lease(workspace.lease_id)
+            if (workspace.kind != 'scratch' or workspace.status != 'active' or lease is None
+                    or lease.released_at is not None or lease.expires_at <= now
+                    or lease.execution_id != live.execution_id or lease.execution_workspace_id != workspace.id):
+                raise LocalExecutionWorkerRuntimeError("Current Home workspace lease is unavailable")
+            return live
+
+        live = current()
+        # Derived operation contract only: the persisted native assignment and
+        # its disabled network/Bubblewrap contract are NEVER changed.
+        operation = live.model_copy(update={
+            'execution_contract_version': HOME_HOST_COMMAND_CONTRACT,
+            'network': NetworkPolicy(enabled=True), 'secret_refs': (),
+            'limits': live.limits.model_copy(update={'wall_seconds': min(
+                timeout_seconds, live.limits.wall_seconds)})})
+        try:
+            result = backend.run_action(operation, argv=argv,
+                workspace_path=self._workspace_path(live), admission_guard=current,
+                max_output_bytes=max_output_bytes)
+            current()
+            return result
+        except Exception as error:
+            # A revocation/timeout after launch may follow host effects. Do not
+            # let ActionRequirementError classify this as proved-before-effect.
+            from codex_web.services.home_host_action_provider import HostActionOutcomeUnknown
+            raise HostActionOutcomeUnknown("Inspect original host intent; possible effects must never be replayed") from error
 
     def execute_procedure_operation(self, assignment, step, code, inputs):
         """Execute immutable diagnostic bytes through the canonical sandbox.

@@ -9,6 +9,8 @@ import os
 import platform
 import shutil
 import sys
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 from codex_web.authority import AuthorityLevel
 from codex_web.control_plane_broker import ControlPlaneBrokerOperation
@@ -25,6 +27,15 @@ HOST_INSPECTION = ControlPlaneBrokerOperation(
     id='operator.host.inspect', method='GET', path_template='/api/operator/host',
     capability='operator.host.inspect', authority_level=AuthorityLevel.READ,
 )
+
+
+@dataclass(frozen=True)
+class HomeOperatorOperationContext:
+    assignment: object
+    requester: object
+    project: object
+    binding: object
+    envelope: object
 
 
 def inspect_host_metadata(project_path: str) -> dict:
@@ -295,3 +306,42 @@ class HomeOperatorHostService:
                 'execution_profile_definition': after.execution_profile_definition.model_dump(mode='json'),
                 'requester_identity_id': requester.identity_id,
                 'scope': 'read-only fixed host metadata; no commands, file contents or credentials'}
+
+    def authorize_operation(self, snapshot, *, operation_id, worker_actor,
+                            requester_id=None, mutating=True):
+        """Shared fresh Home origin for trusted host AND cross-Project adapters.
+
+        Does not confer a host command grant. The exact requested operation must
+        independently be declared and currently authorized; target authorization
+        remains the adapter's canonical Project/Resource responsibility.
+        """
+        if not operation_id.startswith(('operator.host.', 'operator.project.')):
+            self.denied('Unsupported Home operator operation')
+
+        def current():
+            row = self.broker.execution_workers.store.assignment(snapshot.id)
+            if row is None:
+                self.denied('Current Home assignment is unavailable')
+            return row
+
+        # Reuse all existing live worker/token, scratch workspace/resource lease,
+        # current Admin/Profile/Role and selected conversation checks. Metadata
+        # authority is separate from the requested mutation/coordination grant.
+        resolved = SimpleNamespace(operation=HOST_INSPECTION, query={}, target_ref=None)
+        assignment, requester, project, operator = self.guard(
+            snapshot, worker_actor, resolved, current)
+        if requester_id is not None and requester.identity_id != requester_id:
+            self.denied('Home operation requester differs from the original administrator')
+        profile, reference = self.broker.execution_profiles.resolve(assignment.execution_profile_id,
+            organization_id=requester.organization_id, workspace_id=requester.workspace_id, project_id='home')
+        if (reference != assignment.execution_profile_definition or profile.home_operator is None
+                or operation_id not in profile.control_plane_operations):
+            self.denied('Current Home operation is not explicitly declared')
+        worker = self.broker.execution_workers.store.worker(assignment.assigned_worker_id)
+        if mutating and (worker is None or worker.lifecycle != 'active'):
+            self.denied('Mutating Home operations require an active worker')
+        operation = ControlPlaneBrokerOperation(id=operation_id,
+            method='POST' if mutating else 'GET', path_template='/internal/home-operation',
+            capability=operation_id, authority_level=AuthorityLevel.EXECUTE if mutating else AuthorityLevel.READ)
+        self.broker._authorize(assignment, operation, actor=requester, resource_ids=())
+        return HomeOperatorOperationContext(assignment, requester, project, operator, profile.home_operator)

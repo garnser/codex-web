@@ -848,6 +848,10 @@ class ActionIntentService:
         if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             ready_context = await self._ready_execution_context(intent, actor)
         with continuation_context(proof), procedure_action_intent(intent.id), readiness_execution(ready_context):
+            if intent.action_id == 'operator.host.command':
+                from codex_web.services.home_host_action_provider import home_host_executor
+                with home_host_executor(self, intent.id, actor):
+                    return await self.execution.execute(intent.binding_id, intent.request, actor=actor)
             if intent.action_id in {'recovery.scheduled-firing.reconcile', 'recovery.storage-preservation.capture', 'recovery.storage-preservation.verify'}:
                 from codex_web.services.recovery_mutation_admission import recovery_mutation_executor
                 with recovery_mutation_executor(self, intent.id, actor):
