@@ -330,7 +330,7 @@ class ProcedureDiscoveryService:
             proof = current_preparation()
             provider_preparation = (
                 context.enforcement in {"bounded_read_only", "isolated_preparation"}
-                and proof is not None and not blockers and proof.permits(tuple(selected)))
+                and proof is not None and not blockers and proof.permits(tuple(selected), context))
             if not provider_preparation and context.enforcement != "canonical_action" and (selected or context.enforcement not in {"bounded_read_only", "isolated_preparation", "canonical_rollback"}):
                 outcome = "unsupported_enforcement"
                 blockers.append("procedure_tool_enforcement_unsupported: use a canonical ActionIntent operation or policy-authorized isolated preparation")
@@ -511,9 +511,9 @@ class NativeProcedureAdmissionService:
         source = "canonical:native-provider-preparation:" + checksum({
             "assignment":assignment.id,"fence":assignment.fence,"execution":assignment.execution_id,
             "definitions":[ref.model_dump(mode="json") for ref in selected],"policy":context.policy_source})
-        proof = NativeProviderPreparation(tuple(selected), source, validate)
         context = replace(context, policy_source=context.policy_source + ";" + source,
             capability_sources=(*context.capability_sources, source))
+        proof = NativeProviderPreparation(tuple(selected), source, validate, context=context)
         with native_provider_preparation(proof):
             discovery, text = self.discovery.discover(context)
         if not discovery.admitted or tuple(discovery.selected) != tuple(selected):

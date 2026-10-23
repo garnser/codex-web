@@ -16,9 +16,10 @@ class NativeProviderPreparation:
     selected: tuple[DefinitionReference, ...]
     source: str
     validate: Callable[[], None] = field(repr=False, compare=False)
+    context: object | None = field(default=None, repr=False, compare=False)
 
-    def permits(self, selected):
-        if not self.selected or set(self.selected) != set(selected):
+    def permits(self, selected, context):
+        if self.context is not context or not self.selected or set(self.selected) != set(selected):
             return False
         self.validate()
         return True
