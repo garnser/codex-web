@@ -515,6 +515,32 @@ IDs/hash and held intent IDs. It contains no lease tokens, transcript, argv, out
 or fabricated active-turn record. This metadata checkpoint references existing
 persistent state; it is not a copy of volatile native model context.
 
+A selected **LOST** Home assignment has a separate preservation-only disposition
+when the canonical current runner explicitly reports no lease, stopped process and
+typed executor-work zero, with no active-turn marker, queued input or Home Goal
+binding. The supervisor revalidates the exact selected Human/Admin, Profile/Role,
+bootstrap, tenant, worker observations and canonical Session; it never weakens the
+Host operation guard or revives custody. Executing/UNCERTAIN actions block this
+classification. Terminal cancellation with a retained UNKNOWN receipt is recorded
+as historical UNKNOWN, never as provider success or permission to replay.
+
+This disposition is an idempotent, governed REPORT Artifact using distinct source
+`home-upgrade-dormant-preservation`, metadata schema `1.0`, exact plan/release/source/
+target and current preservation identifiers. It is **not** checkpoint `1.4`, does
+not grant native input, and cannot coexist with a real planned checkpoint for the
+same plan. Idempotent rereads freshly revalidate dormancy; changed selection,
+Session, Goal, queue or process evidence fails closed. Existing Artifact/report
+inspectors expose the explicit UNKNOWN/no-continuation report name, source, plan
+reference, digest and scope; detailed retained references remain in the canonical
+Artifact API metadata. No new operator control or model call is introduced. The post-verification observer validates the
+actual completed plan/PASS and unchanged preservation state, then returns without
+enqueueing Home. An absent old process-local manager after actual service replacement
+is not reported as fresh process-zero evidence; it grants no continuation.
+Canonical service-wide drain counters and clean stopped-service/cgroup qualification
+remain mandatory. Older readers ignore this distinct metadata source and cannot
+interpret it as a checkpoint or authorization. No core schema migration or Session,
+Goal, queue, lease or action-outcome mutation is introduced by this disposition.
+
 The same supervisor's post-verification callback point-reads that plan's immutable
 checkpoint, verifies actual target source, SAME completed plan and current valid
 PASS evidence, then retains one continuation in the SAME native conversation.
