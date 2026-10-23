@@ -5,6 +5,10 @@ The reference contains its native thread ID, selecting identity, revision and ti
 It is a navigation binding on the existing Project, not a new session, execution role,
 agent identity, goal owner or permission grant. Ordinary Projects have no such entry point.
 Absent bindings are omitted from existing Project serialization for compatibility.
+The overview uses the explicitly present canonical Project context while the product
+switcher is initializing. Explicitly cleared or unavailable context stays empty;
+route or selector fallbacks never restore a cleared scope. The same resolver fences
+responses so a previous Project cannot populate the current overview.
 
 `GET /api/home/operator` reads the current tenant's Home Project and revalidates the
 thread through canonical ThreadScope. An unavailable, foreign, archived or replaced
@@ -475,6 +479,14 @@ work refuse visibly. The existing owned operation joins the read worker before
 retiring; it never substitutes a whole-history fallback. Legacy nonstandard JSON
 which cannot be classified safely may refuse rather than be treated as absent.
 
+The PostgreSQL query projects the original intent's query headers through a
+JSON record conversion instead of repeatedly parsing its full retained payload
+for each predicate. The projection is query-local, not a stored index or an
+absence proof. An explicit scope CASE keeps correlated receipt checks behind
+the matching tenant/execution or command predicate. Missing identifying headers
+and non-object originals still reach full canonical validation; receipt identity,
+unknown outcomes, candidate limits and the five-second budget are unchanged.
+
 No derived alias proves an original absent. The abandoned Home index prototype
 was never deployed; deleting any such alias cannot affect this predicate. No new
 records migration is required. The reader explicitly accepts prototype normalized
@@ -547,6 +559,46 @@ Its terminal callback returns to that same Automation run. Budget settlement
 requires actual canonical usage for every interrupted and resumed native turn;
 missing or UNKNOWN original usage stays pending instead of contributing zero.
 The existing exact-turn duration interrupt also recognizes that validated chain.
+
+### Active Goal-derived restart continuation
+
+A positively started application-mode Home Goal can use the SAME existing
+HomeRestart owner. Its strict queue proof is **1.5** and references the original
+binding, delivery, Goal revision and canonical START. This is not a source-prefix
+grant: current HumanAdmin, selected Home, Profile/Definition, Goal and exclusive
+continuation policy are revalidated before the original retained recovery input
+can cross the final native writer. Goal or binding pause, revocation and changed
+custody fail closed. Ordinary human proof1.3 and planned proof1.4 stay unchanged.
+
+Each new recovery input atomically reserves another call against that Goal's
+finite budget using the existing Goal binding transaction. Expiry may renew the
+same owner's lease only for the exact original retained queued snapshot with a
+canonical preflight proving no claim, retirement, resume or start. A claimed or
+UNKNOWN start is held, never resubmitted. Existing worker expiry, cancellation,
+fresh bootstrap and strong-CAS same-thread rebind preserve the original delivery.
+
+The original and every positively started recovery turn require actual attributed
+canonical usage. Known usage is accounted once; missing original or resumed usage
+keeps the delivery pending and permits no next Goal continuation. The existing
+Goal runtime terminal event owner reconciles delayed original usage even after a
+later recovery turn becomes the binding's latest turn. Events convey identity,
+not token counts or success. Budget exhaustion blocks the binding without
+claiming the ongoing Goal complete. A fresh independent positively started Goal
+delivery can archive the prior bounded chain only after every original/recovery
+usage has been accounted and its exact settlement witness retained in the SAME
+recovery record. The witness is written before releasing the Goal delivery;
+failure leaves existing terminal reconciliation retryable. Missing or UNKNOWN
+usage prevents history reset, and original action/preflight records stay intact.
+
+Goal-derived recovery records use explicit **1.1**; ordinary recovery records
+retain their existing unversioned1.0 serialization. Old strict readers reject both
+record1.1 and queue proof1.5. This adds a compatible-state boundary to GoalBinding
+state1.2: qualify capture/isolated restore without starting the new application or
+writing new records while the old service must still be restorable. After a new
+writer persists these records, rollback requires compatible readers or a normal
+lossless qualified migration, never deleting proof/history or clearing UNKNOWN.
+Private integration fixtures prove these paths; actual deployed restart acceptance
+must still use genuine canonical Goal/input and custody evidence.
 
 ### Delegated child terminal event
 

@@ -7,6 +7,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.definitions import DefinitionReference
+from codex_web.models import SandboxMode
+
 
 PROJECT_READINESS_VERSION = "1.0"
 
@@ -34,6 +37,15 @@ class ProjectReadinessCheck(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutionReadinessContext(BaseModel):
+    """Advisory evaluation context; never an assignment or execution grant."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    profile_id: str = Field(min_length=1)
+    definition: DefinitionReference | None = None
+    sandbox: SandboxMode
+
+
 class ProjectReadinessSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -53,6 +65,7 @@ class ProjectReadinessSnapshot(BaseModel):
     migration_version: str | None = None
     last_successful_verification_at: float | None = None
     generated_at: float = Field(default_factory=time.time)
+    execution_context: ExecutionReadinessContext | None = None
 
     @property
     def blockers(self) -> tuple[ProjectReadinessCheck, ...]:

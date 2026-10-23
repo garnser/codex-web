@@ -224,6 +224,24 @@ class AgentRuntimeUsageStore:
             )
         return record
 
+    def reconcile_observed_call_count(self, record_id: str, fingerprint: str, *, event_has_usage: bool) -> tuple[AgentRuntimeUsage, bool]:
+        """Idempotently settle one retained observation without stale overwrite."""
+        with self._lock:
+            self._ensure_records()
+            changed=[]
+            def reconcile(raw):
+                record=AgentRuntimeUsage.model_validate(raw)
+                if fingerprint not in record.event_fingerprints:
+                    raise ValueError('Original usage observation changed')
+                if (record.model_call_count is None and record.terminal_outcome!='unknown'
+                        and (event_has_usage or any(getattr(record,key) is not None for key in (
+                            'input_tokens','output_tokens','total_tokens','cost_usd')))):
+                    changed.append(True)
+                    return record.model_copy(update={'model_call_count':1}).model_dump(mode='json')
+                return raw
+            payload=self.store.record_update(self.namespace,record_id,reconcile,default=None)
+        return AgentRuntimeUsage.model_validate(payload), bool(changed)
+
     def get(self, record_id: str) -> AgentRuntimeUsage | None:
         with self._lock:
             self._ensure_records()

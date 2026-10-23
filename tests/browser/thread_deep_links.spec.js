@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const {baseURL,openSettings}=require('./context_picker_fixture');
+const {executionProfiles,contextualReadiness}=require('./execution_readiness_fixture');
 
 for (const outcome of ['success', 'failure']) {
   test(`project switch clears previous threads while the new list is pending (${outcome})`, async ({ page }) => {
@@ -106,12 +107,18 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
       await route.fulfill({ json: projects });
       return;
     }
+    const readinessMatch=path.match(/^\/api\/projects\/([^/]+)\/readiness$/);
+    if(readinessMatch){
+      await route.fulfill({json:{project_id:decodeURIComponent(readinessMatch[1]),semantic_ready:true,
+        execution_ready:true,status:'ready',checks:[],...contextualReadiness(request)}});
+      return;
+    }
     const stateMatch = path.match(/^\/api\/projects\/([^/]+)\/ui-state$/);
     if (stateMatch) {
       const projectId = decodeURIComponent(stateMatch[1]);
       await route.fulfill({ json: {
         project: projects.find((project) => project.id === projectId),
-        executionProfiles: [],
+        executionProfiles: executionProfiles(projectId),
         resources: { items: [] },
         bindings: { items: [] },
         threadSettings: {},

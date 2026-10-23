@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Contextual execution readiness fixture</title></head>
+<body data-project-id="project-a">
+<aside class="sidebar"><div class="brand">Fixture</div></aside>
+<main class="main"><header class="topbar"><div class="controls"></div></header>
+<select id="execution-profile"></select><p id="execution-profile-summary"></p>
+<select id="sandbox"><option value="workspace-write">Workspace write</option><option value="read-only">Read only</option></select>
+<button id="new-thread">New thread</button><textarea id="prompt" aria-label="Message"></textarea><button id="send">Send</button></main>
+<details id="developer-panel"><div class="developer-grid"></div></details>
+<script>
+const definition=(project,revision=1)=>({record_id:`catalog-${project}-${revision}`,definition_id:'execution.profiles.default',kind:'execution-profile-catalog',revision,checksum:String(revision).repeat(64),definition_schema_version:'1.0'});
+window.fixture={calls:[],project:'project-a',revision:1,workerReady:true,blockedRevisions:[],hold:null,
+ catalog(){return {default_profile_id:'orchestration-only',definition:definition(this.project,this.revision),items:[
+  {id:'orchestration-only',name:'Scratch',workspaceMode:'scratch',repositoryAccess:'none',requiredWorkerCapabilities:['command_execution']},
+  {id:'repository-write',name:'Repository',workspaceMode:'repository',repositoryAccess:'mutable',requiredWorkerCapabilities:['git','command_execution']}]};},
+ generic(project){return {project_id:project,execution_ready:false,semantic_ready:false,status:'blocked',checks:[
+  {id:'repository:resources',domain:'repository',required:true,status:'blocked',code:'repository_resource_missing',message:'Repository missing'},
+  {id:'repository:execution-target',domain:'execution_target',required:true,status:'blocked',code:'repository_target_missing',message:'Repository target missing'}]};}};
+window.CodexProductUI={openWorkspace(){}};
+window.fetch=async(input,options={})=>{
+ const url=new URL(input,location.origin),project=url.pathname.match(/\/projects\/([^/]+)/)?.[1];
+ window.fixture.calls.push({path:url.pathname,query:url.search,method:options.method||'GET'});
+ let payload;
+ if(url.pathname==='/api/projects')payload=['project-a','project-b'].map(id=>({id,name:id,sandbox:'workspace-write',organization_id:'local',workspace_id:'default'}));
+ else if(url.pathname.endsWith('/readiness')){
+  payload=window.fixture.generic(project);
+  if(url.searchParams.has('execution_profile_id')){
+   const profile=url.searchParams.get('execution_profile_id'),sandbox=url.searchParams.get('sandbox');
+   const ready=profile==='orchestration-only'&&sandbox==='workspace-write'&&window.fixture.workerReady&&!window.fixture.blockedRevisions.includes(window.fixture.revision);
+   payload={...payload,execution_ready:ready,semantic_ready:ready,status:ready?'ready':'blocked',
+    execution_context:{profile_id:profile,sandbox,definition:definition(project,window.fixture.revision)},generated_at:Date.now()/1000};
+   if(ready)payload.checks=payload.checks.map(item=>({...item,required:false,status:'not_applicable'}));
+   const hold=window.fixture.hold;
+   if(hold&&!hold.pending){hold.pending=true;await new Promise(resolve=>{hold.release=resolve;});hold.settled=true;}
+  }
+ }else if(url.pathname.endsWith('/ui-state'))payload={project:{id:project,name:project,sandbox:'workspace-write',organization_id:'local',workspace_id:'default'},resources:{items:[]}};
+ else if(url.pathname.endsWith('/bootstrap/status'))payload={items:[]};
+ else return new Response(JSON.stringify({detail:'fixture route not found'}),{status:404});
+ return new Response(JSON.stringify(payload),{headers:{'Content-Type':'application/json'}});
+};
+</script>
+<script type="module">
+import * as profiles from '/static/execution_profile_controls.js';
+import '/static/project_setup_ui.js';
+window.fixture.render=()=>{profiles.setCatalog(window.fixture.catalog(),window.fixture.project);profiles.render(document.getElementById('execution-profile').value||'orchestration-only',String);};
+window.fixture.render();
+document.getElementById('execution-profile').addEventListener('change',()=>profiles.render(document.getElementById('execution-profile').value,String));
+window.fixture.switchProject=project=>{window.fixture.project=project;document.body.dataset.projectId=project;window.fixture.render();window.dispatchEvent(new CustomEvent('codex:project-changed',{detail:{projectId:project}}));};
+window.fixture.publish=revision=>{window.fixture.revision=revision;window.fixture.render();};
+</script></body></html>

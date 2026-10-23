@@ -271,3 +271,27 @@ test('permission-limited onboarding does not promote unavailable Automation acti
   await expect(onboarding.getByRole('link', { name: 'Create Automation' })).toHaveCount(0);
   await expect(onboarding.getByRole('link', { name: 'Start first task' })).toBeVisible();
 });
+
+
+test('explicit cleared and unavailable contexts override a stale populated selector', async ({ page }) => {
+  let reads = 0;
+  await page.route('**/api/home?project_id=project-a', route => {
+    reads += 1;
+    return route.fulfill({ json: populated });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_overview_fixture.html');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const originalReads = reads;
+  await page.evaluate(async () => {
+    document.body.dataset.projectId = '';
+    await window.__renderHomeOverview(document.querySelector('[data-home-overview]'));
+  });
+  await expect(page.locator('[data-home-overview]')).toContainText('Select a Project');
+  await page.evaluate(async () => {
+    document.body.dataset.projectId = 'project-a';
+    document.body.classList.add('project-context-unavailable');
+    await window.__renderHomeOverview(document.querySelector('[data-home-overview]'));
+  });
+  await expect(page.locator('[data-home-overview]')).toContainText('Select a Project');
+  expect(reads).toBe(originalReads);
+});

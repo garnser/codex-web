@@ -61,7 +61,8 @@ from codex_web.execution_profile_seed import execution_profile_catalog_seed_payl
 from tests import test_turn_execution_binding as binding_tests, test_control_plane_broker as broker_tests
 from tests.test_control_plane_broker import _WorkItems, _Operator
 from tests.test_turn_execution import _Host
-from tests.test_turn_service import _Settings, _Recovery, _Resume, _Bindings
+from tests.turn_service_fixture_helpers import _Settings, _Recovery, _Resume, _Bindings
+from tests.project_coordination_fixture_lifecycle import stop_owned_broker
 from codex_web.models import IndexedThread
 
 
@@ -194,7 +195,10 @@ class ProjectCoordinationBrokerTests(unittest.IsolatedAsyncioTestCase):
             worker_id=f.worker.id, worker_actor=self.worker_actor, fence=self.assignment.fence,
             validator=lambda:f.workers.store.assignment(self.assignment.id))
         await self.broker.start()
-        self.addAsyncCleanup(self.broker.stop)
+        # This is a canonical multi-service integration, not a 2s execution SLA.
+        # Keep the generic broker default and pending-phase assertions unchanged.
+        self.broker_response_timeout = 8
+        self.addAsyncCleanup(stop_owned_broker, self.broker)
 
     def publish(self,payload):
         record=self.registry.create_draft(DefinitionDraftCreate(definition_id='execution.profiles.default',
