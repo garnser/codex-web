@@ -1,12 +1,7 @@
+import {projectIdFromPath} from "./project_selection.js";
 import {clearProjectProjection} from "./project_ui_state.js";
 import {confirmDiscard} from "./dirty_editor.js";
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
-
-function projectIdFromPath(pathname=window.location.pathname) {
-  const match=String(pathname||"").match(/\/projects\/([^/]+)(?:\/|$)/);
-  if(!match)return "";
-  try{return decodeURIComponent(match[1])}catch{return match[1]}
-}
 
 export function initialProjectId() {
   return projectIdFromPath() || new URLSearchParams(window.location.search).get("project")

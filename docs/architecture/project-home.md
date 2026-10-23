@@ -5,6 +5,10 @@ The reference contains its native thread ID, selecting identity, revision and ti
 It is a navigation binding on the existing Project, not a new session, execution role,
 agent identity, goal owner or permission grant. Ordinary Projects have no such entry point.
 Absent bindings are omitted from existing Project serialization for compatibility.
+The overview uses the explicitly present canonical Project context while the product
+switcher is initializing. Explicitly cleared or unavailable context stays empty;
+route or selector fallbacks never restore a cleared scope. The same resolver fences
+responses so a previous Project cannot populate the current overview.
 
 `GET /api/home/operator` reads the current tenant's Home Project and revalidates the
 thread through canonical ThreadScope. An unavailable, foreign, archived or replaced

@@ -1,3 +1,4 @@
+import { selectedProjectId as projectId } from "./project_selection.js";
 import { renderHomeOperator } from "./home_operator_ui.js";
 import { request as apiRequest } from "./api_client.js";
 import { journeyId, trackUx } from "./ux_telemetry.js";
@@ -208,14 +209,6 @@ function wireOnboarding(host, payload) {
     setOnboardingDismissed(id, false);
     renderPayload(host, payload);
   });
-}
-
-function projectId() {
-  const selector = document.getElementById("product-project-switcher");
-  if (selector) return selector.value;
-  return document.body?.dataset.projectId
-    || new URLSearchParams(location.search).get("project")
-    || "";
 }
 
 function itemBody(item) {
