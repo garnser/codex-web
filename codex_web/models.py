@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator,
 from codex_web.resource_context import ReadOnlyResourceIds, ReadOnlyResourceContext
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
 from codex_web.notification_provenance import ProviderNotificationPin
-from codex_web.home_restart import HomeRestartInputProof, HomeUpgradeInputProof
+from codex_web.home_restart import HomeRestartInputProof, HomeUpgradeInputProof, HomeGoalRestartInputProof
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
@@ -950,7 +950,7 @@ class QueuedTurn(BaseModel):
 
     memory_context_binding: UxBriefTurnBinding | None = None
     provider_notification_pin: ProviderNotificationPin | None = None
-    project_coordination_dispatch: ProjectCoordinationDispatch | HomeOperatorCoordinationDispatch | HomeRestartInputProof | HomeUpgradeInputProof | None = None
+    project_coordination_dispatch: ProjectCoordinationDispatch | HomeOperatorCoordinationDispatch | HomeRestartInputProof | HomeUpgradeInputProof | HomeGoalRestartInputProof | None = None
     owner_routing_pin: OwnerRoutingPin | None = None
 
     @property

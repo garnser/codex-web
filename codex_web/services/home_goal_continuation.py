@@ -27,6 +27,7 @@ class HomeGoalContinuation:
         self.continuation, self.home = continuation, home_host
         self.bindings, self.goals, self.sessions = continuation.bindings, continuation.goals, continuation.agent_sessions
         self.turns, self.preflight, self.usage = turns, preflight, usage
+        self.restart_recovery = None
 
     @staticmethod
     def handles(binding):
@@ -118,10 +119,42 @@ class HomeGoalContinuation:
             if settled:
                 # Re-enter the ordinary owner on a later canonical recovery event.
                 return GoalContinuationDispatchResult(binding_id=binding.id,outcome='not_dispatched',reason='home_goal_usage_settled')
+        renewed=await asyncio.to_thread(self.renew_known_not_sent,binding)
+        if renewed:
+            self.turns.execution.schedule_queue_drain(binding.thread_id)
+            return GoalContinuationDispatchResult(binding_id=binding.id,outcome='not_dispatched',reason='home_goal_original_lease_renewed')
         # Existing requested identity is held even if a lease expires or an HTTP
         # response was lost. Only canonical START/terminal/usage can settle it.
         return GoalContinuationDispatchResult(binding_id=binding.id, outcome='not_dispatched',
             reason='home_goal_original_input_requires_settlement:' + progress.delivery.id)
+
+    def renew_known_not_sent(self,binding):
+        """Renew owner lease only; the existing queue still owns SAME input."""
+        if binding.lease_expires_at is not None and binding.lease_expires_at>time.time():return False
+        scope=TenantScope(organization_id=binding.organization_id,workspace_id=binding.workspace_id)
+        d=binding.home_continuation.delivery if binding.home_continuation else None
+        if d is None or binding.status!='active':return False
+        try:
+            queued=None
+            if d.phase=='queued':
+                self.context(binding,require_lease=False)
+                queued=next((r for r in self.turns.execution._thread_queue(d.thread_id) if r.id==d.queued_id),None)
+                if queued is None or (queued.source,queued.execution_id,queued.message,queued.agent_profile_actor_id)!=(
+                        SOURCE+binding.id,d.requested_execution_id,d.message,d.requested_by):return False
+            elif self.restart_recovery is not None:
+                queued=self.restart_recovery.pending_goal_queue(binding)
+            if queued is None:return False
+            attempt=self.preflight.retain_queued(queued,organization_id=scope.organization_id,workspace_id=scope.workspace_id)
+            if (attempt.status!='queued' or attempt.queued_admission_claim_id is not None
+                    or attempt.started_at is not None or attempt.scheduling_retirement is not None
+                    or any(getattr(attempt,name) is not None for name in ('queued_start_correlation','queued_start_evidence',
+                        'queued_start_receipt','queued_resume_correlation','queued_resume_evidence'))
+                    or attempt.queued_turn_snapshot!=queued.model_dump(mode='json')):return False
+            return self.bindings.claim_continuation(binding.id,scope=scope,owner_id=self.continuation.owner_id,
+                lease_seconds=self.continuation.lease_seconds) is not None
+        except Exception:
+            # Missing/malformed evidence is a held original, never a new grant.
+            return False
 
     async def dispatch(self, claimed, *, scope):
         from codex_web.services.post_turn_readiness import PostTurnReadinessService
@@ -291,11 +324,31 @@ class HomeGoalContinuation:
         self.mutate(binding.id,scope,started,'Canonical Home Goal START '+d.id)
         return True
 
+    def matches_terminal_event(self,binding,event):
+        """Match historical usage publication to this retained original input.
+
+        An event supplies identity only; counters still come from attributed
+        canonical usage, and an unresolved recovery cannot admit another input.
+        """
+        progress=binding.home_continuation
+        d=progress.delivery if progress else None
+        if d is None or d.phase!='terminal_pending_usage':return False
+        if (event.provider_native_session_id,event.provider_native_turn_id)==(d.thread_id,d.native_turn_id):return True
+        if self.restart_recovery is None:return False
+        context=self.restart_recovery.goal_usage_context(binding)
+        return bool(context and not context.get('pending') and any(
+            (event.provider_native_session_id,event.provider_native_turn_id)==(active.thread_id,active.turn_id)
+            for active in context['turns']))
+
     def _settle_usage(self, binding, scope):
         progress=binding.home_continuation
         d=progress.delivery if progress else None
         if d is None or d.phase!='terminal_pending_usage' or d.native_turn_id is None:
             return False
+        if self.restart_recovery is not None:
+            recovered=self.restart_recovery.goal_usage_context(binding)
+            if recovered is not None:
+                return self._settle_restarted_usage(binding,scope,recovered)
         attempt=self.preflight.store.get(d.admission_attempt_id)
         if attempt is None:
             raise ValueError('Original Home Goal terminal start unavailable')
@@ -349,6 +402,146 @@ class HomeGoalContinuation:
         if goal.budget.max_cost_usd is not None and usage.cost_usd is None:
             return None
         return usage
+
+    def restart_origin(self,active,queued,attempt,*,actor):
+        source=(active.source or '').removeprefix('queued:')
+        if not source.startswith(SOURCE):raise ValueError('Canonical Goal origin required')
+        binding=self.binding(source[len(SOURCE):],actor.tenant)
+        goal=self.goal(binding.goal_id,actor.tenant)
+        owner=self.home.broker.identity.actor_for_identity(goal.owner_identity_id,scope=actor.tenant)
+        IdentityService.require_admin(owner)
+        d=binding.home_continuation.delivery if binding.home_continuation else None
+        selected=self.home.projects.get('home',actor.tenant).home_operator
+        if (d is None or d.phase not in {'started','terminal_pending_usage'} or binding.status!='active'
+                or binding.execution_mode!='application_continuation' or goal.status!='active'
+                or goal.revision!=binding.goal_revision or d.goal_revision!=goal.revision
+                or owner.principal_kind!='human' or not actor.has_same_authority(owner)
+                or (binding.created_by,binding.execution_owner_id)!=(owner.identity_id,owner.identity_id)
+                or selected is None or (selected.thread_id,selected.revision)!=(d.thread_id,d.home_revision)
+                or (active.thread_id,active.turn_id,active.assignment_id,active.execution_id,
+                    active.execution_workspace_id,active.worker_id,active.fence)!=(d.thread_id,d.native_turn_id,
+                    d.assignment_id,d.execution_id,d.execution_workspace_id,d.worker_id,d.fence)):
+            raise ValueError('Current original Goal restart authority changed')
+        reason=self.continuation._policy_stop_reason(binding)
+        if reason:raise ValueError(reason)
+        self.project_native_start_proof(attempt,d,binding)
+        if queued.id!=d.queued_id:raise ValueError('Goal original queue changed')
+        return binding,d
+
+    @staticmethod
+    def restart_event_id(proof):
+        return 'home-goal-restart-'+hashlib.sha256(proof.recovery_id.encode()).hexdigest()[:32]
+
+    def reserve_restart(self,binding,delivery,proof):
+        goal=self.goal(binding.goal_id,TenantScope(organization_id=binding.organization_id,workspace_id=binding.workspace_id))
+        scope=TenantScope(organization_id=binding.organization_id,workspace_id=binding.workspace_id)
+        claimed=self.bindings.claim_continuation(binding.id,scope=scope,owner_id=self.continuation.owner_id,
+            lease_seconds=self.continuation.lease_seconds)
+        if claimed is None:raise ValueError('Original Goal continuation lease unavailable')
+        def reserve(row,state):
+            if row.home_continuation.delivery!=delivery or row.goal_revision!=proof.goal_revision or row.status!='active':
+                raise ValueError('Goal restart reservation changed')
+            if any(e.id==self.restart_event_id(proof) for e in state.events):return row
+            progress=row.home_continuation;budget=goal.budget
+            if (budget.max_model_calls is None or budget.max_input_tokens is None or budget.max_output_tokens is None
+                    or progress.reserved_calls>=budget.max_model_calls or progress.model_calls>=budget.max_model_calls
+                    or progress.input_tokens>=budget.max_input_tokens or progress.output_tokens>=budget.max_output_tokens
+                    or budget.max_cost_usd is not None and (progress.cost_usd is None or progress.cost_usd>=budget.max_cost_usd)):
+                raise ValueError('Goal restart finite budget unavailable or exhausted')
+            return row.model_copy(update={'home_continuation':progress.model_copy(update={'reserved_calls':progress.reserved_calls+1})})
+        return self.mutate(binding.id,scope,reserve,'Home Goal restart input reserved '+proof.recovery_id,
+            event_id=self.restart_event_id(proof))
+
+    def validate_restart_reservation(self,binding,delivery,proof,reservation,*,require_lease=True):
+        scope=TenantScope(organization_id=binding.organization_id,workspace_id=binding.workspace_id)
+        # This witness is recorded only AFTER the atomic Goal budget reservation.
+        # The existing recovery record is a point read; no event-history scan at
+        # the synchronous final native guard is permitted.
+        if (not isinstance(reservation,dict) or set(reservation)!={'binding_id','delivery_id','goal_revision','reserved_calls','event_id'}
+                or (reservation['binding_id'],reservation['delivery_id'],reservation['goal_revision'],reservation['event_id'])!=
+                    (binding.id,delivery.id,binding.goal_revision,self.restart_event_id(proof))
+                or type(reservation['reserved_calls']) is not int or reservation['reserved_calls']<1):
+            raise ValueError('Canonical Goal restart reservation unavailable')
+        goal=self.goal(binding.goal_id,scope);progress=binding.home_continuation
+        budget=goal.budget
+        if ((require_lease and (binding.lease_owner_id!=self.continuation.owner_id or binding.lease_expires_at is None
+                or binding.lease_expires_at<=time.time()))
+                or budget.max_model_calls is None or progress.reserved_calls>budget.max_model_calls
+                or progress.model_calls>=budget.max_model_calls
+                or progress.reserved_calls<reservation['reserved_calls']
+                or budget.max_input_tokens is None or progress.input_tokens>=budget.max_input_tokens
+                or budget.max_output_tokens is None or progress.output_tokens>=budget.max_output_tokens
+                or budget.max_cost_usd is not None and (progress.cost_usd is None or progress.cost_usd>=budget.max_cost_usd)):
+            raise ValueError('Current Goal restart budget changed')
+
+    def _settle_restarted_usage(self,binding,scope,context):
+        if context.get('pending'):
+            return False
+        d=binding.home_continuation.delivery
+        observed=[];missing=False
+        for active in context['turns']:
+            snapshot=d.model_copy(update={'thread_id':active.thread_id,'native_turn_id':active.turn_id,
+                'assignment_id':active.assignment_id,'execution_id':active.execution_id,
+                'execution_workspace_id':active.execution_workspace_id,'worker_id':active.worker_id,'fence':active.fence})
+            usage=self._observed_usage(binding,snapshot,scope)
+            if usage is None:
+                missing=True
+                continue
+            observed.append(usage)
+            def account(row,state):
+                current=row.home_continuation
+                if current.delivery.id!=d.id:return row
+                if any(e.id==self.usage_event_id(row.id,usage.id) for e in state.events):return row
+                return row.model_copy(update={'home_continuation':current.model_copy(update={
+                    'model_calls':current.model_calls+usage.model_call_count,
+                    'input_tokens':current.input_tokens+usage.input_tokens,'output_tokens':current.output_tokens+usage.output_tokens,
+                    'cost_usd':current.cost_usd+usage.cost_usd if current.cost_usd is not None and usage.cost_usd is not None else None})})
+            self.mutate(binding.id,scope,account,'Actual original Home Goal usage '+usage.id,
+                event_id=self.usage_event_id(binding.id,usage.id))
+        if missing:
+            return False
+        current=self.binding(binding.id,scope)
+        if current.home_continuation.delivery.id!=d.id:return False
+        # Retain accounted usage BEFORE releasing this original delivery. If the
+        # point write fails, existing terminal reconciliation retries this phase;
+        # no settled row can be stranded without its history witness.
+        self.restart_recovery.retain_goal_settlement(current,context,[usage.id for usage in observed])
+        latest=observed[-1];won=[]
+        def settled(row,state):
+            current=row.home_continuation.delivery
+            if current.id!=d.id or current.phase!='terminal_pending_usage':return row
+            won.append(True)
+            status=row.status
+            if status=='active':
+                success=context['succeeded'] and latest.terminal_outcome=='succeeded' and all(u.terminal_outcome!='failed' for u in observed)
+                status=GoalExecutionBindingStatus.IDLE if success else GoalExecutionBindingStatus.BLOCKED
+            return row.model_copy(update={'status':status,'stop_reason':'Original and recovered Goal native usage observed',
+                'lease_owner_id':None,'lease_expires_at':None,'home_continuation':row.home_continuation.model_copy(update={
+                    'delivery':current.model_copy(update={'phase':'settled','usage_id':observed[0].id,
+                        'completion_succeeded':context['succeeded']})})})
+        self.mutate(binding.id,scope,settled,'Home Goal recovered chain settled '+context['turns'][-1].turn_id)
+        return bool(won)
+
+    async def record_restarted_terminal(self,active,*,succeeded,recovery):
+        assignment=await asyncio.to_thread(self.home.broker.execution_workers.store.assignment,active.assignment_id)
+        if assignment is None:raise ValueError('Recovery terminal tenant unavailable')
+        scope=TenantScope(organization_id=assignment.organization_id,workspace_id=assignment.workspace_id)
+        evidence=await asyncio.to_thread(recovery.retain_goal_terminal,active,succeeded=succeeded)
+        if evidence is None:return
+        binding=await asyncio.to_thread(self.binding,evidence['binding_id'],scope)
+        d=binding.home_continuation.delivery
+        if d is None or (d.id,binding.goal_revision)!=(evidence['delivery_id'],evidence['goal_revision']):return
+        def pending(row,state):
+            current=row.home_continuation.delivery
+            if current.id!=d.id or current.phase=='settled':return row
+            return row.model_copy(update={'last_turn_id':active.turn_id,'home_continuation':row.home_continuation.model_copy(update={
+                'delivery':current.model_copy(update={'phase':'terminal_pending_usage','completion_succeeded':bool(succeeded)})})})
+        await asyncio.to_thread(self.mutate,binding.id,scope,pending,'Home Goal recovery native terminal '+active.turn_id)
+        binding=await asyncio.to_thread(self.binding,binding.id,scope)
+        settled=await asyncio.to_thread(self._settle_usage,binding,scope)
+        if settled:
+            current=await asyncio.to_thread(self.binding,binding.id,scope)
+            if current.status=='idle':await self.continuation.dispatch_once(current.id,scope=scope)
 
     def project_native_start_proof(self, attempt, d, binding):
         correlation,receipt,evidence=(attempt.queued_start_correlation,attempt.queued_start_receipt,attempt.queued_start_evidence)
