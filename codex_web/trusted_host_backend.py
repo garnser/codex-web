@@ -80,3 +80,17 @@ class TrustedHostActionBackend(BubblewrapExecutionBackend):
         finally:
             self._output_limit.reset(output_token)
             self._admission.reset(token)
+
+
+def trusted_host_deployment_options(environ):
+    """Explicit deployment opt-in with an independently configured OS identity."""
+    enabled = environ.get('CODEX_WEB_TRUSTED_HOME_HOST_ENABLED', '').strip().lower()
+    if enabled not in {'1', 'true'}:
+        return None
+    value = environ.get('CODEX_WEB_TRUSTED_HOME_HOST_UID', '')
+    if not value.isascii() or not value.isdecimal():
+        raise ValueError('Trusted Home host requires an explicit numeric OS UID')
+    uid = int(value)
+    if os.name != 'posix' or uid != os.geteuid():
+        raise ValueError('Trusted Home host OS UID does not match the running service')
+    return {'enabled': True, 'expected_uid': uid}

@@ -201,3 +201,23 @@ adapter with fresh custody and provenance checks. Never relabel arbitrary stdout
 as safe. The engine and its tests therefore do not by themselves close #1669;
 Root's broker/startup/UI integration, explicit activation and governed output
 access remain part of that issue's delivery.
+
+### Trusted host command deployment
+
+The native Home runner continues to use its isolated scratch workspace. Host
+suboperations require both deployment settings
+`CODEX_WEB_TRUSTED_HOME_HOST_ENABLED=true` and
+`CODEX_WEB_TRUSTED_HOME_HOST_UID=<service OS uid>`. A missing or mismatched UID
+refuses explicit enablement; the service does not manufacture OS privilege.
+Only this opt-in advertises `home-host-command/1.0` and grants its local worker
+Artifact output storage capability. Profiles, human administrator selection,
+current Role authority, canonical Environment, output key and the unique enabled
+`home-operator` / `trusted-host` provider binding remain separately required.
+
+`POST /api/operator/host/commands` accepts only `parameters.argv` and an
+`idempotency_key`. The broker derives identity, assignment, fence and Environment.
+Admission deduplication is separate from provider effect idempotency: one original
+intent has one execution attempt; an uncertain command is retained for inspection,
+never automatically replayed. Its claim covers the configured process duration
+and receipt recording. Encrypted governed Artifact references appear in receipts;
+process completion alone does not verify a deployment or other requested effect.

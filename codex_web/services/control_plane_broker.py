@@ -99,6 +99,7 @@ from codex_web.services.project_coordination import (
 )
 
 from codex_web.services.home_operator_host import HOST_INSPECTION
+from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
 from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS
 
 from codex_web.services.worker_verifications import (
@@ -145,6 +146,7 @@ class _ResolvedOperation:
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     HOST_INSPECTION,
+    HOST_COMMAND,
     *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
@@ -552,6 +554,11 @@ class ControlPlaneBrokerService:
         }.get(item.id)
         if work_item_model is not None:
             result["request_body"] = work_item_model.model_json_schema()
+        if item.id == HOST_COMMAND.id:
+            result['request_body'] = HostCommandAdmission.model_json_schema()
+            result['query_parameters'] = {'allowed': False}
+            result['effect'] = 'One bounded privileged host process under the configured OS identity; process completion does not verify requested effects'
+            result['response_loss'] = 'Inspect original intent and artifact; never replace the key or replay an uncertain command'
         if item.id == HOST_INSPECTION.id:
             result['scope'] = 'Explicitly selected Home operator; current Home-scoped profile declaration and administrator authority required'
             result['request_body'] = {'allowed': False}
@@ -735,6 +742,7 @@ class ControlPlaneBrokerService:
                     home_coordination_ids = set(profile.control_plane_operations)
             except (ValueError, LookupError):
                 pass
+        operations = [op for op in operations if op['id'] != HOST_COMMAND.id or op['id'] in home_coordination_ids]
         operations = [op for op in operations if not op['id'].startswith('operator.project.')
                       or op['id'] in home_coordination_ids]
         if context is not None and assignment.project_id == 'home':
@@ -955,6 +963,10 @@ class ControlPlaneBrokerService:
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
                 query[key] = member_query[key]
+        if path == HOST_COMMAND.path_template:
+            if method != HOST_COMMAND.method or parsed.query:
+                raise ControlPlaneBrokerRequestError('Host command requires POST without query parameters')
+            return _ResolvedOperation(operation=HOST_COMMAND, target_ref=None, query={})
         if path == HOST_INSPECTION.path_template:
             if method != HOST_INSPECTION.method or parsed.query:
                 raise ControlPlaneBrokerRequestError('Host inspection accepts only GET without query parameters')
@@ -1747,7 +1759,7 @@ class ControlPlaneBrokerService:
             if self.project_coordination is None:
                 raise ControlPlaneBrokerDeniedError("project coordination adapters unavailable")
             self.project_coordination.authorize(assignment, operation, self._requester_actor(assignment))
-        if operation.id == HOST_INSPECTION.id or operation.id.startswith('operator.project.'):
+        if operation.id.startswith('operator.host.') or operation.id.startswith('operator.project.'):
             if self.home_operator_host is None:
                 raise ControlPlaneBrokerDeniedError('Home operator inspection is unavailable')
             self.home_operator_host.authorize(assignment, actor)
@@ -1810,7 +1822,7 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("project.")
             or operation.id.startswith("verification.")
             or operation.id == "upgrade.approval.request"
-            or operation.id == HOST_INSPECTION.id
+            or operation.id.startswith('operator.host.')
             or operation.id.startswith('operator.project.')
             else actor
         )
@@ -1986,7 +1998,9 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id.startswith('operator.project.'):
+        if operation.id == HOST_COMMAND.id:
+            result = await execute_host_command(self, assignment, worker_actor, payload)
+        elif operation.id.startswith('operator.project.'):
             adapter = self.home_operator_coordination
             if adapter is None:
                 raise ControlPlaneBrokerDeniedError('Home coordination is unavailable')

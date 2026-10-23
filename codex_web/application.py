@@ -1316,18 +1316,24 @@ execution_worker_service.mark_stale_workers_offline(
 execution_worker_service.recover_expired(
     actor=identity_service.local_trusted_actor(),
 )
+from codex_web.trusted_host_backend import TrustedHostActionBackend, trusted_host_deployment_options
+from codex_web.execution_profiles import HOME_HOST_COMMAND_CONTRACT
+from codex_web.execution_workers import WorkerCapability
+_home_host_options = trusted_host_deployment_options(os.environ)
 local_execution_backend = BubblewrapExecutionBackend()
 local_execution_backend_status = local_execution_backend.probe()
 local_worker_actor = identity_service.bootstrap_service_actor(
     identity_id="execution-worker-local",
     name="Local Execution Worker",
     scope=identity_service.local_trusted_actor().tenant,
-    service_scopes=("execution-worker:run", "action-intent:worker", "secret:use"),
+    service_scopes=("execution-worker:run", "action-intent:worker", "secret:use",
+        *(("artifact-evidence:admin",) if _home_host_options is not None else ())),
 )
 local_execution_worker = execution_worker_service.ensure_local_worker(
     service_identity_id=local_worker_actor.identity_id,
     version="local-v2",
-    capabilities=local_execution_backend_status.capabilities,
+    capabilities=tuple(dict.fromkeys((*local_execution_backend_status.capabilities,
+        *((WorkerCapability.COMMAND_EXECUTION, WorkerCapability.NETWORK) if _home_host_options is not None else ())))),
     supported_execution_contract_versions=(
         "1.0",
         "thread-turn/1.0",
@@ -1335,6 +1341,7 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
         "thread-turn/1.1",
         "thread-bootstrap/1.1",
         "skill-scan/1.0",
+        *((HOME_HOST_COMMAND_CONTRACT,) if _home_host_options is not None else ()),
     ),
     actor=identity_service.local_trusted_actor(),
     max_concurrency=runtime_policy.local_worker_max_concurrency(),
@@ -1915,6 +1922,8 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_workspace_service,
     local_execution_backend,
     worker=local_execution_worker,
+    trusted_host_backend=(TrustedHostActionBackend(worker_id=local_execution_worker.id,
+        **_home_host_options) if _home_host_options is not None else None),
     worker_actor=local_worker_actor,
     control_actor=identity_service.local_trusted_actor(),
     artifact_evidence=artifact_evidence_service,
@@ -4880,6 +4889,10 @@ control_plane_broker_service.home_operator_host = HomeOperatorHostService(
     thread_scope=thread_scope_service, thread_index=thread_index_repository,
     bootstrap_bindings=thread_bootstrap_binding_service,
 )
+from codex_web.services.home_host_action_provider import HomeHostActionProvider
+_home_host_provider = HomeHostActionProvider(home_host=control_plane_broker_service.home_operator_host,
+    worker_runtime=local_execution_worker_runtime, artifacts=artifact_evidence_service, crypto=crypto_key_service)
+action_provider_registry.register(_home_host_provider)
 from codex_web.services.home_operator_coordination import (
     HomeOperatorCoordinationService, HomeOperatorCoordinationActionProvider,
 )
