@@ -65,6 +65,18 @@ class HostCommandWireTests(unittest.TestCase):
         public = ControlPlaneBrokerService.public_operation(HOST_COMMAND)
         self.assertIn('idempotency_key', public['request_body']['required'])
 
+    def test_output_route_rejects_ambiguous_artifact_identity(self):
+        from codex_web.services.control_plane_broker import HOST_OUTPUT_READ
+        resolved = ControlPlaneBrokerService._resolve_operation('GET',
+            '/api/operator/host/outputs/artifact-original?kind=source&max_bytes=64')
+        self.assertEqual(resolved.operation, HOST_OUTPUT_READ)
+        self.assertEqual(resolved.target_ref, 'artifact-original')
+        self.assertEqual(resolved.query['max_bytes'], ['64'])
+        for method, target in [('POST', '/api/operator/host/outputs/artifact-original'),
+                ('GET', '/api/operator/host/outputs/a/b'), ('GET', '/api/operator/host/outputs/%2e%2e')]:
+            with self.assertRaises(ControlPlaneBrokerRequestError):
+                ControlPlaneBrokerService._resolve_operation(method, target)
+
     def test_host_execution_requires_explicit_uid_and_opt_in(self):
         self.assertIsNone(trusted_host_deployment_options({}))
         self.assertIsNone(trusted_host_deployment_options({'CODEX_WEB_TRUSTED_HOME_HOST_UID': '1000'}))

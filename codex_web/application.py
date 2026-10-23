@@ -4904,6 +4904,15 @@ from codex_web.services.home_host_action_provider import HomeHostActionProvider
 _home_host_provider = HomeHostActionProvider(home_host=control_plane_broker_service.home_operator_host,
     worker_runtime=local_execution_worker_runtime, artifacts=artifact_evidence_service, crypto=crypto_key_service)
 action_provider_registry.register(_home_host_provider)
+from codex_web.services.home_host_output import HomeHostOutputService
+from codex_web.api.home_host_output import build_home_host_output_router
+home_host_output_service = HomeHostOutputService(home_host=control_plane_broker_service.home_operator_host,
+    worker_runtime=local_execution_worker_runtime, intents=action_intent_service,
+    artifacts=artifact_evidence_service, crypto=crypto_key_service, registry=definition_registry_service)
+control_plane_broker_service.home_host_outputs = home_host_output_service
+app.state.home_host_output_service = home_host_output_service
+app.include_router(build_home_host_output_router(home_host_output_service))
+
 from codex_web.services.home_operator_coordination import (
     HomeOperatorCoordinationService, HomeOperatorCoordinationActionProvider,
 )

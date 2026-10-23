@@ -100,6 +100,7 @@ from codex_web.services.project_coordination import (
 
 from codex_web.services.home_operator_host import HOST_INSPECTION
 from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
+from codex_web.services.home_host_output import OUTPUT_READ
 from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS
 
 from codex_web.services.worker_verifications import (
@@ -144,9 +145,14 @@ class _ResolvedOperation:
     query: dict[str, list[str]]
 
 
+HOST_OUTPUT_READ = ControlPlaneBrokerOperation(id=OUTPUT_READ, method='GET',
+    path_template='/api/operator/host/outputs/{artifact_id}', capability=OUTPUT_READ,
+    authority_level=AuthorityLevel.READ)
+
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     HOST_INSPECTION,
     HOST_COMMAND,
+    HOST_OUTPUT_READ,
     *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
@@ -531,6 +537,7 @@ class ControlPlaneBrokerService:
         self._local_installers = {}
         self.procedure_admission = None
         self.project_coordination = None
+        self.home_host_outputs = None
         self.home_operator_host = None
         self.home_operator_coordination = None
 
@@ -554,6 +561,10 @@ class ControlPlaneBrokerService:
         }.get(item.id)
         if work_item_model is not None:
             result["request_body"] = work_item_model.model_json_schema()
+        if item.id == OUTPUT_READ:
+            result['query_parameters'] = {'kind': ['source', 'released'],
+                'stream': ['stdout', 'stderr'], 'max_bytes': {'minimum': 1, 'maximum': 65536}}
+            result['effect'] = 'Read a bounded excerpt only under current explicit output policy or prior human review; no classification override'
         if item.id == HOST_COMMAND.id:
             result['request_body'] = HostCommandAdmission.model_json_schema()
             result['query_parameters'] = {'allowed': False}
@@ -742,7 +753,7 @@ class ControlPlaneBrokerService:
                     home_coordination_ids = set(profile.control_plane_operations)
             except (ValueError, LookupError):
                 pass
-        operations = [op for op in operations if op['id'] != HOST_COMMAND.id or op['id'] in home_coordination_ids]
+        operations = [op for op in operations if op['id'] not in {HOST_COMMAND.id, OUTPUT_READ} or op['id'] in home_coordination_ids]
         operations = [op for op in operations if not op['id'].startswith('operator.project.')
                       or op['id'] in home_coordination_ids]
         if context is not None and assignment.project_id == 'home':
@@ -963,6 +974,12 @@ class ControlPlaneBrokerService:
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
                 query[key] = member_query[key]
+        if path.startswith('/api/operator/host/outputs/'):
+            artifact_id = path.removeprefix('/api/operator/host/outputs/')
+            if method != 'GET' or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', artifact_id):
+                raise ControlPlaneBrokerRequestError('Host output requires GET and one exact artifact reference')
+            return _ResolvedOperation(operation=HOST_OUTPUT_READ, target_ref=artifact_id,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         if path == HOST_COMMAND.path_template:
             if method != HOST_COMMAND.method or parsed.query:
                 raise ControlPlaneBrokerRequestError('Host command requires POST without query parameters')
@@ -1356,6 +1373,20 @@ class ControlPlaneBrokerService:
                 "repository operation requires exactly one eligible enabled provider binding"
             )
         return bindings[0]
+
+    def _read_home_output(self, assignment, artifact_id, worker_actor, *, kind, stream='stdout', maximum=4096):
+        from codex_web.services.data_governance import DataGovernanceError
+        from codex_web.services.crypto_keys import CryptoKeyError
+        from codex_web.services.artifact_evidence import ArtifactEvidenceError
+        from codex_web.services.definitions import DefinitionError
+        from codex_web.services.identity import AuthorizationError
+        try:
+            if kind == 'released':
+                return self.home_host_outputs.read(assignment, artifact_id, worker_actor=worker_actor)
+            return self.home_host_outputs.read_source(assignment, artifact_id,
+                worker_actor=worker_actor, stream=stream, max_bytes=maximum)
+        except (DataGovernanceError, CryptoKeyError, ArtifactEvidenceError, DefinitionError, AuthorizationError) as error:
+            raise ControlPlaneBrokerDeniedError('Current Home output is unavailable or remains protected; inspect the original command and output policy') from error
 
     async def _execute_repository_action(
         self,
@@ -1998,7 +2029,29 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id == HOST_COMMAND.id:
+        if operation.id == OUTPUT_READ:
+            if (body or self.home_host_outputs is None or set(resolved.query) - {'kind', 'stream', 'max_bytes'}
+                    or any(len(v) != 1 or not v[0] for v in resolved.query.values())):
+                raise ControlPlaneBrokerRequestError('Host output requires a bounded read without a request body')
+            kind = resolved.query.get('kind', ['source'])[0]
+            if kind == 'released':
+                if set(resolved.query) - {'kind'}:
+                    raise ControlPlaneBrokerRequestError('Released excerpts accept no range override')
+                result = await run_settled(lambda: self._read_home_output(
+                    assignment, resolved.target_ref, worker_actor, kind='released'))
+            elif kind == 'source':
+                stream = resolved.query.get('stream', ['stdout'])[0]
+                try:
+                    maximum = int(resolved.query.get('max_bytes', ['4096'])[0])
+                except ValueError as error:
+                    raise ControlPlaneBrokerRequestError('Invalid output byte bound') from error
+                if stream not in {'stdout', 'stderr'} or not 1 <= maximum <= 65536:
+                    raise ControlPlaneBrokerRequestError('Invalid output stream or byte bound')
+                result = await run_settled(lambda: self._read_home_output(
+                    assignment, resolved.target_ref, worker_actor, kind='source', stream=stream, maximum=maximum))
+            else:
+                raise ControlPlaneBrokerRequestError('Unknown output read kind')
+        elif operation.id == HOST_COMMAND.id:
             result = await execute_host_command(self, assignment, worker_actor, payload)
         elif operation.id.startswith('operator.project.'):
             adapter = self.home_operator_coordination
