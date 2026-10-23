@@ -4880,6 +4880,24 @@ control_plane_broker_service.home_operator_host = HomeOperatorHostService(
     thread_scope=thread_scope_service, thread_index=thread_index_repository,
     bootstrap_bindings=thread_bootstrap_binding_service,
 )
+from codex_web.services.home_operator_coordination import (
+    HomeOperatorCoordinationService, HomeOperatorCoordinationActionProvider,
+)
+def _home_coordination_origin(snapshot, operation_id):
+    context = control_plane_broker_service.home_operator_host.authorize_operation(
+        snapshot, operation_id=operation_id, worker_actor=local_execution_worker_runtime.worker_actor,
+        mutating=operation_id == 'operator.project.thread.message')
+    return context.assignment, context.requester, context.binding, context.envelope
+
+home_operator_coordination_service = HomeOperatorCoordinationService(
+    broker=control_plane_broker_service, origin_guard=_home_coordination_origin,
+    thread_scope=thread_scope_service, bootstrap_bindings=thread_bootstrap_binding_service,
+    project_coordination=project_coordination_service, turns=turn_service,
+)
+control_plane_broker_service.home_operator_coordination = home_operator_coordination_service
+turn_execution_service.home_operator_coordination_admission = home_operator_coordination_service.validate_queued_delegation
+action_provider_registry.register(HomeOperatorCoordinationActionProvider(home_operator_coordination_service))
+app.state.home_operator_coordination_service = home_operator_coordination_service
 turn_execution_service.procedure_admission.input_authorizer = (
     control_plane_broker_service.home_operator_host.authorize_native_input
 )

@@ -99,6 +99,7 @@ from codex_web.services.project_coordination import (
 )
 
 from codex_web.services.home_operator_host import HOST_INSPECTION
+from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS
 
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
@@ -144,6 +145,7 @@ class _ResolvedOperation:
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     HOST_INSPECTION,
+    *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
@@ -528,6 +530,7 @@ class ControlPlaneBrokerService:
         self.procedure_admission = None
         self.project_coordination = None
         self.home_operator_host = None
+        self.home_operator_coordination = None
 
     @staticmethod
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
@@ -723,6 +726,17 @@ class ControlPlaneBrokerService:
             except ControlPlaneBrokerDeniedError:
                 pass
         operations = [op for op in operations if op['id'] != HOST_INSPECTION.id or host_declared]
+        home_coordination_ids = set()
+        if host_declared and self.home_operator_coordination is not None:
+            try:
+                profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                    organization_id=assignment.organization_id, workspace_id=assignment.workspace_id, project_id='home')
+                if reference == assignment.execution_profile_definition and getattr(profile, 'home_operator', None):
+                    home_coordination_ids = set(profile.control_plane_operations)
+            except (ValueError, LookupError):
+                pass
+        operations = [op for op in operations if not op['id'].startswith('operator.project.')
+                      or op['id'] in home_coordination_ids]
         if context is not None and assignment.project_id == 'home':
             context['host_inspection_declaration'] = {
                 'declared': host_declared,
@@ -927,6 +941,12 @@ class ControlPlaneBrokerService:
             return _ResolvedOperation(operation=operation, target_ref=target,
                 query=parse_qs(parsed.query, keep_blank_values=True))
         query = parse_qs(parsed.query, keep_blank_values=False)
+        for operation in HOME_COORDINATION_OPERATIONS:
+            if path == operation.path_template:
+                if method != operation.method:
+                    raise ControlPlaneBrokerRequestError('Unsupported Home coordination method')
+                return _ResolvedOperation(operation=operation, target_ref=None,
+                    query=parse_qs(parsed.query, keep_blank_values=True))
         if path == COORDINATION_PREFIX or path.startswith(COORDINATION_PREFIX + "/"):
             operation, target_ref = resolve_operation(method, path)
             return _ResolvedOperation(operation=operation, target_ref=target_ref,
@@ -1727,7 +1747,7 @@ class ControlPlaneBrokerService:
             if self.project_coordination is None:
                 raise ControlPlaneBrokerDeniedError("project coordination adapters unavailable")
             self.project_coordination.authorize(assignment, operation, self._requester_actor(assignment))
-        if operation.id == HOST_INSPECTION.id:
+        if operation.id == HOST_INSPECTION.id or operation.id.startswith('operator.project.'):
             if self.home_operator_host is None:
                 raise ControlPlaneBrokerDeniedError('Home operator inspection is unavailable')
             self.home_operator_host.authorize(assignment, actor)
@@ -1791,6 +1811,7 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("verification.")
             or operation.id == "upgrade.approval.request"
             or operation.id == HOST_INSPECTION.id
+            or operation.id.startswith('operator.project.')
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
@@ -1965,7 +1986,22 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id == HOST_INSPECTION.id:
+        if operation.id.startswith('operator.project.'):
+            adapter = self.home_operator_coordination
+            if adapter is None:
+                raise ControlPlaneBrokerDeniedError('Home coordination is unavailable')
+            if operation.id == 'operator.project.threads.list':
+                if body or set(resolved.query) - {'project_id', 'limit', 'cursor'} or any(
+                        len(v) != 1 or not v[0] for v in resolved.query.values()) or 'project_id' not in resolved.query:
+                    raise ControlPlaneBrokerRequestError('Home inspection requires one explicit target Project and no body')
+                result = await run_settled(lambda: adapter.inspect(assignment_id=assignment.id,
+                    fence=assignment.fence, project_id=resolved.query['project_id'][0], query=resolved.query))
+            else:
+                if resolved.query:
+                    raise ControlPlaneBrokerRequestError('Home delegation accepts no query parameters')
+                result = await adapter.message(assignment_id=assignment.id, fence=assignment.fence,
+                    payload=payload, worker_actor=worker_actor)
+        elif operation.id == HOST_INSPECTION.id:
             if body:
                 raise ControlPlaneBrokerRequestError('Host inspection accepts no request body')
             result = await run_settled(lambda: self.home_operator_host.inspect(

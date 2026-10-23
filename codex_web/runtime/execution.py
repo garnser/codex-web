@@ -785,6 +785,19 @@ class TurnExecutionService:
             return recovery.admission_validator(queued)
         if queued.project_coordination_dispatch is None:
             return None
+        if queued.project_coordination_dispatch.schema_version == "1.2":
+            admission = getattr(self, "home_operator_coordination_admission", None)
+            if queued.source != "home-operator-coordination" or admission is None:
+                raise HTTPException(status_code=409, detail={"code": "home_coordination_unavailable"})
+            def validate_home():
+                try:
+                    admission(queued)
+                except (HTTPException, ValueError, RuntimeError, LookupError) as exc:
+                    raise AutomatedAdmissionPaused(status_code=409, detail={
+                        "code": "home_coordination_blocked", "retryable": False,
+                        "message": "Home delegation authority changed; inspect the original action and retained input",
+                    }) from exc
+            return validate_home
         if (queued.source != "project-coordination"
                 or self.project_coordination_admission is None):
             raise HTTPException(status_code=409, detail={"code": "project_delegation_unavailable"})
