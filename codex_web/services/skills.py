@@ -567,14 +567,17 @@ class SkillService:
         actor: AuthenticationActor,
         project_id: str | None = None,
     ) -> DefinitionRecord:
-        item = next(
-            (
-                record
-                for record in self._records(skill_id, actor=actor, project_id=project_id)
-                if record.revision == revision
-            ),
-            None,
-        )
+        records = self._records(skill_id, actor=actor, project_id=project_id)
+        slots = {(r.scope_type, r.scope_id) for r in records}
+        if len(slots) > 1:
+            if project_id is None and any(scope == DefinitionScope.PROJECT for scope, _ in slots):
+                raise SkillConflict("numeric Skill revision is ambiguous; select a Project")
+            if project_id is not None:
+                precedence = {DefinitionScope.GLOBAL: 0, DefinitionScope.ORGANIZATION: 1,
+                              DefinitionScope.WORKSPACE: 2, DefinitionScope.PROJECT: 3}
+                selected_scope = max(slots, key=lambda slot: precedence[slot[0]])
+                records = [r for r in records if (r.scope_type, r.scope_id) == selected_scope]
+        item = next((r for r in records if r.revision == revision), None)
         if item is None:
             raise SkillNotFound("skill revision not found")
         return item

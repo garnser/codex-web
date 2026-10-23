@@ -122,6 +122,12 @@ class ProjectScopedSkillTests(unittest.TestCase):
             self.skills.get('closure', actor=self.actor)
         self.assertEqual(self.skills.get('closure', actor=self.actor, project_id='vdo')['scopeId'], 'vdo')
         self.assertEqual(self.skills.get('closure', actor=self.actor, project_id='home')['scopeId'], 'home')
+        with self.assertRaises(SkillConflict):
+            self.skills.get('closure', actor=self.actor, revision=1)
+        self.assertEqual(self.skills.get('closure', actor=self.actor, project_id='vdo', revision=1)['scopeId'], 'vdo')
+        self.create(None)
+        self.assertEqual(self.skills.get('closure', actor=self.actor, project_id='vdo', revision=1)['scopeId'], 'vdo')
+        self.assertEqual(self.skills.export_bundle('closure', actor=self.actor, project_id='vdo', revision=1)['manifest']['project_id'], None)
 
     def test_http_project_authoring_and_scope_denials(self):
         from fastapi import FastAPI
@@ -145,6 +151,8 @@ class ProjectScopedSkillTests(unittest.TestCase):
             record_id = draft['recordId']
             self.assertEqual(client.get('/api/skills?project_id=home').json()['count'], 0)
             self.assertEqual(client.get('/api/skills/http-closure?project_id=home').status_code, 404)
+            self.assertEqual(client.get('/api/skills/http-closure/export?project_id=home').status_code, 404)
+            self.assertEqual(client.get('/api/skills/http-closure/export?project_id=home&revision=1').status_code, 404)
             self.assertEqual(client.post(f'/api/skills/http-closure/revisions/{record_id}/scan', json={}).status_code, 200)
             published = client.post(f'/api/skills/http-closure/revisions/{record_id}/publish?project_id=vdo', json={})
             self.assertEqual(published.status_code, 200, published.text)
