@@ -38,7 +38,7 @@ export function createExecutionReadinessGate({read, getProjectId, doc = document
   async function refresh({force = false} = {}) {
     const current = selection(), nextKey = key(current);
     if (!doc.getElementById('execution-profile')) { render(); return; }
-    if (nextKey && nextKey === selectedKey && (controller || (!force && (result || error)))) { render(); return; }
+    if (!force && nextKey && nextKey === selectedKey && (controller || result || error)) { render(); return; }
     controller?.abort(); controller = null; generation += 1;
     selectedKey = nextKey; result = null; error = '';
     if (!current) { error = 'Select an available execution profile and sandbox.'; render(); return; }
