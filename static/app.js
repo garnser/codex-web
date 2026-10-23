@@ -1028,10 +1028,7 @@ async function refresh({ reloadProjects = false } = {}) {
     if (threadRoute.idFromLocation() || threadIdBeforeRefresh !== state.threadId) await threadRoute.restore();
     if (state.usageProjectId !== projectId) refreshTokenUsage();
     markMilestone("project-useful",startedAt);
-    await applyProjectModels(snapshot,{
-      state,controller,generation,projectId,search,
-      getSearch:()=>$("thread-search").value.trim(),
-      getControl:()=>$("thread-model-setting"),renderModelOptions,
+    await applyProjectModels(snapshot,{state,controller,generation,projectId,search,getSearch:()=>$("thread-search").value.trim(),getControls:()=>document.querySelectorAll("#thread-model-setting,[data-action=thread-model]"),renderModelOptions,
     });
   })();
 
@@ -1054,8 +1051,6 @@ function scheduleRefresh(delay = 100) {
     refresh().catch(console.error);
   }, delay);
 }
-
-
 
 async function refreshBotConnections() {
   state.botConnections = await api("/api/bots/connections");

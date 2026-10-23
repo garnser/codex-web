@@ -185,7 +185,7 @@ export function refreshBindingQueueDepth(depthByThread, bindings) {
 // restoring the selected conversation, then joins the original optional read.
 export async function applyProjectModels(snapshot, {
   state, controller, generation, projectId, search,
-  getSearch, getControl, renderModelOptions,
+  getSearch, getControls, renderModelOptions,
 }) {
   if (!snapshot.modelsReady) return;
   const models = await snapshot.modelsReady;
@@ -193,6 +193,7 @@ export async function applyProjectModels(snapshot, {
       || generation !== state.refreshGeneration || projectId !== state.projectId
       || search !== getSearch()) return;
   state.models = models;
-  const control = getControl();
-  if (control) control.innerHTML = renderModelOptions(control.value || "");
+  for (const control of getControls()) {
+    control.innerHTML = renderModelOptions(control.value || "");
+  }
 }

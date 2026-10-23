@@ -86,7 +86,8 @@ The chat refresh applies its canonical Project workspace and execution catalog,
 then restores the explicit conversation deep link before waiting for independent
 model discovery. The same refresh signal owns both reads. Late model metadata
 can update only the still-current Project, refresh generation and search; it
-preserves the current model selector value. Failed or superseded workspace loads
+updates existing selected-thread and expanded-list model controls in place while
+preserving each current selector value. Failed or superseded workspace loads
 abort the optional read. Model failure remains visible through the existing
 `models.error` diagnostic and does not manufacture a model, execution profile or
 readiness result. Contextual readiness and canonical turn admission continue to
