@@ -68,7 +68,9 @@ class WorkerVerificationAdapter:
             self.denied('Verification requires an exact Work Item reference')
         state = self.broker._state_for_target(assignment, ref)
         pin = assignment.agent_profile
-        if pin is None or state.current_owner != pin.profile_id:
+        owner_ids = {value for value in (getattr(pin, 'profile_id', None),
+                                         getattr(pin, 'role_id', None)) if value}
+        if not owner_ids or state.current_owner not in owner_ids:
             self.denied('Verification requires current canonical Work Item ownership')
         if not set(state.resource_ids).issubset(set(assignment.resource_ids)):
             self.denied('Current Work Item resource scope changed')
