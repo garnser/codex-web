@@ -244,5 +244,17 @@ class AssignmentReasoningBroker:
             return {"item": prepared.model_dump(mode="json"), "reused": reused}
         item = await run_settled(lambda: self.activation(target, current, actor, operation))
         current, actor = await run_settled(lambda: self.current(assignment, worker_actor, operation, target, validator))
-        result = await self.executives.consult(item.id, actor=actor)
+        native = {}
+        if getattr(self.executives, 'native_invocation_authorizer', None) is not None:
+            def current_origin():
+                latest, requester = self.current(assignment, worker_actor, operation, target, validator)
+                # The Executive owner separately point-checks the exact
+                # CONSULTING snapshot; do not reload its entire history here.
+                self.scoped(item, latest, requester, operation)
+                if item.trigger_ref != self.origin(latest) or item.initiated_by != requester.identity_id:
+                    deny('native consultation origin changed')
+                self.context(self.request_for(item), latest, requester, operation)
+                self.prepared_context(item, latest, requester, operation)
+            native = {'native_origin_guard': current_origin}
+        result = await self.executives.consult(item.id, actor=actor, **native)
         return {"item": result.model_dump(mode="json")}

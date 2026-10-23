@@ -306,3 +306,59 @@ not Project-specific overrides. Disabling prevents subsequent selection, includi
 linked AgentProvider eligibility, but does not cancel already-accepted invocations
 or delete model definitions. The remote provider's own management surface remains
 the authority for account lifecycle.
+
+## Restricted native entitlement reasoning
+
+The opt-in `codex-native-reasoning` ModelProvider adapter uses the existing
+ThreadService, TurnService, canonical worker/session manager, queued START
+receipt and runtime usage owner. It is separate from ordinary operational Codex
+sessions: a public invocation or an AgentProfile label cannot create its private
+Executive reservation context. The Executive atomically reserves consultation
+first; each role/synthesis has a stable logical invocation ID. That ID is bound
+to the original queued attempt, while START, session and measured usage retain
+the actual bootstrap assignment's physical execution ID. Unknown originals are
+held by those existing owners and never authorize fallback or another input.
+
+The deployment must explicitly compose `build_native_reasoning_components` and
+`register_native_reasoning_components`, publish and pin a scratch/read-only
+execution contract and exact AgentProfile, and supply current canonical Profile
+and requester validators. These components do not activate a provider/Profile.
+The configured native worker is the existing worker, not a second execution
+plane. Its session has no operational broker and advertises no shell, filesystem,
+git, MCP or approval capabilities. The actual isolated launch, lease, Profile,
+worker, native version, restricted catalog/config and absence of an operational
+broker are checked before inference. Public/native input still uses the existing
+final worker/preflight guards; the internal context is not a source-prefix grant.
+
+The pinned Codex 0.160.0 contract reduces one actual bundled model row: shell and
+patch tools, experimental tools, search, apps/plugins/hooks and other operational
+features are disabled. A fresh private Codex home mounts only the existing
+sign-in owner's `auth.json` reference read-only and the reviewed restricted public
+catalog. Credential bytes are never parsed/copied by the adapter, converted into
+an API key or stored as another Secret. Ambient MCP configuration is not mounted;
+an empty `mcp_servers={}` override alone is insufficient because native config
+merges tables. Effective native config is read and validated before thread
+startup. Server-origin tool/approval/auth-refresh requests are refused. An expired
+sign-in requires the existing authentication owner; unknown inference is never
+retried automatically. Real native tool-inventory/authentication qualification
+is required before enabling this adapter; unit fixtures are not that proof.
+
+Only this explicitly scoped native adapter can admit an unpriced
+`CHATGPT_SUBSCRIPTION` / `ENTITLEMENT` route. API and unverified routes retain the
+pricing-required budget guard. Entitlement USD cost remains null, not zero; token,
+call, time and observed-byte budgets remain finite. Goal/Decision aggregate USD
+is null when any included entitlement call has unattested USD, including mixed
+priced usage. The individual priced attempts remain intact. The Decision UI
+renders unknown entitlement USD, and ordinary priced deliberation refuses an
+unknown aggregate rather than subtracting null as zero.
+
+One inference is accepted only after an actual terminal turn and an attributed
+canonical record with one measured call and input/output tokens. Native
+`max_output_tokens` is not a qualified hard cap for this subscription protocol.
+Observed token/output-byte limits interrupt and may overshoot before observation;
+request timeout and the canonical process boundary remain finite. Cancellation
+joins preparation and the existing exact process stop/reap owner, including
+failures before thread-create returns. Missing/delayed/ambiguous usage, unexpected
+tools, scope drift and unknown native outcomes do not become successful model
+results. This contract does not claim a live consultation until the opt-in
+composition, current authentication and actual bounded inference are qualified.

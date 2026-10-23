@@ -142,7 +142,7 @@ function approval() {
   };
 }
 
-async function mockDecisionApis(page, posts, initialStatus = 'awaiting_approval') {
+async function mockDecisionApis(page, posts, initialStatus = 'awaiting_approval', costUsd = 0.01) {
   let current = decision(initialStatus);
   await page.route(/\/api\/decisions(?:[/?].*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -162,7 +162,7 @@ async function mockDecisionApis(page, posts, initialStatus = 'awaiting_approval'
         body: JSON.stringify({
           item: current,
           approval_request: current.approval_request_id ? approval() : null,
-          model_usage: { decision_id: 'decision-a', calls: 3, input_tokens: 300, output_tokens: 150, cost_usd: 0.01 },
+          model_usage: { decision_id: 'decision-a', calls: 3, input_tokens: 300, output_tokens: 150, cost_usd: costUsd },
         }),
       });
     }
@@ -552,4 +552,14 @@ test('late Decision generation preserves newer work text and prevents duplicate 
   await expect(page.locator('.decisions-status')).toContainText('Newer edits remain unsaved');
   await expect(form.locator('[name=description]')).toHaveValue('Newer work description');
   await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});
+
+
+test('Decision entitlement USD null renders unknown rather than zero dollars', async ({ page }) => {
+  await mockDecisionApis(page, [], 'awaiting_approval', null);
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html');
+  await page.locator('#decisions-button').click();
+  const cost = page.locator('#decisions-dialog .decision-grid > div').filter({ has: page.locator('span', { hasText: /^Cost$/ }) });
+  await expect(cost).toContainText('Unknown / entitlement');
+  await expect(cost).not.toContainText('$0 /');
 });

@@ -122,6 +122,7 @@ class ExecutiveManagementService:
         data_governance: DataGovernanceService | None = None,
         *,
         clock=time.time,
+        native_invocation_authorizer=None,
     ) -> None:
         self.store = store
         self.roles = roles
@@ -138,6 +139,7 @@ class ExecutiveManagementService:
         self.business_kpis = business_kpis
         self.data_governance = data_governance
         self.clock = clock
+        self.native_invocation_authorizer = native_invocation_authorizer
 
     @staticmethod
     def _same_scope(
@@ -1372,6 +1374,37 @@ class ExecutiveManagementService:
             )
         return output
 
+    def _native_context(self, activation, role_id, actor, max_input, max_output, origin_guard=None):
+        if self.native_invocation_authorizer is None:
+            return {}
+        from codex_web.services.native_model_provider import NativeModelInvocationContext
+        # This configured owner must validate the original authenticated caller
+        # (including broker custody where applicable), never actor labels alone.
+        caller_guard = self.native_invocation_authorizer(activation, actor)
+        if not callable(caller_guard) or not activation.project_id:
+            raise ExecutiveConsultationError('Native consultation authorization unavailable')
+
+        def validate_current():
+            caller_guard()
+            if origin_guard is not None:
+                origin_guard()
+            current = self.store.get_scoped(activation.id,
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+            if (current.status != ExecutiveActivationStatus.CONSULTING
+                    or current != activation):
+                raise ExecutiveConsultationError('Native consultation reservation changed')
+            _catalog, reference = self._catalog(actor=actor, project_id=current.project_id)
+            if reference != activation.role_catalog:
+                raise ExecutiveConsultationError('Native consultation role catalog changed')
+
+        return {'native_context': NativeModelInvocationContext(
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+            actor_id=actor.identity_id, project_id=activation.project_id,
+            activation_id=activation.id, role_id=role_id,
+            execution_id=f'executive:{activation.id}:{role_id}',
+            max_input_tokens=max_input, max_output_tokens=max_output,
+            validate_current=validate_current)}
+
     async def _consult_role(
         self,
         activation: ExecutiveActivation,
@@ -1381,6 +1414,7 @@ class ExecutiveManagementService:
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost_usd: float,
+        native_origin_guard=None,
     ) -> ExecutiveConsultation:
         started = float(self.clock())
         filtered_context = self._filter_context(activation.context, role)
@@ -1419,8 +1453,14 @@ class ExecutiveManagementService:
                     reasoning_effort="medium",
                     text_verbosity="low",
                     purpose=f"executive-role:{role.id}",
+                    execution_id=f"executive:{activation.id}:{role.id}",
+                    goal_id=activation.goal_ids[0] if len(activation.goal_ids) == 1 else None,
+                    work_item_ref=activation.work_item_refs[0] if len(activation.work_item_refs) == 1 else None,
+                    decision_id=activation.decision_ids[0] if len(activation.decision_ids) == 1 else None,
                 ),
                 actor=actor,
+                **self._native_context(activation, role.id, actor, max_input_tokens,
+                                       min(max_output_tokens, self.MAX_OUTPUT_PER_CALL), native_origin_guard),
             )
         except ModelGatewayError as exc:
             raise ExecutiveConsultationError(
@@ -1457,6 +1497,7 @@ class ExecutiveManagementService:
         activation_id: str,
         *,
         actor: AuthenticationActor,
+        native_origin_guard=None,
     ) -> ExecutiveActivation:
         activation = self.get(activation_id, actor=actor)
         if activation.status == ExecutiveActivationStatus.COMPLETED:
@@ -1523,6 +1564,7 @@ class ExecutiveManagementService:
                             max_input_tokens=per_call_input,
                             max_output_tokens=per_call_output,
                             max_cost_usd=per_call_cost,
+                            native_origin_guard=native_origin_guard,
                         )
                         for role in roles
                     )
@@ -1585,8 +1627,14 @@ class ExecutiveManagementService:
                         reasoning_effort="high",
                         text_verbosity="low",
                         purpose="executive-synthesis",
+                        execution_id=f"executive:{consulting.id}:synthesis",
+                        goal_id=consulting.goal_ids[0] if len(consulting.goal_ids) == 1 else None,
+                        work_item_ref=consulting.work_item_refs[0] if len(consulting.work_item_refs) == 1 else None,
+                        decision_id=consulting.decision_ids[0] if len(consulting.decision_ids) == 1 else None,
                     ),
                     actor=actor,
+                    **self._native_context(consulting, "synthesis", actor, per_call_input,
+                                           min(per_call_output, self.MAX_OUTPUT_PER_CALL), native_origin_guard),
                 )
                 try:
                     raw = json.loads(result.text)

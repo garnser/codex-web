@@ -9,6 +9,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from codex_web.services.post_turn_readiness import PostTurnReadinessService
+
 from fastapi import HTTPException
 
 from codex_web.identity import AuthenticationActor
@@ -438,7 +440,9 @@ class TurnService:
                 raise HTTPException(status_code=409,detail={'code':'resource_context_rollover_required',
                     'next_action':'Preserve custody and use supported terminal fence then fresh SAME-thread bootstrap.'})
         if admission_guard is not None:
-            admission_guard()
+            await PostTurnReadinessService._run_owned(
+                lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                name='thread-admission-current-guard')
         self.settings.remember(
             thread_id,
             sandbox=effective_sandbox,
@@ -477,7 +481,9 @@ class TurnService:
             capacity_retry_at: float | None = None,
         ) -> dict[str, Any]:
             if admission_guard is not None:
-                admission_guard()
+                await PostTurnReadinessService._run_owned(
+                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    name='thread-admission-current-guard')
             queued = self.execution.enqueue_turn(
                 thread_id=thread_id,
                 source=source,

@@ -1,0 +1,301 @@
+"""One bounded inference through the existing canonical Thread/Turn owners.
+
+The bridge owns no durable queue, worker, session, credential or retry authority.
+A failed/unknown original is retained by normal bootstrap/preflight owners.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import uuid
+from dataclasses import dataclass
+
+from codex_web.model_gateway import ModelProviderResult, ModelProviderUsage
+from codex_web.model_providers import ModelProviderAdapterError, ModelProviderOutcomeUnknownError
+from codex_web.models import TurnCreate
+from codex_web.services.post_turn_readiness import PostTurnReadinessService
+from codex_web.services.queued_native_start import validate_attribution
+
+
+@dataclass(frozen=True, slots=True)
+class NativeReasoningBinding:
+    provider_id: str
+    model_id: str
+    concrete_model: str
+    agent_profile_id: str
+    agent_profile_revision: int
+    execution_profile_id: str
+    worker_id: str
+    max_output_bytes: int = 65536
+
+    def __post_init__(self):
+        if (not all((self.provider_id, self.model_id, self.concrete_model,
+                     self.agent_profile_id, self.execution_profile_id, self.worker_id))
+                or self.agent_profile_revision < 1 or not 1 <= self.max_output_bytes <= 1048576):
+            raise ValueError('Exact bounded native reasoning binding required')
+
+
+class CanonicalNativeReasoningBridge:
+    """Opt-in composition; attestation must inspect the actual serving session."""
+
+    runtime_id = 'codex-reasoning'
+
+    def __init__(self, *, binding, threads, turns, sessions, usage, preflight,
+                 execution, hub, attest_session):
+        self.binding = binding
+        self.threads, self.turns = threads, turns
+        self.sessions, self.usage, self.preflight = sessions, usage, preflight
+        self.execution, self.hub = execution, hub
+        # The configured canonical credential/backend owner verifies the exact
+        # version, restricted catalog/config, scratch contract, worker and lease.
+        # A deployment assertion or model/provider metadata is insufficient.
+        self.attest_session = attest_session
+        self._usage_waiters = {}
+
+    def observe_usage(self, record):
+        # Notification is not permission or accounting authority: _result reads
+        # and validates the original committed record again before returning.
+        waiting = self._usage_waiters.get(record.agent_session_id)
+        if waiting is None or record.runtime_id != self.runtime_id:
+            return
+        loop, future = waiting
+        if (record.terminal_outcome == 'succeeded' and record.model_call_count == 1
+                and record.input_tokens is not None and record.output_tokens is not None):
+            def signal():
+                if not future.done():
+                    future.set_result(record.provider_native_turn_id)
+            loop.call_soon_threadsafe(signal)
+
+    def supports(self, provider, model, context):
+        b = self.binding
+        return (provider.id == b.provider_id and model.id == b.model_id
+                and model.concrete_model == b.concrete_model and not model.supports_tools
+                and bool(context.project_id) and callable(self.attest_session))
+
+    @staticmethod
+    async def _owned(function, *args):
+        return await PostTurnReadinessService._run_owned(
+            lambda: asyncio.to_thread(function, *args), seconds=5., name='native-model-canonical-read')
+
+    @staticmethod
+    async def _wait_or_cancel(future, cancelled):
+        waiter = asyncio.create_task(cancelled.wait())
+        try:
+            done, _ = await asyncio.wait((future, waiter), return_when=asyncio.FIRST_COMPLETED)
+            if waiter in done:
+                raise asyncio.CancelledError
+            return future.result()
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+    def _result(self, *, context, actor, session, assignment, thread_id,
+                turn_id, queued_id, text):
+        context.validate_current()
+        attempt = self.preflight.store.get('preflight-queued-' + queued_id)
+        if attempt is None or attempt.status != 'started':
+            raise ValueError('Native inference positive original START unavailable')
+        correlation, receipt = attempt.queued_start_correlation, attempt.queued_start_receipt
+        evidence = attempt.queued_start_evidence
+        if correlation is None or receipt is None or evidence is None:
+            raise ValueError('Native inference START evidence unavailable')
+        validate_attribution(self.preflight, attempt, correlation)
+        if ((attempt.organization_id, attempt.workspace_id, attempt.project_id,
+             attempt.execution_id, receipt.thread_id, receipt.provider_native_session_id,
+             receipt.provider_native_turn_id, correlation.assignment_id,
+             correlation.worker_id, correlation.fence) !=
+            (context.organization_id, context.workspace_id, context.project_id,
+             context.execution_id, thread_id, thread_id, turn_id, assignment.id,
+             assignment.assigned_worker_id, assignment.fence)
+                or receipt.execution_id != assignment.execution_id
+                or correlation.execution_id != assignment.execution_id
+                or evidence.provider_native_turn_id != turn_id
+                or evidence.provider_native_session_id != thread_id):
+            raise ValueError('Native inference original START attribution changed')
+        record_id = 'runtime-usage-' + hashlib.sha256(
+            f'{session.id}\n{turn_id}'.encode()).hexdigest()[:32]
+        usage = self.usage.get(record_id)
+        if (usage is None or (usage.organization_id, usage.workspace_id, usage.project_id,
+                usage.agent_session_id, usage.assignment_id, usage.execution_id,
+                usage.provider_id, usage.runtime_id, usage.provider_native_session_id,
+                usage.provider_native_turn_id) !=
+                (context.organization_id, context.workspace_id, context.project_id,
+                 session.id, assignment.id, assignment.execution_id,
+                 'openai', self.runtime_id, thread_id, turn_id)
+                or usage.terminal_outcome != 'succeeded'
+                or usage.runtime_duration_seconds is None
+                or usage.runtime_duration_seconds > context.max_duration_seconds
+                or any(m != self.binding.concrete_model for m in usage.observed_model_ids)
+                or usage.model_call_count != 1
+                or usage.input_tokens is None or usage.output_tokens is None
+                or usage.tool_call_count or usage.shell_command_count or usage.file_edit_count
+                or usage.git_operation_count or usage.subagent_count
+                or usage.input_tokens > context.max_input_tokens
+                or usage.output_tokens > context.max_output_tokens):
+            raise ValueError('Native inference terminal measured usage unavailable or outside budget')
+        return ModelProviderResult(text=text,
+            usage=ModelProviderUsage(input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens),
+            provider_request_id=f'{session.id}/{turn_id}', stop_reason='completed')
+
+    async def invoke(self, provider, model, request, *, actor, context):
+        cancelled = asyncio.Event()
+        owner = asyncio.create_task(self._invoke_owned(provider, model, request,
+            actor=actor, context=context, cancelled=cancelled), name='canonical-native-model-owner')
+        try:
+            return await asyncio.shield(owner)
+        except asyncio.CancelledError:
+            cancelled.set()
+            # Preparation may own an actual worker process before returning its
+            # thread DTO. Join it; its cancellation edge forbids the first input.
+            while not owner.done():
+                try:
+                    await asyncio.shield(owner)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                except Exception:
+                    break
+            if owner.done() and not owner.cancelled():
+                owner.exception()
+            raise
+
+    async def _invoke_owned(self, provider, model, request, *, actor, context, cancelled):
+        if not self.supports(provider, model, context):
+            raise ModelProviderAdapterError('Native reasoning binding unavailable')
+        await self._owned(context.validate_current)
+        b = self.binding
+        manager = serving = None
+        assignment = session = None
+        native_admitted = False
+        native_runtime = None
+        usage_ready = None
+        thread_id = None
+        terminal = asyncio.get_running_loop().create_future()
+        text_parts = []
+        byte_count = 0
+        loop = asyncio.get_running_loop()
+
+        def finish(value=None, error=None):
+            if not terminal.done():
+                terminal.set_exception(error) if error is not None else terminal.set_result(value)
+
+        def observe_on_loop(event):
+            nonlocal byte_count
+            if event.get('type') != 'codex.event' or terminal.done():
+                return
+            message = event.get('message') or {}
+            params = message.get('params') or {}
+            turn = params.get('turn') or {}
+            if (params.get('threadId') or turn.get('threadId')) != thread_id:
+                return
+            method = message.get('method')
+            if method == 'item/started':
+                item = params.get('item') or {}
+                if item.get('type') not in {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction'}:
+                    finish(error=ModelProviderOutcomeUnknownError(
+                        'Unexpected native operational item refused'))
+            elif method == 'item/agentMessage/delta':
+                delta = params.get('delta')
+                if not isinstance(delta, str):
+                    return
+                byte_count += len(delta.encode())
+                if byte_count > b.max_output_bytes:
+                    loop.call_soon_threadsafe(finish, None,
+                        ModelProviderOutcomeUnknownError('Native output observation limit exceeded'))
+                    return
+                text_parts.append(delta)
+            elif method == 'thread/tokenUsage/updated':
+                from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
+                measured = AgentRuntimeTelemetryService._usage_fields(message)
+                if ((measured['input_tokens'] or 0) > context.max_input_tokens
+                        or (measured['output_tokens'] or 0) > context.max_output_tokens):
+                    loop.call_soon_threadsafe(finish, None, ModelProviderOutcomeUnknownError(
+                        'Native observed token budget exceeded'))
+            elif method == 'turn/completed':
+                turn_id = params.get('turnId') or turn.get('id')
+                if turn.get('status') != 'completed' or turn.get('error'):
+                    loop.call_soon_threadsafe(finish, None,
+                        ModelProviderOutcomeUnknownError('Native inference did not complete successfully'))
+                elif isinstance(turn_id, str):
+                    loop.call_soon_threadsafe(finish, turn_id)
+
+        def observe(event):
+            loop.call_soon_threadsafe(observe_on_loop, event)
+
+        self.hub.subscribe_filtered(observe, event_types=('codex.event',))
+        try:
+            # Stable bootstrap correlation is provenance, never permission to
+            # retry an unknown invocation. Executive owns the single reservation.
+            bootstrap = uuid.uuid5(uuid.NAMESPACE_URL, context.execution_id).hex
+            response = await self.threads.create(project_id=context.project_id,
+                sandbox='read-only', approval_policy='never', model=b.concrete_model,
+                provider_id='openai', runtime_id=self.runtime_id,
+                execution_profile_id=b.execution_profile_id,
+                agent_profile_id=b.agent_profile_id, agent_profile_revision=b.agent_profile_revision,
+                actor=actor, bootstrap_token=bootstrap, admission_guard=context.validate_current)
+            thread_id = response['thread']['id']
+            session = await self._owned(lambda: self.sessions.get(response['agentSessionId'],
+                organization_id=context.organization_id, workspace_id=context.workspace_id))
+            if (session.provider_id != 'openai' or session.runtime_id != self.runtime_id
+                    or session.provider_native_session_id != thread_id
+                    or session.project_id != context.project_id or session.resource_ids
+                    or session.worker_id != b.worker_id or session.model != b.concrete_model):
+                raise ValueError('Native reasoning canonical session binding changed')
+            manager, serving = self.execution._session_for_assignment(session.assignment_id)
+            native_runtime = serving.runtime
+            usage_ready = loop.create_future()
+            self._usage_waiters[session.id] = (loop, usage_ready)
+            assignment = await self._owned(serving.validate_current)
+            await self._owned(lambda: self.attest_session(serving, assignment, context, model))
+            # JSON keeps individual message boundaries as data. The system
+            # policy is separately installed by the restricted native runtime.
+            message = json.dumps([item.model_dump(mode='json') for item in request.messages],
+                                 ensure_ascii=False, separators=(',', ':'))
+            if cancelled.is_set():
+                raise asyncio.CancelledError
+            native_admitted = True  # Subsequent unknowns cannot be replayed.
+            started = await self.turns.start(thread_id, TurnCreate(message=message,
+                project_id=context.project_id, sandbox='read-only', approval_policy='never',
+                model=b.concrete_model, reasoning_effort=request.reasoning_effort,
+                execution_profile_id=b.execution_profile_id, agent_profile_id=b.agent_profile_id,
+                agent_profile_revision=b.agent_profile_revision, defer_start=True),
+                actor=actor, execution_id=context.execution_id,
+                admission_guard=context.validate_current, allow_assignment_renewal=False)
+            queued_id = started['queuedId']
+            turn_id = await self._wait_or_cancel(terminal, cancelled)
+            observed_turn = await self._wait_or_cancel(usage_ready, cancelled)
+            if observed_turn != turn_id or native_runtime.reasoning_refusal:
+                raise ValueError('Native usage or restricted request attribution changed')
+            completion = self.execution.thread_completion_tasks.get(thread_id)
+            if completion is not None:
+                await asyncio.shield(completion)
+            return await self._owned(lambda: self._result(context=context, actor=actor,
+                session=session, assignment=assignment, thread_id=thread_id,
+                turn_id=turn_id, queued_id=queued_id, text=''.join(text_parts)))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if native_admitted:
+                raise ModelProviderOutcomeUnknownError(
+                    'Native inference original retained; inspect canonical START/usage') from exc
+            raise ModelProviderAdapterError('Native reasoning preparation refused') from exc
+        finally:
+            self.hub.unsubscribe(observe)
+            if terminal.done() and not terminal.cancelled():
+                terminal.exception()  # Observe any simultaneous cancellation/terminal error.
+            if session is not None:
+                self._usage_waiters.pop(session.id, None)
+            stop = (context.process_owner.stop if context.process_owner is not None else None)
+            if stop is None and manager is not None and assignment is not None:
+                stop = lambda: manager.stop(assignment.id)
+            if stop is not None:
+                # Existing stop owns watchdog/process interruption and positive
+                # reap, including failures before thread/create returns a DTO.
+                cleanup = asyncio.create_task(stop())
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                cleanup.result()

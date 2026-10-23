@@ -83,6 +83,21 @@ class ExecutiveActivationStore:
             raise ExecutiveActivationNotFoundError(activation_id)
         return item
 
+    def get_scoped(self, activation_id: str, *, organization_id: str,
+                   workspace_id: str) -> ExecutiveActivation:
+        """Full selected canonical activation without reading unrelated history."""
+        payload = self.store.document_array_item_envelope(
+            self.namespace, 'activations', activation_id,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('activations', 'revisions'))
+        state = self._decode(payload)
+        matches = [item for item in state.activations if item.id == activation_id
+                   and item.organization_id == organization_id
+                   and item.workspace_id == workspace_id]
+        if len(matches) != 1:
+            raise ExecutiveActivationNotFoundError(activation_id)
+        return matches[0]
+
     def create(self, activation: ExecutiveActivation) -> ExecutiveActivation:
         def apply(raw: Any) -> dict[str, Any]:
             state = self._decode(raw)
