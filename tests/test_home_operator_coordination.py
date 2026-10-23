@@ -1,4 +1,5 @@
 import copy
+import asyncio
 import hashlib
 import unittest
 from types import SimpleNamespace as NS
@@ -8,7 +9,10 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from codex_web.models import HomeOperatorCoordinationDispatch, ProjectCoordinationDispatch, QueuedTurn
-from codex_web.services.home_operator_coordination import HomeOperatorCoordinationService
+from codex_web.action_providers import ActionProviderBinding, ActionRequest
+from codex_web.services.home_operator_coordination import (
+    HomeOperatorCoordinationService, HomeOperatorCoordinationActionProvider,
+)
 
 
 class HomeCoordinationTests(unittest.TestCase):
@@ -41,7 +45,7 @@ class HomeCoordinationTests(unittest.TestCase):
             execution_profile_id="repository-write", repository_resource_id="resource-data",
             writable_repository_resource_ids=("resource-data",), read_only_repository_resource_ids=("resource-core",),
             project_coordination_dispatch=self.proof)
-        self.intent = NS(id="intent", action_id="operator.project.thread.message", status="succeeded",
+        self.intent = NS(id="intent", binding_id="binding", action_id="operator.project.thread.message", status="succeeded",
             provider_type="home-operator-coordination", provider_instance="canonical", resource_ids=("resource-host",),
             requested_by="admin", execution_id="origin-execution", organization_id="local", workspace_id="default", project_id="home",
             request=NS(parameters={"assignment_id":"origin", "fence":2, "home_revision":4,
@@ -50,7 +54,10 @@ class HomeCoordinationTests(unittest.TestCase):
         self.broker = NS(execution_workers=NS(store=NS(assignment=self.assignments.get, worker=lambda key:self.worker)),
             execution_profiles=NS(agent_profiles=NS(resolve_for_execution=Mock(return_value=(self.profile,None)))),
             authority=NS(evaluate=Mock(return_value=NS(outcome="allow"))),
-            action_intents=NS(get=Mock(side_effect=lambda key, actor:self.intent)), _clock=lambda:100)
+            action_intents=NS(get=Mock(side_effect=lambda key, actor:self.intent),
+                execution=NS(registry=NS(binding=lambda key,actor:NS(enabled=True,credential_ref=None,
+                    provider_type="home-operator-coordination",provider_instance="canonical",organization_id="local",
+                    workspace_id="default",project_id="home",resource_ids=("resource-host",))))), _clock=lambda:100)
         self.source_guard = Mock(side_effect=lambda assignment, operation:(self.origin,self.actor,self.home,self.envelope))
         self.scope = NS(for_thread=Mock())
         self.service = HomeOperatorCoordinationService(broker=self.broker, origin_guard=self.source_guard,
@@ -112,3 +119,59 @@ class HomeCoordinationTests(unittest.TestCase):
         self.envelope.project_targets=(NS(project_id="data",child_profiles=(NS(profile_id="quinn",revision=6),)),)
         self.broker.authority.evaluate.return_value=NS(outcome="deny")
         with self.assertRaises(HTTPException):self.validate()
+
+
+class HomeCoordinationProviderTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        HomeCoordinationTests.setUp(self)
+        self.origin.assigned_worker_id = "worker-home"
+        self.provider = HomeOperatorCoordinationActionProvider(self.service)
+        self.provider_binding = ActionProviderBinding(id="binding", organization_id="local", workspace_id="default",
+            project_id="home", resource_ids=("resource-host",), provider_type="home-operator-coordination",
+            provider_instance="canonical", enabled=True)
+        self.broker.action_intents.execution.registry.binding = lambda key, actor:self.provider_binding
+        self.request = ActionRequest(action_id="operator.project.thread.message", organization_id="local", workspace_id="default",
+            project_id="home", resource_ids=("resource-host",), requested_by="admin", idempotency_key="one-original",
+            parameters={"assignment_id":"origin", "fence":2, "home_revision":4, "definition_record_id":"home-definition",
+                "target_assignment_id":"target", "target_fence":3, "project_id":"data", "thread_id":"quinn-thread", "message":self.message})
+        self.intent.request = self.request
+        self.intent.status = "executing"
+        self.intent.attempt = 1
+        self.intent.lease = NS(worker_id="control-plane-broker:worker-home",expires_at=150)
+        self.intent.execution_started_at = 95
+        self.intent.timeout_seconds = 120
+        self.broker.action_intents.store = NS(find_idempotent=lambda *args:self.intent)
+        self.effects = []
+
+    async def test_cancelled_original_during_turn_preparation_cannot_admit_input_or_renew_target(self):
+        async def start(thread, payload, **kwargs):
+            self.assertFalse(kwargs["allow_assignment_renewal"])
+            self.intent.status = "cancelled"
+            await asyncio.sleep(0)
+            kwargs["admission_guard"]()
+            self.effects.append(thread)
+            return {"queuedId":"queued"}
+        self.service.turns = NS(start=start)
+        with self.assertRaises(HTTPException):
+            await self.provider.execute(self.request,binding=self.provider_binding)
+        self.assertEqual(self.effects,[])
+
+    async def test_lost_response_after_one_queue_effect_cannot_replay_uncertain_action(self):
+        async def start(thread, payload, **kwargs):
+            self.assertFalse(kwargs["allow_assignment_renewal"])
+            await asyncio.sleep(0)
+            kwargs["admission_guard"]()
+            self.effects.append((thread,payload,kwargs))
+            raise TimeoutError("Queue response lost after original acceptance")
+        self.service.turns = NS(start=start)
+        with self.assertRaises(TimeoutError):
+            await self.provider.execute(self.request,binding=self.provider_binding)
+        self.intent.status = "uncertain"
+        with self.assertRaises(HTTPException):
+            await self.provider.execute(self.request,binding=self.provider_binding)
+        self.assertEqual(len(self.effects),1)
+        thread,payload,kwargs=self.effects[0]
+        self.assertEqual(thread,"quinn-thread")
+        self.assertEqual(kwargs["project_coordination_dispatch"].intent_id,"intent")
+        self.assertEqual(kwargs["execution_id"],"home-coordinate-input:intent")
+        self.assertEqual(payload.read_only_repository_resource_ids,("resource-core",))

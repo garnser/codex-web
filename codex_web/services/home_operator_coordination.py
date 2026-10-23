@@ -162,6 +162,13 @@ class HomeOperatorCoordinationService:
         if home.revision != proof.home_revision:
             denied("Selected Home conversation changed; retain the original input")
         intent = self.broker.action_intents.get(proof.intent_id, actor)
+        provider_binding = self.broker.action_intents.execution.registry.binding(intent.binding_id, actor)
+        if (not provider_binding.enabled or provider_binding.credential_ref is not None
+                or (provider_binding.provider_type, provider_binding.provider_instance) != (PROVIDER, "canonical")
+                or (provider_binding.organization_id, provider_binding.workspace_id,
+                    provider_binding.project_id, provider_binding.resource_ids) !=
+                   (actor.organization_id, actor.workspace_id, "home", (envelope.host_resource_id,))):
+            denied("The original Home coordination provider binding was disabled or changed")
         params = intent.request.parameters
         # UNCERTAIN never unlocks a possibly accepted queued input. Reconcile the
         # same intent first; neither a new key nor another native input is made.
@@ -252,6 +259,9 @@ class HomeOperatorCoordinationActionProvider:
     def context(self, request, binding):
         data = HomeProjectEffect.model_validate(request.parameters)
         current, actor, home, envelope = self.service.origin(data.assignment_id, data.fence, MESSAGE_ACTION)
+        latest = self.service.broker.action_intents.execution.registry.binding(binding.id, actor)
+        if latest != binding:
+            denied("Home coordination provider binding changed during the action")
         if (request.action_id != MESSAGE_ACTION or request.requested_by != actor.identity_id
                 or (request.organization_id, request.workspace_id, request.project_id, request.resource_ids) !=
                    (actor.organization_id, actor.workspace_id, "home", (envelope.host_resource_id,))
@@ -288,7 +298,18 @@ class HomeOperatorCoordinationActionProvider:
         scope = target.repository_scope
         if scope is None or not scope.writable_repository_ids or self.service.turns is None:
             denied("Canonical target repository scope or input service is unavailable")
-        guard = lambda: self.context(request, binding)
+        def guard():
+            context = self.context(request, binding)
+            original = self.service.broker.action_intents.get(intent.id, actor)
+            if (original.status != "executing" or original.request != request or original.attempt != 1
+                    or original.execution_id != current.execution_id or original.lease is None
+                    or original.lease.worker_id != f"control-plane-broker:{current.assigned_worker_id}"
+                    or original.lease.expires_at <= self.service.broker._clock()
+                    or original.execution_started_at is None
+                    or original.execution_started_at + original.timeout_seconds <= self.service.broker._clock()):
+                denied("Original Home action custody changed before input admission")
+            return context
+        guard()
         result = await self.service.turns.start(data.thread_id, TurnCreate(message=data.message,
             project_id=data.project_id, repository_resource_id=scope.writable_repository_ids[0],
             writable_repository_resource_ids=scope.writable_repository_ids,
@@ -296,7 +317,7 @@ class HomeOperatorCoordinationActionProvider:
             execution_profile_id=target.execution_profile_id, agent_profile_id=profile.profile_id,
             agent_profile_revision=profile.revision, defer_start=True), actor=actor,
             admission_guard=guard, source=SOURCE, project_coordination_dispatch=proof,
-            execution_id=f"home-coordinate-input:{intent.id}")
+            execution_id=f"home-coordinate-input:{intent.id}", allow_assignment_renewal=False)
         guard()
         queued_id = result.get("queuedId")
         if not queued_id:
