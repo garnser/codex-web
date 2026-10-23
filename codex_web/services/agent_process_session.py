@@ -597,7 +597,8 @@ class AssignmentBoundAgentProcessSession:
                         control_broker.mount_destination,
                     ),
                 )
-            process = self.local_worker.backend.spawn_interactive(
+            launch_backend = self.local_worker.backend
+            process = launch_backend.spawn_interactive(
                 assignment,
                 argv=command,
                 workspace_path=workspace_path,
@@ -612,6 +613,7 @@ class AssignmentBoundAgentProcessSession:
                 text=True,
                 bufsize=1,
             )
+            self._native_preparation_backend = launch_backend
             # The returned tuple contains no credential value. SecretBroker.use()
             # still performs its boundary escape check before returning it.
             return (
@@ -924,6 +926,34 @@ class AssignmentBoundAgentProcessSession:
             self._validate_resource_bounds(assignment)
         finally:
             self._supervision_timings["resource_seconds"] = round(time.monotonic() - resource_started, 6)
+        return assignment
+
+    def attest_native_provider_preparation(self, expected: ExecutionAssignment):
+        """Proof from the actual session owner; metadata alone cannot grant it."""
+        from codex_web.local_execution_backend import BubblewrapExecutionBackend
+        assignment = self.validate_current()
+        status = self.status()
+        broker = self.control_plane_broker
+        backend = self.local_worker.backend
+        if (assignment.id != expected.id or assignment.execution_id != expected.execution_id
+                or assignment.fence != expected.fence or assignment.assigned_worker_id != expected.assigned_worker_id
+                or assignment.execution_profile_definition != expected.execution_profile_definition
+                or assignment.resource_context != expected.resource_context
+                or assignment.network.enabled or not status.running or not status.ready
+                or type(backend) is not BubblewrapExecutionBackend
+                or getattr(self, "_native_preparation_backend", None) is not backend
+                or broker is None or broker._stopping or broker.server is None
+                or not broker.server.is_serving() or broker.snapshot.id != assignment.id
+                or broker.snapshot.execution_id != assignment.execution_id
+                or broker.worker_id != self.worker_id or broker.fence != assignment.fence):
+            raise AssignmentBoundAgentProcessSessionStaleError("native provider preparation is not attested")
+        current = broker._validate_current()
+        if current.fence != assignment.fence or current.id != assignment.id:
+            raise AssignmentBoundAgentProcessSessionStaleError("native broker assignment changed")
+        isolation = backend.probe()
+        if not isolation.ready or not isolation.supports_network_disabled or not isolation.supports_resource_limits:
+            raise AssignmentBoundAgentProcessSessionStaleError("native isolation is unavailable")
+        backend.validate_assignment(assignment)
         return assignment
 
     def _heartbeat_and_renew(self, assignment: ExecutionAssignment) -> ExecutionAssignment:

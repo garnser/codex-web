@@ -211,3 +211,41 @@ GitLab's ordinary flat ActionResult and provider receipt are not the typed
 must use a registered adapter that satisfies that contract before publishing an
 enforced operational procedure. Existing procedure trace and Executive management
 UI continue to inspect the same canonical records.
+
+### Attested native preparation for provider procedures
+
+A selected required procedure ordinarily refuses native tools whose future
+operation is unknown. A narrow exception permits isolated **preparation** for
+procedures whose privileged operations all resolve to registered canonical
+ActionProviders. This exception is installed only by the existing native turn
+owner and interpreter; it is not a serialized request/Definition flag.
+
+The first discovery must have selected exact procedure revisions and have only
+the existing unsupported-tool-enforcement blocker. Missing environment, failed
+reads, inaccessible/stale Skills, conflicting selection or missing capabilities
+remain refusals. The actual assignment-bound process session must freshly prove
+its current worker/fence/delegation, ready owned process, current workspace lease,
+OS-enforced network-disabled Bubblewrap backend and serving broker bound to the
+same assignment. A configured broker URL, stored digest, generic AgentSession or
+trusted-host backend is insufficient. Existing profile policy must additionally
+exclude network and host mutation. Worker/local procedure steps remain unsupported
+by this preparation path, including recovery steps without a canonical provider.
+
+The interpreter resolves every selected action's exact registered provider,
+instance, contract, enabled binding and target envelope without credentials or
+provider transport. The canonical ActionIntent pre-dispatch hook must actually
+be installed. A process-local live validation scope permits one second discovery
+only for the exact same selected revisions; its bounded provenance participates
+in the discovery fingerprint. Changed subsets or facts fail closed. The existing
+guarded native resume/start boundary revalidates that same fingerprint, session
+and broker immediately before input. Unsupported unguarded transports refuse.
+No alternate controller, polling loop, store or remote-write path is introduced.
+
+Preparation does not create a checkpoint, approve a step or execute a provider.
+Direct provider mutation without an ActionIntent remains denied. An ordinary
+ActionIntent matching a required procedure still cannot execute without the
+exact current durable interpreter step, request, approvals and receipts. Local
+repository edits cannot publish remotely through the isolated network envelope;
+remote operations retain canonical broker/ActionIntent checks. Existing trace UI
+shows the selected revisions and `canonical:native-provider-preparation` source;
+the source string itself confers no authority.
