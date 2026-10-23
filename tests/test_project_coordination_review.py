@@ -93,8 +93,9 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
         # a competing ordinary request, explicit owned cleanup, and final reply.
         # Use an explicit bounded 8s total lifetime only for this held request,
         # rather than one ordinary reply budget for the entire scenario.
-        # Other clients keep the shared 2s default; no production
-        # timeout or fixture-wide limit changes. wait_for_pending_phase still
+        # Other coordination clients use the same explicit integration bound;
+        # the generic broker default and production budgets stay unchanged.
+        # wait_for_pending_phase still
         # detects early producer completion and bounds admission independently.
         holder = SimpleNamespace(broker=self.broker, broker_response_timeout=8)
         path = '/api/project-coordination/threads?project_id=home&repository_resource_id=' + self.f.repository.id
