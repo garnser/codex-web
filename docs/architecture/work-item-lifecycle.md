@@ -452,6 +452,10 @@ For a pending structured handoff, routing first reuses one compatible LIVE
 recipient. When none exists specifically because the original native scope is
 incompatible, the existing Thread service may prepare one new context under the
 original current Profile, actor and exact Work Item repository scope. Its
+requested scope is compared separately from the current bootstrap: original and
+current custody agreeing on repository A does not make them compatible with a
+handoff requesting repository B. Absent native custody or an unavailable
+same-scope LIVE lane does not itself authorize fresh-context preparation. Its
 bootstrap token is deterministic for the original binding, Work Item and
 handoff nonce. The existing canonical bootstrap assignment reserves the attempt;
 if that assignment exists without a positive binding, subsequent observations

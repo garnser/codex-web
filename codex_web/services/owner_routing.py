@@ -376,8 +376,21 @@ class OwnerRoutingService:
                 continue
             matches.append(witness)
         if len(matches) != 1:
+            request_incompatible = not native_compatible
+            if (not matches and native_compatible and scope is not None
+                    and (set(scope.writable_repository_ids) != requested
+                         or scope.read_only_repository_ids)
+                    and self.sessions is not None):
+                # Original native custody can agree with the old bootstrap
+                # while both differ from this Work Item's requested scope.
+                # Only positive native custody makes this a fresh-context
+                # case; absent custody keeps ordinary admission/recovery.
+                try:
+                    request_incompatible = self.sessions.native_custody(binding.thread_id) is not None
+                except (LookupError, ValueError, RuntimeError) as exc:
+                    raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
             raise OwnerRoutingError('owner_recipient_ambiguous' if matches else
-                'owner_recipient_native_scope_incompatible' if not native_compatible else
+                'owner_recipient_native_scope_incompatible' if request_incompatible else
                 'owner_recipient_compatible_lane_unavailable')
         intent = routing.binding(configured_owner) or OwnerRoutingBinding(schema_version='1.1',
             organization_id=state.organization_id, workspace_id=state.workspace_id,
