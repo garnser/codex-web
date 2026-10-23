@@ -4908,10 +4908,13 @@ home_restart_recovery_service = HomeRestartRecoveryService(
 turn_execution_service.home_restart_recovery = home_restart_recovery_service
 app.state.home_restart_recovery_service = home_restart_recovery_service
 from codex_web.services.home_upgrade_checkpoint import HomeUpgradeCheckpointService
+def _home_installed_revision():
+    value = os.environ.get("CODEX_WEB_GIT_REVISION", "").strip()
+    return value if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) else None
 home_upgrade_checkpoint_service = HomeUpgradeCheckpointService(
     restart_recovery=home_restart_recovery_service, upgrades=upgrade_service,
     artifacts=artifact_evidence_service,
-    source_revision=lambda: os.environ.get("CODEX_WEB_GIT_REVISION", "").strip() or None)
+    source_revision=_home_installed_revision)
 home_restart_recovery_service.planned_restart = home_upgrade_checkpoint_service
 upgrade_service.home_checkpoint_before_drain = lambda plan_id, actor: home_upgrade_checkpoint_service.checkpoint_current(
     plan_id, worker_runtime=local_execution_worker_runtime, operator_actor=actor)

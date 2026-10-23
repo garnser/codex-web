@@ -36,7 +36,6 @@ class HomeRestartRecoveryService:
         self.intents, self.preflight = intents, preflight
         self.planned_restart = None
         self.event_followup = None
-        self.planned_restart = None
 
     def refused(self, reason):
         from codex_web.runtime.execution import ExecutionPrestartRefusal
