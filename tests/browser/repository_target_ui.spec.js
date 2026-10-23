@@ -1,5 +1,7 @@
 const { test, expect } = require("@playwright/test");
 
+const {executionDefinition,contextualReadiness}=require('./execution_readiness_fixture');
+
 async function mirrorProductionStaticMount(page) {
   await page.route("**/static/static/**", async (route) => {
     const url = new URL(route.request().url());
@@ -54,6 +56,7 @@ test("explicit repository policy requires a target and submits canonical resourc
         contentType: "application/json",
         body: JSON.stringify({
           project_id: "home",
+          ...contextualReadiness(request),
           semantic_ready: true,
           execution_ready: true,
           status: "ready",
@@ -76,6 +79,7 @@ test("explicit repository policy requires a target and submits canonical resourc
         body: JSON.stringify({
           project,
           executionProfiles: {
+            definition: executionDefinition('home'),
             items: [{
               id: "repository-write",
               name: "Repository write",
@@ -177,6 +181,7 @@ test("thread-bound repository stays visible and can be changed from thread setti
         contentType: "application/json",
         body: JSON.stringify({
           project_id: "home",
+          ...contextualReadiness(request),
           semantic_ready: true,
           execution_ready: true,
           status: "ready",
@@ -199,6 +204,7 @@ test("thread-bound repository stays visible and can be changed from thread setti
         body: JSON.stringify({
           project,
           executionProfiles: {
+            definition: executionDefinition('home'),
             items: [{ id: "repository-write", name: "Repository write",
               repositoryAccess: "mutable", workspaceMode: "repository",
               requiredWorkerCapabilities: ["git", "command_execution"] }],
@@ -312,6 +318,7 @@ test("Project coordinated policy submits all repositories without per-turn selec
         contentType: "application/json",
         body: JSON.stringify({
           project_id: "home",
+          ...contextualReadiness(request),
           semantic_ready: true,
           execution_ready: true,
           status: "ready",
@@ -333,6 +340,7 @@ test("Project coordinated policy submits all repositories without per-turn selec
         body: JSON.stringify({
           project,
           executionProfiles: {
+            definition: executionDefinition('home'),
             items: [{
               id: "repository-write",
               name: "Repository write",
@@ -425,7 +433,7 @@ test("retryable steering failure preserves the queued message and reconciles can
       return;
     }
     if (path === "/api/projects/home/readiness") {
-      await route.fulfill({ json: { project_id: "home", semantic_ready: true, execution_ready: true, status: "ready", checks: [] } });
+      await route.fulfill({ json: { project_id: "home", ...contextualReadiness(request), semantic_ready: true, execution_ready: true, status: "ready", checks: [] } });
       return;
     }
     if (path === "/api/projects/home/ui-state") {
@@ -433,6 +441,7 @@ test("retryable steering failure preserves the queued message and reconciles can
         json: {
           project,
           executionProfiles: {
+            definition: executionDefinition('home'),
             items: [{ id: "repository-write", name: "Repository write",
               repositoryAccess: "mutable", workspaceMode: "repository",
               requiredWorkerCapabilities: ["git", "command_execution"] }],
@@ -528,12 +537,13 @@ test("sidebar channel actions remain usable alongside relocated thread settings"
     const path = new URL(request.url()).pathname;
     if (path === "/api/projects") return route.fulfill({ json: [project] });
     if (path === "/api/projects/home/readiness") {
-      return route.fulfill({ json: { project_id: project.id, semantic_ready: true, execution_ready: true, status: "ready", checks: [] } });
+      return route.fulfill({ json: { project_id: project.id, ...contextualReadiness(request), semantic_ready: true, execution_ready: true, status: "ready", checks: [] } });
     }
     if (path === "/api/projects/home/ui-state") {
       return route.fulfill({ json: {
         project,
         executionProfiles: {
+            definition: executionDefinition('home'),
             items: [{ id: "repository-write", name: "Repository write",
               repositoryAccess: "mutable", workspaceMode: "repository",
               requiredWorkerCapabilities: ["git", "command_execution"] }],
