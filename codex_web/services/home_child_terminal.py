@@ -78,7 +78,8 @@ class HomeChildTerminalService:
         key = f'{attempt.id}:{receipt.provider_native_session_id}:{receipt.provider_native_turn_id}'
         existing = self.events.bus.store.event(self.events._event_id(SOURCE, key))
         if existing is not None:
-            return None  # Immutable first observation; canonical outbox owns delivery/restart.
+            return None  # Immutable observation; no subscription replay. Only a
+            # configured durable transport owns delivery retries.
         usage = None
         if self.sessions is not None and self.usage is not None:
             session = self.sessions.find_by_native_id(active.thread_id, organization_id=attempt.organization_id,

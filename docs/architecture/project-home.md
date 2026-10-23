@@ -558,9 +558,14 @@ The native telemetry outcome and the owned completion/checkpoint boolean
 (`completion_succeeded`) are distinct fields; the latter is true only when
 both the original terminal path and checkpoint succeeded.
 
-Publication uses the original canonical event identity/outbox and is idempotent
-for the same admission and native turn across duplicate terminal observations
-or process reopen. It never sends another child input or replays its provider
+Publication uses the original canonical event identity and is idempotent for
+the same admission and native turn across duplicate terminal observations or
+process reopen. A configured durable transport owns its existing outbox delivery
+retries after commit. With local-only transport, a subscriber failure after
+event commit has no automatic subscription replay; dedupe does not establish
+delivery recovery. Abrupt process death before event commit is also outside
+this observer's recovery guarantee. No unconditional crash-delivery guarantee
+is introduced. It never sends another child input or replays its provider
 action. Missing or inconsistent positive START/proof/intent attribution refuses
 publication. The original parent action may still be `executing` because its
 queue provider has not returned yet, or `succeeded`; the observed
