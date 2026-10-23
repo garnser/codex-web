@@ -174,7 +174,7 @@ The selected administrator, Home selection revision, current Profile/Definition,
 Role capability, host Environment, binding/security policy, action attempt,
 worker/token, assignment fence and scratch lease are checked before execution
 and during execution. Commands accept bounded argv with an absolute executable;
-there is no inherited environment, automatic root/sudo or credential injection.
+the engine uses its minimal environment, without automatic root/sudo or credential injection.
 Host filesystem, process and network access deliberately use the configured OS
 principal's existing permissions. The canonical security policy must explicitly
 allow host read/write roots, process/shell execution and network access. The
@@ -193,14 +193,10 @@ again to resolve uncertainty.
 Output is bounded, encrypted with the existing canonical Artifact-purpose key,
 and stored through Artifact content and DataGovernance as SECRET with
 `deny_model_context=true`. Receipts contain only process metadata, command digest
-and the artifact reference. An authorized human can use the canonical Artifact
-and Crypto operations to inspect/decrypt it. This first engine slice does not
-expose raw output to the native model: a usable model-readable source/test/log
-path still requires an explicit current-Admin governed output selection/review
-adapter with fresh custody and provenance checks. Never relabel arbitrary stdout
-as safe. The engine and its tests therefore do not by themselves close #1669;
-Root's broker/startup/UI integration, explicit activation and governed output
-access remain part of that issue's delivery.
+and the artifact reference. Model-readable excerpts require the current
+administrator's explicit output-release policy or human review through the
+Home output surface. Every excerpt retains encrypted source provenance and
+fresh custody/governance checks; arbitrary command output cannot classify itself.
 
 ### Trusted host command deployment
 
@@ -221,6 +217,7 @@ intent has one execution attempt; an uncertain command is retained for inspectio
 never automatically replayed. Its claim covers the configured process duration
 and receipt recording. Encrypted governed Artifact references appear in receipts;
 process completion alone does not verify a deployment or other requested effect.
+
 ## Explicit event follow-up in the saved conversation
 
 Automation Definition schema `1.1` adds the opt-in `home_operator` target over the
@@ -303,8 +300,8 @@ A duplicate callback cannot overwrite the first terminal fact. Historical outcom
 recording grants no new input and does not change pause state or provider receipts.
 A missing or incompatible terminal witness remains unresolved for reconciliation.
 Browser disconnection does not own delivery or settlement: both use canonical
-persisted records. This implements the event-delivery engine, not the full #1669
-live UI/restart/lease-expiry qualification or privileged host mutation capability.
+persisted records. Event delivery does not itself confer privileged host mutation
+authority; each host action retains its independent current authorization.
 
 
 Home event runs use AutomationRun state schema **1.4**, with a migration from 1.3,
@@ -376,3 +373,22 @@ must dispose the component when Home selection changes. The model cannot choose
 its own classification, replace text, publish a policy or read the SECRET
 original. Broker/startup/UI wiring and deployment activation remain explicit
 integration steps; the standalone service does not enable privileged access.
+
+### Cross-project coordination from Home
+
+An explicit `project_targets` envelope pins each accessible Project and child
+Agent Profile revision. `GET /api/operator/projects/threads` accepts one declared
+`project_id` plus bounded pagination. `POST /api/operator/projects/thread/messages`
+accepts the target Project, existing thread, bounded message and admission key.
+Current membership, invocability, target authority, bootstrap ownership and full
+writable/read-only repository scope are rechecked independently of the Home grant.
+
+A canonical credential-free `home-operator-coordination` / `canonical` binding
+admits one original ActionIntent and one retained input through the existing
+TurnService queue. The queued dispatch pins the original Home and target custody
+and message digest; the native guarded writer rechecks it immediately before
+sending. Queue acceptance is neither native-start proof nor delegated completion.
+Revoked authority and uncertain delivery retain the original input for normal
+reconciliation rather than choosing another thread or creating a replacement key.
+`HomeOperatorCoordinationDispatch` schema `1.2` requires compatible queue readers;
+reconcile or drain retained dispatches before rolling back to an older reader.

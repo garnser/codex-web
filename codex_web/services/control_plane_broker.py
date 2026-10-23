@@ -101,7 +101,7 @@ from codex_web.services.project_coordination import (
 from codex_web.services.home_operator_host import HOST_INSPECTION
 from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
 from codex_web.services.home_host_output import OUTPUT_READ
-from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS
+from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS, HomeProjectMessage
 
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
@@ -561,6 +561,15 @@ class ControlPlaneBrokerService:
         }.get(item.id)
         if work_item_model is not None:
             result["request_body"] = work_item_model.model_json_schema()
+        if item.id == 'operator.project.thread.message':
+            result['request_body'] = HomeProjectMessage.model_json_schema()
+            result['query_parameters'] = {'allowed': False}
+            result['effect'] = 'One retained input in an existing explicitly declared project thread; queue acceptance does not verify native start or task completion'
+            result['response_loss'] = 'Inspect the original canonical intent and retained input; no replacement key or automatic replay'
+        if item.id == 'operator.project.threads.list':
+            result['required_query_parameters'] = ['project_id']
+            result['optional_query_parameters'] = ['limit', 'cursor']
+            result['scope'] = 'One explicitly declared project and pinned invokable Agent Profile revisions; current target authority remains required'
         if item.id == OUTPUT_READ:
             result['query_parameters'] = {'kind': ['source', 'released'],
                 'stream': ['stdout', 'stderr'], 'max_bytes': {'minimum': 1, 'maximum': 65536}}
@@ -745,17 +754,22 @@ class ControlPlaneBrokerService:
                 pass
         operations = [op for op in operations if op['id'] != HOST_INSPECTION.id or host_declared]
         home_coordination_ids = set()
+        home_envelope = None
         if host_declared and self.home_operator_coordination is not None:
             try:
                 profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
                     organization_id=assignment.organization_id, workspace_id=assignment.workspace_id, project_id='home')
                 if reference == assignment.execution_profile_definition and getattr(profile, 'home_operator', None):
                     home_coordination_ids = set(profile.control_plane_operations)
+                    home_envelope = profile.home_operator
             except (ValueError, LookupError):
                 pass
         operations = [op for op in operations if op['id'] not in {HOST_COMMAND.id, OUTPUT_READ} or op['id'] in home_coordination_ids]
         operations = [op for op in operations if not op['id'].startswith('operator.project.')
                       or op['id'] in home_coordination_ids]
+        if context is not None and home_envelope is not None:
+            context['home_operator_declaration'] = home_envelope.model_dump(mode='json')
+            context['home_operator_declaration']['effective_authority_requires_operation_checks'] = True
         if context is not None and assignment.project_id == 'home':
             context['host_inspection_declaration'] = {
                 'declared': host_declared,
