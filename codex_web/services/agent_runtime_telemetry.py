@@ -648,6 +648,11 @@ class AgentRuntimeTelemetryService:
         record_id = self._record_id(session, event.provider_native_turn_id)
         existing = self.store.get(record_id)
         if existing is not None and fingerprint in existing.event_fingerprints:
+            if existing.model_call_count is None:
+                # A genuine redelivery can settle old retained NULL without
+                # replaying observations or overwriting newer canonical fields.
+                return self.store.reconcile_observed_call_count(record_id,fingerprint,
+                    event_has_usage=any(value is not None for value in self._usage_fields(event.payload).values()))
             return existing
 
         now = self.clock()
@@ -792,6 +797,15 @@ class AgentRuntimeTelemetryService:
                 if value is not None:
                     update[key] = value
             record = existing.model_copy(update=update)
+
+        if (record.model_call_count is None and record.terminal_outcome != RuntimeTerminalOutcome.UNKNOWN
+                and (any(value is not None for value in usage.values())
+                    or any(getattr(record,key) is not None for key in (
+                        'input_tokens','output_tokens','total_tokens','cost_usd')))):
+            # Apply the same measured-terminal inference after an earlier START
+            # or usage event. Preserve actual counts; elapsed time synthesized
+            # below is not itself a provider usage measurement.
+            record = record.model_copy(update={'model_call_count': 1})
 
         if (
             record.runtime_duration_seconds is None

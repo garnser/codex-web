@@ -175,3 +175,19 @@ finish without producing a response. This scheduling boundary prevents synchrono
 usage inspection from blocking ASGI and native RPC scheduling. It does not reduce
 the catalog's total validation, CPU or database work, and introduces no cache or
 storage migration.
+
+### Measured terminal call-count settlement
+
+The existing call-count inference applies equally to fresh terminal records and
+retained START/usage records: a known terminal outcome plus actual provider usage
+can fill an absent call count with one. The measurements and terminal may arrive
+in either order. Bare START, bare terminal and synthesized elapsed duration alone
+leave the call count unknown. Existing non-null counts and custody attribution
+are preserved.
+
+A genuine redelivery whose exact fingerprint is already retained can reconcile
+an old null count under the same rule. This is an atomic point update of only the
+missing counter, preserving newer measurements and the original fingerprint set;
+it does not replay the observation, rewrite past custody, or emit another input.
+There is no automatic historical scan/backfill. Existing Goal accounting continues
+to hold incomplete usage, and telemetry never supplies input authority.
