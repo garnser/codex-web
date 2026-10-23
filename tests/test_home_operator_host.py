@@ -504,3 +504,46 @@ class HomeOperatorHostTests(unittest.IsolatedAsyncioTestCase):
         history.record_procedure_discovery.assert_not_called()
         self.assertEqual(self.current().model_dump(), before)
         self.inspector.assert_not_called()
+
+    async def test_exact_canonical_home_event_run_reaches_existing_final_guard_and_rechecks_fence(self):
+        from tests.test_home_operator_followup import HomeFollowupTests
+        import hashlib
+        helper = HomeFollowupTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        helper.actor = self.actor
+        helper.followup.workers = self.f.workers
+        helper.followup.bootstrap_bindings = self.bindings
+        pin = self.assignment.agent_profile
+        binding = HomeOperatorBinding(thread_id='operator-thread', selected_by=self.actor.identity_id,
+            revision=2, updated_at=time.time(), agent_profile_id=pin.profile_id,
+            agent_profile_revision=pin.profile_revision)
+        self.projects.repository.update_home_operator(organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id, expected_revision=1, binding=binding)
+        helper.selected = {'status': 'configured', 'binding': binding.model_dump(),
+            'thread': {'id': 'operator-thread', 'execution_profile_id': self.assignment.execution_profile_id}}
+        helper.payload['owner_identity_id'] = self.actor.identity_id
+        helper.payload['target'].update(id=pin.profile_id, home_thread_id='operator-thread',
+            home_binding_revision=2, agent_profile_revision=pin.profile_revision)
+        helper.publish(publisher=self.actor.identity_id)
+        run = helper.admit().run
+        result = await helper.launch(run)
+        self.assertEqual(len(helper.calls), 1, result.model_dump(mode='json'))
+        _, payload, request = helper.calls[0]
+        host = self.service.home_operator_host
+        host.event_input_authorizer = helper.followup.authorize_input
+        self.assertTrue(host.authorize_native_input(assignment=self.assignment, actor=self.actor,
+            project=self.f.project, source='queued:'+request['source']))
+        kwargs = dict(project=self.f.project, actor=self.actor, execution_id=self.assignment.execution_id,
+            assignment_id=self.assignment.id, source='queued:'+request['source'],
+            request_checksum=hashlib.sha256(payload.message.encode()).hexdigest(),
+            input_execution_id=request['execution_id'])
+        guard = host.prepare_native_input_guard(**kwargs)
+        guard()
+        with self.assertRaises(ExecutionPrestartRefusal):
+            host.prepare_native_input_guard(**(kwargs | {'request_checksum': hashlib.sha256(b'changed').hexdigest()}))
+        with self.assertRaises(ExecutionPrestartRefusal):
+            host.prepare_native_input_guard(**(kwargs | {'input_execution_id': None}))
+        self.mutate_assignment(fence=self.assignment.fence + 1)
+        with self.assertRaises(ExecutionPrestartRefusal):
+            guard()

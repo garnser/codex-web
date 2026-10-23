@@ -70,6 +70,7 @@ class AutomationExecutionService:
         self.action_intents = action_intents
         self.action_providers = action_providers
         self.approvals = approvals
+        self.home_operator_followup = None
 
     def _run(self, run_id: str, *, organization_id: str, workspace_id: str) -> AutomationRun:
         return self.runs.store.get(
@@ -577,12 +578,11 @@ class AutomationExecutionService:
                     "Automation execution requires an explicit canonical project id"
                 )
             context = self._trigger_context(run)
-            selected_work_item_ref = self._resolve_work_item_ref(
-                run,
-                policy=automation.work_item_policy,
-                explicit_ref=work_item_ref,
-                event_ref=self._event_work_item_ref(context),
-            )
+            selected_work_item_ref = None
+            if automation.target.kind != AutomationTargetKind.HOME_OPERATOR:
+                selected_work_item_ref = self._resolve_work_item_ref(
+                    run, policy=automation.work_item_policy, explicit_ref=work_item_ref,
+                    event_ref=self._event_work_item_ref(context))
             if automation.approval_required:
                 if run.approval_request_id is None:
                     return await self._wait_for_approval(
@@ -614,6 +614,11 @@ class AutomationExecutionService:
                     context=context,
                 )
             message = self._message(automation.instructions, context)
+
+            if automation.target.kind == AutomationTargetKind.HOME_OPERATOR:
+                if self.home_operator_followup is None:
+                    raise AutomationExecutionError("Home operator follow-up is unavailable")
+                return await self.home_operator_followup.launch(run, message)
 
             if automation.target.kind == AutomationTargetKind.AGENT_PROFILE:
                 profile, _decision = (
@@ -724,6 +729,12 @@ class AutomationExecutionService:
                 f"unsupported Automation target kind: {automation.target.kind}"
             )
         except Exception as exc:
+            current = self._run(run.id, organization_id=run.organization_id, workspace_id=run.workspace_id)
+            if (run.target_kind == AutomationTargetKind.HOME_OPERATOR
+                    and current.status == AutomationRunStatus.RUNNING):
+                # The durable Home delivery claim precedes external queue effects.
+                # A lost response is not proof that nothing was delivered.
+                return current
             if isinstance(exc, AutomationExecutionError):
                 reason = str(exc)
             else:

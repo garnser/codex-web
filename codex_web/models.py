@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator,
 from codex_web.resource_context import ReadOnlyResourceIds, ReadOnlyResourceContext
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
 from codex_web.notification_provenance import ProviderNotificationPin
+from codex_web.home_restart import HomeRestartInputProof, HomeUpgradeInputProof
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
@@ -873,6 +874,23 @@ class ActiveThreadTurn(BaseModel):
         return result
 
 
+class HomeOperatorCoordinationDispatch(BaseModel):
+    """One retained Home action, never a transferable human-origin assertion.
+
+    Older queue readers reject this version instead of admitting an input whose
+    originating Home authority they cannot revalidate.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.2"] = "1.2"
+    intent_id: str = Field(min_length=1, max_length=200)
+    assignment_id: str = Field(min_length=1, max_length=200)
+    fence: int = Field(ge=1)
+    home_revision: int = Field(ge=1)
+    target_assignment_id: str = Field(min_length=1, max_length=200)
+    target_fence: int = Field(ge=1)
+    message_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ProjectCoordinationDispatch(BaseModel):
     """Server-produced references, revalidated at admission; never human origin."""
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -928,8 +946,14 @@ class QueuedTurn(BaseModel):
 
     memory_context_binding: UxBriefTurnBinding | None = None
     provider_notification_pin: ProviderNotificationPin | None = None
-    project_coordination_dispatch: ProjectCoordinationDispatch | None = None
+    project_coordination_dispatch: ProjectCoordinationDispatch | HomeOperatorCoordinationDispatch | HomeRestartInputProof | HomeUpgradeInputProof | None = None
     owner_routing_pin: OwnerRoutingPin | None = None
+
+    @property
+    def home_restart_input(self):
+        """Typed retained proof; never a silently ignored extra queue field."""
+        value = self.project_coordination_dispatch
+        return value if isinstance(value, (HomeRestartInputProof, HomeUpgradeInputProof)) else None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):

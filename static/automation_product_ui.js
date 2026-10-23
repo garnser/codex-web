@@ -174,13 +174,20 @@ function editorMarkup(item) {
         </label>
         <label>Target
           <select name="target_kind">
-            <option value="agent_profile" ${target.kind !== "team" ? "selected" : ""}>Agent Profile</option>
+            <option value="agent_profile" ${target.kind === "agent_profile" ? "selected" : ""}>Agent Profile</option>
             <option value="team" ${target.kind === "team" ? "selected" : ""}>Team</option>
+            <option value="home_operator" ${target.kind === "home_operator" ? "selected" : ""}>Saved Home operator (event follow-up)</option>
           </select>
         </label>
         <label>Target ID
           <input name="target_id" value="${esc(target.id || "")}" required />
         </label>
+        <fieldset><legend>Home operator event target pins</legend>
+          <p>For a Home target, Target ID is the explicitly selected Agent Profile. Publish as the same current administrator who selected the conversation. Selection/profile changes revoke delivery. Only event triggers, one attempt/concurrency, reuse-only work and finite budgets are supported; uncertain delivery is never replayed.</p>
+          <label>Home conversation ID<input name="home_thread_id" value="${esc(target.home_thread_id || '')}" /></label>
+          <label>Home selection revision<input name="home_binding_revision" type="number" min="1" value="${esc(numberValue(target.home_binding_revision))}" /></label>
+          <label>Home Agent Profile revision<input name="agent_profile_revision" type="number" min="1" value="${esc(numberValue(target.agent_profile_revision))}" /></label>
+        </fieldset>
         <label>Owner identity
           <input name="owner_identity_id" value="${esc(definition.owner_identity_id || "")}" />
         </label>
@@ -252,6 +259,11 @@ function definitionFromEditor(form, existing) {
     target: {
       kind: form.elements.target_kind.value,
       id: form.elements.target_id.value.trim(),
+      ...(form.elements.target_kind.value === "home_operator" ? {
+        home_thread_id: form.elements.home_thread_id.value.trim(),
+        home_binding_revision: nullableNumber(form, "home_binding_revision"),
+        agent_profile_revision: nullableNumber(form, "agent_profile_revision"),
+      } : {}),
     },
     instructions: form.elements.instructions.value.trim(),
     skill_refs: existing?.skill_refs || [],
@@ -308,13 +320,14 @@ function detailMarkup(item) {
           <dt>Definition</dt><dd>${esc(refLabel(item.definitionRef))}</dd>
           <dt>Owner</dt><dd>${esc(definition.owner_identity_id || "Not configured")}</dd>
           <dt>Execution profile</dt><dd>${esc(definition.execution_profile_ref?.definition_id || "Canonical default")}</dd>
+          ${target.kind === 'home_operator' ? `<dt>Home conversation</dt><dd>${esc(target.home_thread_id)} · selection ${esc(target.home_binding_revision)} · Agent Profile revision ${esc(target.agent_profile_revision)}</dd><dt>Delivery</dt><dd>Canonical events only. Run now cannot replay a Home event; unknown deliveries retain their original run for reconciliation.</dd>` : ''}
           <dt>Skills</dt><dd>${esc((definition.skill_refs || []).map((ref) => `${ref.definition_id}@${ref.revision}`).join(", ") || "None")}</dd>
           <dt>Token budget</dt><dd>${esc([budget.max_input_tokens, budget.max_output_tokens].filter((v) => v != null).join(" / ") || "Not bounded here")}</dd>
           <dt>Cost budget</dt><dd>${budget.max_cost_usd == null ? "Not bounded here" : `$${esc(budget.max_cost_usd)}`}</dd>
         </dl>
       </details>
        <div class="automation-actions">
-         <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" || state.runPendingId === item.id ? "disabled" : ""}>${state.runPendingId === item.id ? "Starting…" : "Run now"}</button>
+         <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" || target.kind === "home_operator" || state.runPendingId === item.id ? "disabled" : ""}>${state.runPendingId === item.id ? "Starting…" : "Run now"}</button>
         <button type="button" class="ghost-button" data-automation-edit>Edit</button>
         <button type="button" class="ghost-button" data-automation-refresh>Refresh</button>
        </div>

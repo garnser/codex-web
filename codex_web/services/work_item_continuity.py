@@ -1216,13 +1216,15 @@ class WorkItemContinuityService:
 
 
 def build_work_item_continuity_compatibility_service(
-    host: Any,
+    host: Any, *, owner_routing=None,
 ) -> WorkItemContinuityService:
     """Build a dynamic adapter for historical direct-call entrypoints.
 
     Every collaborator resolves through the host at call time so supported
     tests/integrations can patch one historical seam. Canonical application
-    paths use the explicitly composed WorkItemContinuityService instead.
+    paths use the explicitly composed WorkItemContinuityService instead. The
+    production historical surface receives that same canonical owner router;
+    only standalone legacy hosts may omit it.
     """
 
     policy = SimpleNamespace(
@@ -1260,7 +1262,7 @@ def build_work_item_continuity_compatibility_service(
             )
         ),
     )
-    return WorkItemContinuityService(
+    service = WorkItemContinuityService(
         policy=policy,
         get_state=lambda ref: host._work_item_state(ref),
         coerce_owner=lambda owner: host._coerce_owner(owner),
@@ -1296,5 +1298,7 @@ def build_work_item_continuity_compatibility_service(
             key
         ),
         coordination_channel=host.HANDOFF_COORDINATION_CHANNEL,
-        revalidate_after_thread_replacement=False,
+        revalidate_after_thread_replacement=owner_routing is not None,
     )
+    service.owner_routing = owner_routing
+    return service

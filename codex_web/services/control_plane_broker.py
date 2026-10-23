@@ -99,6 +99,9 @@ from codex_web.services.project_coordination import (
 )
 
 from codex_web.services.home_operator_host import HOST_INSPECTION
+from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
+from codex_web.services.home_host_output import OUTPUT_READ
+from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS, HomeProjectMessage
 
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
@@ -142,8 +145,15 @@ class _ResolvedOperation:
     query: dict[str, list[str]]
 
 
+HOST_OUTPUT_READ = ControlPlaneBrokerOperation(id=OUTPUT_READ, method='GET',
+    path_template='/api/operator/host/outputs/{artifact_id}', capability=OUTPUT_READ,
+    authority_level=AuthorityLevel.READ)
+
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     HOST_INSPECTION,
+    HOST_COMMAND,
+    HOST_OUTPUT_READ,
+    *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
@@ -527,7 +537,9 @@ class ControlPlaneBrokerService:
         self._local_installers = {}
         self.procedure_admission = None
         self.project_coordination = None
+        self.home_host_outputs = None
         self.home_operator_host = None
+        self.home_operator_coordination = None
 
     @staticmethod
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
@@ -549,6 +561,24 @@ class ControlPlaneBrokerService:
         }.get(item.id)
         if work_item_model is not None:
             result["request_body"] = work_item_model.model_json_schema()
+        if item.id == 'operator.project.thread.message':
+            result['request_body'] = HomeProjectMessage.model_json_schema()
+            result['query_parameters'] = {'allowed': False}
+            result['effect'] = 'One retained input in an existing explicitly declared project thread; queue acceptance does not verify native start or task completion'
+            result['response_loss'] = 'Inspect the original canonical intent and retained input; no replacement key or automatic replay'
+        if item.id == 'operator.project.threads.list':
+            result['required_query_parameters'] = ['project_id']
+            result['optional_query_parameters'] = ['limit', 'cursor']
+            result['scope'] = 'One explicitly declared project and pinned invokable Agent Profile revisions; current target authority remains required'
+        if item.id == OUTPUT_READ:
+            result['query_parameters'] = {'kind': ['source', 'released'],
+                'stream': ['stdout', 'stderr'], 'max_bytes': {'minimum': 1, 'maximum': 65536}}
+            result['effect'] = 'Read a bounded excerpt only under current explicit output policy or prior human review; no classification override'
+        if item.id == HOST_COMMAND.id:
+            result['request_body'] = HostCommandAdmission.model_json_schema()
+            result['query_parameters'] = {'allowed': False}
+            result['effect'] = 'One bounded privileged host process under the configured OS identity; process completion does not verify requested effects'
+            result['response_loss'] = 'Inspect original intent and artifact; never replace the key or replay an uncertain command'
         if item.id == HOST_INSPECTION.id:
             result['scope'] = 'Explicitly selected Home operator; current Home-scoped profile declaration and administrator authority required'
             result['request_body'] = {'allowed': False}
@@ -723,6 +753,23 @@ class ControlPlaneBrokerService:
             except ControlPlaneBrokerDeniedError:
                 pass
         operations = [op for op in operations if op['id'] != HOST_INSPECTION.id or host_declared]
+        home_coordination_ids = set()
+        home_envelope = None
+        if host_declared and self.home_operator_coordination is not None:
+            try:
+                profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                    organization_id=assignment.organization_id, workspace_id=assignment.workspace_id, project_id='home')
+                if reference == assignment.execution_profile_definition and getattr(profile, 'home_operator', None):
+                    home_coordination_ids = set(profile.control_plane_operations)
+                    home_envelope = profile.home_operator
+            except (ValueError, LookupError):
+                pass
+        operations = [op for op in operations if op['id'] not in {HOST_COMMAND.id, OUTPUT_READ} or op['id'] in home_coordination_ids]
+        operations = [op for op in operations if not op['id'].startswith('operator.project.')
+                      or op['id'] in home_coordination_ids]
+        if context is not None and home_envelope is not None:
+            context['home_operator_declaration'] = home_envelope.model_dump(mode='json')
+            context['home_operator_declaration']['effective_authority_requires_operation_checks'] = True
         if context is not None and assignment.project_id == 'home':
             context['host_inspection_declaration'] = {
                 'declared': host_declared,
@@ -927,6 +974,12 @@ class ControlPlaneBrokerService:
             return _ResolvedOperation(operation=operation, target_ref=target,
                 query=parse_qs(parsed.query, keep_blank_values=True))
         query = parse_qs(parsed.query, keep_blank_values=False)
+        for operation in HOME_COORDINATION_OPERATIONS:
+            if path == operation.path_template:
+                if method != operation.method:
+                    raise ControlPlaneBrokerRequestError('Unsupported Home coordination method')
+                return _ResolvedOperation(operation=operation, target_ref=None,
+                    query=parse_qs(parsed.query, keep_blank_values=True))
         if path == COORDINATION_PREFIX or path.startswith(COORDINATION_PREFIX + "/"):
             operation, target_ref = resolve_operation(method, path)
             return _ResolvedOperation(operation=operation, target_ref=target_ref,
@@ -935,6 +988,16 @@ class ControlPlaneBrokerService:
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
                 query[key] = member_query[key]
+        if path.startswith('/api/operator/host/outputs/'):
+            artifact_id = path.removeprefix('/api/operator/host/outputs/')
+            if method != 'GET' or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', artifact_id):
+                raise ControlPlaneBrokerRequestError('Host output requires GET and one exact artifact reference')
+            return _ResolvedOperation(operation=HOST_OUTPUT_READ, target_ref=artifact_id,
+                query=parse_qs(parsed.query, keep_blank_values=True))
+        if path == HOST_COMMAND.path_template:
+            if method != HOST_COMMAND.method or parsed.query:
+                raise ControlPlaneBrokerRequestError('Host command requires POST without query parameters')
+            return _ResolvedOperation(operation=HOST_COMMAND, target_ref=None, query={})
         if path == HOST_INSPECTION.path_template:
             if method != HOST_INSPECTION.method or parsed.query:
                 raise ControlPlaneBrokerRequestError('Host inspection accepts only GET without query parameters')
@@ -1324,6 +1387,20 @@ class ControlPlaneBrokerService:
                 "repository operation requires exactly one eligible enabled provider binding"
             )
         return bindings[0]
+
+    def _read_home_output(self, assignment, artifact_id, worker_actor, *, kind, stream='stdout', maximum=4096):
+        from codex_web.services.data_governance import DataGovernanceError
+        from codex_web.services.crypto_keys import CryptoKeyError
+        from codex_web.services.artifact_evidence import ArtifactEvidenceError
+        from codex_web.services.definitions import DefinitionError
+        from codex_web.services.identity import AuthorizationError
+        try:
+            if kind == 'released':
+                return self.home_host_outputs.read(assignment, artifact_id, worker_actor=worker_actor)
+            return self.home_host_outputs.read_source(assignment, artifact_id,
+                worker_actor=worker_actor, stream=stream, max_bytes=maximum)
+        except (DataGovernanceError, CryptoKeyError, ArtifactEvidenceError, DefinitionError, AuthorizationError) as error:
+            raise ControlPlaneBrokerDeniedError('Current Home output is unavailable or remains protected; inspect the original command and output policy') from error
 
     async def _execute_repository_action(
         self,
@@ -1727,7 +1804,7 @@ class ControlPlaneBrokerService:
             if self.project_coordination is None:
                 raise ControlPlaneBrokerDeniedError("project coordination adapters unavailable")
             self.project_coordination.authorize(assignment, operation, self._requester_actor(assignment))
-        if operation.id == HOST_INSPECTION.id:
+        if operation.id.startswith('operator.host.') or operation.id.startswith('operator.project.'):
             if self.home_operator_host is None:
                 raise ControlPlaneBrokerDeniedError('Home operator inspection is unavailable')
             self.home_operator_host.authorize(assignment, actor)
@@ -1790,7 +1867,8 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("project.")
             or operation.id.startswith("verification.")
             or operation.id == "upgrade.approval.request"
-            or operation.id == HOST_INSPECTION.id
+            or operation.id.startswith('operator.host.')
+            or operation.id.startswith('operator.project.')
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
@@ -1965,7 +2043,46 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id == HOST_INSPECTION.id:
+        if operation.id == OUTPUT_READ:
+            if (body or self.home_host_outputs is None or set(resolved.query) - {'kind', 'stream', 'max_bytes'}
+                    or any(len(v) != 1 or not v[0] for v in resolved.query.values())):
+                raise ControlPlaneBrokerRequestError('Host output requires a bounded read without a request body')
+            kind = resolved.query.get('kind', ['source'])[0]
+            if kind == 'released':
+                if set(resolved.query) - {'kind'}:
+                    raise ControlPlaneBrokerRequestError('Released excerpts accept no range override')
+                result = await run_settled(lambda: self._read_home_output(
+                    assignment, resolved.target_ref, worker_actor, kind='released'))
+            elif kind == 'source':
+                stream = resolved.query.get('stream', ['stdout'])[0]
+                try:
+                    maximum = int(resolved.query.get('max_bytes', ['4096'])[0])
+                except ValueError as error:
+                    raise ControlPlaneBrokerRequestError('Invalid output byte bound') from error
+                if stream not in {'stdout', 'stderr'} or not 1 <= maximum <= 65536:
+                    raise ControlPlaneBrokerRequestError('Invalid output stream or byte bound')
+                result = await run_settled(lambda: self._read_home_output(
+                    assignment, resolved.target_ref, worker_actor, kind='source', stream=stream, maximum=maximum))
+            else:
+                raise ControlPlaneBrokerRequestError('Unknown output read kind')
+        elif operation.id == HOST_COMMAND.id:
+            result = await execute_host_command(self, assignment, worker_actor, payload)
+        elif operation.id.startswith('operator.project.'):
+            adapter = self.home_operator_coordination
+            if adapter is None:
+                raise ControlPlaneBrokerDeniedError('Home coordination is unavailable')
+            if operation.id == 'operator.project.threads.list':
+                if body or set(resolved.query) - {'project_id', 'limit', 'cursor'} or any(
+                        len(v) != 1 or not v[0] for v in resolved.query.values()) or 'project_id' not in resolved.query:
+                    raise ControlPlaneBrokerRequestError('Home inspection requires one explicit target Project and no body')
+                result = await run_settled(lambda: adapter.inspect(assignment_id=assignment.id,
+                    fence=assignment.fence, project_id=resolved.query['project_id'][0], query=resolved.query))
+            else:
+                if resolved.query:
+                    raise ControlPlaneBrokerRequestError('Home delegation accepts no query parameters')
+                result = await adapter.message(assignment_id=assignment.id, fence=assignment.fence,
+                    payload=payload, worker_actor=worker_actor)
+        elif operation.id == HOST_INSPECTION.id:
             if body:
                 raise ControlPlaneBrokerRequestError('Host inspection accepts no request body')
             result = await run_settled(lambda: self.home_operator_host.inspect(

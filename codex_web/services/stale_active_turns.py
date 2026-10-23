@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import threading
 import time
@@ -115,6 +117,7 @@ class ActiveTurnResolutionRequest(BaseModel):
 class ActiveTurnRecoveryStore:
     RECORD_NAMESPACE = "active_turn_recovery_records"
     META_NAMESPACE = "active_turn_recovery_meta"
+    HISTORY_NAMESPACE = "active_turn_recovery_history"
 
     def __init__(self, store: StateStore) -> None:
         self.store = store
@@ -141,6 +144,28 @@ class ActiveTurnRecoveryStore:
             if isinstance(raw, dict)
             else None
         )
+
+    def archive(self, record: ActiveTurnRecoveryRecord) -> str:
+        """Immutable canonical history, never another active-thread authority."""
+        raw = record.model_dump(mode='json')
+        digest = hashlib.sha256(json.dumps(raw,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        key = record.recovery_id + ':' + digest
+        def retain(current):
+            if current is not None and current != raw:
+                raise ValueError('Canonical recovery history changed')
+            return raw
+        self.store.record_update(self.HISTORY_NAMESPACE,key,retain,default=None)
+        return key
+
+    def archived(self, key: str) -> ActiveTurnRecoveryRecord | None:
+        raw = self.store.record_get(self.HISTORY_NAMESPACE,key)
+        if raw is None:
+            return None
+        record = ActiveTurnRecoveryRecord.model_validate(raw)
+        digest = hashlib.sha256(json.dumps(record.model_dump(mode='json'),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if key != record.recovery_id + ':' + digest:
+            raise ValueError('Canonical recovery history identity changed')
+        return record
 
     def put(self, record: ActiveTurnRecoveryRecord) -> None:
         with self._lock:

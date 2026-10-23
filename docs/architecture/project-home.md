@@ -148,3 +148,397 @@ observation and opens the existing Goal surface for supported controls. Inspecti
 does not claim an active runner, resume a binding, settle an unknown result, or
 create a continuation owner. There is no timer or model call. Native Goal controls
 remain subject to their separate capability and qualification contract.
+
+### Explicit trusted host action engine (schema 1.3)
+
+The optional project-scoped execution-profile schema `1.3` adds a
+`home_operator` envelope to `orchestration-only`. It names an existing host
+Environment resource, explicit trusted worker IDs, an explicit `true`
+`host_network_access` acknowledgment, bounded command duration/output, and an
+existing Artifact-purpose `host_output_key_id`. Optional `project_targets` pin
+specific Projects and child Agent Profile revisions; absent targets grant
+nothing. Legacy schema readers reject this envelope. No seed profile, worker,
+key, binding, Role or host backend is enabled by publication of this code.
+Deploy compatible readers before publishing 1.3; drain/reconcile Home inputs
+and unresolved host actions before removing or rolling back this support.
+
+`operator.host.command` is a critical canonical ActionIntent action. Its provider
+requires a separate explicitly enabled `TrustedHostActionBackend` on the
+existing local worker, the configured OS UID, and that worker's explicit
+`home-host-command/1.0` contract. The native Home assignment retains its isolated
+scratch/Bubblewrap/network-disabled contract and its original lease. A command
+uses the existing process execution engine as a nonterminal suboperation;
+its ActionIntent receipt owns the command outcome, never parent completion.
+
+The selected administrator, Home selection revision, current Profile/Definition,
+Role capability, host Environment, binding/security policy, action attempt,
+worker/token, assignment fence and scratch lease are checked before execution
+and during execution. Commands accept bounded argv with an absolute executable;
+the engine uses its minimal environment, without automatic root/sudo or credential injection.
+Host filesystem, process and network access deliberately use the configured OS
+principal's existing permissions. The canonical security policy must explicitly
+allow host read/write roots, process/shell execution and network access. The
+engine bounds duration, CPU/memory/process limits and retained output and reaps
+the owned process group. Workspace disk accounting is not a whole-host disk
+quota, and host network access is not egress-isolated.
+
+This action has one attempt and advertises neither idempotency nor functional
+effect verification. Exit zero is process completion, not proof that a service,
+deploy or arbitrary host mutation achieved its desired state. Lost custody or
+revocation after spawn retains possible effects as an unknown outcome; there
+is no automatic retry. Cancellation joins the owned operation before returning.
+Reconcile the original intent and artifacts rather than submitting its command
+again to resolve uncertainty.
+
+Output is bounded, encrypted with the existing canonical Artifact-purpose key,
+and stored through Artifact content and DataGovernance as SECRET with
+`deny_model_context=true`. Receipts contain only process metadata, command digest
+and the artifact reference. Model-readable excerpts require the current
+administrator's explicit output-release policy or human review through the
+Home output surface. Every excerpt retains encrypted source provenance and
+fresh custody/governance checks; arbitrary command output cannot classify itself.
+
+### Trusted host command deployment
+
+The native Home runner continues to use its isolated scratch workspace. Host
+suboperations require both deployment settings
+`CODEX_WEB_TRUSTED_HOME_HOST_ENABLED=true` and
+`CODEX_WEB_TRUSTED_HOME_HOST_UID=<service OS uid>`. A missing or mismatched UID
+refuses explicit enablement; the service does not manufacture OS privilege.
+Only this opt-in advertises `home-host-command/1.0` and grants its local worker
+Artifact output storage capability. Profiles, human administrator selection,
+current Role authority, canonical Environment, output key and the unique enabled
+`home-operator` / `trusted-host` provider binding remain separately required.
+
+`POST /api/operator/host/commands` accepts only `parameters.argv` and an
+`idempotency_key`. The broker derives identity, assignment, fence and Environment.
+Admission deduplication is separate from provider effect idempotency: one original
+intent has one execution attempt; an uncertain command is retained for inspection,
+never automatically replayed. Its claim covers the configured process duration
+and receipt recording. Encrypted governed Artifact references appear in receipts;
+process completion alone does not verify a deployment or other requested effect.
+
+## Explicit event follow-up in the saved conversation
+
+Automation Definition schema `1.1` adds the opt-in `home_operator` target over the
+existing canonical Automation engine. No subscription, profile, Role or worker is
+created or activated by installing the source. The existing Automations editor
+shows the target's native Home thread ID, Home selection revision and exact Agent
+Profile revision. Its ordinary run history retains the canonical event, immutable
+Definition reference, delivery result and original requested execution reference.
+Manual "Run now" is unavailable for this event-only target; normal human requests
+continue through the conversation composer.
+
+An administrator explicitly publishes an enabled Automation whose owner is the
+same current administrator who selected the profile-bound Home conversation.
+The target ID is that exact Agent Profile. The current authority catalog must
+allow `operator.event.followup` at EXECUTE in Home; publishing a task description
+or receiving a provider event does not grant that capability. Normal profile
+invocation rights and host operation checks remain separate. Credential-free
+identity resolution rechecks membership; it does not authenticate a new human
+request or manufacture MFA/session assurance. Policies requiring stronger current
+assurance still refuse. Generic service or bot input cannot borrow this grant.
+
+The Automation uses an existing canonical/provider event trigger with explicit
+filters, such as CI terminal status, delegated completion or failure. Project-
+scoped Home Definitions see only events in their scope; an explicitly published
+workspace Definition can select other Projects' events within that same workspace.
+Filters and instructions remain versioned Definition data, not another code-owned
+routing catalog. Administrators should filter meaningful terminal changes rather
+than intermediate status traffic. Canonical event ingress and AutomationRun
+idempotency deduplicate the same event. The existing autonomy controller applies
+pause, scoped/exclusive gates, cooldown and reasoning-cycle budgets; no idle model
+poll, scheduler or Goal continuation owner is added.
+
+The target requires one attempt, concurrency one, finite configured token/duration
+budgets and `reuse_only` work policy. Unlike repository Automations, this input
+needs no Work Item creation: its subject is the retained operator conversation.
+Only bounded identifier references are appended to the published instructions;
+raw event bodies, logs, transcripts and credentials are excluded. The new message
+contribution is conservatively bounded by its byte length against the configured
+input-token allocation. This is not a whole-transcript estimator. Settlement
+uses canonical runtime usage for the exact assignment, session and native turn,
+including actual input/output tokens and duration; missing usage remains pending,
+not zero. The current native request API exposes no provider-side hard output-token
+limit. An observed over-budget output is recorded as a failed Automation, rather
+than claimed to have been prevented by the deterministic controller wrapper.
+
+Before enqueueing, an atomic transition of the existing AutomationRun records its
+original delivery claim and requested execution ID. At most one Home delivery may
+remain unresolved in a workspace. Other genuine events stay in
+`waiting_for_capacity`, including events from the same Automation. They keep their
+original dedupe identity and are admitted in creation order after positive terminal
+settlement. Up to 128 active Home events are retained per workspace; overflow is an
+explicit recorded capacity refusal. Completion, real usage, startup/idle recovery
+and canonical cooldown wakeups advance deferred delivery without model polling.
+Unknown claimed deliveries are never requalified as no-effect.
+
+The existing TurnService enters a deferred turn
+in the **same** selected conversation without assignment replacement or renewal.
+Human queue policy remains authoritative. Current publication, owner membership,
+explicit capability, selection and Profile pins are rechecked at queue admission,
+after awaited input preparation and immediately before the guarded native send.
+That final guard additionally checks the original event message checksum and
+requested execution ID, along with the existing native bootstrap/worker/fence/
+lease checks. A changed pointer, disabled/superseded Definition, expired duration,
+revoked authority, pause or lost custody refuses rather than retargeting.
+
+A lost queue/native response or interrupted delivery leaves the original run and
+execution reference visible as unconfirmed. Restarting, seeing the same event or
+calling launch again cannot send another input. Missing receipts are not proof of
+no effect. Explicit custody recovery and reconciliation use the existing retained
+queue/runner mechanisms; this slice does not resurrect cancelled assignments,
+resume a native Goal or duplicate an uncertain external action.
+
+Retained threads keep their assignment alive after a turn, so assignment-terminal
+Automation reconciliation alone cannot settle these runs. The existing runtime
+checkpoint barrier joins the retained-turn outcome observer; synchronous storage
+work runs in a worker thread, without blocking the shared async loop. It reports
+the actual native terminal outcome to the Automation ledger, without creating another execution. It validates the original run/thread/
+Profile and current bootstrap/fence/lease; checkpoint failure remains failure.
+A duplicate callback cannot overwrite the first terminal fact. Historical outcome
+recording grants no new input and does not change pause state or provider receipts.
+A missing or incompatible terminal witness remains unresolved for reconciliation.
+Browser disconnection does not own delivery or settlement: both use canonical
+persisted records. Event delivery does not itself confer privileged host mutation
+authority; each host action retains its independent current authorization.
+
+
+Home event runs use AutomationRun state schema **1.4**, with a migration from 1.3,
+a durable waiting status, immutable positive terminal witness and one interrupt
+attempt marker. This is a canonical state compatibility change, including ordinary
+run-store writes; a rollback requires a reader supporting 1.4 or the documented
+state compatibility procedure. It must not be described as a migration-free install.
+
+Each original claimed run creates one canonical duration deadline. At expiry the
+engine may request the existing guarded `turn/interrupt` operation only for that
+run's exact active native turn and current original assignment/worker/fence/lease.
+A changed turn or custody refuses. The interrupt attempt is persisted before the
+request; a lost response is never resent. Interruption does not settle external
+mutations: original ActionIntent uncertainty and terminal/usage reconciliation
+remain authoritative. Canonical timers and native recovery keep pending state
+visible across restart; they do not revive cancelled custody or create idle turns.
+### Governed command output and reviewed derivatives
+
+Native source-output reads may omit a byte selection and request only a stream
+and `max_bytes` (default 4096, hard maximum 65536). The server chooses a UTF-8
+prefix bounded by the current exact command policy and Home envelope; the model
+does not supply a classification or release override. A policy-authorized empty
+stream returns explicit empty metadata without creating a derivative or claiming
+host-effect success. A nonempty stream whose first UTF-8 codepoint exceeds the
+requested limit is distinguished from an empty stream. Unconfigured commands
+remain denied even when their output is empty.
+
+Human preview revalidates its original source/receipt and current key/version
+after decrypting, so a revocation during the read suppresses plaintext. The
+release validator also parses the digest-bound original ciphertext envelope and
+checks its actual key version on every future context/read edge. Encrypting a
+derivative under a newer active version cannot bypass revocation of the original
+source version; validation does not decrypt the original plaintext again.
+The human-only no-store output list exposes at most twenty current-assignment
+Artifact/receipt references and process-result metadata, never argv or output.
+It reuses the existing intent catalog read and bounds matching history fanout;
+it does not introduce a bounded storage index. The Home operator panel mounts
+the explicit preview/review component after a human selects a listed reference,
+checks the current Home selection around each request and disposes the preview
+on rerender or abort. Human routes and native broker reads share the same
+canonical output service and current governance checks.
+
+
+Home's optional `output_release_policy` pins a published project/Home
+`home-host-output-release` Definition, schema `1.0`. It is an explicit output
+policy, not a host execution grant. Publication requires the current same human
+administrator and selected Home origin. The policy pins that administrator,
+tenant/workspace, Agent Profile revision, host Environment, trusted worker IDs,
+maximum excerpt bytes and INTERNAL or CONFIDENTIAL classification. Its bounded
+command rules match the entire argv and explicit process exit codes/streams;
+there are no wildcard/path/shell-safety inferences or implicit default rules.
+A known failing test process can expose its errors only when its configured exit
+code is included. Publishing this policy once permits routine configured work
+without a prompt for each output. Nothing auto-publishes or adds commands.
+
+`HomeHostOutputService.read_source` accepts an original Artifact and bounded
+selection through the current assignment-bound `operator.host.output.read`
+capability. It requires the original one-attempt host ActionIntent and canonical
+known process-completion receipt, exact command digest, current host key/context,
+content digest, source assignment/fence, Home selection revision and explicit
+current policy. Timeout, limit breach, truncation and uncertain execution cannot
+release output. Process exit does not become host-effect verification.
+
+The service creates an encrypted canonical Artifact derivative using normal
+source inheritance, initially SECRET/denied. The narrow canonical DataGovernance
+reviewed-release operation then records the immutable original Artifact,
+governance/source IDs, encrypted content digest, exact process receipt/intent,
+key context, selected byte range/digest, current Profile/Home revision and policy
+reference. Only this derivative is released; original source IDs are retained
+and the original remains SECRET/denied. Repeated identical release requests use
+canonical Artifact idempotency and do not repeat the host command. Downstream
+artifacts derived from a released excerpt default to denied model context;
+classification inheritance cannot remove the release's revocation guard.
+
+Every model read calls the canonical context filter and the current release
+validator before and after decrypting. Revoked/superseded policy, changed Home
+selection/Profile/Role/worker/lease, changed source/receipt/content/key, expired
+retention or missing validator denies the read. Previously supplied model
+context cannot be retroactively erased; revocation stops future reads.
+DataGovernance state `1.1` explicitly migrates legacy `1.0` metadata and causes
+old `1.0` filter engines to refuse the new state. Deploy the release-aware reader
+with the host engine before publishing output policy. Rollback needs the normal
+controlled compatible-state procedure; never downgrade released state by
+removing provenance or policy fields.
+
+Unconfigured commands remain denied. A separate human-only no-store preview and
+review API lets the current same Home administrator inspect an output, select an
+exact digest-checked UTF-8 byte range and explicitly release a derivative with a
+reason and classification. This API is not a model broker operation; service
+principals cannot approve their own output. `home_host_output_review.js` provides
+the protected-output review control, checks Home selection before/after requests
+and clears previews at the earlier of lease expiry or 60 seconds. Its host UI
+must dispose the component when Home selection changes. The model cannot choose
+its own classification, replace text, publish a policy or read the SECRET
+original. Broker/startup/UI wiring and deployment activation remain explicit
+integration steps; the standalone service does not enable privileged access.
+
+### Cross-project coordination from Home
+
+An explicit `project_targets` envelope pins each accessible Project and child
+Agent Profile revision. `GET /api/operator/projects/threads` accepts one declared
+`project_id` plus bounded pagination. `POST /api/operator/projects/thread/messages`
+accepts the target Project, existing thread, bounded message and admission key.
+Current membership, invocability, target authority, bootstrap ownership and full
+writable/read-only repository scope are rechecked independently of the Home grant.
+
+A canonical credential-free `home-operator-coordination` / `canonical` binding
+admits one original ActionIntent and one retained input through the existing
+TurnService queue. The queued dispatch pins the original Home and target custody
+and message digest; the native guarded writer rechecks it immediately before
+sending. Queue acceptance is neither native-start proof nor delegated completion.
+Revoked authority and uncertain delivery retain the original input for normal
+reconciliation rather than choosing another thread or creating a replacement key.
+`HomeOperatorCoordinationDispatch` schema `1.2` requires compatible queue readers;
+reconcile or drain retained dispatches before rolling back to an older reader.
+## Retained Home restart input
+
+Home startup continuation uses the existing `ActiveTurnRecoveryStore` record,
+retained Turn queue and QueuedPreflight claim. An interrupted human Home turn is
+retained once on the SAME conversation with its original actor, Profile, selection
+revision, assignment and message checksums. The old active marker is removed only
+after positive durable retention. A source string alone grants no authority: the
+common native input and final-send guards require the exact canonical recovery
+record, current queue attempt/claim and current Home/worker/lease authority.
+Ordinary Project startup recovery is unchanged.
+
+The existing typed `project_coordination_dispatch` queue field has a distinct
+Home restart proof schema `1.3`; it conveys no project delegation. Legacy dispatch
+readers reject this proof rather than silently rewriting a queue without its
+witness. Absent proofs preserve ordinary queue serialization. Deploy the matching
+reader/writer together; rollback must retain these rows behind the normal compatible
+state boundary. A retained or unknown native start never automatically acquires a
+second claim. Missing evidence is an actionable retained blocker, not an invitation
+to reconstruct human origin from a source prefix.
+
+Known NOT-SENT human input remains the original queued row while existing canonical
+lease expiry, bootstrap cancellation, fresh worker custody and strong-CAS binding
+recovery heal the SAME conversation. An uncertain host action does not block all
+conversation inspection. Its original intent remains held; a new intent with the
+same requester, host resource and exact argv cannot replay that action across
+assignment incarnations. Other independently authorized operations may proceed.
+Exact argv matching does not establish semantic shell equivalence or command safety.
+
+This slice covers interrupted human turns and retained human inputs. Planned idle
+restart checkpoints, completed Upgrade supervisor provenance, repeated restart
+chains and claimed event custody rollover require their explicit canonical handoff;
+they are not inferred from an empty active marker or a successful process exit.
+Private canonical admission/custody tests do not establish live restart acceptance.
+
+Host duplicate prevention and startup inspection use a typed, parameterized
+canonical state-backend query over ORIGINAL ActionIntent and receipt rows. The
+predicate pins tenant and exact native execution or Home command identity
+(requester/provider/resources/argv). It selects unresolved statuses, an original
+unknown/missing receipt, and terminal executions without a receipt. Positive
+terminal receipts must match the original intent's identity, attempt and known
+outcome. A single original receipt is required; conflicting/unknown headers
+cannot establish settled history. Selected full models and original receipts are
+validated again. This is a current recovery predicate, not an integrity audit of
+all positively settled historical result payloads.
+
+The query has a five-second statement budget and returns at most 256 unresolved
+candidates. Settled history does not consume that limit, so 300 successful repeats
+of one command or native execution cannot disable the next action. Unsupported
+backend/query semantics, conversion failure or genuinely excessive unresolved
+work refuse visibly. The existing owned operation joins the read worker before
+retiring; it never substitutes a whole-history fallback. Legacy nonstandard JSON
+which cannot be classified safely may refuse rather than be treated as absent.
+
+No derived alias proves an original absent. The abandoned Home index prototype
+was never deployed; deleting any such alias cannot affect this predicate. No new
+records migration is required. The reader explicitly accepts prototype normalized
+metadata `1.5` without downgrading it; publication/readiness compatibility remains
+intact. Ordinary canonical `1.4` writes and serialization stay unchanged.
+
+## Planned Upgrade checkpoint and same-conversation handoff
+
+An explicitly configured Home operator can use the existing whole-service Upgrade
+supervisor. `UpgradeService.start_service_drain` has an optional before-maintenance
+checkpoint callback; `verify_post_upgrade` has an optional observer AFTER canonical
+PASS evidence and COMPLETED status are committed. The application supplies the
+already configured `LocalExecutionWorkerRuntime`, never constructs an alternate
+worker identity. Both API operations must run through the existing owned, joined,
+off-loop storage boundary. No signal, restart daemon, second controller or native
+Goal mutation is introduced.
+
+`HomeUpgradeCheckpointService.checkpoint_current` first resolves the selected
+Agent Profile and its current explicit Home operator declaration. Navigation-only
+and ordinary profiles are no-ops BEFORE bootstrap lookup. Configured Home resolves
+the same conversation's actual bootstrap/assignment and accepts only the configured
+worker's existing identity. A mismatched worker is a visible blocker. The checkpoint
+is a canonical REPORT Artifact with selected Home/Profile/native-conversation and
+custody references, exact new plan/release/source/target references, retained queue
+IDs/hash and held intent IDs. It contains no lease tokens, transcript, argv, output
+or fabricated active-turn record. This metadata checkpoint references existing
+persistent state; it is not a copy of volatile native model context.
+
+The same supervisor's post-verification callback point-reads that plan's immutable
+checkpoint, verifies actual target source, SAME completed plan and current valid
+PASS evidence, then retains one continuation in the SAME native conversation.
+The existing typed queue dispatch union carries schema `1.4`, distinct from project
+delegation and interrupted-turn `1.3`; old readers reject it visibly. Its internal
+input authorizer checks the exact original preflight claim, checkpoint and resume
+Evidence/message hash, current Home selection/Profile/requester and current healed
+worker/fence/lease at final send. Old completed plans, stale sources, changed
+selection, revoked completion evidence and replaced messages cannot authorize it.
+
+A checkpoint failure prevents maintenance. A continuation failure after a real
+successful Upgrade preserves COMPLETED/maintenance-off and records explicit WARN
+Evidence (`home-upgrade-resume-blocked`); it does not repeat source installation.
+An existing resume reservation is never automatically submitted again. Existing
+preflight/queue evidence owns any uncertain native start. Rebinding an already
+active service drain does not overwrite the pre-stop checkpoint. With configured
+Home callbacks, re-reading completed verification does not replay the observer.
+Unconfigured deployments retain the existing Upgrade verification behavior.
+
+Private canonical fixtures cover the real retained admission and guarded
+`thread/resume` / `turn/start` capture path with fake transport and actual expired
+custody recovery. Application wiring, controlled actual restart and live Home
+continuation qualification are still required; these tests do not claim live
+self-restart or full native Goal lifecycle acceptance.
+An interrupted Home restart continuation can create a later recovery generation
+only when its exact queued input has the canonical positive native START receipt,
+correlation and actual active native-turn/custody identity. An UNKNOWN original
+start never authorizes a new submission. The same thread, pending human queue and
+all previous recovery originals are retained. Twenty inline generations bounds
+one unsettled continuation chain, never lifetime use of the conversation. A new
+independent human chain requires its own positive START and the prior
+continuation's actual terminal usage (plus terminal event accounting when
+applicable). The complete previous chain is archived immutably through the
+existing recovery store before resetting its current CAS. Original ActionIntent
+and preflight UNKNOWN records are unchanged; history links require no scan.
+
+An active Home event additionally retains the original Automation grant, event,
+selection and custody evidence and revalidates current administrator, Role,
+Definition and control authority. A restart message is a new inspection/
+continuation input, never a replay of the event or an uncertain host action.
+Its terminal callback returns to that same Automation run. Budget settlement
+requires actual canonical usage for every interrupted and resumed native turn;
+missing or UNKNOWN original usage stays pending instead of contributing zero.
+The existing exact-turn duration interrupt also recognizes that validated chain.

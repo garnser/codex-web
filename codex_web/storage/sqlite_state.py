@@ -362,6 +362,21 @@ class SQLiteStateStore:
             ).fetchone()
         return int(row[0] or 0) if row else 0
 
+    def home_intent_recovery_rows(self, namespace, query):
+        from codex_web.storage.home_intent_query import recovery_statement, recovery_query_budget
+        statement, parameters = recovery_statement(namespace, query)
+        with recovery_query_budget(), self._connection() as connection:
+            try:
+                rows = connection.execute(statement, parameters).fetchall()
+            except sqlite3.OperationalError as error:
+                # Preserve timeouts/storage failures; never fall back to scans.
+                if 'malformed JSON' in str(error):
+                    raise ValueError('Home recovery original JSON unavailable') from None
+                raise
+        if len(rows) > 256:
+            raise ValueError('Home recovery unresolved inventory exceeded')
+        return [json.loads(payload) for _,payload in rows]
+
     def record_page(
         self,
         namespace: str,

@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from codex_web.automation_definitions import AutomationLifecycle, AutomationTriggerType
+from codex_web.automation_definitions import AutomationLifecycle, AutomationTriggerType, AutomationTargetKind
 from codex_web.automation_runs import (
     ACTIVE_AUTOMATION_RUN_STATUSES,
     AutomationRun,
@@ -182,8 +182,15 @@ class AutomationRunService:
             status = AutomationRunStatus.BLOCKED
             block_code = "automation_paused"
             block_reason = "Automation is paused; trigger recorded without execution"
-        elif len(active) >= automation.budget.max_concurrency:
+        elif (automation.target.kind == AutomationTargetKind.HOME_OPERATOR
+                and sum(row.target_kind == "home_operator" and row.status in ACTIVE_AUTOMATION_RUN_STATUSES
+                    for row in self.store.list(organization_id=organization_id, workspace_id=workspace_id)) >= 128):
             status = AutomationRunStatus.BLOCKED
+            block_code = "home_followup_pending_capacity_exhausted"
+            block_reason = "128 Home events are retained; inspect canonical run history and reconcile pending delivery"
+        elif len(active) >= automation.budget.max_concurrency:
+            status = (AutomationRunStatus.WAITING_FOR_CAPACITY
+                if automation.target.kind == AutomationTargetKind.HOME_OPERATOR else AutomationRunStatus.BLOCKED)
             block_code = "automation_concurrency_exhausted"
             block_reason = (
                 "Automation concurrency budget is exhausted; "

@@ -361,6 +361,7 @@ from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.home_operator import HomeOperatorService
 from codex_web.services.home_operator_goals import HomeOperatorGoalInspection
 from codex_web.services.home_operator_host import HomeOperatorHostService
+from codex_web.services.home_operator_followup import HomeOperatorFollowup
 from codex_web.services.metrics import MetricService
 from codex_web.services.outcome_metrics import OutcomeMetricService
 from codex_web.services.ux_telemetry import UxTelemetryService
@@ -1316,18 +1317,24 @@ execution_worker_service.mark_stale_workers_offline(
 execution_worker_service.recover_expired(
     actor=identity_service.local_trusted_actor(),
 )
+from codex_web.trusted_host_backend import TrustedHostActionBackend, trusted_host_deployment_options
+from codex_web.execution_profiles import HOME_HOST_COMMAND_CONTRACT
+from codex_web.execution_workers import WorkerCapability
+_home_host_options = trusted_host_deployment_options(os.environ)
 local_execution_backend = BubblewrapExecutionBackend()
 local_execution_backend_status = local_execution_backend.probe()
 local_worker_actor = identity_service.bootstrap_service_actor(
     identity_id="execution-worker-local",
     name="Local Execution Worker",
     scope=identity_service.local_trusted_actor().tenant,
-    service_scopes=("execution-worker:run", "action-intent:worker", "secret:use"),
+    service_scopes=("execution-worker:run", "action-intent:worker", "secret:use",
+        *(("artifact-evidence:admin",) if _home_host_options is not None else ())),
 )
 local_execution_worker = execution_worker_service.ensure_local_worker(
     service_identity_id=local_worker_actor.identity_id,
     version="local-v2",
-    capabilities=local_execution_backend_status.capabilities,
+    capabilities=tuple(dict.fromkeys((*local_execution_backend_status.capabilities,
+        *((WorkerCapability.COMMAND_EXECUTION, WorkerCapability.NETWORK) if _home_host_options is not None else ())))),
     supported_execution_contract_versions=(
         "1.0",
         "thread-turn/1.0",
@@ -1335,6 +1342,7 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
         "thread-turn/1.1",
         "thread-bootstrap/1.1",
         "skill-scan/1.0",
+        *((HOME_HOST_COMMAND_CONTRACT,) if _home_host_options is not None else ()),
     ),
     actor=identity_service.local_trusted_actor(),
     max_concurrency=runtime_policy.local_worker_max_concurrency(),
@@ -1697,6 +1705,9 @@ def _notify_automation_runtime_usage(record):
         except RuntimeError:
             loop = None
         if loop is not None:
+            recovery = getattr(app.state, "native_recovery_service", None)
+            if recovery is not None:
+                recovery.schedule(reason="home-runtime-usage-observed")
             for automation_run in outcome_runs:
                 if automation_run.status.value in {"succeeded", "failed"}:
                     loop.create_task(
@@ -1915,6 +1926,8 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_workspace_service,
     local_execution_backend,
     worker=local_execution_worker,
+    trusted_host_backend=(TrustedHostActionBackend(worker_id=local_execution_worker.id,
+        **_home_host_options) if _home_host_options is not None else None),
     worker_actor=local_worker_actor,
     control_actor=identity_service.local_trusted_actor(),
     artifact_evidence=artifact_evidence_service,
@@ -4030,7 +4043,7 @@ core._watchdog_dispatch_allowed = watchdog_dispatch_policy.allowed
 core._record_watchdog_dispatch = watchdog_dispatch_policy.record
 core.HANDOFF_COORDINATION_CHANNEL = HANDOFF_COORDINATION_CHANNEL
 work_item_continuity_compatibility = (
-    build_work_item_continuity_compatibility_service(core)
+    build_work_item_continuity_compatibility_service(core, owner_routing=owner_routing_service)
 )
 app.state.work_item_continuity_compatibility = (
     work_item_continuity_compatibility
@@ -4241,9 +4254,16 @@ async def _reconcile_native_goal_runners():
             observer=owner_lane_recovery_service.native_goal_blocker)
 
 
+async def _recover_home_event_runs():
+    followup = getattr(app.state, "home_operator_followup", None)
+    if followup is not None:
+        await followup.recover_pending()
+
+
 native_recovery_service = NativeRecoveryService(
     policy=runtime_policy,
     cycles=(
+        _recover_home_event_runs,
         _reconcile_native_goal_runners,
         autonomy_service.run_owner_work_cycle,
         autonomy_service.run_release_gate_cycle,
@@ -4880,6 +4900,84 @@ control_plane_broker_service.home_operator_host = HomeOperatorHostService(
     thread_scope=thread_scope_service, thread_index=thread_index_repository,
     bootstrap_bindings=thread_bootstrap_binding_service,
 )
+from codex_web.services.home_restart_recovery import HomeRestartRecoveryService
+home_restart_recovery_service = HomeRestartRecoveryService(
+    home_host=control_plane_broker_service.home_operator_host,
+    recovery_store=active_turn_recovery_store, execution=turn_execution_service,
+    intents=action_intent_service, preflight=execution_preflight_service)
+turn_execution_service.home_restart_recovery = home_restart_recovery_service
+app.state.home_restart_recovery_service = home_restart_recovery_service
+from codex_web.services.home_upgrade_checkpoint import HomeUpgradeCheckpointService
+def _home_installed_revision():
+    value = os.environ.get("CODEX_WEB_GIT_REVISION", "").strip()
+    return value if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) else None
+home_upgrade_checkpoint_service = HomeUpgradeCheckpointService(
+    restart_recovery=home_restart_recovery_service, upgrades=upgrade_service,
+    artifacts=artifact_evidence_service,
+    source_revision=_home_installed_revision)
+home_restart_recovery_service.planned_restart = home_upgrade_checkpoint_service
+upgrade_service.home_checkpoint_before_drain = lambda plan_id, actor: home_upgrade_checkpoint_service.checkpoint_current(
+    plan_id, worker_runtime=local_execution_worker_runtime, operator_actor=actor)
+upgrade_service.home_resume_after_upgrade = lambda plan_id, actor: home_upgrade_checkpoint_service.resume_completed(
+    plan_id, operator_actor=actor)
+app.state.home_upgrade_checkpoint_service = home_upgrade_checkpoint_service
+from codex_web.services.home_host_action_provider import HomeHostActionProvider
+_home_host_provider = HomeHostActionProvider(home_host=control_plane_broker_service.home_operator_host,
+    worker_runtime=local_execution_worker_runtime, artifacts=artifact_evidence_service, crypto=crypto_key_service)
+action_provider_registry.register(_home_host_provider)
+from codex_web.services.home_host_output import HomeHostOutputService
+from codex_web.api.home_host_output import build_home_host_output_router
+home_host_output_service = HomeHostOutputService(home_host=control_plane_broker_service.home_operator_host,
+    worker_runtime=local_execution_worker_runtime, intents=action_intent_service,
+    artifacts=artifact_evidence_service, crypto=crypto_key_service, registry=definition_registry_service)
+control_plane_broker_service.home_host_outputs = home_host_output_service
+app.state.home_host_output_service = home_host_output_service
+app.include_router(build_home_host_output_router(home_host_output_service))
+
+from codex_web.services.home_operator_coordination import (
+    HomeOperatorCoordinationService, HomeOperatorCoordinationActionProvider,
+)
+def _home_coordination_origin(snapshot, operation_id):
+    context = control_plane_broker_service.home_operator_host.authorize_operation(
+        snapshot, operation_id=operation_id, worker_actor=local_execution_worker_runtime.worker_actor,
+        mutating=operation_id == 'operator.project.thread.message')
+    return context.assignment, context.requester, context.binding, context.envelope
+
+home_operator_coordination_service = HomeOperatorCoordinationService(
+    broker=control_plane_broker_service, origin_guard=_home_coordination_origin,
+    thread_scope=thread_scope_service, bootstrap_bindings=thread_bootstrap_binding_service,
+    project_coordination=project_coordination_service, turns=turn_service,
+)
+control_plane_broker_service.home_operator_coordination = home_operator_coordination_service
+turn_execution_service.home_operator_coordination_admission = home_operator_coordination_service.validate_queued_delegation
+action_provider_registry.register(HomeOperatorCoordinationActionProvider(home_operator_coordination_service))
+app.state.home_operator_coordination_service = home_operator_coordination_service
+home_operator_followup = HomeOperatorFollowup(
+    runs=automation_run_service, operator=home_operator_service,
+    identity=identity_service, events=canonical_event_store, turns=turn_service,
+    controller=autonomy_controller, authority=authority_role_service,
+    event_triggers=automation_event_trigger_service, workers=execution_worker_service,
+    bootstrap_bindings=thread_bootstrap_binding_service,
+    scheduler=scheduler_service, sessions=agent_session_store,
+    runtime_usage=agent_runtime_usage_store,
+    outcomes=automation_outcome_reconciliation_service,
+)
+async def _launch_home_event_run(run):
+    return await automation_execution_service.launch(run.id,
+        organization_id=run.organization_id, workspace_id=run.workspace_id)
+
+home_operator_followup.launch_handler = _launch_home_event_run
+app.state.home_operator_followup = home_operator_followup
+app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
+    home_operator_followup.on_schedule, event_types=("schedule.due",))
+home_restart_recovery_service.event_followup = home_operator_followup
+home_operator_followup.restart_recovery = home_restart_recovery_service
+async def _record_home_retained_terminal(active, *, succeeded):
+    await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
+    await home_operator_followup.record_terminal(active, succeeded=succeeded)
+turn_execution_service.retained_turn_outcome_recorder = _record_home_retained_terminal
+automation_execution_service.home_operator_followup = home_operator_followup
+control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input
 turn_execution_service.procedure_admission.input_authorizer = (
     control_plane_broker_service.home_operator_host.authorize_native_input
 )

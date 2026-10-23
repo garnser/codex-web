@@ -11,6 +11,7 @@ from codex_web.services.local_installation_inspector import LocalInstallationIns
 from codex_web.services.artifact_evidence import ArtifactEvidenceError
 from codex_web.services.recovery import RecoveryError, RecoveryConflictError
 from codex_web.services.releases import ReleaseError
+from codex_web.services.post_turn_readiness import PostTurnReadinessService
 from codex_web.services.upgrades import (
     UpgradeConflictError,
     UpgradeError,
@@ -124,13 +125,15 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.start_service_drain(
-                plan_id,
-                actor=admin(request),
-                service_instance_id=payload.service_instance_id,
-                source_revision=payload.source_revision,
-                target_revision=payload.target_revision,
-            )
+            actor = admin(request)
+            async def drain_owned():
+                return await asyncio.to_thread(service.start_service_drain,
+                    plan_id, actor=actor,
+                    service_instance_id=payload.service_instance_id,
+                    source_revision=payload.source_revision,
+                    target_revision=payload.target_revision)
+            item = await PostTurnReadinessService._run_owned(drain_owned,
+                seconds=60, name='upgrade-service-drain-' + plan_id)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (UpgradeError, AuthorizationError)):
@@ -244,10 +247,11 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.verify_post_upgrade(
-                plan_id,
-                actor=admin(request),
-            )
+            actor = admin(request)
+            async def verify_owned():
+                return await asyncio.to_thread(service.verify_post_upgrade, plan_id, actor=actor)
+            item = await PostTurnReadinessService._run_owned(verify_owned,
+                seconds=60, name='upgrade-post-verification-' + plan_id)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (UpgradeError, AuthorizationError)):

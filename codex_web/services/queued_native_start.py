@@ -114,59 +114,59 @@ class QueuedNativeStartCapture:
         recheck the exact admission reservation. This guard is never used for
         historical evidence reconciliation.
         """
-        if self.send_validator is None:
-            raise ValueError('native start send validator is unavailable')
-        assignment = self.send_validator()
-        if any(getattr(assignment, name) != getattr(self.assignment, name) for name in (
-                'id', 'execution_id', 'organization_id', 'workspace_id', 'project_id',
-                'resource_ids', 'repository_scope', 'runtime_binding', 'agent_profile',
-                'execution_profile_id', 'created_by', 'assigned_worker_id', 'fence')):
-            raise ValueError('native start assignment changed during preparation')
-        def guard(current):
-            validate_attribution(self.service, current, correlation)
-            if self.rpc_method == 'turn/start' and current.queued_resume_correlation is not None:
-                from codex_web.services.queued_native_resume import validate_resume_observation
-                _, observed = validate_resume_observation(self.service, current)
-                if observed.outcome != 'resumed':
-                    raise ValueError('resume observation changed before turn/start')
-            if (getattr(current, self.correlation_field) != correlation
-                    or current.status != 'reconciliation_required'
-                    or current.queued_start_receipt is not None
-                    or getattr(current, self.evidence_field) is not None
-                    or current.scheduling_retirement is not None):
-                raise ValueError('native start reservation changed before send')
-            return current
-        self.service.store.update(self.attempt_id, guard)
-        if self.admission_validator is not None:
-            try:
+        try:
+            if self.send_validator is None:
+                raise ValueError('native start send validator is unavailable')
+            assignment = self.send_validator()
+            if any(getattr(assignment, name) != getattr(self.assignment, name) for name in (
+                    'id', 'execution_id', 'organization_id', 'workspace_id', 'project_id',
+                    'resource_ids', 'repository_scope', 'runtime_binding', 'agent_profile',
+                    'execution_profile_id', 'created_by', 'assigned_worker_id', 'fence')):
+                raise ValueError('native start assignment changed during preparation')
+            def guard(current):
+                validate_attribution(self.service, current, correlation)
+                if self.rpc_method == 'turn/start' and current.queued_resume_correlation is not None:
+                    from codex_web.services.queued_native_resume import validate_resume_observation
+                    _, observed = validate_resume_observation(self.service, current)
+                    if observed.outcome != 'resumed':
+                        raise ValueError('resume observation changed before turn/start')
+                if (getattr(current, self.correlation_field) != correlation
+                        or current.status != 'reconciliation_required'
+                        or current.queued_start_receipt is not None
+                        or getattr(current, self.evidence_field) is not None
+                        or current.scheduling_retirement is not None):
+                    raise ValueError('native start reservation changed before send')
+                return current
+            self.service.store.update(self.attempt_id, guard)
+            if self.admission_validator is not None:
                 self.admission_validator()
-            except Exception as exc:
-                # This synchronous method runs before stdin.write under the
-                # native writer lock. Only this local witness can release the
-                # prepared correlation; an absent/failed RPC response cannot.
-                def refuse(current):
-                    validate_attribution(self.service, current, correlation)
-                    if (getattr(current, self.correlation_field) != correlation
-                            or current.status != 'reconciliation_required'
-                            or current.queued_start_receipt is not None
-                            or getattr(current, self.evidence_field) is not None
-                            or current.started_at is not None
-                            or current.scheduling_retirement is not None
-                            or (self.rpc_method == 'thread/resume' and (
-                                current.queued_start_correlation is not None
-                                or current.queued_start_evidence is not None))):
-                        raise ValueError('native refusal reservation changed')
-                    blocker = ExecutionPreflightBlocker(code='native_preinput_admission_refused',
-                        message='Live admission refused before native write',
-                        correlation=correlation.model_dump(mode='json'))
-                    history = ExecutionPreflightBlockerSnapshot(blockers=(blocker,),
-                        recorded_at=float(self.service.clock()), attempt_number=current.attempt_number)
-                    return current.model_copy(update={'status':'queued', self.correlation_field:None,
-                        'blockers':(blocker,), 'blocker_history':(*current.blocker_history, history)[-self.service.MAX_HISTORY:],
-                        'updated_at':float(self.service.clock())})
-                self.service.store.update(self.attempt_id, refuse)
-                raise NativeStartAdmissionRefused("Live admission refused before native write",
-                    correlation=correlation) from exc
+        except Exception as exc:
+            # This synchronous method runs before stdin.write under the
+            # native writer lock. Only this local witness can release the
+            # prepared correlation; an absent/failed RPC response cannot.
+            def refuse(current):
+                validate_attribution(self.service, current, correlation)
+                if (getattr(current, self.correlation_field) != correlation
+                        or current.status != 'reconciliation_required'
+                        or current.queued_start_receipt is not None
+                        or getattr(current, self.evidence_field) is not None
+                        or current.started_at is not None
+                        or current.scheduling_retirement is not None
+                        or (self.rpc_method == 'thread/resume' and (
+                            current.queued_start_correlation is not None
+                            or current.queued_start_evidence is not None))):
+                    raise ValueError('native refusal reservation changed')
+                blocker = ExecutionPreflightBlocker(code='native_preinput_admission_refused',
+                    message='Live admission refused before native write',
+                    correlation=correlation.model_dump(mode='json'))
+                history = ExecutionPreflightBlockerSnapshot(blockers=(blocker,),
+                    recorded_at=float(self.service.clock()), attempt_number=current.attempt_number)
+                return current.model_copy(update={'status':'queued', self.correlation_field:None,
+                    'blockers':(blocker,), 'blocker_history':(*current.blocker_history, history)[-self.service.MAX_HISTORY:],
+                    'updated_at':float(self.service.clock())})
+            self.service.store.update(self.attempt_id, refuse)
+            raise NativeStartAdmissionRefused("Live admission refused before native write",
+                correlation=correlation) from exc
 
     def prepare(self, *, generation, rpc_request_id, native_session_id, runtime_version=None):
         """Commit before _send; a storage error forbids this native RPC."""

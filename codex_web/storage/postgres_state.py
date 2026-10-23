@@ -515,6 +515,27 @@ class PostgresStateStore:
                 row = cursor.fetchone()
         return int(row[0] or 0) if row else 0
 
+    def home_intent_recovery_rows(self, namespace, query):
+        from codex_web.storage.home_intent_query import recovery_statement, recovery_query_budget
+        statement, parameters = recovery_statement(namespace, query, postgres=True)
+        with recovery_query_budget(), self._read_connection() as connection:
+            # Isolate conversion failure from any owning canonical transaction.
+            with connection.transaction(), connection.cursor() as cursor:
+                cursor.execute('SHOW statement_timeout')
+                previous_timeout = cursor.fetchone()[0]
+                self._operation_deadline(connection)
+                try:
+                    cursor.execute(statement, parameters)
+                    rows = cursor.fetchall()
+                    cursor.execute("SELECT set_config('statement_timeout', %s, true)", (previous_timeout,))
+                except Exception as error:
+                    if getattr(error, 'sqlstate', None) in {'22P02','22003','22P05'}:
+                        raise ValueError('Home recovery original JSON unavailable') from None
+                    raise
+        if len(rows) > 256:
+            raise ValueError('Home recovery unresolved inventory exceeded')
+        return [json.loads(payload) for _,payload in rows]
+
     def record_page(
         self,
         namespace: str,

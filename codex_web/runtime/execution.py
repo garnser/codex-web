@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import contextlib
 import contextvars
 import hashlib
@@ -222,6 +223,7 @@ class TurnExecutionService:
         self.owner_routing_validator = None
         self.procedure_admission = None
         self.native_input_guard_factory = None
+        self.home_restart_recovery = None
         self.readiness_origin_blocker = None
         self.post_turn_readiness = None
         self.readiness_terminal_events = None
@@ -783,8 +785,21 @@ class TurnExecutionService:
             if recovery is None:
                 raise HTTPException(status_code=409, detail={"code": "owner_recovery_unavailable"})
             return recovery.admission_validator(queued)
-        if queued.project_coordination_dispatch is None:
+        if queued.home_restart_input is not None or queued.project_coordination_dispatch is None:
             return None
+        if queued.project_coordination_dispatch.schema_version == "1.2":
+            admission = getattr(self, "home_operator_coordination_admission", None)
+            if queued.source != "home-operator-coordination" or admission is None:
+                raise HTTPException(status_code=409, detail={"code": "home_coordination_unavailable"})
+            def validate_home():
+                try:
+                    admission(queued)
+                except (HTTPException, ValueError, RuntimeError, LookupError) as exc:
+                    raise AutomatedAdmissionPaused(status_code=409, detail={
+                        "code": "home_coordination_blocked", "retryable": False,
+                        "message": "Home delegation authority changed; inspect the original action and retained input",
+                    }) from exc
+            return validate_home
         if (queued.source != "project-coordination"
                 or self.project_coordination_admission is None):
             raise HTTPException(status_code=409, detail={"code": "project_delegation_unavailable"})
@@ -930,14 +945,20 @@ class TurnExecutionService:
         ingress_execution_profile_definition=None,
         project_coordination_dispatch=None,
         admit_first: bool = False,
+        home_restart_input=None,
     ) -> QueuedTurn:
         h = self.host
+        if home_restart_input is not None:
+            if project_coordination_dispatch is not None:
+                raise ValueError("Only one canonical queued dispatch proof is allowed")
+            project_coordination_dispatch = home_restart_input
         selected: dict[str, QueuedTurn] = {}
 
         def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
             for existing in items:
                 if (
-                    existing.canonical_ingress_id == canonical_ingress_id
+                    existing.home_restart_input == home_restart_input
+                    and existing.canonical_ingress_id == canonical_ingress_id
                     and
                     existing.source == source
                     and existing.message == message
@@ -968,7 +989,7 @@ class TurnExecutionService:
             incoming_entries = (
                 h._work_item_wakeup_entries(message)
                 if (reply_target is None and memory_context_binding is None and provider_notification_pin is None and owner_routing_pin is None
-                    and source != "project-coordination" and project_coordination_dispatch is None)
+                    and source != "project-coordination" and project_coordination_dispatch is None and home_restart_input is None)
                 else []
             )
             if incoming_entries:
@@ -1465,6 +1486,23 @@ class TurnExecutionService:
         if clear_active:
             self.clear_thread_active(thread_id)
 
+    async def _record_retained_outcome(self, active, *, succeeded):
+        recorder = getattr(self, "retained_turn_outcome_recorder", None)
+        if recorder is None:
+            return
+        async def observe():
+            if inspect.iscoroutinefunction(recorder):
+                await recorder(active, succeeded=succeeded)
+            else:
+                await asyncio.to_thread(recorder, active, succeeded=succeeded)
+        try:
+            from codex_web.services.post_turn_readiness import PostTurnReadinessService
+            await PostTurnReadinessService._run_owned(observe, seconds=5.,
+                name='retained-turn-outcome-' + active.assignment_id)
+        except Exception:
+            self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
+                "thread_id": active.thread_id, "turn_id": active.turn_id})
+
     def _schedule_assignment_completion(
         self,
         active: ActiveThreadTurn,
@@ -1545,7 +1583,8 @@ class TurnExecutionService:
                             ),
                         )
 
-            if callable(checkpoint) or self.post_turn_readiness is not None:
+            if (callable(checkpoint) or self.post_turn_readiness is not None
+                    or getattr(self, "retained_turn_outcome_recorder", None) is not None):
                 existing = self.assignment_completion_tasks.get(assignment_id)
                 if existing is not None and not existing.done():
                     return
@@ -1565,8 +1604,10 @@ class TurnExecutionService:
                         await self._settle_post_turn_readiness(active, manager)
                         record_bootstrap_result(checkpoint_count=len(values),
                             checkpoint_error=checkpoint_error)
+                        await self._record_retained_outcome(active, succeeded=succeeded and checkpoint_error is None)
                     except Exception as exc:
                         record_bootstrap_result(checkpoint_error=checkpoint_error or str(exc)[:500])
+                        await self._record_retained_outcome(active, succeeded=False)
                     finally:
                         current_task = asyncio.current_task()
                         if self.assignment_completion_tasks.get(assignment_id) is current_task:
@@ -3084,7 +3125,10 @@ class TurnExecutionService:
             if self.native_input_guard_factory is not None:
                 input_admission_validator = await asyncio.to_thread(self.native_input_guard_factory,
                     project=project, actor=actor, execution_id=canonical_execution_id,
-                    assignment_id=assignment_id, source=source)
+                    assignment_id=assignment_id, source=source,
+                    **({"request_checksum": hashlib.sha256(message.encode()).hexdigest(),
+                        "input_execution_id": requested_execution_id}
+                       if source.removeprefix("queued:").startswith("home-operator-automation:") else {}))
 
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(
@@ -3293,6 +3337,17 @@ class TurnExecutionService:
                     "remediation_route": "/api/threads/" + thread_id + "/preflight-attempts",
                 })
             if not initial_turn_pending:
+                delegated_input = (TurnQueuePolicy.source_origin(source) in {
+                    "project-coordination", "home-operator-coordination"}
+                    and operator_admission_validator is not None)
+                if (delegated_input or input_admission_validator is not None or owner_routing_pin is not None) and (
+                        not isinstance(runtime_adapter, CodexAgentRuntimeAdapter)
+                        or not callable(getattr(runtime_adapter.transport, "request_with_start_capture", None))):
+                    refusal = AutomatedAdmissionPaused if delegated_input else ExecutionPrestartRefusal
+                    raise refusal(status_code=409, detail={
+                        "code": "project_delegation_transport_unsupported" if delegated_input else "operator_input_transport_unsupported",
+                        "message": "Pinned input requires the canonical guarded resume/start transport",
+                        "retryable": False})
                 resume_options = {}
                 try:
                     custody_before = None
@@ -3549,7 +3604,7 @@ class TurnExecutionService:
                     preinput_admission_refused = True
                     raise
                 start_options = {}
-                delegated = (TurnQueuePolicy.source_origin(source) == "project-coordination"
+                delegated = (TurnQueuePolicy.source_origin(source) in {"project-coordination", "home-operator-coordination"}
                              and operator_admission_validator is not None)
                 guarded_owner = owner_routing_pin is not None
                 guarded_input = input_admission_validator is not None
@@ -4221,38 +4276,49 @@ class TurnExecutionService:
                     queued.agent_profile_actor_id,
                     project,
                 )
-            start_response = await self.start_thread_turn_now(
-                thread_id,
-                project=project,
-                message=queued.message,
-                sandbox=queued.sandbox or project.sandbox,
-                approval_policy=queued.approval_policy or project.approval_policy,
-                model=queued.model,
-                reasoning_effort=queued.reasoning_effort,
-                source=f"queued:{queued.source}",
-                reply_target=queued.reply_target,
-                execution_id=(queued.execution_id or retained_attempt.execution_id
-                    if retained_attempt is not None else queued.execution_id),
-                work_item_ref=queued.work_item_ref,
-                handoff_requested_at=queued.handoff_requested_at,
-                **({'owner_routing_pin': queued.owner_routing_pin} if queued.owner_routing_pin is not None else {}),
-                repository_resource_id=queued.repository_resource_id,
-                writable_repository_resource_ids=queued.writable_repository_resource_ids,
-                read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
-                **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
-                execution_profile_id=queued.execution_profile_id,
-                **({"ingress_execution_profile_definition": queued.ingress_execution_profile_definition}
-                   if queued.ingress_execution_profile_definition is not None else {}),
-                actor=queued_actor,
-                agent_profile_id=queued.agent_profile_id,
-                agent_profile_revision=queued.agent_profile_revision,
-                agent_profile_actor_id=queued.agent_profile_actor_id,
-                **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
-                **({'operator_admission_validator':operator_admission_validator}
-                   if operator_admission_validator is not None else {}),
-                **({'queued_admission_attempt_id':retained_attempt.id,
-                    'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
-            )
+            restart_context = contextlib.nullcontext()
+            if queued.home_restart_input is not None:
+                if self.home_restart_recovery is None or retained_attempt is None or admission_claim_id is None:
+                    raise ExecutionPrestartRefusal(status_code=409, detail={'code':'home_restart_admission_unavailable'})
+                from codex_web.services.post_turn_readiness import PostTurnReadinessService
+                async def prepare_restart_context():
+                    return await asyncio.to_thread(self.home_restart_recovery.input_context, queued,
+                        attempt_id=retained_attempt.id, claim_id=admission_claim_id)
+                restart_context = await PostTurnReadinessService._run_owned(prepare_restart_context,
+                    seconds=10, name='home-restart-admission-' + queued.id)
+            with restart_context:
+                start_response = await self.start_thread_turn_now(
+                    thread_id,
+                    project=project,
+                    message=queued.message,
+                    sandbox=queued.sandbox or project.sandbox,
+                    approval_policy=queued.approval_policy or project.approval_policy,
+                    model=queued.model,
+                    reasoning_effort=queued.reasoning_effort,
+                    source=f"queued:{queued.source}",
+                    reply_target=queued.reply_target,
+                    execution_id=(queued.execution_id or retained_attempt.execution_id
+                        if retained_attempt is not None else queued.execution_id),
+                    work_item_ref=queued.work_item_ref,
+                    handoff_requested_at=queued.handoff_requested_at,
+                    **({'owner_routing_pin': queued.owner_routing_pin} if queued.owner_routing_pin is not None else {}),
+                    repository_resource_id=queued.repository_resource_id,
+                    writable_repository_resource_ids=queued.writable_repository_resource_ids,
+                    read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                    **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
+                    execution_profile_id=queued.execution_profile_id,
+                    **({"ingress_execution_profile_definition": queued.ingress_execution_profile_definition}
+                       if queued.ingress_execution_profile_definition is not None else {}),
+                    actor=queued_actor,
+                    agent_profile_id=queued.agent_profile_id,
+                    agent_profile_revision=queued.agent_profile_revision,
+                    agent_profile_actor_id=queued.agent_profile_actor_id,
+                    **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
+                    **({'operator_admission_validator':operator_admission_validator}
+                       if operator_admission_validator is not None else {}),
+                    **({'queued_admission_attempt_id':retained_attempt.id,
+                        'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
+                )
             returned_turn = start_response.get('turn', {}) if isinstance(start_response, dict) else {}
             if retained_attempt is not None:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
@@ -4604,6 +4670,38 @@ class TurnExecutionService:
                     }
                 )
                 continue
+
+            if self.home_restart_recovery is not None and project.id == "home":
+                try:
+                    lock = self._turn_start_locks.get(thread_id)
+                    if lock is None:
+                        lock = asyncio.Lock()
+                        self._turn_start_locks[thread_id] = lock
+                    async with lock:
+                        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+                        def retain():
+                            requester = (self.actor_resolver(active.agent_profile_actor_id, project)
+                                if active.agent_profile_actor_id and self.actor_resolver else None)
+                            return self.home_restart_recovery.retain_startup(active, project=project, actor=requester)
+                        async def retain_owned():
+                            return await asyncio.to_thread(retain)
+                        queued = await PostTurnReadinessService._run_owned(retain_owned,
+                            seconds=10, name='home-startup-retention-' + thread_id)
+                        if queued is not None:
+                            current = h._get_active_turn_record(thread_id) if callable(getattr(h, '_get_active_turn_record', None)) else h._load_active_turns().get(thread_id)
+                            if current != active:
+                                raise ExecutionPrestartRefusal(status_code=409, detail={'code':'home_restart_active_turn_changed'})
+                            self._delete_active_turn(thread_id)
+                    if queued is not None:
+                        h._append_bot_event({'type':'home_restart_original_retained',
+                            'thread_id':thread_id,'queued_id':queued.id})
+                        self.schedule_queue_drain(thread_id)
+                        continue
+                except Exception as exc:
+                    h._append_bot_event({'type':'home_restart_recovery_blocked','thread_id':thread_id,
+                        'reason_code':getattr(exc, 'detail', {}).get('code', 'home_restart_authority_unavailable')
+                            if isinstance(getattr(exc, 'detail', None), dict) else 'home_restart_authority_unavailable'})
+                    continue
 
             settings = h._thread_run_settings(thread_id)
             sandbox = (

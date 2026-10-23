@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError, create_model
 from codex_web.models import ExecutionPreflightAttempt
 from codex_web.services.queued_native_resume import QueuedNativeResumeCapture
+from codex_web.services.queued_native_start import NativeStartAdmissionRefused
 from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from tests import test_queued_native_start as fixtures
@@ -108,8 +109,15 @@ class ResumeCases:
                 native_session_id='thread',runtime_version='0.161.0')
         self.assertIsNone(self.saved().queued_resume_correlation)
         c=self.prepare()
+        original=copy.deepcopy(self.saved().queued_turn_snapshot)
         self.f.assignment=self.f.assignment.model_copy(update={'fence':8})
-        with self.assertRaises(ValueError):self.capture.validate_before_send(c)
+        with self.assertRaises(NativeStartAdmissionRefused):self.capture.validate_before_send(c)
+        refused=self.saved()
+        self.assertEqual(refused.status,'queued')
+        self.assertEqual(refused.queued_turn_snapshot,original)
+        self.assertIsNone(refused.queued_resume_correlation)
+        self.assertIsNone(refused.queued_start_receipt)
+        self.assertEqual(refused.blockers[0].code,'native_preinput_admission_refused')
         self.runtime._send.assert_not_called()
 
     async def test_old_reader_refuses_new_capture_and_unknown_version(self):

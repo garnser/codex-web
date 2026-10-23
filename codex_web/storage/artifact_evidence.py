@@ -65,6 +65,14 @@ class ArtifactEvidenceStore:
         ARTIFACT_EVIDENCE_CONTRACT.require(payload.get("schema_version", ""))
         return ArtifactEvidenceState.model_validate(payload)
 
+    def artifact_state(self, artifact_id: str, *, organization_id: str, workspace_id: str) -> ArtifactEvidenceState:
+        reader = getattr(self.store, 'document_array_item_envelope', None)
+        if not callable(reader):
+            return self.load()
+        return self._decode(reader(self.namespace, 'artifacts', artifact_id,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('artifacts','evidence','verifications')))
+
     def evidence_state(self, evidence_id: str, *, organization_id: str, workspace_id: str) -> ArtifactEvidenceState:
         """Validate the canonical envelope and complete selected Evidence.
 

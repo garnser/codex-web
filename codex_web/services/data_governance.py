@@ -23,6 +23,7 @@ from codex_web.data_governance import (
     GovernanceAuditEvent,
     GovernanceRequestStatus,
     RetentionSweepResult,
+    ReviewedHostOutputRelease,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.services.identity import AuthorizationError, IdentityService
@@ -53,6 +54,7 @@ class DataGovernanceService:
     """
 
     def __init__(self, store: DataGovernanceStore) -> None:
+        self.host_output_release_validator = None
         self.store = store
         self._action_handlers: dict[str, ActionHandler] = {}
 
@@ -222,7 +224,7 @@ class DataGovernanceService:
                 residency_tags.update(source.residency_tags)
 
             deny_model_context = payload.deny_model_context or any(
-                item.deny_model_context for item in sources
+                item.deny_model_context or item.host_output_release is not None for item in sources
             )
             if payload.category == DataCategory.CREDENTIAL:
                 deny_model_context = True
@@ -272,6 +274,57 @@ class DataGovernanceService:
             # domain retention cannot leave an orphan registration behind.
             apply(state)
         return created[0]
+
+    def release_reviewed_host_output(self, record_id: str, proof: ReviewedHostOutputRelease,
+                                     *, actor: AuthenticationActor) -> GovernedDataRecord:
+        """Release ONLY a canonical derivative under a fresh registered Home guard.
+
+        The source remains SECRET/denied; its IDs, residency and retention are
+        preserved. A missing adapter is a denial, never an implicit release.
+        """
+        if actor.principal_kind != PrincipalKind.HUMAN or actor.identity_id != proof.reviewed_by:
+            raise AuthorizationError('Current same human administrator must authorize output release')
+        IdentityService.require_admin(actor)
+        validator = self.host_output_release_validator
+        if validator is None:
+            raise GovernanceConflictError('Reviewed Home output adapter is unavailable')
+        snapshot = self.store.load()
+        original = self._record_from_state(snapshot, record_id, actor)
+        source = self._record_from_state(snapshot, proof.source_record_id, actor)
+        if (original.category != DataCategory.ARTIFACT or original.object_type != 'artifact' or original.object_id != proof.target_artifact_id
+                or original.project_id != 'home' or source.project_id != 'home'
+                or source.object_type != 'artifact' or source.object_id != proof.source_artifact_id
+                or original.id == source.id or original.source_record_ids != (source.id,)
+                or source.category == DataCategory.CREDENTIAL
+                or original.lifecycle != GovernedDataLifecycle.ACTIVE
+                or source.lifecycle != GovernedDataLifecycle.ACTIVE
+                or original.retention_expires_at is not None and original.retention_expires_at <= time.time()
+                or source.retention_expires_at is not None and source.retention_expires_at <= time.time()):
+            raise GovernanceConflictError('Current canonical Home derivative and retained source required')
+        if original.host_output_release is not None:
+            if original.host_output_release != proof:
+                raise GovernanceConflictError('An output release cannot be rewritten')
+            validator(original, proof, actor)
+            return original
+        validator(original, proof, actor)
+        returned = []
+        def apply(state):
+            current = self._record_from_state(state, record_id, actor)
+            current_source = self._record_from_state(state, source.id, actor)
+            if current != original or current_source != source:
+                raise GovernanceConflictError('Output derivative or source changed during review')
+            replacement = GovernedDataRecord.model_validate({**current.model_dump(),
+                'classification': proof.classification,
+                'requested_classification': proof.classification,
+                'deny_model_context': False, 'host_output_release': proof,
+                'updated_at': time.time()})
+            state.records = [replacement if item.id == record_id else item for item in state.records]
+            self._audit(state, actor=actor, operation='home_host_output_reviewed_release',
+                outcome='success', record=replacement, reason_code=proof.mode)
+            returned.append(replacement)
+            return state
+        self.store.update(apply)
+        return returned[0]
 
     def set_legal_hold(
         self,
@@ -600,6 +653,15 @@ class DataGovernanceService:
             record = self._record_from_state(state, record_id, actor)
             if record.lifecycle != GovernedDataLifecycle.ACTIVE:
                 allowed, reason = False, f"lifecycle:{record.lifecycle.value}"
+            elif record.host_output_release is not None:
+                try:
+                    if self.host_output_release_validator is None:
+                        raise GovernanceConflictError('Reviewed Home output adapter unavailable')
+                    self.host_output_release_validator(record, record.host_output_release, actor)
+                    allowed = CLASSIFICATION_RANK[record.classification] <= CLASSIFICATION_RANK[payload.max_classification]
+                    reason = 'reviewed_home_output_allowed' if allowed else 'classification_exceeds_context_limit'
+                except (DataGovernanceError, AuthorizationError, ValueError, LookupError):
+                    allowed, reason = False, 'reviewed_home_output_authority_unavailable'
             elif record.category == DataCategory.CREDENTIAL:
                 allowed, reason = False, "credential_data_never_enters_model_context"
             elif record.classification == DataClassification.SECRET:
