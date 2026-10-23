@@ -39,6 +39,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
+    CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
     CodeHostActionContract,
     AttestedBranch,
     result_resource_output,
@@ -258,6 +260,9 @@ class GitLabActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         project = self.contract.locator(request)
+        if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+            return {"operation":"pull-request-merge-observation","repository":project,
+                **self.contract.pull_request_verify_merge(request)}
         if request.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
             payload = self.contract.issue_create(request)
             return {
@@ -681,6 +686,17 @@ class GitLabActionProvider:
                 "provider_mutation_performed": mutated,
                 "metadata_sha256": hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
             summary = "Exact open GitLab merge request is ready for review; no approval or merge was performed."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+            parameters = self.contract.pull_request_verify_merge(request)
+            item = await self.client.merge_request(self.api_base,project,
+                parameters["pull_request_number"],token=credential)
+            if not self._observed_merge(item,parameters):
+                raise ActionRequirementError("Exact original merged MR state, head or merge commit does not match")
+            evidence_type = CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE
+            external_id = str(parameters["pull_request_number"])
+            url = None
+            output.update({**parameters,"merge_verified":True})
+            summary = "Read-only observation matches the exact original merged MR."
         elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             if payload["merge_method"] == "rebase":
@@ -775,6 +791,12 @@ class GitLabActionProvider:
             ),
         )
 
+    @staticmethod
+    def _observed_merge(item, parameters):
+        return (type(item.get("iid")) is int and item["iid"] == parameters["pull_request_number"]
+            and item.get("state") == "merged" and item.get("sha") == parameters["head_sha"]
+            and item.get("merge_commit_sha") == parameters["merge_commit_sha"])
+
     async def verify(
         self,
         result: ActionResult,
@@ -788,7 +810,16 @@ class GitLabActionProvider:
             raise ValueError("GitLab result binding does not match verification binding")
         project = self.contract.locator_for_result(result, binding)
         verified = False
-        if result.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+        if result.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+            from types import SimpleNamespace
+            parameters = self.contract.pull_request_verify_merge(SimpleNamespace(parameters={
+                key:result.output.get(key) for key in ("pull_request_number","head_sha","merge_commit_sha")}))
+            if (result.status != "succeeded" or result.output.get("merge_verified") is not True
+                or result.external_id != str(parameters["pull_request_number"])):
+                return ActionVerification(verified=False,findings=("Original merge observation result is invalid",))
+            item = await self.client.merge_request(self.api_base,project,parameters["pull_request_number"],token=credential)
+            verified = self._observed_merge(item,parameters)
+        elif result.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
             iid = result.output.get("issue_number")
             external_id = result.external_id
             if (

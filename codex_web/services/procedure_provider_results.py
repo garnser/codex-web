@@ -12,6 +12,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
+    CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
     CodeHostActionContract,
 )
 
@@ -19,7 +21,8 @@ from codex_web.services.code_host_action_contract import (
 class CodeHostProcedureResultAdapter:
     provider_type = "gitlab"
     contract_version = "1.2"
-    action_ids = (CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID)
+    action_ids = (CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+                  CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID)
 
     def project(self, request, result):
         """Return only the supported, typed output fields; preserve legacy output."""
@@ -44,6 +47,12 @@ class CodeHostProcedureResultAdapter:
             if parameters["expected_head_sha"] is None or outputs["head_sha"] != parameters["expected_head_sha"]:
                 raise ValueError("procedure_code_host_observed_head_mismatch")
             evidence_type = CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
+        elif request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+            parameters = CodeHostActionContract.pull_request_verify_merge(request)
+            if raw.get("merge_verified") is not True or any(raw.get(k) != v for k,v in parameters.items()):
+                raise ValueError("procedure_code_host_merge_observation_invalid")
+            outputs = {**parameters,"merge_verified":True}
+            evidence_type = CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE
         else:
             parameters = CodeHostActionContract.pull_request_ready(request)
             if (raw.get("draft") is not False

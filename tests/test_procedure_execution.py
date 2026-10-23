@@ -219,6 +219,9 @@ def contract(f):
 
 
 class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
+    def assignment_options(self):
+        return {}
+
     async def asyncSetUp(self):
         asyncio.get_running_loop().slow_callback_duration = 5
         await action_fixtures.ActionIntentTests.asyncSetUp(self)
@@ -277,7 +280,7 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
             capabilities=('command_execution','git','artifact_upload','network')),actor=self.actor)
         assignment=self.workers.create_assignment(ExecutionAssignmentCreate(subject=subject,execution_id='fixture-execution',project_id='home',
             resource_ids=(self.repo.id,self.resource.id),required_capabilities=('command_execution',),execution_contract_version='1.0',
-            execution_workspace_id=workspace.id,sandbox='workspace-write'),actor=self.actor)
+            execution_workspace_id=workspace.id,sandbox='workspace-write',**self.assignment_options()),actor=self.actor)
         claimed=self.workers.claim(self.worker.id,AssignmentClaimRequest(lease_seconds=120),actor=self.worker_actor,assignment_id=assignment.id)
         self.assignment=self.workers.start(self.worker.id,assignment.id,AssignmentStartRequest(lease_token=claimed.lease.lease_token,fence=claimed.fence),actor=self.worker_actor)
         registry=ArtifactContentRegistry();registry.register(LocalArtifactContentStore(self.root/'content'))

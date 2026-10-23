@@ -19,6 +19,7 @@ from codex_web.authority import AuthorityEvaluationRequest
 from codex_web.identity import TenantScope
 from codex_web.procedure_execution import ProcedureCheckpoint, ProcedureStepCheckpoint, ProcedureDeviation
 from codex_web.services.action_providers import ActionRequirementError
+from codex_web.services.code_host_action_contract import CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID
 from codex_web.services.execution_workers import AssignmentNotFoundError, WorkerConflictError
 from codex_web.services.procedure_discovery import OperationContext, ProcedureAdmissionError, checksum
 from codex_web.skills import SkillDefinition, _contains_secret_material
@@ -700,7 +701,8 @@ class ProcedureExecutionService:
                 or state.rollback_origin_receipt_id != receipt.id):
                 raise ProcedureExecutionError("procedure_rollback_origin_not_current")
             return True
-        if phase != "execute" or step.recovery:
+        if (phase != "execute" and not (phase == "verify"
+                and intent.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID)) or step.recovery:
             raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
         state = checkpoint.steps[step.id]
         if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":

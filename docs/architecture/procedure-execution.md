@@ -181,6 +181,27 @@ Canonical broker facts may inform a separately admitted step's inputs; provider
 mutation still performs its ordinary current protected-fact/policy checks. A full
 workflow requires separately supported operations and actual live qualification.
 
+GitLab additionally registers `code-host.pull-request.verify-merge` as a bounded
+read operation under existing `repository.read.metadata` authority. It accepts
+only `pull_request_number` (positive integer), `head_sha` and `merge_commit_sha`
+(exact lowercase SHA-1 revisions). These names consume the originating merge
+step's typed outputs without a caller script or transformation. Its fixed MR GET
+requires actual merged state and those exact revisions; independent provider
+verification performs another fixed GET. Its typed outputs retain those three
+fields plus `merge_verified=true`, backed by the actual original verification.
+It never performs READY, merge, CI refresh/rerun or a fallback write.
+
+Only this exact registered GitLab 1.2 read contract may use an assignment's
+writable **or** read-only repository scope. Ordinary mutations still require the
+writable scope. Current binding/target, actor authority, Profile/Definition,
+assignment/worker fence, lease and procedure step are checked through existing
+admission before and after each observation. The scope predicate reads metadata;
+it neither resolves a credential nor lends another principal credential rights.
+The worker's normal credential boundary remains mandatory. Changed custody,
+binding, proof or an unknown read outcome retains the original intent rather than
+retrying with another key. This supplies a real later `verification` step after a
+merge; it is not permission to execute a required procedure on native tools.
+
 The step policy snapshot attributes the exact published definition and live
 assignment checks; it grants no Role authority or provider capability. Current
 Role authority and canonical approval quorum are required separately, including
