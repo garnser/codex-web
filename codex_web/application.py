@@ -4976,14 +4976,32 @@ from codex_web.services.home_child_terminal import HomeChildTerminalService
 home_child_terminal_service = HomeChildTerminalService(
     preflight=execution_preflight_service, events=canonical_event_ingestion,
     intents=action_intent_store, sessions=agent_session_store, usage=agent_runtime_usage_store)
+from codex_web.services.home_goal_continuation import HomeGoalContinuation
+home_goal_continuation = HomeGoalContinuation(continuation=goal_continuation_service,
+    home_host=control_plane_broker_service.home_operator_host, turns=turn_service,
+    preflight=execution_preflight_service, usage=agent_runtime_usage_store)
+goal_continuation_service.home_continuation = home_goal_continuation
+control_plane_broker_service.home_operator_host.goal_input_authorizer = home_goal_continuation.authorize_input
+def _project_home_goal_native_start(attempt):
+    try:
+        owner_routing_service.project_native_start(attempt)
+    finally:
+        home_goal_continuation.project_native_start(attempt)
+execution_preflight_service.queued_start_observer = _project_home_goal_native_start
+app.state.home_goal_continuation = home_goal_continuation
+
 async def _record_home_retained_terminal(active, *, succeeded):
     try:
         await home_child_terminal_service.record_terminal(active, succeeded=succeeded)
     finally:
         try:
-            await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
+            await home_goal_continuation.record_terminal(active, succeeded=succeeded)
         finally:
-            await home_operator_followup.record_terminal(active, succeeded=succeeded)
+            try:
+                await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
+            finally:
+                await home_operator_followup.record_terminal(active, succeeded=succeeded)
+
 turn_execution_service.retained_turn_outcome_recorder = _record_home_retained_terminal
 automation_execution_service.home_operator_followup = home_operator_followup
 control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 
 from codex_web.agent_runtime import AgentRuntimeEvent, AgentSessionStatus
 from codex_web.goal_execution_bindings import GoalExecutionBindingStatus, GoalExecutionMode
@@ -84,12 +85,12 @@ class GoalContinuationEventService:
             for item in self.bindings.list_all(scope=scope)
             if item.agent_session_id == session.id
             and getattr(item, "execution_mode", GoalExecutionMode.APPLICATION) == GoalExecutionMode.APPLICATION
-            and item.status
+            and (getattr(item, "home_continuation", None) is not None or item.status
             not in {
                 GoalExecutionBindingStatus.BLOCKED,
                 GoalExecutionBindingStatus.COMPLETED,
                 GoalExecutionBindingStatus.CANCELLED,
-            }
+            })
         ]
         if event.provider_native_turn_id:
             rows = [
@@ -115,12 +116,27 @@ class GoalContinuationEventService:
                 reason="non_terminal_event",
             )
 
-        binding = self._binding_for_event(event, scope=scope)
+        binding = await asyncio.to_thread(self._binding_for_event,event,scope=scope)
         if binding is None:
             return GoalContinuationEventResult(
                 outcome="ignored",
                 reason="binding_not_found_or_ambiguous",
             )
+        if getattr(binding, "home_continuation", None) is not None:
+            home = getattr(self.continuation, "home_continuation", None)
+            if home is None:
+                return GoalContinuationEventResult(outcome="ignored",binding_id=binding.id,reason="home_owner_unavailable")
+            # Runtime terminal publication follows telemetry finalization. The
+            # owned checkpoint callback may already be waiting for this exact
+            # usage; this event never releases a binding based on status alone.
+            settled = await asyncio.to_thread(home._settle_usage,binding,scope)
+            next_turn = None
+            if settled:
+                current = await asyncio.to_thread(home.binding,binding.id,scope)
+                if current.status == GoalExecutionBindingStatus.IDLE:
+                    next_turn = await self.continuation.dispatch_once(binding.id,scope=scope,now=now)
+            return GoalContinuationEventResult(outcome="continued" if next_turn else "held",
+                binding_id=binding.id,continuation=next_turn,reason="home_original_usage_reconciliation")
         terminal_session_status = (
             AgentSessionStatus.READY
             if event_type in self._COMPLETED

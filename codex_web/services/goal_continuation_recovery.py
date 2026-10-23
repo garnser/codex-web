@@ -82,6 +82,10 @@ class GoalContinuationRecoveryService:
         )
 
     def _expired_active_outcome_known(self, binding, *, scope: TenantScope) -> bool:
+        if getattr(binding, "home_continuation", None) is not None:
+            # Original queued/started Home input is reconciled by the same owner.
+            # Session status alone never proves that input was not sent.
+            return True
         if binding.status != GoalExecutionBindingStatus.ACTIVE:
             return True
         try:

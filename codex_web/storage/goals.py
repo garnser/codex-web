@@ -85,6 +85,14 @@ class GoalStore:
         GOAL_CONTRACT.require(payload.get("schema_version", ""))
         return GoalState.model_validate(payload)
 
+    def goal_state(self, goal_id, *, organization_id, workspace_id):
+        reader = getattr(self.store, 'document_array_item_envelope', None)
+        if not callable(reader):
+            return self.load()
+        return self._decode(reader(self.namespace, 'goals', goal_id,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('goals', 'revisions', 'events', 'completion_evaluations')))
+
     def load(self) -> GoalState:
         return self._decode(self.store.get(self.namespace))
 

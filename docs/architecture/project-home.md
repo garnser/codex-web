@@ -591,3 +591,11 @@ acquire Home input authority. Existing Home selection, Profile, current Role,
 controller, custody, final native-send guards and actual native usage accounting
 remain required. The Automations UI and canonical event provenance expose these
 existing objects; this producer adds no activation or default Automation.
+Home application Goals use the canonical GoalContinuation adapter described in
+[Goals](goals.md#selected-home-application-continuation). A current human-owned
+ACTIVE Goal can perform bounded work in the same selected native conversation.
+The generic service actor is still refused. Existing Goal pause/stop controls,
+canonical input identity, final current-authority guard and actual runtime usage
+control continuation; no synthetic zero-token wrapper or idle polling is used.
+The Goal binding 1.2 write/rollback boundary applies globally, even before a Home
+binding is created. A paused or draft Goal is not evidence of active execution.

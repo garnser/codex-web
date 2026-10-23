@@ -5,7 +5,10 @@ import uuid
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+
+
+from codex_web.home_goal import HomeGoalProgress
 
 
 class GoalExecutionMode(StrEnum):
@@ -112,6 +115,7 @@ class GoalExecutionBinding(BaseModel):
     provider_native_objective_id: str | None = None
     native_objective_supported: bool = False
     capability_snapshot: tuple[str, ...] = ()
+    home_continuation: HomeGoalProgress | None = None
     execution_mode: GoalExecutionMode = GoalExecutionMode.APPLICATION
     delegation_authorization: ProjectDelegationAuthorization = ProjectDelegationAuthorization.NONE
     delegation_revision: int = Field(default=0, ge=0)
@@ -136,6 +140,13 @@ class GoalExecutionBinding(BaseModel):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
+    @model_serializer(mode="wrap")
+    def omit_home_continuation(self, handler):
+        result = handler(self)
+        if self.home_continuation is None:
+            result.pop("home_continuation", None)
+        return result
+
 
 class GoalExecutionBindingEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -154,6 +165,6 @@ class GoalExecutionBindingEvent(BaseModel):
 class GoalExecutionBindingState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.1"] = "1.1"
+    schema_version: Literal["1.2"] = "1.2"
     bindings: list[GoalExecutionBinding] = Field(default_factory=list)
     events: list[GoalExecutionBindingEvent] = Field(default_factory=list)

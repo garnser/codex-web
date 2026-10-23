@@ -6,10 +6,12 @@ from codex_web.goal_execution_bindings import GoalExecutionBindingState
 from codex_web.compatibility import ContractSpec, MigrationRegistry
 
 
-GOAL_EXECUTION_BINDING_CONTRACT = ContractSpec("goal-execution-binding-state", "1.1", ("1.0", "1.1"))
+GOAL_EXECUTION_BINDING_CONTRACT = ContractSpec("goal-execution-binding-state", "1.2", ("1.0", "1.1", "1.2"))
 GOAL_EXECUTION_BINDING_MIGRATIONS = MigrationRegistry("goal-execution-binding-state")
 GOAL_EXECUTION_BINDING_MIGRATIONS.register("1.0", "1.1",
     lambda payload: {**payload, "schema_version": "1.1"})
+GOAL_EXECUTION_BINDING_MIGRATIONS.register("1.1", "1.2",
+    lambda payload: {**payload, "schema_version": "1.2"})
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -35,6 +37,14 @@ class GoalExecutionBindingStore:
 
     def load(self) -> GoalExecutionBindingState:
         return self._decode(self.store.get(self.namespace))
+
+    def binding_state(self, binding_id, *, organization_id, workspace_id):
+        reader = getattr(self.store, 'document_array_item_envelope', None)
+        if not callable(reader):
+            return self.load()
+        return self._decode(reader(self.namespace, 'bindings', binding_id,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('bindings', 'events')))
 
     def update(
         self,

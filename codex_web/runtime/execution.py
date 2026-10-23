@@ -3130,7 +3130,7 @@ class TurnExecutionService:
                     assignment_id=assignment_id, source=source,
                     **({"request_checksum": hashlib.sha256(message.encode()).hexdigest(),
                         "input_execution_id": requested_execution_id}
-                       if source.removeprefix("queued:").startswith("home-operator-automation:") else {}))
+                       if source.removeprefix("queued:").startswith(("home-operator-automation:", "home-goal-continuation:")) else {}))
 
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(
