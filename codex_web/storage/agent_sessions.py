@@ -351,6 +351,17 @@ class AgentSessionStore:
         )
         return matches[0] if matches else None
 
+    def native_custody(self, native_id: str) -> AgentSession | None:
+        """Bounded original custody lookup for routing, across provider aliases.
+
+        Absence permits first admission; ambiguity never proves absence.
+        Execution still resolves and validates its exact provider/runtime.
+        """
+        matches = self._native_matches(native_id, limit=2)
+        if len(matches) > 1:
+            raise AgentSessionConflictError("ambiguous native session custody")
+        return matches[0] if matches else None
+
     def find_unique_by_native_id(
         self,
         provider_native_session_id: str,

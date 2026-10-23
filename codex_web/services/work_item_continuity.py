@@ -518,7 +518,7 @@ class WorkItemContinuityService:
             )
             return
         repository_resource_id, writable_repository_resource_ids = self._dispatch_repository_scope(state)
-        pin = (await asyncio.to_thread(self.owner_routing.compatible_pin, state, binding, handoff.to_agent,
+        pin = (await self.owner_routing.prepare_compatible_pin(state, binding, handoff.to_agent,
             writable_repository_ids=writable_repository_resource_ids)
             if self.owner_routing is not None else None)
         if pin is None or pin.recipient is None:
@@ -799,7 +799,7 @@ class WorkItemContinuityService:
         repository_resource_id, writable_repository_resource_ids = (
             self._dispatch_repository_scope(state)
         )
-        pin = (await asyncio.to_thread(self.owner_routing.compatible_pin,
+        pin = (await self.owner_routing.prepare_compatible_pin(
             state, binding, actionable_owner_value(state),
             writable_repository_ids=writable_repository_resource_ids)
             if self.owner_routing is not None else None)
