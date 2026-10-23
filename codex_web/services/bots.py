@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -82,6 +83,37 @@ class BotService:
             None,
         )
 
+    def _runtime_status(self, connections) -> list[dict[str, Any]]:
+        """Project current admission separately from retained transport telemetry."""
+        by_id = {connection.id: connection for connection in connections}
+        reasons: dict[str, str | None] = {}
+        observed_at = time.time()
+        result = []
+        for retained in self.telemetry.snapshot().values():
+            row = dict(retained)
+            connection = by_id.get(row.get("connectionId"))
+            if connection is None:
+                reason = "bot_runtime_connection_unavailable"
+            else:
+                project = connection.project_id
+                if project not in reasons:
+                    try:
+                        reasons[project] = self.runtime.gate_reason(project)
+                    except Exception:
+                        reasons[project] = "bot_runtime_gate_unavailable"
+                reason = reasons[project]
+            if "gateReason" in row:
+                row["lastObservedGateReason"] = row["gateReason"]
+                # Legacy observations have no real gate timestamp. A later ping
+                # updatedAt must never be borrowed as a pause observation time.
+                row["lastObservedGateReasonAt"] = row.pop("gateReasonObservedAt", None)
+            row.update(projectId=connection.project_id if connection else None,
+                       gateReason=reason, gateEligible=reason is None,
+                       gateReasonSource="canonical_project_reconciliation",
+                       gateObservedAt=observed_at)
+            result.append(row)
+        return result
+
     def status(self) -> dict[str, Any]:
         bindings = self.bindings.load_bindings()
         connections = self.connections.load_connections()
@@ -136,9 +168,7 @@ class BotService:
             "connections": len(connections),
             "bindings": len(bindings),
             "runtimeConnections": len(self.runtime.tasks),
-            "runtimeStatus": list(
-                self.telemetry.snapshot().values()
-            ),
+            "runtimeStatus": self._runtime_status(connections),
             "slackPayloadBackpressure": (
                 self.runtime.slack_payload_status()
                 if callable(

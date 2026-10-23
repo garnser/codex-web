@@ -30,14 +30,17 @@ class BotRuntimeTelemetry:
         status: str,
         **details: Any,
     ) -> dict[str, Any]:
+        observed_at = time.time()
         current = dict(self.status.get(connection.id, {}))
+        if "gateReason" in details:
+            current["gateReasonObservedAt"] = observed_at
         current.update(
             {
                 "connectionId": connection.id,
                 "provider": connection.provider,
                 "name": connection.name,
                 "status": status,
-                "updatedAt": time.time(),
+                "updatedAt": observed_at,
                 **details,
             }
         )
