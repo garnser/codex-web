@@ -69,6 +69,14 @@ class HomeRestartRecoveryService:
                 self.refused('home_restart_original_action_inventory_unavailable')
         return tuple(held)
 
+    def _known_attempts(self, queued_id):
+        if not isinstance(queued_id,str) or not queued_id:
+            self.refused('home_restart_retained_queue_identity_unavailable')
+        attempt = self.preflight.store.get('preflight-queued-' + queued_id)
+        if attempt is None or (attempt.queued_turn_snapshot or {}).get('id') != queued_id:
+            self.refused('home_restart_retained_queue_identity_unavailable')
+        return (attempt,)
+
     def _started_input(self, active, *, queued_id=None, proof=None):
         """Positive original START, not absence of an unknown response.
 
@@ -77,7 +85,9 @@ class HomeRestartRecoveryService:
         """
         from codex_web.services.queued_native_start import validate_attribution
         matches = []
-        for attempt in self.preflight.store.for_thread(active.thread_id, limit=200):
+        candidates = (self._known_attempts(queued_id) if queued_id is not None
+            else self.preflight.store.for_thread(active.thread_id, limit=200))
+        for attempt in candidates:
             receipt, correlation = attempt.queued_start_receipt, attempt.queued_start_correlation
             if receipt is None or correlation is None or attempt.status != 'started':
                 continue
@@ -108,10 +118,11 @@ class HomeRestartRecoveryService:
 
     def _settled_chain(self, previous):
         evidence = previous.evidence.get('home_restart')
-        if evidence is None or self.event_followup is None:
+        if (evidence is None or self.event_followup is None
+                or self.event_followup.sessions is None or self.event_followup.runtime_usage is None):
             self.refused('home_restart_previous_terminal_usage_unavailable')
         matches = []
-        for attempt in self.preflight.store.for_thread(previous.thread_id,limit=200):
+        for attempt in self._known_attempts(evidence.get('queued_id')):
             snapshot = attempt.queued_turn_snapshot
             if snapshot is None or snapshot.get('id') != evidence.get('queued_id'):
                 continue
@@ -175,15 +186,15 @@ class HomeRestartRecoveryService:
             attempt, queued = self._started_input(active)
             self.event_followup.restart_origin(active, assignment=assignment, actor=actor, project=project,
                 requested_execution_id=attempt.execution_id, message=queued.message)
-            return {'active': active.model_dump(mode='json')}
+            return {'active': active.model_dump(mode='json'), 'queued_id':queued.id}
         self.refused('home_restart_original_provenance_unavailable')
 
     def _validate_event_origin(self, origin, actor, project, *, check_controls=True):
-        if self.event_followup is None or not isinstance(origin, dict) or set(origin) != {'active'}:
+        if self.event_followup is None or not isinstance(origin, dict) or set(origin) != {'active','queued_id'}:
             self.refused('home_restart_event_authority_unavailable')
         original = ActiveThreadTurn.model_validate(origin['active'])
         assignment = self._assignment(original.assignment_id)
-        attempt, queued = self._started_input(original)
+        attempt, queued = self._started_input(original,queued_id=origin['queued_id'])
         return self.event_followup.restart_origin(original, assignment=assignment, actor=actor, project=project,
             requested_execution_id=attempt.execution_id, message=queued.message, check_controls=check_controls)
 
@@ -357,10 +368,10 @@ class HomeRestartRecoveryService:
         if not evidence or evidence.get('event_origin') is None:
             return ()
         proof = HomeRestartInputProof.model_validate(evidence['proof'])
-        for attempt in self.preflight.store.for_thread(terminal.native_session_id, limit=200):
+        for attempt in self._known_attempts(evidence.get('queued_id')):
             receipt = attempt.queued_start_receipt
             if receipt is None or receipt.provider_native_turn_id != terminal.native_turn_id:
-                continue
+                return ()
             queued = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
             if queued.home_restart_input != proof:
                 return ()

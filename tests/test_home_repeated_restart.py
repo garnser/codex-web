@@ -124,6 +124,29 @@ class RepeatedHomeRestartTests(HomeRestartRecoveryTests):
         self.assertEqual(self.intents.store.get(intent.id).model_dump(mode='json'),original)
         self.assertEqual(self.effects,0)
 
+    async def test_known_recovery_proofs_survive_over_two_hundred_newer_preflights(self):
+        from unittest.mock import patch
+        run,active=self.event()
+        queued=self.restart.retain_startup(active,project=self.host._project('home'),actor=self.actor)
+        resumed=self.start_input(queued,'old-recovery-before-history')
+        saved=self.records.get('operator-thread')
+        for index in range(205):
+            unrelated=self.execution.enqueue_turn(thread_id='operator-thread',project_id='home',
+                message='Unrelated newer request '+str(index),source='web')
+            self.preflight.retain_queued(unrelated,organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id)
+        self.followup.runtime_usage=NS(get=lambda key:None)
+        with patch.object(self.preflight.store,'for_thread',side_effect=AssertionError('known provenance must use point lookup')):
+            context=self.restart.event_terminal_context(resumed)
+            self.assertEqual(context[0].id,run.id)
+            self.assertEqual(context[1][0].turn_id,active.turn_id)
+            self.assertEqual(self.records.get('operator-thread'),saved)
+            # The prior settlement reader also locates its known input directly;
+            # missing usage remains the honest blocker, not a truncated history.
+            with self.assertRaises(ExecutionPrestartRefusal) as refused:
+                self.restart._settled_chain(saved)
+            self.assertEqual(refused.exception.detail['code'],'home_restart_previous_terminal_usage_unavailable')
+        self.assertEqual(self.effects,0)
+
     async def test_twenty_unsettled_consecutive_generations_refuse_without_dropping_proof(self):
         active=self.interrupted
         for cycle in range(21):
