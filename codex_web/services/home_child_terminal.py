@@ -1,7 +1,7 @@
 """Canonical terminal facts for positively started Home-delegated child inputs.
 
-This observer grants no execution authority. All reads are exact canonical point
-reads; older active markers without the optional reference are left untouched.
+This observer grants no execution authority. Admission/intent/usage reads are exact canonical points; native session
+resolution uses the existing two-candidate canonical lookup; older active markers without the optional reference are left untouched.
 """
 from __future__ import annotations
 
@@ -82,10 +82,11 @@ class HomeChildTerminalService:
             # configured durable transport owns delivery retries.
         usage = None
         if self.sessions is not None and self.usage is not None:
-            session = self.sessions.find_by_native_id(active.thread_id, organization_id=attempt.organization_id,
-                workspace_id=attempt.workspace_id, provider_id=receipt.provider_id, runtime_id=receipt.runtime_id)
+            session = self.sessions.find_unique_by_native_id(active.thread_id,
+                provider_id=receipt.provider_id, runtime_id=receipt.runtime_id)
             if session is not None:
-                if (session.project_id, session.assignment_id, session.execution_id, session.execution_workspace_id) != (
+                if (session.organization_id, session.workspace_id, session.project_id, session.assignment_id,
+                        session.execution_id, session.execution_workspace_id) != (attempt.organization_id, attempt.workspace_id,
                         active.project_id, active.assignment_id, active.execution_id, active.execution_workspace_id):
                     raise ValueError('Home child session attribution changed')
                 usage_id = 'runtime-usage-' + hashlib.sha256(f'{session.id}\n{active.turn_id}'.encode()).hexdigest()[:32]

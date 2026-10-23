@@ -81,7 +81,9 @@ class HomeChildTerminalTests(HomeCanonicalSendTests):
     async def test_actual_usage_duplicate_and_reopened_bus_keep_one_original(self):
         active = await self.start_child()
         usage = self.final_usage(active)
-        await self.complete_child(active)
+        from unittest.mock import patch
+        with patch.object(self.sessions.store,'find_by_native_id',side_effect=AssertionError('unbounded native alias lookup')):
+            await self.complete_child(active)
         payload = self.received[0].payload
         self.assertEqual((payload['input_tokens'],payload['output_tokens'],payload['runtime_duration_seconds']),(17,9,2.5))
         self.assertEqual(payload['usage_id'],usage.id)
@@ -161,6 +163,14 @@ class HomeChildTerminalTests(HomeCanonicalSendTests):
         with self.assertRaises(ValueError):
             await self.observer.record_terminal(active,succeeded=True)
         self.assertEqual(self.received,[])
+        from unittest.mock import patch
+        # Canonical telemetry's bounded ambiguity result never selects a different
+        # session/usage record or leaks the mismatched record above.
+        with patch.object(self.sessions.store,'find_unique_by_native_id',return_value=None):
+            await self.observer.record_terminal(active,succeeded=True)
+        self.assertEqual(self.received[0].payload['outcome'],'unknown')
+        self.assertFalse(self.received[0].payload['usage_available'])
+        self.assertNotIn('input_tokens',self.received[0].payload)
 
     async def test_cancelled_waiter_retains_terminal_owner_until_writer_joins(self):
         import asyncio
