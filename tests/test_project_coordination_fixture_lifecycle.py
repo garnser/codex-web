@@ -41,3 +41,15 @@ class CoordinationFixtureLifecycleTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
             await handler
+
+    async def test_cleanup_surfaces_owned_handler_failure_and_cancellation(self):
+        async def fail(error):
+            raise error
+        async def stop():
+            return None
+        for error in (RuntimeError('fixture failure'), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                handler = asyncio.create_task(fail(error))
+                with self.assertRaisesRegex(AssertionError, type(error).__name__):
+                    await stop_owned_broker(SimpleNamespace(_handler_tasks={handler}, stop=stop))
+                self.assertTrue(handler.done())
