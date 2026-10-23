@@ -294,6 +294,20 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
                          self.original)
         self.assertEqual(self.evidence.store.load().verifications, [])
 
+    async def test_pinned_role_owner_appends_one_actual_worker_verification(self):
+        self.use_pinned_role_owner()
+        status, _, body = await self.post()
+        self.assertEqual(status, 200, body)
+        record = body['item']
+        self.assertEqual(record['verifier_identity_id'], self.worker_actor.identity_id)
+        self.assertEqual(body['attribution']['authorizer_identity_id'], self.admin.identity_id)
+        self.assertTrue(record['independent'])
+        self.assertEqual(record['evidence_ids'], [self.original.id])
+        self.assertEqual(len(self.evidence.store.load().verifications), 1)
+        self.assertEqual(self.recovery.store.load(), self.original_state)
+        self.assertEqual(self.evidence.get_evidence(self.original.id, actor=self.admin),
+                         self.original)
+
     async def test_pinned_role_does_not_admit_unscoped_or_foreign_record(self):
         self.use_pinned_role_owner()
         for overrides in ({'work_item_ref': None}, {'project_id': 'another-project'}):
