@@ -86,3 +86,30 @@ class RequestedNativeScopeTests(unittest.IsolatedAsyncioTestCase):
         self.n.threads.create.assert_awaited_once()
         self.assertEqual(pin.recipient.thread_id, 'platform-thread')
         self.assertEqual(self.source.repository_scope.read_only_repository_ids, ('core',))
+
+    def add_last_unrelated_candidate(self, scope):
+        from types import SimpleNamespace
+        unrelated = self.source.model_copy(deep=True, update={
+            'id': 'assignment-unrelated', 'repository_scope': scope,
+            'agent_profile': self.source.agent_profile.model_copy(update={'role_id': 'unrelated'})})
+        self.n.fixture.assignments[unrelated.id] = unrelated
+        self.n.fixture.bootstraps['unrelated'] = SimpleNamespace(
+            assignment_id=unrelated.id, thread_id='unrelated')
+
+    async def test_last_unrelated_requested_scope_cannot_hide_source_mismatch(self):
+        self.add_last_unrelated_candidate(self.n.template.repository_scope.model_copy(deep=True))
+        pin = await self.n.prepare()
+        self.n.fixture.validate(pin)
+        self.n.threads.create.assert_awaited_once()
+
+    async def test_last_unrelated_foreign_scope_cannot_invent_source_mismatch(self):
+        original_scope = self.source.repository_scope.model_copy(deep=True)
+        requested_scope = self.n.template.repository_scope.model_copy(deep=True)
+        for assignment in (self.n.original, self.source):
+            assignment.repository_scope = requested_scope.model_copy(deep=True)
+            assignment.resource_ids = ('platform',)
+        self.n.routing.replacement_resolver = lambda *args, **kwargs: 'replacement'
+        self.add_last_unrelated_candidate(original_scope)
+        with self.assertRaisesRegex(OwnerRoutingError, 'compatible_lane_unavailable'):
+            await self.n.prepare()
+        self.n.threads.create.assert_not_awaited()
