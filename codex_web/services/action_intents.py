@@ -600,7 +600,7 @@ class ActionIntentService:
             binding = self.execution.registry.binding(binding_id,actor)
             provider = self.execution.registry.provider(binding.provider_type,binding.provider_instance,actor=actor)
             definition = self.execution._definition(provider,request.action_id)
-            read_only_observation = (provider.provider_type == "gitlab" and provider.contract_version == "1.2"
+            read_only_observation = (binding.enabled and provider.provider_type == "gitlab" and provider.contract_version == "1.2"
                 and (binding.project_id is None or binding.project_id == request.project_id)
                 and (not binding.resource_ids or set(request.resource_ids).issubset(binding.resource_ids))
                 and definition.capabilities.read and definition.required_authority_level == "read"

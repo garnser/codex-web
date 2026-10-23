@@ -173,6 +173,12 @@ class MergeVerificationProcedureTests(ProcedureExecutionTests):
         mutation = request.model_copy(update={"action_id":CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID})
         with self.assertRaisesRegex(ActionIntentConflictError,"writable scope"):
             self.intents._validate_execution_repository_scope(assignment.execution_id,mutation,self.actor,binding_id=self.binding.id)
+        # This direct canonical scope check has no Procedure checkpoint to
+        # reject revocation later. It must independently reread binding state.
+        self.registry.set_enabled(self.binding.id,False,actor=self.actor)
+        with self.assertRaisesRegex(ActionIntentConflictError,"provider contract"):
+            self.intents._validate_execution_repository_scope(assignment.execution_id,request,self.actor,binding_id=self.binding.id)
+        self.registry.set_enabled(self.binding.id,True,actor=self.actor)
         self.provider.contract_version="1.1"
         with self.assertRaisesRegex(ActionIntentConflictError,"provider contract"):
             self.intents._validate_execution_repository_scope(assignment.execution_id,request,self.actor,binding_id=self.binding.id)
