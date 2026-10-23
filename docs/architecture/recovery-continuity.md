@@ -1155,3 +1155,10 @@ identity bootstrap and internal service bootstrap read an already complete state
 without rewriting it; missing principals or memberships still initialize through
 the existing atomic updater, and existing membership roles are preserved. This
 neither adds membership authority nor suppresses audit records.
+
+Historical core work-item continuity entrypoints use the same canonical
+owner-routing service as the composed work-item service. Their dynamic host
+adapter does not bypass compatible-recipient, current custody, unresolved-input
+or post-await state checks. A task's repository requirements remain context,
+not permission to widen a recipient; legitimate new least-privileged work does
+not imply that every task needs an earlier conversation's read-only resources.

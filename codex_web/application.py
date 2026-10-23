@@ -4043,7 +4043,7 @@ core._watchdog_dispatch_allowed = watchdog_dispatch_policy.allowed
 core._record_watchdog_dispatch = watchdog_dispatch_policy.record
 core.HANDOFF_COORDINATION_CHANNEL = HANDOFF_COORDINATION_CHANNEL
 work_item_continuity_compatibility = (
-    build_work_item_continuity_compatibility_service(core)
+    build_work_item_continuity_compatibility_service(core, owner_routing=owner_routing_service)
 )
 app.state.work_item_continuity_compatibility = (
     work_item_continuity_compatibility
