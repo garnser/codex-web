@@ -210,6 +210,77 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.call("procedure.start",{**payload,"actor":"override"},target=self.assignment.id)
 
+    async def test_real_broker_socket_to_canonical_procedure_owner_and_audit(self):
+        import time
+        import tests.test_control_plane_broker as broker_fixture
+        from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+        from codex_web.execution_workers import ExecutionWorker
+        from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
+        from codex_web.services.procedure_execution import ProcedureExecutionService
+
+        fixture=broker_fixture.ControlPlaneBrokerTests()
+        await fixture.asyncSetUp()
+        try:
+            profiles=install_execution_profile_definitions(fixture.registry)
+            active=profiles.record(organization_id="local",workspace_id="default",project_id="project-a")
+            payload=copy.deepcopy(active.payload)
+            for profile in payload["profiles"]:
+                if profile["id"]=="orchestration-only":
+                    profile["control_plane_operations"]=["procedure.read"]
+            draft=fixture.registry.create_draft(DefinitionDraftCreate(
+                definition_id=active.definition_id,kind=active.kind,
+                definition_schema_version=active.definition_schema_version,payload=payload,
+                actor="test",reason="Explicit procedure read broker fixture"))
+            fixture.registry.approve_publication(draft.record_id,actor="test-approver",
+                reference="TEST-APPROVAL",reason="Fixture declaration")
+            fixture.registry.publish(draft.record_id,DefinitionPublishRequest(
+                actor="test",reason="Current explicit fixture",expected_active_revision=active.revision))
+            _,reference=profiles.resolve("orchestration-only",organization_id="local",
+                workspace_id="default",project_id="project-a")
+            fixture.assignment.execution_profile_definition=reference
+            fixture.assignment.execution_workspace_id="workspace-private"
+            worker=ExecutionWorker(id="worker-1",organization_id="local",workspace_id="default",
+                service_identity_id=fixture.worker_actor.identity_id,version="test",
+                capabilities=fixture.assignment.required_capabilities,
+                supported_execution_contract_versions=(fixture.assignment.execution_contract_version,),
+                registered_by="test")
+            workspace=NS(status="active",execution_id=fixture.assignment.execution_id,
+                project_id="project-a",resource_ids=(),lease_id="lease-private",id="workspace-private")
+            resource_lease=NS(released_at=None,expires_at=time.time()+120,
+                execution_id=fixture.assignment.execution_id,execution_workspace_id="workspace-private")
+            workers=NS(store=NS(assignment=lambda _:fixture.current_assignment,worker=lambda _:worker),
+                workspaces=NS(get=lambda *a:workspace,store=NS(lease=lambda _:resource_lease)))
+            control=fixture.identity.local_trusted_actor()
+            owner=ProcedureExecutionService(workers=workers,skills=None,discovery=None,
+                intents=None,evidence=None,identity=fixture.identity,authority=fixture.authority,
+                approvals=None,attention=None,control_actor=control)
+            owner_get=Mock(wraps=owner.get)
+            owner.get=owner_get
+            owner.start=Mock(side_effect=AssertionError("undeclared start reached owner"))
+            fixture.service.execution_workers=workers
+            fixture.service.execution_profiles=profiles
+            fixture.service.procedure_admission=AsyncMock()
+            fixture.service.assignment_reasoning=AssignmentReasoningBroker(fixture.service,
+                procedures=owner,executives=self.fixture.service)
+            status,_,response=await fixture._request("GET",
+                f"/api/execution-workers/assignments/{fixture.assignment.id}/procedure")
+            self.assertEqual(status,200,response)
+            self.assertEqual(response["assignment_id"],fixture.assignment.id)
+            actual_actor=owner_get.call_args.args[1]
+            self.assertEqual(actual_actor.identity_id,fixture.assignment.created_by)
+            self.assertEqual(actual_actor.assurance.value,"primary")
+            self.assertEqual(fixture.service.procedure_admission.await_args.kwargs["operation"].id,"procedure.read")
+            events=fixture.service.audit.load().events
+            self.assertTrue(any(event.assignment_id==fixture.assignment.id
+                and event.operation_id=="procedure.read" and event.decision.value=="allow" for event in events))
+            status,_,response=await fixture._request("POST",
+                f"/api/execution-workers/assignments/{fixture.assignment.id}/procedure/start",
+                payload={"definition":reference.model_dump(mode="json"),"input_snapshot_id":"artifact-one"})
+            self.assertEqual(status,403,response)
+            owner.start.assert_not_called()
+        finally:
+            await fixture.asyncTearDown()
+
     async def test_body_and_query_are_closed(self):
         for name,target in (("procedure.read",self.assignment.id),("executive.activation.read",None)):
             with self.assertRaises(HTTPException):
