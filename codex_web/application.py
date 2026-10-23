@@ -4907,6 +4907,17 @@ home_restart_recovery_service = HomeRestartRecoveryService(
     intents=action_intent_service, preflight=execution_preflight_service)
 turn_execution_service.home_restart_recovery = home_restart_recovery_service
 app.state.home_restart_recovery_service = home_restart_recovery_service
+from codex_web.services.home_upgrade_checkpoint import HomeUpgradeCheckpointService
+home_upgrade_checkpoint_service = HomeUpgradeCheckpointService(
+    restart_recovery=home_restart_recovery_service, upgrades=upgrade_service,
+    artifacts=artifact_evidence_service,
+    source_revision=lambda: os.environ.get("CODEX_WEB_GIT_REVISION", "").strip() or None)
+home_restart_recovery_service.planned_restart = home_upgrade_checkpoint_service
+upgrade_service.home_checkpoint_before_drain = lambda plan_id, actor: home_upgrade_checkpoint_service.checkpoint_current(
+    plan_id, worker_runtime=local_execution_worker_runtime, operator_actor=actor)
+upgrade_service.home_resume_after_upgrade = lambda plan_id, actor: home_upgrade_checkpoint_service.resume_completed(
+    plan_id, operator_actor=actor)
+app.state.home_upgrade_checkpoint_service = home_upgrade_checkpoint_service
 from codex_web.services.home_host_action_provider import HomeHostActionProvider
 _home_host_provider = HomeHostActionProvider(home_host=control_plane_broker_service.home_operator_host,
     worker_runtime=local_execution_worker_runtime, artifacts=artifact_evidence_service, crypto=crypto_key_service)
