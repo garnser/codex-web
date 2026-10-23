@@ -5,6 +5,7 @@ is introduced. The supervisor must hold its ordinary canonical Upgrade authority
 """
 import hashlib
 import json
+import time
 from pydantic import BaseModel, ConfigDict, Field
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.artifact_evidence import ArtifactCreate, ArtifactDigest, EvidenceCreate
@@ -72,7 +73,7 @@ class HomeUpgradeCheckpointService:
             worker_actor=worker_actor, requester_id=snapshot.created_by, mutating=False)
         a, requester, binding = origin.assignment, origin.requester, origin.binding
         if ((plan.organization_id, plan.workspace_id) != (a.organization_id, a.workspace_id)
-                or plan.status != 'draft' or plan.maintenance_mode or plan.completed_at is not None
+                or plan.status not in {'draft','ready','preflight_blocked'} or plan.maintenance_mode or plan.completed_at is not None
                 or plan.post_upgrade_evidence_id is not None):
             self.refused('home_upgrade_checkpoint_requires_new_plan')
         release = self.upgrades.releases.get(plan.release_id, actor=operator_actor)
@@ -105,13 +106,58 @@ class HomeUpgradeCheckpointService:
             source='home-upgrade-checkpoint', external_id=plan.id,
             digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
             metadata={'checkpoint':raw}), actor=requester,
-            idempotency_key=sha(encoded([plan.id, binding.revision, a.id, a.fence])))
+            idempotency_key=plan.id)
+
+    def _selected_host(self, operator_actor):
+        binding = self.home.projects.get('home', operator_actor.tenant).home_operator
+        if binding is None or not binding.thread_id or not binding.agent_profile_id:
+            return None
+        requester = self.home.broker.identity.actor_for_identity(binding.selected_by, scope=operator_actor.tenant)
+        profiles = self.home.broker.execution_profiles
+        selected,_ = profiles.agent_profiles.resolve_for_execution(binding.agent_profile_id,actor=requester,project_id='home')
+        if selected.revision != binding.agent_profile_revision:
+            self.refused('home_upgrade_selected_profile_changed')
+        profile,_ = profiles.resolve(selected.execution_profile_id,
+            organization_id=requester.organization_id,workspace_id=requester.workspace_id,project_id='home')
+        if HOST_INSPECTION.id not in profile.control_plane_operations:
+            return None
+        return binding,requester
+
+    def checkpoint_current(self, plan_id, *, worker_runtime, operator_actor):
+        """Optional existing service-drain callback; unconfigured Home is a no-op."""
+        self._operator(operator_actor)
+        selected = self._selected_host(operator_actor)
+        if selected is None:
+            return None
+        binding,requester = selected
+        bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
+        assignment = self.recovery._assignment(bootstrap.assignment_id)
+        # Only the ALREADY configured registered worker is usable here. No
+        # identity construction, new token or arbitrary worker impersonation.
+        if (worker_runtime is None or worker_runtime.worker is None or worker_runtime.worker_actor is None
+                or assignment.assigned_worker_id != worker_runtime.worker.id):
+            self.refused('home_upgrade_configured_worker_unavailable')
+        return self.checkpoint(plan_id, snapshot=assignment, worker_actor=worker_runtime.worker_actor,
+            operator_actor=operator_actor)
+
+    def resume_completed(self, plan_id, *, operator_actor):
+        self._operator(operator_actor)
+        selected = self._selected_host(operator_actor)
+        if selected is None:
+            return None
+        binding,requester = selected
+        artifact = self.artifacts.find_idempotent_artifact(actor=requester,
+            source='home-upgrade-checkpoint', idempotency_key=plan_id)
+        if artifact is None:
+            self.refused('home_upgrade_checkpoint_missing_for_completed_plan')
+        return self.resume(artifact.id, operator_actor=operator_actor)
 
     def _checkpoint(self, checkpoint_id, actor):
         artifact = self.artifacts.get_artifact(checkpoint_id, actor=actor)
         raw = artifact.metadata.get('checkpoint')
         if (artifact.project_id != 'home' or artifact.source != 'home-upgrade-checkpoint'
-                or artifact.lifecycle != 'active' or not isinstance(raw, str)
+                or artifact.lifecycle != 'active' or artifact.retention_expires_at is not None and artifact.retention_expires_at <= time.time()
+                or not isinstance(raw, str)
                 or artifact.digest is None or artifact.digest.value != sha(raw)):
             self.refused('home_upgrade_checkpoint_unavailable')
         checkpoint = HomeUpgradeCheckpoint.model_validate_json(raw)
@@ -132,6 +178,7 @@ class HomeUpgradeCheckpointService:
             self.refused('home_upgrade_completion_unavailable')
         evidence = self.artifacts.get_evidence(plan.post_upgrade_evidence_id, actor=actor)
         if (evidence.lifecycle != 'valid' or evidence.result != 'pass'
+                or evidence.retention_expires_at is not None and evidence.retention_expires_at <= time.time()
                 or evidence.source != 'upgrade-post-verification' or evidence.project_id != plan.project_id
                 or evidence.metadata.get('upgrade_plan_id') != plan.id
                 or evidence.metadata.get('target_app_version') != checkpoint.target_version):
@@ -167,7 +214,7 @@ class HomeUpgradeCheckpointService:
             artifact_ids=(artifact.id,), summary='Existing Upgrade supervisor retained Home continuation',
             observed_at=plan.completed_at,
             metadata={'upgrade_plan_id':plan.id,'completion_evidence_id':completion.id,
-                'checkpoint_sha256':artifact.digest.value}), actor=actor, idempotency_key=artifact.id)
+                'checkpoint_sha256':artifact.digest.value,'message_sha256':sha(message)}), actor=actor, idempotency_key=artifact.id)
         proof = HomeUpgradeInputProof(checkpoint_id=artifact.id,checkpoint_sha256=artifact.digest.value,
             upgrade_plan_id=plan.id,completion_evidence_id=completion.id,resume_evidence_id=receipt.id,
             thread_id=checkpoint.thread_id,requested_by=actor.identity_id,message_sha256=sha(message))
@@ -195,10 +242,13 @@ class HomeUpgradeCheckpointService:
                 scope=TenantScope(organization_id=attempt.organization_id,workspace_id=attempt.workspace_id))
             artifact, checkpoint = service._checkpoint(proof.checkpoint_id,actor)
             plan, completion = service._completed(checkpoint,actor)
+            if plan.completed_at < artifact.created_at or completion.observed_at < artifact.created_at:
+                service.refused('home_upgrade_old_completion_cannot_resume')
             actor = service._requester(checkpoint)
             receipt = service.artifacts.get_evidence(proof.resume_evidence_id,actor=actor)
             if (proof.checkpoint_sha256 != artifact.digest.value or proof.upgrade_plan_id != plan.id
-                    or proof.completion_evidence_id != completion.id or queued.thread_id != checkpoint.thread_id
+                    or proof.completion_evidence_id != completion.id or proof.requested_by != checkpoint.requester_id
+                    or queued.thread_id != checkpoint.thread_id
                     or proof.thread_id != checkpoint.thread_id or queued.source != 'upgrade-recovery:home'
                     or queued.project_id != 'home' or queued.execution_id != 'home-upgrade-'+artifact.id
                     or queued.canonical_ingress_id is not None or queued.agent_profile_actor_id != actor.identity_id
@@ -207,7 +257,8 @@ class HomeUpgradeCheckpointService:
                     or receipt.artifact_ids != (artifact.id,) or receipt.producer_identity_id != actor.identity_id
                     or receipt.metadata.get('upgrade_plan_id') != plan.id
                     or receipt.metadata.get('completion_evidence_id') != completion.id
-                    or receipt.metadata.get('checkpoint_sha256') != artifact.digest.value):
+                    or receipt.metadata.get('checkpoint_sha256') != artifact.digest.value
+                    or receipt.metadata.get('message_sha256') != proof.message_sha256):
                 service.refused('home_upgrade_retained_input_changed')
             return checkpoint,actor
         class Authorizer:

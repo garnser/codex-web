@@ -277,7 +277,9 @@ class ArtifactEvidenceService:
         actor: AuthenticationActor,
         state: ArtifactEvidenceState | None = None,
     ) -> Artifact:
-        return self._artifact(state if state is not None else self.store.load(), artifact_id, actor)
+        current = state if state is not None else self.store.artifact_state(artifact_id,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        return self._artifact(current, artifact_id, actor)
 
     def get_evidence(
         self,
@@ -697,6 +699,14 @@ class ArtifactEvidenceService:
     def _idempotent_evidence_id(actor: AuthenticationActor, source: str, key: str) -> str:
         scoped_key = "\0".join((actor.organization_id, actor.workspace_id, actor.identity_id, source, key))
         return "evidence-" + hashlib.sha256(scoped_key.encode()).hexdigest()
+
+    def find_idempotent_artifact(self, *, actor: AuthenticationActor, source: str,
+                                 idempotency_key: str) -> Artifact | None:
+        key = self._idempotent_evidence_id(actor, source, idempotency_key).replace('evidence-', 'artifact-', 1)
+        try:
+            return self.get_artifact(key, actor=actor)
+        except ArtifactNotFoundError:
+            return None
 
     def find_idempotent_evidence(self, *, actor: AuthenticationActor, source: str,
                                 idempotency_key: str) -> Evidence | None:

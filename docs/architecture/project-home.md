@@ -475,3 +475,50 @@ was never deployed; deleting any such alias cannot affect this predicate. No new
 records migration is required. The reader explicitly accepts prototype normalized
 metadata `1.5` without downgrading it; publication/readiness compatibility remains
 intact. Ordinary canonical `1.4` writes and serialization stay unchanged.
+
+## Planned Upgrade checkpoint and same-conversation handoff
+
+An explicitly configured Home operator can use the existing whole-service Upgrade
+supervisor. `UpgradeService.start_service_drain` has an optional before-maintenance
+checkpoint callback; `verify_post_upgrade` has an optional observer AFTER canonical
+PASS evidence and COMPLETED status are committed. The application supplies the
+already configured `LocalExecutionWorkerRuntime`, never constructs an alternate
+worker identity. Both API operations must run through the existing owned, joined,
+off-loop storage boundary. No signal, restart daemon, second controller or native
+Goal mutation is introduced.
+
+`HomeUpgradeCheckpointService.checkpoint_current` first resolves the selected
+Agent Profile and its current explicit Home operator declaration. Navigation-only
+and ordinary profiles are no-ops BEFORE bootstrap lookup. Configured Home resolves
+the same conversation's actual bootstrap/assignment and accepts only the configured
+worker's existing identity. A mismatched worker is a visible blocker. The checkpoint
+is a canonical REPORT Artifact with selected Home/Profile/native-conversation and
+custody references, exact new plan/release/source/target references, retained queue
+IDs/hash and held intent IDs. It contains no lease tokens, transcript, argv, output
+or fabricated active-turn record. This metadata checkpoint references existing
+persistent state; it is not a copy of volatile native model context.
+
+The same supervisor's post-verification callback point-reads that plan's immutable
+checkpoint, verifies actual target source, SAME completed plan and current valid
+PASS evidence, then retains one continuation in the SAME native conversation.
+The existing typed queue dispatch union carries schema `1.4`, distinct from project
+delegation and interrupted-turn `1.3`; old readers reject it visibly. Its internal
+input authorizer checks the exact original preflight claim, checkpoint and resume
+Evidence/message hash, current Home selection/Profile/requester and current healed
+worker/fence/lease at final send. Old completed plans, stale sources, changed
+selection, revoked completion evidence and replaced messages cannot authorize it.
+
+A checkpoint failure prevents maintenance. A continuation failure after a real
+successful Upgrade preserves COMPLETED/maintenance-off and records explicit WARN
+Evidence (`home-upgrade-resume-blocked`); it does not repeat source installation.
+An existing resume reservation is never automatically submitted again. Existing
+preflight/queue evidence owns any uncertain native start. Rebinding an already
+active service drain does not overwrite the pre-stop checkpoint. With configured
+Home callbacks, re-reading completed verification does not replay the observer.
+Unconfigured deployments retain the existing Upgrade verification behavior.
+
+Private canonical fixtures cover the real retained admission and guarded
+`thread/resume` / `turn/start` capture path with fake transport and actual expired
+custody recovery. Application wiring, controlled actual restart and live Home
+continuation qualification are still required; these tests do not claim live
+self-restart or full native Goal lifecycle acceptance.

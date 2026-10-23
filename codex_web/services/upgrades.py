@@ -181,6 +181,8 @@ class UpgradeService:
         service_instance_id: str | None = None,
         admission: UpgradeAdmissionCoordinator | None = None,
         cancellation_guard=None,
+        home_checkpoint_before_drain=None,
+        home_resume_after_upgrade=None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -197,6 +199,8 @@ class UpgradeService:
         self.service_instance_id = service_instance_id
         self.admission = admission or UpgradeAdmissionCoordinator()
         self.cancellation_guard = cancellation_guard
+        self.home_checkpoint_before_drain = home_checkpoint_before_drain
+        self.home_resume_after_upgrade = home_resume_after_upgrade
         self.clock = clock
         self._migration_handlers: dict[str, MigrationHandler] = {}
 
@@ -1002,6 +1006,8 @@ class UpgradeService:
             raise UpgradeConflictError(
                 "target revision does not match the immutable Release"
             )
+        if not plan.maintenance_mode and self.home_checkpoint_before_drain is not None:
+            self.home_checkpoint_before_drain(plan.id, actor)
         scopes = self._hosted_scopes()
         fingerprint = self._scope_fingerprint(scopes)
         now = float(self.clock())
@@ -1891,6 +1897,8 @@ class UpgradeService:
         actor: AuthenticationActor,
     ) -> UpgradePlan:
         plan = self._open_plan(plan_id, actor=actor)
+        if self.home_resume_after_upgrade is not None and plan.status == UpgradeStatus.COMPLETED:
+            return plan
         blockers: list[str] = []
         if self._publication_event_boundary(plan) and not self.action_intents.store.publication_index_ready():
             try:
@@ -1990,7 +1998,7 @@ class UpgradeService:
             )
 
         now = float(self.clock())
-        return self._update(
+        completed = self._update(
             plan.id,
             actor,
             lambda current: current.model_copy(
@@ -2003,6 +2011,23 @@ class UpgradeService:
                 }
             ),
         )
+
+        if self.home_resume_after_upgrade is not None:
+            try:
+                self.home_resume_after_upgrade(completed.id, actor)
+            except Exception as error:
+                # The source Upgrade has ALREADY completed. An unavailable Home
+                # continuation must not rewrite it as failed or repeat deployment.
+                self.evidence.create_evidence(EvidenceCreate(project_id=completed.project_id,
+                    evidence_type=EvidenceType.RUNTIME_RESULT, provider='codex-web',
+                    source='home-upgrade-resume-blocked', result=EvidenceResult.WARN,
+                    summary='Upgrade completed; Home continuation is retained/blocked; inspect original evidence before retry',
+                    metadata={'upgrade_plan_id':completed.id,'error_type':type(error).__name__,
+                        'reason_code': (error.detail.get('code') if isinstance(getattr(error,'detail',None),dict)
+                            and isinstance(error.detail.get('code'),str) and error.detail['code'].startswith('home_')
+                            and error.detail['code'].replace('_','').isalnum() else 'home_continuation_unavailable')}), actor=actor,
+                    idempotency_key=completed.id)
+        return completed
 
     def mark_rolled_back(
         self,
