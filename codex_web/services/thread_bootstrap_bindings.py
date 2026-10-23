@@ -263,12 +263,12 @@ class ThreadBootstrapBindingService:
         actor: AuthenticationActor,
     ) -> ThreadBootstrapBinding:
         normalized = self._value(bootstrap_id, "bootstrap_id")
-        for item in self.store.load().bindings:
-            if (
-                self._scope_matches(item, actor)
-                and item.bootstrap_id == normalized
-            ):
-                return item
+        matches = [item for item in self.store.load().bindings
+            if self._scope_matches(item, actor) and item.bootstrap_id == normalized]
+        if len(matches) > 1:
+            raise ThreadBootstrapBindingConflictError("ambiguous thread bootstrap binding")
+        if matches:
+            return matches[0]
         raise ThreadBootstrapBindingNotFoundError(
             "thread bootstrap binding not found"
         )

@@ -4030,6 +4030,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
 from codex_web.services.owner_routing import OwnerRoutingService
 execution_preflight_store.prepare_work_item_index()
 owner_routing_service = OwnerRoutingService(
+    sessions=agent_session_store,
     routing=work_item_state_machine._owner_routing,
     get_state=work_item_state_machine._work_item_state, projects=project_service,
     load_bindings=bot_binding_repository.load,
@@ -4044,6 +4045,13 @@ owner_routing_service = OwnerRoutingService(
     update_state=_update_work_item_state_record,
     append_event=work_item_state_machine._append_work_item_event,
     preflight=execution_preflight_store,
+)
+from codex_web.services.owner_recipient_preparation import OwnerRecipientPreparationService
+owner_routing_service.recipient_preparer = OwnerRecipientPreparationService(
+    routing=owner_routing_service, threads=thread_service,
+    existing_assignment=turn_execution_binding_service._existing_assignment,
+    ownership=turn_execution_service.ownership,
+    queue_lock=turn_execution_service.queue_admission_lock,
 )
 canonical_work_item_continuity_service.owner_routing = owner_routing_service
 owner_routing_service.delivery_recorder = canonical_work_item_continuity_service.record_handoff_delivery

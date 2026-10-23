@@ -132,7 +132,7 @@ class AutonomyService:
                     if work_item.handoff is not None and work_item.handoff.status == "pending"
                     else actionable_owner_value(work_item))
                 try:
-                    pin = await asyncio.to_thread(routing.compatible_pin,
+                    pin = await routing.prepare_compatible_pin(
                         work_item, binding, recipient,
                         writable_repository_ids=dispatch_context.get("writable_repository_resource_ids", ()))
                 except OwnerRoutingError as exc:

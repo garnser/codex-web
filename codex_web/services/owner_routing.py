@@ -19,7 +19,7 @@ from codex_web.services.work_item_dependencies import actionable_owner_value, wo
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
-                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None):
+                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None):
         self.routing = routing
         self.get_state = get_state
         self.projects = projects
@@ -36,6 +36,8 @@ class OwnerRoutingService:
         self.delivery_recorder = None
         self.workers = workers
         self.execution_profiles = execution_profiles
+        self.sessions = sessions
+        self.recipient_preparer = None
 
     def project_native_start(self, attempt):
         """Attribute an exact late positive receipt without renewing authority.
@@ -242,6 +244,32 @@ class OwnerRoutingService:
         raw['handoff_from'] = state.handoff.from_agent if state.handoff is not None else None
         return hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
+    def native_scope_compatible(self, state, bootstrap, assignment):
+        """Current bootstrap scope cannot replace the original native custody."""
+        if self.sessions is None:
+            return True  # Optional for existing non-native compositions.
+        try:
+            session = self.sessions.native_custody(bootstrap.thread_id)
+        except (LookupError, ValueError, RuntimeError) as exc:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
+        if session is None:
+            # No provider session exists yet: ordinary first admission remains
+            # subject to the normal canonical bootstrap/native guards.
+            return True
+        expected = (state.organization_id, state.workspace_id, state.project_id)
+        if (session.organization_id, session.workspace_id, session.project_id) != expected:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        previous = self.assignments(session.assignment_id) if session.assignment_id else None
+        if (previous is None or
+                (previous.organization_id, previous.workspace_id, previous.project_id, previous.created_by)
+                != (*expected, assignment.created_by)):
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        if (previous.id != assignment.id and str(previous.status) not in
+                {'succeeded', 'failed', 'cancelled', 'lost'}):
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        return (set(previous.resource_ids) == set(assignment.resource_ids)
+                and previous.repository_scope == assignment.repository_scope)
+
     def _live_recipient(self, state, binding, bootstrap, owner):
         from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
         assignment = self.assignments(bootstrap.assignment_id)
@@ -263,12 +291,25 @@ class OwnerRoutingService:
                 or (worker.organization_id, worker.workspace_id)
                    != (state.organization_id, state.workspace_id)):
             raise OwnerRoutingError('owner_recipient_worker_unavailable')
+        if not self.native_scope_compatible(state, bootstrap, assignment):
+            raise OwnerRoutingError('owner_recipient_native_scope_incompatible')
         profile, actor = self.executor(state, binding, owner, recipient_thread_id=bootstrap.thread_id)
         return OwnerRoutingRecipient(thread_id=bootstrap.thread_id, bootstrap_id=bootstrap.id,
             assignment_id=assignment.id, execution_id=assignment.execution_id,
             worker_id=assignment.assigned_worker_id, fence=assignment.fence,
             authority_checksum=self._authority_checksum(assignment),
             work_item_owner_checksum=self._work_item_owner_checksum(state)), profile, actor
+
+    async def prepare_compatible_pin(self, state, binding, configured_owner, *, writable_repository_ids):
+        import asyncio
+        try:
+            return await asyncio.to_thread(self.compatible_pin, state, binding, configured_owner,
+                writable_repository_ids=writable_repository_ids)
+        except OwnerRoutingError as exc:
+            if str(exc) != 'owner_recipient_native_scope_incompatible' or self.recipient_preparer is None:
+                raise
+        return await self.recipient_preparer.prepare(state, binding, configured_owner,
+            writable_repository_ids=writable_repository_ids)
 
     def compatible_pin(self, state, binding, configured_owner, *, writable_repository_ids):
         """Choose a unique current canonical executor without moving its source binding."""
@@ -299,8 +340,11 @@ class OwnerRoutingService:
                 organization_id=state.organization_id, workspace_id=state.workspace_id, project_id=state.project_id)
             if execution_profile.repository_access == 'none':
                 return self.pin(state, binding, configured_owner)
+        native_compatible = self.native_scope_compatible(state, source, source_assignment)
         scope = getattr(source_assignment, 'repository_scope', None)
-        if scope is not None and set(scope.writable_repository_ids) == requested and not scope.read_only_repository_ids:
+        if (scope is not None and set(scope.writable_repository_ids) == requested
+                and not scope.read_only_repository_ids
+                and native_compatible):
             # Equal historical scope is not a current executor when canonical
             # recovery already linked this source to another conversation.
             # Unreplaced first admission/recovery keeps its existing bootstrap.
@@ -332,7 +376,9 @@ class OwnerRoutingService:
                 continue
             matches.append(witness)
         if len(matches) != 1:
-            raise OwnerRoutingError('owner_recipient_ambiguous' if matches else 'owner_recipient_compatible_lane_unavailable')
+            raise OwnerRoutingError('owner_recipient_ambiguous' if matches else
+                'owner_recipient_native_scope_incompatible' if not native_compatible else
+                'owner_recipient_compatible_lane_unavailable')
         intent = routing.binding(configured_owner) or OwnerRoutingBinding(schema_version='1.1',
             organization_id=state.organization_id, workspace_id=state.workspace_id,
             project_id=state.project_id, configured_owner=normalized_owner(configured_owner),

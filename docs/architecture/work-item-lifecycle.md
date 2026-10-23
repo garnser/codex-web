@@ -436,3 +436,31 @@ queue and final native admission carry the exact read/write sets, and a changed
 recipient scope, actor, Profile, lease or fence invalidates the witness before
 input. This also applies when the source channel binding already points to the
 correct recipient. It neither changes that binding nor grants new access.
+
+
+### Original native custody during recipient selection
+
+A current bootstrap's repository scope does not establish the custody of an
+already existing native session. Owner routing reads the bounded canonical
+native-session aliases and the session's original assignment. Ambiguous,
+foreign or missing original custody refuses selection. An incompatible source
+cannot take the equal-current-scope shortcut, and an incompatible candidate
+cannot pass the final recipient witness validation. The native session custody
+owner remains the final authority before provider resume.
+
+For a pending structured handoff, routing first reuses one compatible LIVE
+recipient. When none exists specifically because the original native scope is
+incompatible, the existing Thread service may prepare one new context under the
+original current Profile, actor and exact Work Item repository scope. Its
+bootstrap token is deterministic for the original binding, Work Item and
+handoff nonce. The existing canonical bootstrap assignment reserves the attempt;
+if that assignment exists without a positive binding, subsequent observations
+report pending and never repeat provider creation. Local queue ownership and
+replicated fencing serialize preparation. Creation is not delivery: only a
+subsequent original native START qualifies the handoff. Existing source sessions,
+bindings, replacement graphs, queues and unknown outcomes remain unchanged.
+
+This changes no UI-owned eligibility or control. Existing Work Item handoff,
+worker/bootstrap and preflight inspectors expose the canonical recipient or
+blocker; current denial reasons remain authoritative. No new UI action is
+required.

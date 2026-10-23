@@ -209,6 +209,16 @@ class ThreadBootstrapBindingTests(unittest.TestCase):
         self.assertEqual(other_binding.thread_id, first.thread_id)
         self.assertEqual(other_binding.bootstrap_id, first.bootstrap_id)
 
+    def test_duplicate_persisted_bootstrap_receipts_refuse_unique_reconciliation(self) -> None:
+        first = self._bind()
+        def duplicate(state):
+            state.bindings.append(first.model_copy(update={
+                "id": "different-record", "thread_id": "different-thread"}))
+            return state
+        self.service.store.update(duplicate)
+        with self.assertRaisesRegex(ThreadBootstrapBindingConflictError, "ambiguous"):
+            self.service.get_by_bootstrap(first.bootstrap_id, self.actor)
+
     def test_binding_requires_non_empty_canonical_identifiers(self) -> None:
         for field in (
             "bootstrap_id",
