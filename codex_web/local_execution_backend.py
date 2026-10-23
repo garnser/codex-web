@@ -971,8 +971,11 @@ class BubblewrapExecutionBackend:
                             duration_seconds=max(0.0, time.monotonic() - started),
                             timed_out=timed_out, limit_breach=limit_breach,
                         ))
-                    except Exception:
-                        pass  # Observation failure cannot mask the owner refusal.
+                    except BaseException:
+                        # Instrumentation runs only inside an already-refused
+                        # operation. Preserve its original error/cancellation,
+                        # including when the observer itself is cancelled.
+                        pass
                 raise
             disk_bytes = current_disk_bytes()
             if limit_breach is None and exit_code < 0:

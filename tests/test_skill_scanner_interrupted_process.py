@@ -119,6 +119,26 @@ class SkillScannerInterruptedProcessTests(unittest.TestCase):
         self.assertEqual(observer.call_args.args[0].exit_code, -9)
         process.wait.assert_called_once()
 
+    def test_cancelled_observer_cannot_replace_original_error_or_cancellation(self):
+        import asyncio
+        from tests.test_local_execution_worker import _assignment
+        for original in (RuntimeError('PRIVATE original error'),
+                         asyncio.CancelledError('PRIVATE original cancellation')):
+            with self.subTest(original_type=type(original).__name__):
+                backend, process, spawned = self.install_backend()
+                observer = Mock(side_effect=asyncio.CancelledError('PRIVATE observer cancelled'))
+                def refuse_after_spawn():
+                    if spawned:
+                        raise original
+                with patch.object(backend, '_kill_process_group'):
+                    with self.assertRaises(type(original)) as caught:
+                        BubblewrapExecutionBackend.run(backend, _assignment(),
+                            argv=('python3', '-c', 'pass'), workspace_path=self.root,
+                            poll_hook=refuse_after_spawn, failure_observer=observer)
+                self.assertIs(caught.exception, original)
+                process.wait.assert_called_once()
+                observer.assert_called_once()
+
 
 def load_tests(loader, tests, pattern):
     return loader.loadTestsFromTestCase(SkillScannerInterruptedProcessTests)
