@@ -88,6 +88,10 @@ class ExecutionPrestartRefusal(HTTPException):
     """Controller-owned routing/profile refusal raised before native turn input."""
 
 
+class ReadinessOriginPrestartDeferred(ExecutionPrestartRefusal):
+    """Local canonical cursor advanced before bootstrap retirement/native input."""
+
+
 def _execution_preflight_blocked(
     exc: TurnExecutionBindingError,
 ) -> HTTPException:
@@ -220,6 +224,7 @@ class TurnExecutionService:
         self.queued_preflight = None
         # Diagnostic throttle only: canonical routes are revalidated on every wake.
         self._queued_retention_notice_at: dict[str, float] = {}
+        self._readiness_origin_waits: dict[tuple[str, str], tuple[str, set[str], float]] = {}
         self.owner_routing_validator = None
         self.procedure_admission = None
         self.native_input_guard_factory = None
@@ -4359,6 +4364,7 @@ class TurnExecutionService:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id, status='started' if returned_turn.get('id') else 'reconciliation_required',
                     claim_id=admission_claim_id)
+            self._readiness_origin_waits.pop((thread_id, queued.id), None)
             h._append_bot_event(
                 {
                     "type": ("queued_turn_started" if returned_turn.get('id')
@@ -4379,6 +4385,55 @@ class TurnExecutionService:
             raise
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
+            if (retained_attempt is not None and isinstance(exc, ReadinessOriginPrestartDeferred)
+                    and detail and detail.get('code') == 'readiness_origin_index_progressing'
+                    and all(isinstance(detail.get(k), str) and len(detail[k]) == size
+                        and all(c in '0123456789abcdef' for c in detail[k])
+                        for k, size in (('epoch', 32), ('cursor_sha256', 64)))
+                    and not self.thread_is_active(thread_id)):
+                # Only this typed local boundary proves noninput. The existing
+                # preflight owner rechecks the claim and ALL native observations
+                # atomically; possible/positive starts and retirement win.
+                current, deferred = await asyncio.to_thread(self.queued_preflight.defer_readiness_origin_index,
+                    retained_attempt.id, claim_id=admission_claim_id, detail=detail, thread_id=thread_id,
+                    expected_snapshot_sha256=self.queued_preflight.queued_snapshot_digest(retained_attempt.queued_turn_snapshot))
+                reschedule_queue = False
+                if deferred and current.status == 'queued' and current.queued_admission_claim_id == admission_claim_id:
+                    restore_original_position()
+                    progress = (detail['epoch'], detail['cursor_sha256'])
+                    key = (thread_id, queued.id)
+                    previous = self._readiness_origin_waits.get(key)
+                    now = time.monotonic()
+                    if previous is None and len(self._readiness_origin_waits) < 256:
+                        previous = (progress[0], set(), now + 30)
+                        self._readiness_origin_waits[key] = previous
+                    wake = bool(previous and previous[0] == progress[0]
+                        and progress[1] not in previous[1] and len(previous[1]) < 8
+                        and now < previous[2])
+                    if wake:
+                        registered = (progress[0], previous[1] | {progress[1]}, previous[2])
+                        self._readiness_origin_waits[key] = registered
+                        # Existing queue scheduler, bounded changing-cursor
+                        # continuation only. Rechecks current authority on wake.
+                        def wake_after_owner():
+                            if (self._readiness_origin_waits.get(key) is not registered
+                                    or registered[0] != progress[0] or progress[1] not in registered[1]
+                                    or time.monotonic() >= registered[2]):
+                                return
+                            owned = self.queue_drain_tasks.get(thread_id)
+                            if owned is not None and not owned.done():
+                                # A slow final status publication must not
+                                # consume the wake while this drain still owns it.
+                                owned.add_done_callback(lambda _task: wake_after_owner())
+                            else:
+                                self.schedule_queue_drain(thread_id)
+                        asyncio.get_running_loop().call_later(1, wake_after_owner)
+                    h._append_bot_event({'type':'queued_turn_waiting_for_readiness_origin_index',
+                        'thread_id':thread_id,'queued_id':queued.id,
+                        'preflight_attempt_id':retained_attempt.id,
+                        'epoch':progress[0],'cursor_sha256':progress[1],
+                        'continuation_scheduled':wake})
+                return
             deferred_admission = isinstance(exc, (LocalExecutionWorkerCapacityError, ProviderCapacityBlockedError, AutomatedAdmissionPaused)) or bool(
                 detail and detail.get('code') in {
                     'upgrade_maintenance_active', 'upgrade_maintenance', 'upgrade_turn_scope_unknown'})
@@ -4929,10 +4984,12 @@ class TurnExecutionService:
         exhaustion renewal retains the same native identity for ordinary resume.
         """
 
-        from codex_web.services.execution_workers import AssignmentReadinessOriginError
+        from codex_web.services.execution_workers import AssignmentReadinessOriginError, AssignmentReadinessIndexProgressing
         def retirement_refusal(exc):
             detail = exc.detail()
-            return ExecutionPrestartRefusal(status_code=409, detail={**detail,
+            refusal = (ReadinessOriginPrestartDeferred if isinstance(exc, AssignmentReadinessIndexProgressing)
+                       else ExecutionPrestartRefusal)
+            return refusal(status_code=409, detail={**detail,
                 'phase': 'before_bootstrap_retirement', 'thread_id': thread_id,
                 'blockers': [{**detail, 'target_type': 'execution_assignment',
                     'target_id': previous_assignment_id,

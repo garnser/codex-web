@@ -264,6 +264,31 @@ class ExecutionPreflightService:
             })
         return self.store.update(attempt_id, update)
 
+    def defer_readiness_origin_index(self, attempt_id: str, *, claim_id: str,
+                                    detail: dict[str, Any], thread_id: str,
+                                    expected_snapshot_sha256: str) -> tuple[ExecutionPreflightAttempt, bool]:
+        """Internal typed pre-retirement refusal; never infer nonstart from a code."""
+        deferred = False
+        def update(current):
+            nonlocal deferred
+            deferred = False
+            if (current.queued_turn_snapshot is None
+                    or self.queued_snapshot_digest(current.queued_turn_snapshot) != expected_snapshot_sha256
+                    or (current.replacement_thread_id or current.thread_id) != thread_id
+                    or current.queued_admission_claim_id != claim_id
+                    or current.status not in {'admitting', 'reconciliation_required'}
+                    or current.scheduling_retirement is not None
+                    or any(value is not None for value in (
+                        current.queued_start_correlation, current.queued_start_evidence,
+                        current.queued_start_receipt, current.queued_resume_correlation,
+                        current.queued_resume_evidence, current.started_at))):
+                return current
+            deferred = True
+            return current.model_copy(update={'status':'queued',
+                'blockers':self._blockers(detail), 'updated_at':float(self.clock())})
+        current = self.store.update(attempt_id, update)
+        return current, deferred
+
     @staticmethod
     def recorded_profile_refusal(attempt: ExecutionPreflightAttempt) -> bool:
         if (attempt.queued_turn_snapshot is None or attempt.queued_start_receipt is not None
