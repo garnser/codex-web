@@ -43,6 +43,13 @@ class HostOutputSelection(BaseModel):
         return self
 
 
+class HostOutputReadOptions(BaseModel):
+    """Native request for a server-selected prefix; never a release override."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    stream: Literal['stdout', 'stderr'] = 'stdout'
+    max_bytes: int = Field(default=4096, ge=1, le=65536, strict=True)
+
+
 class HomeHostOutputService:
     def __init__(self, *, home_host, worker_runtime, intents, artifacts, crypto, registry):
         self.home_host, self.runtime, self.intents = home_host, worker_runtime, intents
@@ -181,14 +188,22 @@ class HomeHostOutputService:
         if digest(cipher) != source.digest.value:
             self.denied('Host output content changed')
         context = HomeHostActionProvider._output_context(origin.assignment, origin.envelope.host_resource_id, source.id)
-        clear = self.crypto.decrypt(EncryptedEnvelope.model_validate_json(cipher), context, actor=origin.requester)
+        envelope = EncryptedEnvelope.model_validate_json(cipher)
+        clear = self.crypto.decrypt(envelope, context, actor=origin.requester)
         if len(clear) > 1024 * 1024:
             self.denied('Host output plaintext exceeds its hard bound')
         output = json.loads(clear)
         if (not isinstance(output, dict) or set(output) != {'stdout', 'stderr'}
                 or any(not isinstance(v, str) or len(v.encode()) > 3 * origin.envelope.max_output_bytes for v in output.values())):
             self.denied('Invalid canonical host output envelope')
-        return output, context
+        return output, context, envelope
+
+    def _current_decryption_key(self, envelope, context, origin):
+        key = self.crypto.get_key(envelope.key_id, origin.requester)
+        self.crypto._ensure_key_context(key, context)
+        version = self.crypto._version(key, envelope.key_version)
+        if key.status != 'active' or key.purpose != 'artifact' or version.status == 'revoked':
+            self.denied('Output decryption key or version was revoked')
 
     @staticmethod
     def _select(output, selection):
@@ -201,13 +216,18 @@ class HomeHostOutputService:
             raise GovernanceConflictError('Previewed output selection changed')
         return selected
 
-    def _rule(self, origin, argv, receipt, selection):
+    def _command_rule(self, origin, argv, receipt, stream):
         policy, pin = self._policy(origin)
         rules = [rule for rule in policy.commands if rule.argv == argv]
         if (len(rules) != 1 or receipt.result.output['exit_code'] not in rules[0].exit_codes
-                or selection.stream not in rules[0].streams
-                or selection.byte_end - selection.byte_start > policy.max_excerpt_bytes):
+                or stream not in rules[0].streams):
             self.denied('Output is outside the explicit command-release policy; HumanAdmin review required')
+        return policy, pin
+
+    def _rule(self, origin, argv, receipt, selection):
+        policy, pin = self._command_rule(origin, argv, receipt, selection.stream)
+        if selection.byte_end - selection.byte_start > policy.max_excerpt_bytes:
+            self.denied('Output exceeds the explicit command-release policy bound')
         return policy, pin
 
     def preview(self, artifact_id, *, actor, expected_home_revision):
@@ -219,7 +239,7 @@ class HomeHostOutputService:
         if type(expected_home_revision) is not int or origin.binding.revision != expected_home_revision:
             self.denied('Home selection changed before output preview')
         source, _, receipt, _, _ = self._source(artifact_id, origin)
-        output, _ = self._decrypt_source(source, origin)
+        output, context, envelope = self._decrypt_source(source, origin)
         final = self._origin(origin.assignment.id, actor=actor)
         if final.binding != origin.binding or final.assignment != origin.assignment:
             # Native renewal may legitimately change the lease: compare its
@@ -227,10 +247,58 @@ class HomeHostOutputService:
             if (final.binding != origin.binding or final.assignment.fence != origin.assignment.fence
                     or final.assignment.execution_id != origin.assignment.execution_id):
                 self.denied()
+        current_source, _, current_receipt, _, _ = self._source(artifact_id, final)
+        if current_source != source or current_receipt != receipt:
+            self.denied('Output source or receipt changed during preview')
+        self._current_decryption_key(envelope, context, final)
         return {'artifact_id': source.id, 'source_content_sha256': source.digest.value,
             'receipt_id': receipt.id, 'streams': output, 'model_context_allowed': False,
             'review_required': True, 'expires_at': min(time.time() + 60, final.assignment.lease.expires_at,
                 final.assignment.deadline_at or float('inf'))}
+
+    def list_sources(self, *, actor, expected_home_revision):
+        """References only; at most twenty matching histories, existing catalog read."""
+        if actor.principal_kind != PrincipalKind.HUMAN:
+            self.denied('Only the current HumanAdmin may list protected command outputs')
+        IdentityService.require_admin(actor)
+        project = self.home_host.projects.get('home', actor.tenant)
+        operator = project.home_operator
+        if not operator or not operator.thread_id:
+            self.denied()
+        binding = self.home_host.bootstrap_bindings.get_by_thread(operator.thread_id, actor)
+        origin = self._origin(binding.assignment_id, actor=actor)
+        if type(expected_home_revision) is not int or origin.binding.revision != expected_home_revision:
+            self.denied('Home selection changed before output listing')
+        candidates = [item for item in self.intents.list(actor)
+            if item.project_id == 'home' and item.action_id == HOST_COMMAND_ACTION
+            and item.execution_id == origin.assignment.execution_id
+            and item.request.parameters.get('assignment_id') == origin.assignment.id
+            and item.request.parameters.get('fence') == origin.assignment.fence
+            and item.status in {'succeeded', 'failed'} and item.last_receipt_id]
+        items = []
+        for intent in candidates[:20]:
+            history = self.intents.history(intent.id, actor)
+            receipts = [value for value in history['receipts'] if value['id'] == intent.last_receipt_id]
+            if len(receipts) != 1:
+                self.denied('Canonical output receipt is unavailable')
+            output = (receipts[0].get('result') or {}).get('output') or {}
+            artifact_id = output.get('output_artifact_id')
+            if not isinstance(artifact_id, str):
+                continue
+            # These references grant no decrypt/review permission themselves.
+            items.append({'artifact_id': artifact_id, 'intent_id': intent.id,
+                'receipt_id': intent.last_receipt_id, 'status': intent.status,
+                'completed_at': intent.completed_at, 'exit_code': output.get('exit_code'),
+                'process_completed': output.get('process_completed') is True,
+                'timed_out': output.get('timed_out') is True,
+                'output_truncated': output.get('output_truncated') is True})
+        final = self._origin(origin.assignment.id, actor=actor)
+        if (final.binding != origin.binding or final.assignment.fence != origin.assignment.fence
+                or final.assignment.execution_id != origin.assignment.execution_id):
+            self.denied('Home origin changed during output listing')
+        return {'items': items, 'has_more': len(candidates) > 20,
+            'home_revision': origin.binding.revision, 'thread_id': origin.binding.thread_id,
+            'model_context_allowed': False}
 
     def release(self, artifact_id, selection: HostOutputSelection, *, snapshot=None,
                 worker_actor=None, actor=None, classification=None, reason=None, expected_home_revision=None):
@@ -256,7 +324,7 @@ class HomeHostOutputService:
         if not manual:
             policy, policy_ref = self._rule(origin, argv, receipt, selection)
             classification, reason = policy.classification, 'Explicit current Home command-output release policy'
-        output, source_context = self._decrypt_source(source, origin)
+        output, source_context, _ = self._decrypt_source(source, origin)
         selected = self._select(output, selection)
         if len(selected) > origin.envelope.max_output_bytes:
             self.denied()
@@ -384,19 +452,60 @@ class HomeHostOutputService:
         cipher = self._content_bound(chunks, 512 * 1024)
         if digest(cipher) != proof.target_content_sha256:
             self.denied()
-        clear = self.crypto.decrypt(EncryptedEnvelope.model_validate_json(cipher),
-            self._target_context(origin, target.id), actor=origin.requester)
+        envelope = EncryptedEnvelope.model_validate_json(cipher)
+        context = self._target_context(origin, target.id)
+        clear = self.crypto.decrypt(envelope, context, actor=origin.requester)
         if len(clear) != proof.byte_end - proof.byte_start or digest(clear) != proof.excerpt_sha256:
             self.denied('Reviewed excerpt content changed')
         final = self._origin(snapshot.id, worker_actor=worker_actor)
         if final.binding != origin.binding:
             self.denied()
         self._validate_release(record, proof, final.requester)
+        self._current_decryption_key(envelope, context, final)
         return {'artifact_id': target.id, 'source_artifact_id': proof.source_artifact_id,
             'text': clear.decode('utf-8'), 'classification': record.classification,
             'policy_ref': proof.policy_ref.model_dump(mode='json') if proof.policy_ref else None,
             'review_mode': proof.mode, 'effect_verified': False}
 
-    def read_source(self, snapshot, artifact_id, selection, *, worker_actor):
+    def read_source(self, snapshot, artifact_id, selection=None, *, worker_actor,
+                    stream='stdout', max_bytes=4096):
+        if selection is None:
+            options = HostOutputReadOptions(stream=stream, max_bytes=max_bytes)
+            origin = self._origin(snapshot.id, worker_actor=worker_actor)
+            if snapshot.fence != origin.assignment.fence or snapshot.execution_id != origin.assignment.execution_id:
+                self.denied()
+            source, _, receipt, argv, _ = self._source(artifact_id, origin)
+            policy, pin = self._command_rule(origin, argv, receipt, options.stream)
+            output, context, envelope = self._decrypt_source(source, origin)
+            raw = output[options.stream].encode('utf-8')
+            limit = min(options.max_bytes, policy.max_excerpt_bytes, origin.envelope.max_output_bytes)
+            prefix = raw[:limit]
+            try:
+                prefix.decode('utf-8')
+            except UnicodeDecodeError as error:
+                # raw came from a UTF-8 string: only the final split codepoint
+                # can be incomplete. Never replace bytes in reviewed output.
+                if error.end != len(prefix) or error.reason != 'unexpected end of data':
+                    raise
+                prefix = prefix[:error.start]
+            if not prefix:
+                final = self._origin(snapshot.id, worker_actor=worker_actor)
+                current_source, _, current_receipt, current_argv, _ = self._source(artifact_id, final)
+                current_policy, current_pin = self._command_rule(final, current_argv, current_receipt, options.stream)
+                if (final.binding != origin.binding or final.assignment.fence != snapshot.fence
+                        or final.assignment.execution_id != snapshot.execution_id
+                        or current_source != source or current_receipt != receipt
+                        or current_pin != pin or current_policy != policy):
+                    self.denied('Output origin or policy changed during empty-stream read')
+                self._current_decryption_key(envelope, context, final)
+                return {'artifact_id': None, 'source_artifact_id': source.id, 'text': '',
+                    'stream': options.stream, 'available_bytes': len(raw), 'selected_bytes': 0,
+                    'empty_stream': not raw, 'excerpt_empty': True,
+                    'classification': policy.classification, 'policy_ref': pin.model_dump(mode='json'),
+                    'review_mode': 'policy', 'effect_verified': False}
+            selection = HostOutputSelection(stream=options.stream, byte_end=len(prefix),
+                expected_sha256=digest(prefix))
+        elif stream != 'stdout' or max_bytes != 4096:
+            self.denied('Explicit byte selection cannot be combined with default-read options')
         released = self.release(artifact_id, selection, snapshot=snapshot, worker_actor=worker_actor)
         return self.read(snapshot, released['artifact_id'], worker_actor=worker_actor)

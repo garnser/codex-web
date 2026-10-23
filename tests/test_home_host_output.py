@@ -27,7 +27,7 @@ class HomeHostOutputTests(HomeHostActionIntentTests):
     def effect(self, operation, **kwargs):
         result=super().effect(operation,**kwargs)
         return replace(result,command_digest='sha256:'+hashlib.sha256('\0'.join(kwargs['argv']).encode()).hexdigest(),
-            stdout='ordinary source/test output',exit_code=self.exit_code)
+            stdout=getattr(self, 'stdout', 'ordinary source/test output'),exit_code=self.exit_code)
 
     def policy_payload(self, **changes):
         a=self.assignment
@@ -160,6 +160,112 @@ class HomeHostOutputTests(HomeHostActionIntentTests):
         with self.assertRaises(GovernanceConflictError):
             self.outputs.release(source,wrong,actor=self.actor,classification='internal',reason='reviewed',expected_home_revision=1)
         self.assertEqual(len(self.artifacts.list_artifacts(self.actor)),1)
+
+    async def test_preview_key_revoked_during_decrypt_suppresses_plaintext(self):
+        source=await self.command_output();decrypt=self.crypto.decrypt
+        def changed(*args,**kwargs):
+            value=decrypt(*args,**kwargs)
+            self.crypto.revoke_key(self.output_key.id,'Private revocation fixture',actor=self.actor)
+            return value
+        self.crypto.decrypt=changed
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.preview(source,actor=self.actor,expected_home_revision=1)
+
+    async def test_preview_source_invalidated_during_decrypt_suppresses_plaintext(self):
+        source=await self.command_output();decrypt=self.crypto.decrypt
+        def changed(*args,**kwargs):
+            value=decrypt(*args,**kwargs)
+            self.artifacts.invalidate_artifact(source,'Private invalidation fixture',actor=self.actor)
+            return value
+        self.crypto.decrypt=changed
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.preview(source,actor=self.actor,expected_home_revision=1)
+
+    async def test_preview_old_key_version_revoked_during_decrypt_suppresses_plaintext(self):
+        source=await self.command_output();self.crypto.rotate(self.output_key.id,actor=self.actor)
+        decrypt=self.crypto.decrypt
+        def changed(*args,**kwargs):
+            value=decrypt(*args,**kwargs)
+            self.crypto.revoke_version(self.output_key.id,1,'Private version revocation fixture',actor=self.actor)
+            return value
+        self.crypto.decrypt=changed
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.preview(source,actor=self.actor,expected_home_revision=1)
+
+    async def test_default_native_read_needs_no_source_digest_and_obeys_current_policy_limit(self):
+        self.configure_policy(max_excerpt_bytes=8);source=await self.command_output()
+        result=self.outputs.read_source(self.assignment,source,worker_actor=self.worker_actor,max_bytes=4096)
+        self.assertEqual(result['text'],'ordinary');self.assertEqual(result['classification'],'confidential')
+        self.assertEqual(self.effects,1)
+        self.assertEqual(len(self.artifacts.list_artifacts(self.actor)),2)
+
+    async def test_default_native_read_is_denied_without_exact_current_policy(self):
+        source=await self.command_output()
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.read_source(self.assignment,source,worker_actor=self.worker_actor)
+        self.assertEqual(len(self.artifacts.list_artifacts(self.actor)),1)
+
+    async def test_default_native_prefix_preserves_utf8_boundaries(self):
+        self.configure_policy();self.stdout='testé-more';source=await self.command_output()
+        result=self.outputs.read_source(self.assignment,source,worker_actor=self.worker_actor,max_bytes=5)
+        self.assertEqual(result['text'],'test')
+
+    async def test_default_native_empty_stream_returns_truthful_metadata_without_derivative(self):
+        self.configure_policy();source=await self.command_output()
+        result=self.outputs.read_source(self.assignment,source,worker_actor=self.worker_actor,stream='stderr')
+        self.assertEqual(result['text'],'');self.assertIs(result['empty_stream'],True)
+        self.assertEqual(result['available_bytes'],0);self.assertEqual(result['selected_bytes'],0)
+        self.assertIsNone(result['artifact_id']);self.assertFalse(result['effect_verified'])
+        self.assertEqual(len(self.artifacts.list_artifacts(self.actor)),1)
+
+    async def test_default_native_nonempty_stream_with_too_small_utf8_limit_is_not_labeled_empty(self):
+        self.configure_policy();self.stdout='é';source=await self.command_output()
+        result=self.outputs.read_source(self.assignment,source,worker_actor=self.worker_actor,max_bytes=1)
+        self.assertEqual(result['text'],'');self.assertIs(result['empty_stream'],False)
+        self.assertEqual(result['available_bytes'],2);self.assertEqual(result['selected_bytes'],0)
+        self.assertEqual(len(self.artifacts.list_artifacts(self.actor)),1)
+
+    async def test_empty_native_read_rechecks_policy_after_decryption(self):
+        self.configure_policy();source=await self.command_output();decrypt=self.crypto.decrypt
+        def changed(*args,**kwargs):
+            value=decrypt(*args,**kwargs)
+            self.publish_policy(max_excerpt_bytes=512)
+            return value
+        self.crypto.decrypt=changed
+        with self.assertRaises(Exception):
+            self.outputs.read_source(self.assignment,source,worker_actor=self.worker_actor,stream='stderr')
+
+    async def test_human_output_list_contains_only_current_receipt_metadata_not_output_or_argv(self):
+        import json
+        source=await self.command_output()
+        result=self.outputs.list_sources(actor=self.actor,expected_home_revision=1)
+        self.assertEqual(len(result['items']),1)
+        self.assertEqual(result['items'][0]['artifact_id'],source)
+        self.assertEqual(result['items'][0]['exit_code'],0)
+        self.assertNotIn('ordinary source/test output',json.dumps(result))
+        self.assertNotIn('/usr/bin/true',json.dumps(result))
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.list_sources(actor=self.actor,expected_home_revision=2)
+        with self.assertRaises(GovernanceConflictError):
+            self.outputs.list_sources(actor=self.worker_actor,expected_home_revision=1)
+
+    async def test_human_router_lists_refs_no_store_and_refuses_service_actor(self):
+        from fastapi import FastAPI
+        import httpx
+        from codex_web.api.home_host_output import build_home_host_output_router
+        source=await self.command_output();app=FastAPI();current=[self.actor]
+        @app.middleware('http')
+        async def fixture_auth(request,call_next):
+            request.state.identity_actor=current[0]
+            return await call_next(request)
+        app.include_router(build_home_host_output_router(self.outputs))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://private-fixture')as client:
+            response=await client.get('/api/home/operator/host-outputs?expected_home_revision=1')
+            self.assertEqual(response.status_code,200);self.assertEqual(response.headers['cache-control'],'no-store')
+            self.assertEqual(response.json()['items'][0]['artifact_id'],source)
+            current[0]=self.worker_actor
+            response=await client.get('/api/home/operator/host-outputs?expected_home_revision=1')
+            self.assertEqual(response.status_code,403)
 
 
 class HomeOutputPolicyTests(unittest.TestCase):

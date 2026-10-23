@@ -1,8 +1,12 @@
 import { request, apiBase } from './api_client.js';
 import { appendHomeOperatorRuntime } from './home_operator_runtime.js';
 import { appendHomeOperatorGoals } from './home_operator_goals.js';
+import { appendHomeHostOutputs } from './home_host_output_panel.js';
+
+const outputDisposers = new WeakMap();
 
 export async function renderHomeOperator(host, { signal } = {}) {
+  outputDisposers.get(host)?.();
   const title = document.createElement('h3');
   title.textContent = 'Home operator conversation';
   host.replaceChildren(title);
@@ -37,6 +41,7 @@ export async function renderHomeOperator(host, { signal } = {}) {
       host.append(open);
       appendHomeOperatorRuntime(host, state, { signal });
       appendHomeOperatorGoals(host, state, { signal });
+      outputDisposers.set(host, appendHomeHostOutputs(host, state, { signal }));
     }
     if (!state.can_configure) return;
     const choose = document.createElement('button');

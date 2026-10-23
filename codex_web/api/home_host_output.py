@@ -24,6 +24,16 @@ class HostOutputReviewRequest(BaseModel):
 def build_home_host_output_router(service):
     router = APIRouter(prefix='/api/home/operator/host-outputs', tags=['home-operator'])
 
+    @router.get('')
+    async def list_sources(expected_home_revision: int, request: Request, response: Response):
+        response.headers['Cache-Control'] = 'no-store'
+        try:
+            return await run_in_threadpool(service.list_sources, actor=request_actor(request),
+                expected_home_revision=expected_home_revision)
+        except (DataGovernanceError, AuthorizationError, ArtifactEvidenceError, CryptoKeyError,
+                ControlPlaneBrokerError, DefinitionError, ValueError) as error:
+            raise HTTPException(status_code=403, detail='Current Home output list is unavailable') from error
+
     @router.get('/{artifact_id}/preview')
     async def preview(artifact_id: str, expected_home_revision: int, request: Request, response: Response):
         response.headers['Cache-Control'] = 'no-store'

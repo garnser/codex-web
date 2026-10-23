@@ -320,6 +320,27 @@ remain authoritative. Canonical timers and native recovery keep pending state
 visible across restart; they do not revive cancelled custody or create idle turns.
 ### Governed command output and reviewed derivatives
 
+Native source-output reads may omit a byte selection and request only a stream
+and `max_bytes` (default 4096, hard maximum 65536). The server chooses a UTF-8
+prefix bounded by the current exact command policy and Home envelope; the model
+does not supply a classification or release override. A policy-authorized empty
+stream returns explicit empty metadata without creating a derivative or claiming
+host-effect success. A nonempty stream whose first UTF-8 codepoint exceeds the
+requested limit is distinguished from an empty stream. Unconfigured commands
+remain denied even when their output is empty.
+
+Human preview revalidates its original source/receipt and current key/version
+after decrypting, so a revocation during the read suppresses plaintext. The
+human-only no-store output list exposes at most twenty current-assignment
+Artifact/receipt references and process-result metadata, never argv or output.
+It reuses the existing intent catalog read and bounds matching history fanout;
+it does not introduce a bounded storage index. The Home operator panel mounts
+the explicit preview/review component after a human selects a listed reference,
+checks the current Home selection around each request and disposes the preview
+on rerender or abort. Human routes and native broker reads share the same
+canonical output service and current governance checks.
+
+
 Home's optional `output_release_policy` pins a published project/Home
 `home-host-output-release` Definition, schema `1.0`. It is an explicit output
 policy, not a host execution grant. Publication requires the current same human
