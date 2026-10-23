@@ -34,6 +34,18 @@ class HomeHostCommandTests(HomeHostActionIntentTests):
             await execute_host_command(self.service, self.assignment, self.worker_actor, self.command_payload())
         self.assertEqual(self.effects, 1)
 
+    async def test_unknown_host_response_with_unchanged_custody_cannot_replay(self):
+        def lost_after_effect():
+            raise RuntimeError('Synthetic lost host completion after effect')
+        self.after_spawn = lost_after_effect
+        result = await execute_host_command(self.service, self.assignment, self.worker_actor, self.command_payload())
+        self.assertEqual(result['item']['status'], 'uncertain')
+        original_id = result['item']['id']
+        again = await execute_host_command(self.service, self.assignment, self.worker_actor, self.command_payload())
+        self.assertEqual(again['item']['id'], original_id)
+        self.assertEqual(again['item']['status'], 'uncertain')
+        self.assertEqual(self.effects, 1)
+
     async def test_changed_same_key_command_is_conflict_before_effect(self):
         admit_host_command(self.service, self.assignment, self.worker_actor, self.command_payload())
         changed = self.command_payload(); changed['parameters']['argv'] = ['/usr/bin/false']
