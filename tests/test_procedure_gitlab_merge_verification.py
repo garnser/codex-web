@@ -45,7 +45,7 @@ class MergeObservationClient:
 class MergeVerificationProcedureTests(ProcedureExecutionTests):
     def assignment_options(self):
         return {"repository_scope":{"organization_id":self.actor.organization_id,
-            "workspace_id":self.actor.workspace_id,"project_id":"home",
+            "workspace_id":self.actor.workspace_id,"project_id":self.project.id,
             "writable_repository_ids":[self.repo.id],"source":"explicit"}}
 
     def configure(self, content):
@@ -56,7 +56,7 @@ class MergeVerificationProcedureTests(ProcedureExecutionTests):
             provider_instance="gitlab.example",api_base="https://gitlab.example/api/v4")
         self.registry.register(self.provider,tenant_scope=self.actor.tenant)
         self.binding = self.registry.bind(ActionProviderBindingCreate(provider_type="gitlab",
-            provider_instance="gitlab.example",project_id="home",resource_ids=self.assignment.resource_ids,
+            provider_instance="gitlab.example",project_id=self.project.id,resource_ids=self.assignment.resource_ids,
             credential_ref=self.secret_fixture_ref,
             security_policy={"network":{"enabled":True,"allowed_schemes":["https"],"allowed_hosts":["gitlab.example"],"allowed_ports":[443]}}),
             actor=self.actor,resources=self.resources)

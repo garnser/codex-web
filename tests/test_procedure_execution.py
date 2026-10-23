@@ -222,6 +222,12 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
     def assignment_options(self):
         return {}
 
+    def configure_project(self, project):
+        return project
+
+    def skill_create_options(self):
+        return {}
+
     async def asyncSetUp(self):
         asyncio.get_running_loop().slow_callback_duration = 5
         await action_fixtures.ActionIntentTests.asyncSetUp(self)
@@ -240,9 +246,10 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.repo=self.resources.create(ResourceCreate(resource_type='repository',name='Controlled fixture repository',
             operational_context={'environment':'staging'},aliases=[ResourceAlias(namespace='filesystem',value=str(repository))]),actor=self.actor)
         project=Project(id='home',name='Fixture',path=str(repository),organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id)
+        project = self.project = self.configure_project(project)
         self.workspaces=ExecutionWorkspaceService(ExecutionWorkspaceStateStore(self.sqlite),LocalGitWorkspaceBackend(self.root/'workspaces'),self.resources,lambda _:project)
         subject={'kind':'thread','ref':'fixture-thread'}
-        workspace=self.workspaces.acquire(ExecutionWorkspaceAcquire(subject=subject,execution_id='fixture-execution',project_id='home',
+        workspace=self.workspaces.acquire(ExecutionWorkspaceAcquire(subject=subject,execution_id='fixture-execution',project_id=self.project.id,
             resource_ids=(self.repo.id,self.resource.id),repository_resource_id=self.repo.id),actor=self.actor)
         self.config=Path(workspace.path)/'config.json'
         import http.server, threading
@@ -278,7 +285,7 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.workers=ExecutionWorkerService(ExecutionWorkerStore(self.sqlite),identity=self.identity,workspaces=self.workspaces)
         self.worker=self.workers.register(ExecutionWorkerRegister(service_identity_id=self.worker_actor.identity_id,pool='local',version='test',
             capabilities=('command_execution','git','artifact_upload','network')),actor=self.actor)
-        assignment=self.workers.create_assignment(ExecutionAssignmentCreate(subject=subject,execution_id='fixture-execution',project_id='home',
+        assignment=self.workers.create_assignment(ExecutionAssignmentCreate(subject=subject,execution_id='fixture-execution',project_id=self.project.id,
             resource_ids=(self.repo.id,self.resource.id),required_capabilities=('command_execution',),execution_contract_version='1.0',
             execution_workspace_id=workspace.id,sandbox='workspace-write',**self.assignment_options()),actor=self.actor)
         claimed=self.workers.claim(self.worker.id,AssignmentClaimRequest(lease_seconds=120),actor=self.worker_actor,assignment_id=assignment.id)
@@ -306,7 +313,7 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.workers.store.update_assignment(self.worker.id, self.assignment.id, assign_reference)
         self.provider=ControlledProvider(self);self.registry.register(self.provider,tenant_scope=self.actor.tenant)
         self.binding=self.registry.bind(ActionProviderBindingCreate(provider_type=self.provider.provider_type,provider_instance=self.provider.provider_instance,
-            project_id='home',resource_ids=(self.resource.id,self.repo.id),credential_ref=self.secret_fixture_ref,
+            project_id=self.project.id,resource_ids=(self.resource.id,self.repo.id),credential_ref=self.secret_fixture_ref,
             security_policy={'network':{'enabled':True,'allowed_schemes':['http'],'allowed_hosts':['127.0.0.1'],
                 'allowed_ports':[self.http_server.server_port],'allowed_private_cidrs':['127.0.0.0/8']}}),actor=self.actor,resources=self.resources)
         disk_code = DISK
@@ -323,7 +330,7 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         scanners=SkillScannerRegistry();scanners.register(FakeScanner())
         security=SkillSecurityService(SkillSecurityStore(self.sqlite),self.definition_registry,scanners)
         self.skills.bind_security(security)
-        draft=self.skills.create(SkillCreate(skill_id='controlled-gitlab',name='Controlled GitLab',instructions='Use canonical procedure controls.',operational_procedure=self.configure(contract(self))),actor=self.actor)
+        draft=self.skills.create(SkillCreate(skill_id='controlled-gitlab',name='Controlled GitLab',instructions='Use canonical procedure controls.',operational_procedure=self.configure(contract(self)),**self.skill_create_options()),actor=self.actor)
         published=self.skills.publish(draft['skillId'],draft['recordId'],SkillPublish(),actor=self.actor)
         self.pin=DefinitionReference.model_validate(published['definitionReference'])
         events=CanonicalEventIngestionService(CanonicalEventBus(CanonicalEventStore(self.sqlite)))
@@ -381,14 +388,14 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.intents.procedure_execution=self.runner
 
     def artifact(self, data, name):
-        artifact=self.artifacts.create_artifact(ArtifactCreate(project_id='home',execution_id='fixture-execution',resource_ids=(self.resource.id,),
+        artifact=self.artifacts.create_artifact(ArtifactCreate(project_id=self.project.id,execution_id='fixture-execution',resource_ids=(self.resource.id,),
             artifact_type='report',name=name,digest=sha256_digest(data)),actor=self.actor)
         return self.artifacts.attach_artifact_content(artifact.id,(data,),actor=self.actor)
 
     def proof(self, name, *, kind='artifact_verification',artifact_ids=(),passed=True):
         from codex_web.procedure_discovery import current_procedure_action_intent
         intent_id = current_procedure_action_intent()
-        return self.artifacts.create_evidence(EvidenceCreate(project_id='home',execution_id='fixture-execution',resource_ids=(self.resource.id,),
+        return self.artifacts.create_evidence(EvidenceCreate(project_id=self.project.id,execution_id='fixture-execution',resource_ids=(self.resource.id,),
             evidence_type=kind,result='pass' if passed else 'fail',artifact_ids=artifact_ids,provider=self.provider.provider_type,
             source=f'action-intent:{intent_id}' if intent_id else name),actor=self.actor)
 
@@ -541,7 +548,7 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.config.write_text(json.dumps({'workers':['failed'],'http_status':503,'rotation':2}))
         await self.advance()
         # Real canonical authority catalog revocation, not a fabricated decision.
-        record=self.authority.catalog_record(actor=self.actor,project_id='home')
+        record=self.authority.catalog_record(actor=self.actor,project_id=self.project.id)
         self.definition_registry.quarantine(record.record_id,actor=self.actor.identity_id,reason='test revocation')
         checkpoint=await self.advance()
         self.assertEqual(checkpoint.status,'recovery_required',checkpoint)
