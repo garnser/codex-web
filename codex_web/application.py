@@ -4559,6 +4559,8 @@ stale_active_turn_recovery_service = StaleActiveTurnRecoveryService(
         turn_execution_service.resume_active_threads_after_startup
     ),
     resume_live_on_startup=deployment_mode in {"local", "single"},
+    control_retry_eligible=turn_execution_service.home_startup_control_retry_eligible,
+    resume_control_blocked=turn_execution_service.resume_control_blocked_home_threads,
     record_terminal_recovery=(
         lambda active, outcome, reason_code, resolved_at:
         thread_transcript_service.reconcile_terminal(
@@ -4570,6 +4572,9 @@ stale_active_turn_recovery_service = StaleActiveTurnRecoveryService(
         )
     ),
     backup_directory=DATA_DIR / "active-turn-recovery-backups",
+)
+turn_execution_service.home_startup_retry_schedule = lambda thread_id: (
+    stale_active_turn_recovery_service.schedule_thread(thread_id, reason="control-resume")
 )
 thread_recovery_service.stale_active_turn_reconciler = (
     stale_active_turn_recovery_service.schedule_thread

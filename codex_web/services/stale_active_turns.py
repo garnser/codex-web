@@ -313,6 +313,8 @@ class StaleActiveTurnRecoveryService:
         append_event,
         resume_active_threads=None,
         resume_live_on_startup: bool = False,
+        control_retry_eligible=None,
+        resume_control_blocked=None,
         record_terminal_recovery=None,
         backup_directory: Path | None = None,
         clock=time.time,
@@ -325,6 +327,8 @@ class StaleActiveTurnRecoveryService:
         self.append_event = append_event
         self.resume_active_threads = resume_active_threads
         self.resume_live_on_startup = resume_live_on_startup
+        self.control_retry_eligible = control_retry_eligible
+        self.resume_control_blocked = resume_control_blocked
         self.record_terminal_recovery = record_terminal_recovery
         self.backup_directory = backup_directory
         self.clock = clock
@@ -1073,7 +1077,12 @@ class StaleActiveTurnRecoveryService:
                     counts["stale"] += 1
                 counts[inspection.outcome] += 1
                 if (
-                    reason == "startup"
+                    (reason == "startup" or (
+                        reason == "control-resume"
+                        and active.project_id == "home"
+                        and self.control_retry_eligible is not None
+                        and self.control_retry_eligible(active)
+                    ))
                     and (
                         inspection.outcome == "fresh"
                         or (
@@ -1144,13 +1153,10 @@ class StaleActiveTurnRecoveryService:
             actor_id=actor_id,
             thread_id=thread_id,
         )
-        if (
-            report.resume_thread_ids
-            and self.resume_active_threads is not None
-        ):
-            await self.resume_active_threads(
-                set(report.resume_thread_ids)
-            )
+        resume = (self.resume_control_blocked if reason == "control-resume"
+                  else self.resume_active_threads)
+        if report.resume_thread_ids and resume is not None:
+            await resume(set(report.resume_thread_ids))
         for value in report.drain_thread_ids:
             self.schedule_queue_drain(value)
         return report

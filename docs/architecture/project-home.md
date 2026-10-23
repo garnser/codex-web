@@ -677,3 +677,23 @@ canonical input identity, final current-authority guard and actual runtime usage
 control continuation; no synthetic zero-token wrapper or idle polling is used.
 The Goal binding 1.2 write/rollback boundary applies globally, even before a Home
 binding is created. A paused or draft Goal is not evidence of active execution.
+
+### Resuming a control-blocked Goal startup
+
+If Home Goal startup retention refuses specifically because GLOBAL autonomy is
+paused, the existing execution owner remembers the exact interrupted active-turn
+snapshot as an in-process observation. Ordinary autonomy Resume schedules one
+per-thread retry through the existing stale-turn recovery coordinator. It does
+not retry arbitrary live Home turns. The same-thread lock compares the current
+marker with that exact snapshot before the ordinary canonical retention owner
+rechecks original positive START, Human/Goal/Profile/selection authority, custody,
+controls and finite Goal call reservation. A control change racing the initial
+refusal is retained as one coordinator wakeup.
+
+The observation grants no authority and adds no durable schema or controller. A
+new process obtains eligibility again only through normal startup reconciliation.
+A changed marker or a different authority/budget refusal does not authorize a
+retry. Positive retained queue creation consumes the observation; duplicate Resume
+cannot create another recovery input. Original UNKNOWN actions and missing actual
+usage remain held by their existing owners. Existing Resume controls and recovery
+metadata continue to provide the operator surface; no new UI action is introduced.
