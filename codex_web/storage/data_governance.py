@@ -51,6 +51,20 @@ class DataGovernanceStore:
     def load(self) -> DataGovernanceState:
         return self._decode(self.store.get(self.namespace))
 
+    def context_state(self, record_ids: tuple[str, ...], *, organization_id: str,
+                      workspace_id: str) -> DataGovernanceState:
+        """Read complete selected records in one uncached canonical snapshot.
+
+        Legacy backends/envelopes retain the ordinary full decoder. Mutation and
+        audit callers continue to load the complete document.
+        """
+        reader = getattr(self.store, 'document_array_items_envelope', None)
+        if not callable(reader):
+            return self.load()
+        return self._decode(reader(self.namespace, 'records', record_ids,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('records', 'requests', 'events')))
+
     def update(
         self,
         updater: Callable[[DataGovernanceState], DataGovernanceState],

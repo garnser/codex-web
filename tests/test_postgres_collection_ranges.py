@@ -15,6 +15,60 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def _governance_context(self):
+        from codex_web.data_governance import GovernedDataRecord, DataCategory, DataClassification
+        from codex_web.storage.data_governance import DataGovernanceStore
+        from codex_web.services.data_governance import DataGovernanceService
+        from codex_web.identity import AuthenticationActor, PrincipalKind, AuthenticationAssurance
+        record = GovernedDataRecord(id='selected', organization_id='local', workspace_id='default',
+            object_type='memory', object_id='selected', category=DataCategory.MEMORY,
+            requested_classification=DataClassification.INTERNAL,
+            classification=DataClassification.INTERNAL, created_by='fixture')
+        actor = AuthenticationActor(identity_id='fixture', principal_kind=PrincipalKind.HUMAN,
+            organization_id='local', workspace_id='default', assurance=AuthenticationAssurance.LOCAL_TRUSTED)
+        return DataGovernanceService(DataGovernanceStore(self.backend)), record, actor
+
+    def test_governance_context_selected_snapshot_preserves_decisions_without_history_transfer(self):
+        from codex_web.data_governance import ContextFilterRequest, GovernedDataLifecycle, DataClassification
+        service, selected, actor = self._governance_context()
+        denied = selected.model_copy(update={'id': 'denied', 'deny_model_context': True})
+        deleted = selected.model_copy(update={'id': 'deleted', 'lifecycle': GovernedDataLifecycle.DELETED})
+        secret = selected.model_copy(update={'id': 'secret', 'classification': DataClassification.SECRET})
+        rows = [selected, denied, deleted, secret]
+        raw = {'schema_version': '1.1', 'records': [r.model_dump(mode='json') for r in rows],
+               'events': [], 'requests': []}
+        self.backend.put('data_governance', raw)
+        request = ContextFilterRequest(record_ids=('deleted','selected','denied','secret','selected'))
+        with patch.object(service.store, 'context_state', return_value=service.store.load()):
+            expected = service.filter_context(request, actor=actor)
+        # Valid retained event history is deliberately large, and irrelevant to
+        # filtering. The selected complete records remain the canonical truth.
+        raw['events'] = [{'organization_id': 'local', 'workspace_id': 'default',
+            'actor_id': 'fixture', 'operation': 'register', 'outcome': 'allowed',
+            'reason_code': 'retained ' * 1000} for _ in range(150)]
+        self.backend.put('data_governance', raw)
+        with patch.object(service.store, 'load', side_effect=AssertionError('whole governance decode')), \
+             patch.object(self.backend, 'get', side_effect=AssertionError('whole document transfer')):
+            actual = service.filter_context(request, actor=actor)
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual.allowed_record_ids, ('selected', 'selected'))
+
+    def test_governance_context_refuses_missing_foreign_malformed_and_unknown_envelopes(self):
+        from codex_web.data_governance import ContextFilterRequest
+        from codex_web.services.data_governance import GovernanceNotFoundError
+        service, selected, actor = self._governance_context()
+        raw = {'schema_version': '1.1', 'records': [selected.model_dump(mode='json')], 'events': [], 'requests': []}
+        for record_id, records in (('missing', raw['records']), ('selected',
+                [{**raw['records'][0], 'organization_id': 'foreign'}])):
+            self.backend.put('data_governance', {**raw, 'records': records})
+            with self.assertRaises(GovernanceNotFoundError):
+                service.filter_context(ContextFilterRequest(record_ids=(record_id,)), actor=actor)
+        for changed in ({**raw, 'schema_version': 'unknown'}, {**raw, 'events': 'wrong'},
+                        {**raw, 'unexpected': True}, {**raw, 'records': [{**raw['records'][0], 'classification': 'unknown'}]}):
+            self.backend.put('data_governance', changed)
+            with self.assertRaises(ValueError):
+                service.filter_context(ContextFilterRequest(record_ids=('selected',)), actor=actor)
+
     def _evidence_point(self, raw, *, item_id="selected", organization_id="local", workspace_id="default"):
         from codex_web.artifact_evidence import Evidence, EvidenceType, EvidenceResult
         selected = Evidence(id=item_id, organization_id=organization_id, workspace_id=workspace_id,
