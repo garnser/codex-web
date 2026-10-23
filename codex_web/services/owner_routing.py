@@ -341,9 +341,9 @@ class OwnerRoutingService:
             if execution_profile.repository_access == 'none':
                 return self.pin(state, binding, configured_owner)
         native_compatible = self.native_scope_compatible(state, source, source_assignment)
-        scope = getattr(source_assignment, 'repository_scope', None)
-        if (scope is not None and set(scope.writable_repository_ids) == requested
-                and not scope.read_only_repository_ids
+        source_scope = getattr(source_assignment, 'repository_scope', None)
+        if (source_scope is not None and set(source_scope.writable_repository_ids) == requested
+                and not source_scope.read_only_repository_ids
                 and native_compatible):
             # Equal historical scope is not a current executor when canonical
             # recovery already linked this source to another conversation.
@@ -376,8 +376,21 @@ class OwnerRoutingService:
                 continue
             matches.append(witness)
         if len(matches) != 1:
+            request_incompatible = not native_compatible
+            if (not matches and native_compatible and source_scope is not None
+                    and (set(source_scope.writable_repository_ids) != requested
+                         or source_scope.read_only_repository_ids)
+                    and self.sessions is not None):
+                # Original native custody can agree with the old bootstrap
+                # while both differ from this Work Item's requested scope.
+                # Only positive native custody makes this a fresh-context
+                # case; absent custody keeps ordinary admission/recovery.
+                try:
+                    request_incompatible = self.sessions.native_custody(binding.thread_id) is not None
+                except (LookupError, ValueError, RuntimeError) as exc:
+                    raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
             raise OwnerRoutingError('owner_recipient_ambiguous' if matches else
-                'owner_recipient_native_scope_incompatible' if not native_compatible else
+                'owner_recipient_native_scope_incompatible' if request_incompatible else
                 'owner_recipient_compatible_lane_unavailable')
         intent = routing.binding(configured_owner) or OwnerRoutingBinding(schema_version='1.1',
             organization_id=state.organization_id, workspace_id=state.workspace_id,
