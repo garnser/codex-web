@@ -2587,6 +2587,8 @@ work_graph_store = WorkGraphStore(state_store)
 work_graph_service = WorkGraphService(
     work_graph_store,
     runtime_state.work_item_states.load,
+    snapshot_items=lambda project_id, scope: WorkGraphService.projected_snapshot_items(
+        runtime_state.work_item_states, project_id, scope),
 )
 app.state.work_graph_store = work_graph_store
 app.state.work_graph_service = work_graph_service

@@ -212,3 +212,19 @@ Graph-runnable remains only one prerequisite. Neither the API nor UI turns
 readiness into execution authority: canonical identity/policy/approval/resource,
 entitlement, worker capability/fenced lease, isolated execution workspace, and
 ActionIntent/provider boundaries still apply.
+
+### Snapshot read cost
+
+The application wires snapshot reads to the canonical Work Item repository's
+projected pages. Graph construction reads current identity/tenant/Project,
+title, stage, terminal outcome, blocker findings and required timestamp fields;
+it does not transfer or deep-copy unrelated retained notes and handoff history.
+Every page is consumed and every same-scope node remains present. Edges,
+dependency readiness, failure impacts, progress and critical paths are unchanged.
+Unavailable reads or non-advancing pagination fail visibly rather than producing
+a partial graph. Ordinary Work Item reads and mutations retain full records.
+
+This also reduces the storage cost of Executive context preparation without
+dropping role-visible graph context, caching authorization, increasing the
+existing context deadline or changing model activation. Other context owners
+(including governed memory and business context) keep their own contracts.
