@@ -33,6 +33,10 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
         f=HomeCanonicalSendTests()
         self.addAsyncCleanup(self.cleanup,f)
         await f.asyncSetUp()
+        # The shared fixture simplifies this to the UI sandbox spelling.
+        # Exercise the real protocol policy here, not that unrelated stub.
+        from codex_web.services.project_runtime import ProjectRuntimeService
+        f.host._sandbox_policy = ProjectRuntimeService.sandbox_policy
         payload=f.f.execution_profiles.record(organization_id=f.actor.organization_id,
             workspace_id=f.actor.workspace_id).payload.copy()
         payload['profiles']=[*payload['profiles'],dict(id='reasoning-only',name='Reasoning only',
@@ -69,6 +73,7 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
                 session.fence=assignment.fence
                 session.delegation=credentials._delegation(assignment,f.f.worker.id,assignment.fence)
                 session.workspace_path=Path(f.f.workspaces.get(assignment.execution_workspace_id,f.actor).path)
+                context.process_owner.bind_workspace(session.workspace_path)
                 session.started_monotonic=time.monotonic()
                 native=ReasoningOnlyCodexRuntime(CodexHost())
                 native.native_runtime_version='0.160.0';native.ensure_started=AsyncMock();native.ready.set()

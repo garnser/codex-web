@@ -26,6 +26,9 @@ from codex_web.services.codex_reasoning_policy import NativeReasoningPolicyError
 class NativeProcessOwnership:
     """Ephemeral join handle, never permission, idempotency or result authority."""
     assignment_id: str | None = None
+    workspace_path: str | None = None
+    native_session_id: str | None = None
+    bootstrap_sent: bool = False
     deadline_at: float | None = None
     cancelled: threading.Event = field(default_factory=threading.Event, repr=False)
     stop: Callable | None = field(default=None, repr=False)
@@ -33,6 +36,17 @@ class NativeProcessOwnership:
     def validate_current(self):
         if self.cancelled.is_set() or self.deadline_at is None or time.monotonic() >= self.deadline_at:
             raise NativeReasoningPolicyError('Native invocation cancelled or deadline expired')
+
+    def bind_workspace(self, path):
+        value = str(path)
+        if self.workspace_path is not None and self.workspace_path != value:
+            raise NativeReasoningPolicyError('Original native workspace changed')
+        self.workspace_path = value
+
+    def bind_native_session(self, native_id):
+        if not native_id or (self.native_session_id is not None and self.native_session_id != native_id):
+            raise NativeReasoningPolicyError('Original native session changed')
+        self.native_session_id = native_id
 
     def attach(self, assignment_id, stop):
         if self.assignment_id is not None or not callable(stop):

@@ -458,3 +458,12 @@ is retained. A release enabling this path must set `stateMigrationRequired=true`
 and must not claim older-source rollback; a reviewed forward-compatible release
 or explicit supported migration is required. Disabled registration before any
 `1.1` write does not itself create such a correlation.
+
+The restricted native transport allowlists protocol methods at both request and
+actual writer boundaries. Unknown methods, steer, compact, goal, fork, command
+execution and credential refresh cannot initiate unreserved inference. Input
+writes additionally require the original private invocation, exact model,
+workspace, native session and message digest, with the canonical START guard for
+resume/turn input. Bootstrap is limited to one send for its owned process;
+interrupt remains available for owned cleanup. These checks do not grant a
+public thread operation permission merely because another consultation is live.

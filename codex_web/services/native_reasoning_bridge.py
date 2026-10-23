@@ -265,6 +265,7 @@ class CanonicalNativeReasoningBridge:
                 agent_profile_id=b.agent_profile_id, agent_profile_revision=b.agent_profile_revision,
                 actor=actor, bootstrap_token=bootstrap, admission_guard=context.validate_current)
             thread_id = response['thread']['id']
+            context.process_owner.bind_native_session(thread_id)
             session = await self._owned(lambda: self.sessions.get(response['agentSessionId'],
                 organization_id=context.organization_id, workspace_id=context.workspace_id))
             if (session.provider_id != 'openai' or session.runtime_id != self.runtime_id

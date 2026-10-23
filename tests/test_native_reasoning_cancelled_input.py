@@ -151,6 +151,30 @@ class NativeHeldInputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream.getvalue(),'')
 
 
+    async def test_valid_reservation_cannot_send_changed_message_session_or_workspace(self):
+        import io
+        import hashlib
+        from codex_web.services.native_model_provider import NativeProcessOwnership
+        owner=NativeProcessOwnership(assignment_id='original',deadline_at=time.monotonic()+10)
+        owner.bind_workspace('/canonical/scratch');owner.bind_native_session('original-thread')
+        context=NS(validate_current=owner.validate_current,process_owner=owner,concrete_model='model',
+                   input_message_sha256=hashlib.sha256(b'original').hexdigest())
+        stream=io.StringIO();native=object.__new__(ReasoningOnlyCodexRuntime)
+        native.proc=NS(stdin=stream,poll=lambda:None);native.generation='original';native.write_lock=asyncio.Lock()
+        base={'threadId':'original-thread','cwd':'/canonical/scratch','model':'model',
+              'approvalPolicy':'never','sandboxPolicy':{'type':'readOnly'},
+              'input':[{'type':'text','text':'original','text_elements':[]}]}
+        with patch('codex_web.services.native_model_provider.current_native_model_invocation',return_value=context):
+            for changed in ({'threadId':'other-thread'},{'cwd':'/other'},
+                            {'input':[{'type':'text','text':'changed','text_elements':[]}]}):
+                with self.subTest(changed=changed):
+                    with self.assertRaises(NativeReasoningPolicyError):
+                        await native._send({'method':'turn/start','id':1,'params':{**base,**changed}},start_guard=lambda:None)
+            with self.assertRaisesRegex(NativeReasoningPolicyError,'START capture'):
+                await native._send({'method':'turn/start','id':1,'params':base})
+        self.assertEqual(stream.getvalue(),'')
+
+
 class NativeAnswerTests(unittest.TestCase):
     def test_commentary_is_not_concatenated_with_final_json(self):
         from codex_web.services.native_reasoning_bridge import NativeReasoningText

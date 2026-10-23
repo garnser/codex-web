@@ -161,3 +161,20 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
             await runtime._handle_message({'id': 9, 'method': method, 'params': {}})
             self.assertEqual(runtime.reasoning_refusal, expected)
             self.assertIn('error', runtime._send.call_args.args[0])
+
+
+class NativeForbiddenRpcTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unreserved_steer_compact_objective_and_approval_never_reach_transport(self):
+        from codex_web.runtime.codex import CodexRuntime
+        from unittest.mock import AsyncMock,patch
+        native=object.__new__(ReasoningOnlyCodexRuntime)
+        with patch.object(CodexRuntime,'request',new_callable=AsyncMock) as request, \
+             patch.object(CodexRuntime,'_send',new_callable=AsyncMock) as send:
+            for method in ('turn/steer','thread/compact/start','thread/goal/set','thread/goal/control/commit',
+                           'thread/fork','command/exec','config/value/write','account/login/start'):
+                with self.subTest(method=method):
+                    with self.assertRaises(NativeReasoningPolicyError):await native.request(method,{})
+                    with self.assertRaises(NativeReasoningPolicyError):await native._send({'method':method,'params':{}})
+            with self.assertRaises(NativeReasoningPolicyError):await native._send({'id':1,'result':{'approved':True}})
+            with self.assertRaises(NativeReasoningPolicyError):await native.request('account/read',{'refreshToken':True})
+            request.assert_not_awaited();send.assert_not_awaited()

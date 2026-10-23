@@ -25,6 +25,21 @@ DISABLED_FEATURES = (
 )
 
 
+REASONING_INPUT_METHODS = frozenset({'thread/start', 'thread/resume', 'turn/start'})
+REASONING_METADATA_METHODS = frozenset({'initialize', 'initialized', 'config/read',
+    'account/read', 'account/rateLimits/read', 'model/list', 'thread/read', 'thread/list', 'turn/interrupt'})
+
+
+def validate_reasoning_rpc(message):
+    method = message.get('method')
+    if method is None and 'error' in message and 'result' not in message and message.get('id') is not None:
+        return  # The only server-request response is an explicit refusal.
+    if method not in REASONING_INPUT_METHODS | REASONING_METADATA_METHODS:
+        raise NativeReasoningPolicyError('Native reasoning RPC does not permit operational or replacement input')
+    if method == 'account/read' and (message.get('params') or {}).get('refreshToken') is not False:
+        raise NativeReasoningPolicyError('Native authentication refresh remains owner-controlled')
+
+
 class NativeReasoningPolicyError(RuntimeError):
     pass
 
@@ -93,20 +108,47 @@ class ReasoningOnlyCodexRuntime(CodexRuntime):
         await super()._handle_message(message)
 
     async def _send(self, message, *, expected_generation=None, start_guard=None):
+        validate_reasoning_rpc(message)
         if message.get('method') in {'thread/start', 'thread/resume', 'turn/start'}:
             from codex_web.services.native_model_provider import current_native_model_invocation
             context = current_native_model_invocation()
             previous = start_guard
             def reasoning_guard():
+                import hashlib
                 context.validate_current()
+                owner, method, params = context.process_owner, message['method'], message.get('params') or {}
+                if (owner is None or owner.workspace_path is None or params.get('cwd') != owner.workspace_path
+                        or params.get('model') != context.concrete_model
+                        or params.get('approvalPolicy') != 'never'
+                        or (params.get('sandboxPolicy') or {}).get('type') != 'readOnly'):
+                    raise NativeReasoningPolicyError('Original native input scope changed: ' + ','.join(key for key, valid in (('workspace', owner is not None and owner.workspace_path is not None and params.get('cwd') == owner.workspace_path), ('model', params.get('model') == context.concrete_model), ('approval', params.get('approvalPolicy') == 'never'), ('sandbox', (params.get('sandboxPolicy') or {}).get('type') == 'readOnly')) if not valid))
+                if method in {'thread/start', 'thread/resume'}:
+                    if (params.get('baseInstructions') != context.system_prompt
+                            or params.get('modelProvider') != 'openai' or params.get('developerInstructions') is not None):
+                        raise NativeReasoningPolicyError('Original native bootstrap instructions changed')
+                if method == 'thread/start':
+                    if (owner.bootstrap_sent or params.get('dynamicTools') != [] or params.get('environments') != []
+                            or params.get('allowProviderModelFallback') is not False):
+                        raise NativeReasoningPolicyError('Original native bootstrap changed or already sent')
+                elif previous is None or params.get('threadId') != owner.native_session_id:
+                    raise NativeReasoningPolicyError('Original native START capture/session required')
+                if method == 'turn/start':
+                    inputs = params.get('input')
+                    if (not isinstance(inputs,list) or len(inputs) != 1 or inputs[0].get('type') != 'text'
+                            or not isinstance(inputs[0].get('text'),str) or inputs[0].get('text_elements') != []
+                            or hashlib.sha256(inputs[0]['text'].encode()).hexdigest() != context.input_message_sha256):
+                        raise NativeReasoningPolicyError('Original native inference message changed')
                 if previous is not None:
                     previous()
                 context.validate_current()
+                if method == 'thread/start':
+                    owner.bootstrap_sent = True
             start_guard = reasoning_guard
         return await super()._send(message, expected_generation=expected_generation,
                                    start_guard=start_guard)
 
     async def request(self, method, params=None, *, start_capture=None):
+        validate_reasoning_rpc({'method':method, 'params':params})
         if method in {'thread/start', 'thread/resume', 'turn/start'}:
             from codex_web.services.native_model_provider import current_native_model_invocation
             from codex_web.services.post_turn_readiness import PostTurnReadinessService

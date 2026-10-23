@@ -116,6 +116,9 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
                 or lease.execution_workspace_id != workspace.id
                 or lease.execution_id != assignment.execution_id):
             raise NativeReasoningPolicyError('Native reasoning empty physical scope unavailable')
+        if context.process_owner is None or context.process_owner.assignment_id != assignment.id:
+            raise NativeReasoningPolicyError('Original native process owner unavailable')
+        context.process_owner.bind_workspace(workspace.path)
         validate_profile(assignment)
 
     credentials = TrustedLocalReasoningCredentialProvider(codex_home=codex_home,
