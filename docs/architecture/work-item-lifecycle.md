@@ -117,6 +117,13 @@ before any source-lane retirement. Scratch-only coordination profiles retain
 their existing no-repository route. Selection performs storage work off the
 async event loop; it neither creates threads/bindings nor grants access.
 
+An equal writable scope on the bound assignment does not bypass this selection
+when the scoped canonical replacement graph already names a successor. The
+replacement relation grants no execution authority: the existing unique live
+recipient and final custody checks still apply. Without a replacement relation,
+ordinary first admission and same-thread bootstrap/recovery retain their existing
+path, including when no live recipient has been established yet.
+
 The `1.1` recipient witness identifies actual bootstrap, assignment, execution,
 worker/fence and a checksum of immutable authority fields. The original bot
 binding/thread and reply target remain conversation provenance, including for

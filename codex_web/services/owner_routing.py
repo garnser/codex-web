@@ -301,7 +301,17 @@ class OwnerRoutingService:
                 return self.pin(state, binding, configured_owner)
         scope = getattr(source_assignment, 'repository_scope', None)
         if scope is not None and set(scope.writable_repository_ids) == requested and not scope.read_only_repository_ids:
-            return self.pin(state, binding, configured_owner)
+            # Equal historical scope is not a current executor when canonical
+            # recovery already linked this source to another conversation.
+            # Unreplaced first admission/recovery keeps its existing bootstrap.
+            try:
+                replacement = self.replacement_resolver(binding.thread_id,
+                    project_id=state.project_id, organization_id=state.organization_id,
+                    workspace_id=state.workspace_id)
+            except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
+                raise OwnerRoutingError('owner_executor_replacement_unverified') from exc
+            if not replacement or replacement == binding.thread_id:
+                return self.pin(state, binding, configured_owner)
         self.require_resolved_originals(state)
         candidates = self.bootstraps.list(actor)
         if len(candidates) > 5000:
