@@ -1056,6 +1056,7 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+skill_service.projects = project_service
 execution_role_definition_service.projects = project_service
 care_composer_service = CareComposerService(skill_service)
 app.include_router(build_care_composer_router(care_composer_service,project_service))
@@ -1218,9 +1219,21 @@ app.state.gitlab_action_provider = gitlab_action_provider
 
 
 def _procedure_definition_scope_actor(record):
-    if record.scope_type.value != "workspace":
+    from codex_web.services.projects import ProjectNotFoundError
+    if record.scope_type.value == "project":
+        try:
+            project = project_service.get(record.scope_id)
+        except ProjectNotFoundError:
+            return None
+        workspace_id = project.workspace_id
+        organization_id = project.organization_id
+    elif record.scope_type.value == "workspace":
+        workspace_id = record.scope_id
+        organization_id = None
+    else:
         return None
-    workspace = next((w for w in identity_service.state().workspaces if w.id == record.scope_id), None)
+    workspace = next((w for w in identity_service.state().workspaces if w.id == workspace_id
+                      and (organization_id is None or w.organization_id == organization_id)), None)
     if workspace is None:
         return None
     from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
@@ -1566,6 +1579,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
             refs,
             organization_id=project.organization_id,
             workspace_id=project.workspace_id,
+            project_id=project.id,
         )[1]
     ),
 )
@@ -3214,6 +3228,7 @@ def _thread_inherited_skill_refs(thread_id, actor):
 skill_service.bind_thread_settings(
     thread_execution_settings_service,
     inherited_refs=_thread_inherited_skill_refs,
+    project_for_thread=lambda thread_id, actor: thread_scope_service.for_thread(thread_id, actor).id,
 )
 app.include_router(build_thread_skills_router(skill_service, thread_scope_service))
 
@@ -3368,6 +3383,7 @@ turn_execution_service = install_turn_execution_service(
             refs,
             organization_id=project.organization_id,
             workspace_id=project.workspace_id,
+            project_id=project.id,
             objective=objective,
         )
     ),
@@ -3408,7 +3424,8 @@ turn_execution_service.session_custody = AgentSessionCustodyService(
 from codex_web.services.procedure_discovery import install_native_procedure_admission
 install_native_procedure_admission(turn_execution_service, agent_session_service,
     procedure_discovery_service, execution_worker_service, thread_history_repository,
-    identity_service.local_trusted_actor(), execution_profile_definition_service)
+    identity_service.local_trusted_actor(), execution_profile_definition_service,
+    procedure_execution=procedure_execution_service)
 
 
 

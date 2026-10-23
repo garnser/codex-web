@@ -153,6 +153,55 @@ judgment proof names its actual invocation. Stale/cross-step/foreign proof refus
 An adapter without this result/Evidence contract fails explicitly; installing the
 interpreter does not claim arbitrary existing operational adapters are supported.
 
+An optional implementation adapter registered with the existing ActionProvider
+registry can project an exact provider/action/contract's legacy result into this
+contract. GitLab contract 1.2 supports typed READY and merge receipt projections;
+the stored flat `ActionResult` remains unchanged for verification/reconciliation.
+The procedure owner requires the same succeeded canonical intent, current receipt,
+attempt, request/key, tenant/Project/execution and Resource attribution. Supported
+outputs are fixed by that adapter, never inferred from arbitrary output keys.
+READY outputs contain its exact head/base target and `draft=false`; merge outputs
+contain the PR number, observed head and merge commit. READY does not prove review,
+approval or merge, and must not be repeated for an already non-Draft MR.
+
+These steps declare Evidence names `receipt` (kind `provider_receipt`) and/or
+`verification` (kind `verification`). Receipt Evidence retains the actual original
+receipt/result identity and timestamp. Verification additionally requires the same
+intent's canonical successful provider-verification record; execution success is
+insufficient. Canonical Evidence idempotency keeps these point writes stable across
+an interrupted checkpoint save and rejects different content under the same key.
+The usual governed immutable output Artifact and all subsequent proof checks remain
+mandatory. UNKNOWN, missing/foreign/malformed proof or changed provider contract
+refuses; projection itself never invokes execute, verify, reconcile or a model.
+Unregistered providers retain the existing strict `outputs`/`evidence` contract.
+
+This adapter adds no read-only MR or Work Item ActionProvider operation, native
+procedure enforcement, publication, Profile activation or autonomous step timer.
+Canonical broker facts may inform a separately admitted step's inputs; provider
+mutation still performs its ordinary current protected-fact/policy checks. A full
+workflow requires separately supported operations and actual live qualification.
+
+GitLab additionally registers `code-host.pull-request.verify-merge` as a bounded
+read operation under existing `repository.read.metadata` authority. It accepts
+only `pull_request_number` (positive integer), `head_sha` and `merge_commit_sha`
+(exact lowercase SHA-1 revisions). These names consume the originating merge
+step's typed outputs without a caller script or transformation. Its fixed MR GET
+requires actual merged state and those exact revisions; independent provider
+verification performs another fixed GET. Its typed outputs retain those three
+fields plus `merge_verified=true`, backed by the actual original verification.
+It never performs READY, merge, CI refresh/rerun or a fallback write.
+
+Only this exact registered GitLab 1.2 read contract may use an assignment's
+writable **or** read-only repository scope. Ordinary mutations still require the
+writable scope. Current binding/target, actor authority, Profile/Definition,
+assignment/worker fence, lease and procedure step are checked through existing
+admission before and after each observation. The scope predicate reads metadata;
+it neither resolves a credential nor lends another principal credential rights.
+The worker's normal credential boundary remains mandatory. Changed custody,
+binding, proof or an unknown read outcome retains the original intent rather than
+retrying with another key. This supplies a real later `verification` step after a
+merge; it is not permission to execute a required procedure on native tools.
+
 The step policy snapshot attributes the exact published definition and live
 assignment checks; it grants no Role authority or provider capability. Current
 Role authority and canonical approval quorum are required separately, including
@@ -211,3 +260,43 @@ GitLab's ordinary flat ActionResult and provider receipt are not the typed
 must use a registered adapter that satisfies that contract before publishing an
 enforced operational procedure. Existing procedure trace and Executive management
 UI continue to inspect the same canonical records.
+
+### Attested native preparation for provider procedures
+
+A selected required procedure ordinarily refuses native tools whose future
+operation is unknown. A narrow exception permits isolated **preparation** for
+procedures whose privileged operations all resolve to registered canonical
+ActionProviders. This exception is installed only by the existing native turn
+owner and interpreter; it is not a serialized request/Definition flag.
+
+The first discovery must have selected exact procedure revisions and have only
+the existing unsupported-tool-enforcement blocker. Missing environment, failed
+reads, inaccessible/stale Skills, conflicting selection or missing capabilities
+remain refusals. The actual assignment-bound process session must freshly prove
+its current worker/fence/delegation, ready owned process, current workspace lease,
+OS-enforced network-disabled Bubblewrap backend and serving broker bound to the
+same assignment. A configured broker URL, stored digest, generic AgentSession or
+trusted-host backend is insufficient. Existing profile policy must additionally
+exclude network and host mutation. Worker/local procedure steps remain unsupported
+by this preparation path, including recovery steps without a canonical provider.
+
+The interpreter resolves every selected action's exact registered provider,
+instance, contract, enabled binding and target envelope without credentials or
+provider transport. The canonical ActionIntent pre-dispatch hook must actually
+be installed. A process-local live validation scope permits one second discovery
+only for the exact same selected revisions; its bounded provenance participates
+in the discovery fingerprint. Changed subsets or facts fail closed. The existing
+guarded native resume/start boundary revalidates that same fingerprint, session
+and broker immediately before input. Unsupported unguarded transports refuse.
+No alternate controller, polling loop, store or remote-write path is introduced.
+
+Preparation does not create a checkpoint, approve a step or execute a provider.
+Direct provider mutation without an ActionIntent remains denied. An ordinary
+ActionIntent matching a required procedure still cannot execute without the
+exact current durable interpreter step, request, approvals and receipts. Local
+repository edits cannot publish remotely through the isolated network envelope;
+remote operations retain canonical broker/ActionIntent checks. Existing trace UI
+shows the selected revisions and `canonical:native-provider-preparation` source;
+the source string itself confers no authority.
+
+A native scratch context can prove its physical resource scope is exactly empty through the same live broker/session owner, current scratch/none Definition, workspace and resource lease. Only registered provider-only procedures may then be rejected as `native_physical_scope_empty` for that single discovery; pinned-reference errors and local/worker procedures retain ordinary refusal. This does not select or authorize a future remote target. Later broker actions resolve their actual target and enforce the required procedure normally. The proof is rechecked at native input. Nonempty preparation additionally requires the current Definition to declare all three procedure broker operations and the actual broker to use the same interpreter.

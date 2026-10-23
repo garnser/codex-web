@@ -21,6 +21,7 @@ from codex_web.identity import (
     AuthenticationAssurance,
     MembershipRole,
     PrincipalKind,
+    TenantScope,
 )
 from codex_web.services.definitions import (
     DefinitionConflictError,
@@ -119,11 +120,14 @@ class SkillService:
         definitions: DefinitionRegistryService,
         *,
         profiles: Any | None = None,
+        projects: Any | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.definitions = definitions
         self.profiles = profiles
+        self.projects = projects
         self.security: Any | None = None
+        self.thread_project: Callable[[str, AuthenticationActor], str] | None = None
         self.thread_settings: Any | None = None
         self.thread_inherited_skill_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None
         self.clock = clock
@@ -282,7 +286,7 @@ class SkillService:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is archived")
             self._validate_procedure_references(record)
 
-    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor) -> DefinitionReference:
+    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None) -> DefinitionReference:
         """Required-procedure facet of ordinary exact Skill reference validation.
 
         No discovery, policy admission, planning, step dispatch or model calls.
@@ -293,7 +297,8 @@ class SkillService:
 
         try:
             record = self.definitions.get_record(reference.record_id)
-            self._assert_visible_record(record, actor)
+            self._assert_visible_scope(record, organization_id=actor.organization_id,
+                                       workspace_id=actor.workspace_id, project_id=project_id)
             if record.lifecycle == DefinitionLifecycle.QUARANTINED:
                 raise SkillResolutionFailure("procedure_quarantined", "required operational procedure is quarantined")
             if record.lifecycle == DefinitionLifecycle.DISABLED:
@@ -308,7 +313,7 @@ class SkillService:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
             if latest.effective_until is not None and float(self.clock()) >= latest.effective_until:
                 raise SkillResolutionFailure("procedure_expired", "current operational procedure effective window expired")
-            valid = self.validate_reference(reference, actor=actor)
+            valid = self.validate_reference(reference, actor=actor, project_id=project_id)
             record = self.definitions.get_record(valid.record_id)
             if SkillDefinition.model_validate(record.payload).operational_procedure is None:
                 raise SkillResolutionFailure("procedure_missing", "required operational procedure is absent")
@@ -335,14 +340,14 @@ class SkillService:
             raise SkillResolutionFailure(code, message) from exc
 
     def validate_required_procedure_for_scope(
-        self, reference: DefinitionReference, *, organization_id: str, workspace_id: str,
+        self, reference: DefinitionReference, *, organization_id: str, workspace_id: str, project_id: str | None = None,
     ) -> DefinitionReference:
         # Read-only validation projection; no service scopes or action authority.
         return self.validate_required_procedure(reference, actor=AuthenticationActor(
             identity_id="procedure-contract-runtime", principal_kind=PrincipalKind.SERVICE,
             organization_id=organization_id, workspace_id=workspace_id,
             assurance=AuthenticationAssurance.SERVICE_TOKEN, service_scopes=(),
-        ))
+        ), project_id=project_id)
 
     def bind_profiles(self, profiles: Any) -> None:
         self.profiles = profiles
@@ -383,9 +388,11 @@ class SkillService:
         self,
         settings: Any,
         *,
+        project_for_thread: Callable[[str, AuthenticationActor], str] | None = None,
         inherited_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None,
     ) -> None:
         self.thread_settings = settings
+        self.thread_project = project_for_thread
         self.thread_inherited_skill_refs = inherited_refs
 
     def thread_assignments(
@@ -396,10 +403,11 @@ class SkillService:
     ) -> dict[str, Any]:
         if self.thread_settings is None:
             raise SkillError("Thread Skill assignment service is unavailable")
+        project_id = self.thread_project(thread_id, actor) if self.thread_project is not None else None
         refs = tuple(self.thread_settings.get(thread_id).skill_refs or ())
         explicit = []
         for reference in refs:
-            valid = self.validate_reference(reference, actor=actor)
+            valid = self.validate_reference(reference, actor=actor, project_id=project_id)
             item = self._view(self.definitions.get_record(valid.record_id), actor=actor)
             explicit.append({**item, "assignmentOrigin": "thread_explicit", "inheritedFrom": None})
         explicit_ids = {item["recordId"] for item in explicit}
@@ -410,7 +418,7 @@ class SkillService:
             else ()
         )
         for reference in inherited_refs:
-            valid = self.validate_reference(reference, actor=actor)
+            valid = self.validate_reference(reference, actor=actor, project_id=project_id)
             if valid.record_id in explicit_ids:
                 continue
             item = self._view(self.definitions.get_record(valid.record_id), actor=actor)
@@ -433,9 +441,10 @@ class SkillService:
         if self.thread_settings is None:
             raise SkillError("Thread Skill assignment service is unavailable")
         self._require_mutation(actor)
+        project_id = self.thread_project(thread_id, actor) if self.thread_project is not None else None
         validated = tuple(
             dict.fromkeys(
-                self.validate_reference(reference, actor=actor)
+                self.validate_reference(reference, actor=actor, project_id=project_id)
                 for reference in references
             )
         )
@@ -469,12 +478,13 @@ class SkillService:
         )
 
     @staticmethod
-    def _context(actor: AuthenticationActor):
+    def _context(actor: AuthenticationActor, project_id: str | None = None):
         from codex_web.definitions import DefinitionContext
 
         return DefinitionContext(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
+            project_id=project_id,
         )
 
     def _records(
@@ -482,7 +492,10 @@ class SkillService:
         skill_id: str | None,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> list[DefinitionRecord]:
+        if project_id is not None:
+            self._project(project_id, actor.organization_id, actor.workspace_id)
         records = self.definitions.list_records(
             kind=SKILL_DEFINITION_KIND,
             definition_id=skill_id,
@@ -501,17 +514,49 @@ class SkillService:
                 and record.scope_id == actor.workspace_id
             ):
                 visible.append(record)
+            elif record.scope_type == DefinitionScope.PROJECT:
+                if project_id is not None and record.scope_id != project_id:
+                    continue
+                try:
+                    self._project(record.scope_id, actor.organization_id, actor.workspace_id)
+                except SkillNotFound:
+                    continue
+                visible.append(record)
         return visible
+
+    def _project(self, project_id: str, organization_id: str, workspace_id: str):
+        from codex_web.services.projects import ProjectNotFoundError
+        if self.projects is None:
+            raise SkillNotFound("Project not found")
+        try:
+            return self.projects.get(project_id, TenantScope(
+                organization_id=organization_id, workspace_id=workspace_id))
+        except ProjectNotFoundError as exc:
+            raise SkillNotFound("Project not found") from exc
 
     def _latest_record(
         self,
         skill_id: str,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> DefinitionRecord:
-        values = self._records(skill_id, actor=actor)
+        values = self._records(skill_id, actor=actor, project_id=project_id)
         if not values:
             raise SkillNotFound("skill not found")
+        if project_id is not None:
+            overrides = [r for r in values if r.scope_type == DefinitionScope.PROJECT and r.scope_id == project_id]
+            if overrides:
+                values = overrides
+        slots = {(r.scope_type, r.scope_id) for r in values}
+        if len(slots) != 1:
+            if project_id is None and any(scope == DefinitionScope.PROJECT for scope, _ in slots):
+                raise SkillConflict("skill has multiple scopes; select an exact revision or Project")
+            if project_id is not None:
+                precedence = {DefinitionScope.GLOBAL: 0, DefinitionScope.ORGANIZATION: 1,
+                              DefinitionScope.WORKSPACE: 2, DefinitionScope.PROJECT: 3}
+                selected_scope = max(slots, key=lambda slot: precedence[slot[0]])
+                values = [r for r in values if (r.scope_type, r.scope_id) == selected_scope]
         return max(values, key=lambda item: item.revision)
 
     def _record_for_revision(
@@ -520,15 +565,19 @@ class SkillService:
         revision: int,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> DefinitionRecord:
-        item = next(
-            (
-                record
-                for record in self._records(skill_id, actor=actor)
-                if record.revision == revision
-            ),
-            None,
-        )
+        records = self._records(skill_id, actor=actor, project_id=project_id)
+        slots = {(r.scope_type, r.scope_id) for r in records}
+        if len(slots) > 1:
+            if project_id is None and any(scope == DefinitionScope.PROJECT for scope, _ in slots):
+                raise SkillConflict("numeric Skill revision is ambiguous; select a Project")
+            if project_id is not None:
+                precedence = {DefinitionScope.GLOBAL: 0, DefinitionScope.ORGANIZATION: 1,
+                              DefinitionScope.WORKSPACE: 2, DefinitionScope.PROJECT: 3}
+                selected_scope = max(slots, key=lambda slot: precedence[slot[0]])
+                records = [r for r in records if (r.scope_type, r.scope_id) == selected_scope]
+        item = next((r for r in records if r.revision == revision), None)
         if item is None:
             raise SkillNotFound("skill revision not found")
         return item
@@ -566,6 +615,7 @@ class SkillService:
         self,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
         search: str | None = None,
         tag: str | None = None,
         category: str | None = None,
@@ -574,11 +624,12 @@ class SkillService:
         lifecycle: SkillLifecycle | None = None,
         include_drafts: bool = True,
     ) -> list[dict[str, Any]]:
-        latest: dict[str, DefinitionRecord] = {}
-        for record in self._records(None, actor=actor):
-            current = latest.get(record.definition_id)
+        latest: dict[tuple, DefinitionRecord] = {}
+        for record in self._records(None, actor=actor, project_id=project_id):
+            slot = (record.definition_id, record.scope_type, record.scope_id)
+            current = latest.get(slot)
             if current is None or record.revision > current.revision:
-                latest[record.definition_id] = record
+                latest[slot] = record
 
         needle = str(search or "").strip().casefold()
         tag_value = str(tag or "").strip().casefold()
@@ -625,12 +676,13 @@ class SkillService:
         skill_id: str,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, Any]:
         record = (
-            self._record_for_revision(skill_id, revision, actor=actor)
+            self._record_for_revision(skill_id, revision, actor=actor, project_id=project_id)
             if revision is not None
-            else self._latest_record(skill_id, actor=actor)
+            else self._latest_record(skill_id, actor=actor, project_id=project_id)
         )
         return self._view(record, actor=actor)
 
@@ -639,10 +691,11 @@ class SkillService:
         skill_id: str,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return [
             self._view(record, actor=actor)
-            for record in self._records(skill_id, actor=actor)
+            for record in self._records(skill_id, actor=actor, project_id=project_id)
         ]
 
     def create(
@@ -652,7 +705,11 @@ class SkillService:
         actor: AuthenticationActor,
     ) -> dict[str, Any]:
         self._require_mutation(actor, owner_identity_id=actor.identity_id)
-        if self._records(payload.skill_id, actor=actor):
+        if payload.project_id is not None:
+            self._project(payload.project_id, actor.organization_id, actor.workspace_id)
+        if any(r.scope_type == (DefinitionScope.PROJECT if payload.project_id else DefinitionScope.WORKSPACE)
+               and r.scope_id == (payload.project_id or actor.workspace_id)
+               for r in self._records(payload.skill_id, actor=actor)):
             raise SkillConflict("skill already exists")
         skill = SkillDefinition(
             name=payload.name,
@@ -675,8 +732,8 @@ class SkillService:
                 definition_id=payload.skill_id,
                 kind=SKILL_DEFINITION_KIND,
                 definition_schema_version=SKILL_DEFINITION_SCHEMA_VERSION,
-                scope_type=DefinitionScope.WORKSPACE,
-                scope_id=actor.workspace_id,
+                scope_type=DefinitionScope.PROJECT if payload.project_id else DefinitionScope.WORKSPACE,
+                scope_id=payload.project_id or actor.workspace_id,
                 payload=skill.model_dump(mode="json"),
                 actor=actor.identity_id,
                 reason=payload.reason,
@@ -690,8 +747,9 @@ class SkillService:
         payload: SkillUpdate,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
-        current = self._latest_record(skill_id, actor=actor)
+        current = self._latest_record(skill_id, actor=actor, project_id=project_id)
         current_skill = SkillDefinition.model_validate(current.payload)
         self._require_mutation(
             actor,
@@ -731,13 +789,19 @@ class SkillService:
         payload: SkillPublish,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         record = self.definitions.get_record(record_id)
         if record.definition_id != skill_id or record.kind != SKILL_DEFINITION_KIND:
             raise SkillNotFound("skill revision not found")
         skill = SkillDefinition.model_validate(record.payload)
         self._require_mutation(actor, owner_identity_id=skill.owner_identity_id)
-        self._assert_visible_record(record, actor)
+        if project_id is not None:
+            self._project(project_id, actor.organization_id, actor.workspace_id)
+            self._assert_visible_scope(record, organization_id=actor.organization_id,
+                                       workspace_id=actor.workspace_id, project_id=project_id)
+        else:
+            self._assert_visible_record(record, actor)
         if self.security is not None:
             self.security.assert_allowed(
                 self._view(record, actor=actor),
@@ -761,8 +825,9 @@ class SkillService:
         payload: SkillLifecycleChange,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
-        current = self._latest_record(skill_id, actor=actor)
+        current = self._latest_record(skill_id, actor=actor, project_id=project_id)
         skill = SkillDefinition.model_validate(current.payload)
         self._require_mutation(actor, owner_identity_id=skill.owner_identity_id)
         if (
@@ -808,8 +873,9 @@ class SkillService:
         payload: SkillRollback,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
-        current = self._latest_record(skill_id, actor=actor)
+        current = self._latest_record(skill_id, actor=actor, project_id=project_id)
         skill = SkillDefinition.model_validate(current.payload)
         self._require_mutation(actor, owner_identity_id=skill.owner_identity_id)
         record = self.definitions.rollback(
@@ -826,12 +892,13 @@ class SkillService:
         )
         return self._view(record, actor=actor)
 
-    @staticmethod
     def _assert_visible_scope(
+        self,
         record: DefinitionRecord,
         *,
         organization_id: str,
         workspace_id: str,
+        project_id: str | None = None,
     ) -> None:
         if record.scope_type == DefinitionScope.GLOBAL:
             return
@@ -845,6 +912,9 @@ class SkillService:
             and record.scope_id == workspace_id
         ):
             return
+        if record.scope_type == DefinitionScope.PROJECT and record.scope_id == project_id:
+            self._project(project_id, organization_id, workspace_id)
+            return
         raise SkillNotFound("skill not found")
 
     def _assert_visible_record(
@@ -856,6 +926,7 @@ class SkillService:
             record,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
+            project_id=record.scope_id if record.scope_type == DefinitionScope.PROJECT else None,
         )
 
     def validate_reference(
@@ -863,9 +934,11 @@ class SkillService:
         reference: DefinitionReference,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> DefinitionReference:
         record = self.definitions.get_record(reference.record_id)
-        self._assert_visible_record(record, actor)
+        self._assert_visible_scope(record, organization_id=actor.organization_id,
+                                   workspace_id=actor.workspace_id, project_id=project_id)
         actual = reference_for(record)
         if actual != reference:
             raise SkillConflict(
@@ -892,7 +965,7 @@ class SkillService:
         current = self.definitions.resolve(
             definition_id=record.definition_id,
             kind=SKILL_DEFINITION_KIND,
-            context=self._context(actor),
+            context=self._context(actor, project_id),
             now=now,
         )
         current_skill = SkillDefinition.model_validate(current.payload)
@@ -913,12 +986,14 @@ class SkillService:
         *,
         organization_id: str,
         workspace_id: str,
+        project_id: str | None = None,
     ) -> DefinitionReference:
         record = self.definitions.get_record(reference.record_id)
         self._assert_visible_scope(
             record,
             organization_id=organization_id,
             workspace_id=workspace_id,
+            project_id=project_id,
         )
         actual = reference_for(record)
         if actual != reference:
@@ -952,6 +1027,7 @@ class SkillService:
             context=DefinitionContext(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                project_id=project_id,
             ),
             now=now,
         )
@@ -981,6 +1057,7 @@ class SkillService:
         *,
         organization_id: str,
         workspace_id: str,
+        project_id: str | None = None,
     ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
         provider = []
         worker = []
@@ -989,6 +1066,7 @@ class SkillService:
                 reference,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                project_id=project_id,
             )
             skill = SkillDefinition.model_validate(
                 self.definitions.get_record(valid.record_id).payload
@@ -1005,11 +1083,12 @@ class SkillService:
         references: tuple[DefinitionReference, ...],
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
     ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
         provider = []
         worker = []
         for reference in references:
-            valid = self.validate_reference(reference, actor=actor)
+            valid = self.validate_reference(reference, actor=actor, project_id=project_id)
             skill = SkillDefinition.model_validate(
                 self.definitions.get_record(valid.record_id).payload
             )
@@ -1034,6 +1113,7 @@ class SkillService:
         *,
         organization_id: str,
         workspace_id: str,
+        project_id: str | None = None,
         objective: str,
         max_chars: int = SKILL_MAX_CONTEXT_CHARS,
     ) -> SkillContextSelection:
@@ -1042,6 +1122,7 @@ class SkillService:
                 reference,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                project_id=project_id,
             )
             for reference in references
         )
@@ -1056,11 +1137,12 @@ class SkillService:
         references: tuple[DefinitionReference, ...],
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
         objective: str,
         max_chars: int = SKILL_MAX_CONTEXT_CHARS,
     ) -> SkillContextSelection:
         validated = tuple(
-            self.validate_reference(reference, actor=actor)
+            self.validate_reference(reference, actor=actor, project_id=project_id)
             for reference in references
         )
         return self._context_for_valid_refs(
@@ -1160,12 +1242,13 @@ class SkillService:
         skill_id: str,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, Any]:
         record = (
-            self._record_for_revision(skill_id, revision, actor=actor)
+            self._record_for_revision(skill_id, revision, actor=actor, project_id=project_id)
             if revision is not None
-            else self._latest_record(skill_id, actor=actor)
+            else self._latest_record(skill_id, actor=actor, project_id=project_id)
         )
         return self.definitions.usage(record.record_id)
 
@@ -1236,12 +1319,13 @@ class SkillService:
         skill_id: str,
         *,
         actor: AuthenticationActor,
+        project_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, Any]:
         record = (
-            self._record_for_revision(skill_id, revision, actor=actor)
+            self._record_for_revision(skill_id, revision, actor=actor, project_id=project_id)
             if revision is not None
-            else self._latest_record(skill_id, actor=actor)
+            else self._latest_record(skill_id, actor=actor, project_id=project_id)
         )
         skill = SkillDefinition.model_validate(record.payload)
         files = {

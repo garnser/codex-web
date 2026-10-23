@@ -64,6 +64,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CodeHostActionContract,
@@ -576,6 +577,7 @@ class ActionIntentService:
         request: ActionRequest,
         actor: AuthenticationActor,
         assignment_id: str | None = None,
+        *, binding_id: str | None = None,
     ) -> None:
         if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             self._ready_assignment(execution_id, request, actor, assignment_id)
@@ -590,6 +592,22 @@ class ActionIntentService:
         )
         if not repository_ids:
             return
+        read_only_observation = False
+        if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and binding_id is not None:
+            # This is a metadata scope predicate, not credential use by the
+            # requester. The ordinary provider boundary independently resolves
+            # the current worker's existing credential before either GET.
+            binding = self.execution.registry.binding(binding_id,actor)
+            provider = self.execution.registry.provider(binding.provider_type,binding.provider_instance,actor=actor)
+            definition = self.execution._definition(provider,request.action_id)
+            read_only_observation = (binding.enabled and provider.provider_type == "gitlab" and provider.contract_version == "1.2"
+                and (binding.project_id is None or binding.project_id == request.project_id)
+                and (not binding.resource_ids or set(request.resource_ids).issubset(binding.resource_ids))
+                and definition.capabilities.read and definition.required_authority_level == "read"
+                and definition.required_authority == ("repository.read.metadata",)
+                and definition.filesystem_access == "none" and not definition.process_access)
+        if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and not read_only_observation:
+            raise ActionIntentConflictError("merge observation provider contract is unavailable")
         if self.execution_workers is None:
             raise ActionIntentConflictError(
                 "execution-bound repository action requires canonical execution assignment state"
@@ -609,7 +627,9 @@ class ActionIntentService:
                 for repository_id in repository_ids:
                     self.execution_profiles.authorize_administrative_target(
                         assignment,
-                        operation_id=("repository.check.rerun"
+                        operation_id=("repository.read.metadata"
+                                      if read_only_observation else
+                                      "repository.check.rerun"
                                       if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID
                                       else request.action_id.replace("code-host.", "repository.", 1)),
                         repository_id=repository_id, actor=actor, authority=self.authority,
@@ -621,6 +641,8 @@ class ActionIntentService:
         scope = assignment.repository_scope
         if scope is not None:
             writable = set(scope.writable_repository_ids)
+            if read_only_observation:
+                writable.update(scope.read_only_repository_ids)
         else:
             target = assignment.repository_target
             writable = (
@@ -631,8 +653,10 @@ class ActionIntentService:
 
         outside_scope = sorted(set(repository_ids) - writable)
         if outside_scope:
+            scope_label = ("read scope" if read_only_observation
+                           else "writable scope")
             raise ActionIntentConflictError(
-                "action request targets repository outside execution writable scope: "
+                f"action request targets repository outside execution {scope_label}: "
                 + ", ".join(outside_scope)
             )
 
@@ -911,6 +935,9 @@ class ActionIntentService:
         if phase == "execute" and request_or_result != intent.request:
             raise ActionRequirementError("procedure_scope_changed: request differs from canonical intent")
         requester = await asyncio.to_thread(self._requester_actor, intent)
+        if intent.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+            await asyncio.to_thread(self._validate_execution_repository_scope,
+                intent.execution_id,intent.request,requester,binding_id=intent.binding_id)
         authority = await asyncio.to_thread(self._canonical_authority_snapshot,
             definition=definition, request=intent.request, actor=requester, execution_id=intent.execution_id)
         if authority.outcome != ActionDecisionOutcome.ALLOW:
@@ -1012,6 +1039,7 @@ class ActionIntentService:
             request,
             actor,
             assignment_id,
+            binding_id=binding.id,
         )
         self._change_request_continuation(
             request, binding_id=binding.id, execution_id=payload.execution_id,
@@ -1930,7 +1958,7 @@ class ActionIntentService:
                     raise ActionRequirementError("Readiness pinned Definition changed at settlement")
             if current.procedure_discoveries:
                 for pin in current.procedure_discoveries[-1].selected:
-                    self.procedure_discovery.skills.validate_reference(pin, actor=requester)
+                    self.procedure_discovery.skills.validate_reference(pin, actor=requester, project_id=intent.project_id)
         return {"guard_rows": {**domains, ASSIGNMENTS: (origin.assignment_id,), WORKERS: (origin.worker_id,),
                                registry.store.namespace: (None,),
                                self.store.records_namespace: ("intents:" + intent.id,)}, "guard": guard}
@@ -2167,6 +2195,7 @@ class ActionIntentService:
                 pending.execution_id, current_request, requester,
                 pending.readiness_origin.assignment_id if pending.readiness_origin else
                 pending.publication_recovery_scope.recovery.assignment_id if pending.publication_recovery_scope else None,
+                binding_id=pending.binding_id,
             )
             authority_recheck = await asyncio.to_thread(self._canonical_authority_snapshot,
                 definition=current_definition,

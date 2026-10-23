@@ -72,6 +72,14 @@ scheduling authorities. The watchdog validates worker/assignment/delegation and
 resource bounds before renewal. Each validation and renewal wait is bounded by
 the lesser of ten seconds and the remaining last validated lease. There is no
 lease extension for delayed validation and no cached resource-limit bypass.
+If the exact renewal operation completed within its original budget but its
+result was observed after the predecessor lease expired, its returned live lease
+can bound one fresh authority read. That read retains the original operation's
+time limit and must confirm current canonical custody, delegation, deadline and
+the same assignment, worker, execution, workspace, fence and lease token. Only
+that fresh canonical result is installed. An expired current lease, changed
+claim, revoked authority, unfinished or late operation still retires the native
+process; neither a second renewal nor an observation grace period is granted.
 Default-executor browser projections cannot occupy these supervision slots.
 Workspace and lease point reads use canonical committed records without the
 compatibility workspace catalog writer mutex. An unrelated workspace creation or

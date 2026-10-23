@@ -31,6 +31,8 @@ CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID = "code-host.pull-request.upsert"
 CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID
 CODE_HOST_BRANCH_PUBLISH_ACTION_ID = "code-host.branch.publish"
 CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID = "code-host.pull-request.merge"
+CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID = "code-host.pull-request.verify-merge"
+CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE = "code-host-pull-request-merge-observation"
 CODE_HOST_PULL_REQUEST_READY_ACTION_ID = "code-host.pull-request.ready"
 CODE_HOST_PULL_REQUEST_READY_EVIDENCE = "code-host-pull-request-ready"
 CODE_HOST_JOB_RERUN_ACTION_ID = "code-host.job.rerun"
@@ -171,6 +173,19 @@ class CodeHostActionContract:
                 retry_max_attempts=1,
                 network_access=True,
             ),
+            *((ActionDefinition(
+                action_id=CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
+                title="Observe exact merged pull request",
+                description="Read the exact MR and verify original head and merge commit; never mutate it.",
+                capabilities=ActionCapability(read=True,prepare=True,execute=True,
+                    idempotency=True,verification=True,evidence=True),
+                risk_class=ActionRiskClass.LOW,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.read.metadata",),required_authority_level="read",
+                credential_required=True,credential_purpose=self.credential_purpose,
+                expected_evidence=(CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,),
+                timeout_seconds=30.0,retry_max_attempts=1,network_access=True,
+            ),) if self.provider_type == "gitlab" else ()),
             # Readiness is additive and implemented by the declared code-host adapters.
             # Registration never grants an execution profile this capability.
             *((ActionDefinition(
@@ -219,6 +234,7 @@ class CodeHostActionContract:
                 CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
             ),
             CODE_HOST_PULL_REQUEST_READY_ACTION_ID: CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
+            CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID: CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
             CODE_HOST_JOB_RERUN_ACTION_ID: CODE_HOST_JOB_RERUN_EVIDENCE,
         }
         try:
@@ -449,6 +465,21 @@ class CodeHostActionContract:
                 raise ValueError(f"{field} requires an exact lowercase SHA-1")
             output[field] = value
         return output
+
+    @staticmethod
+    def pull_request_verify_merge(request: ActionRequest) -> dict[str, Any]:
+        if set(request.parameters) != {"pull_request_number", "head_sha", "merge_commit_sha"}:
+            raise ValueError("merge observation requires only MR number, original head and merge commit")
+        number = request.parameters["pull_request_number"]
+        if type(number) is not int or number < 1:
+            raise ValueError("pull_request_number must be a positive integer")
+        result = {"pull_request_number": number}
+        for field in ("head_sha", "merge_commit_sha"):
+            value = request.parameters[field]
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+                raise ValueError("merge observation requires exact lowercase SHA-1 revisions")
+            result[field] = value
+        return result
 
     @classmethod
     def pull_request_merge(cls, request: ActionRequest) -> dict[str, Any]:

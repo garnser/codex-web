@@ -6,6 +6,7 @@ assignment. Scanner installation remains an operator prerequisite.
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from codex_web.execution_workspaces import ExecutionWorkspaceAcquire, ExecutionW
 from codex_web.services.skill_scanner_configuration import SCANNER_PROJECT, SCANNER_ROOT, validate_scanner_runtime
 from codex_web.services.security_boundary import redact_boundary_payload
 from codex_web.services.skill_scanners import SkillScannerError, SkillSpectorCliProvider, SkillSpectorJsonParser
+from codex_web.services.local_execution_worker import SkillScannerExecutionError, SkillScannerExecutionObservation
 from codex_web.skill_security import SkillScanMode
 
 
@@ -134,6 +136,7 @@ class WorkerSkillSpectorProvider:
             execution_id=execution_id, project_id=project_id, resource_ids=(), scratch=True,
             ttl_seconds=seconds + 30, requested_disk_bytes=64 * 1024 * 1024), actor=actor)
         assignment = None
+        completion = None
         try:
             assignment = runtime.worker_service.create_assignment(ExecutionAssignmentCreate(
                 subject=subject, execution_id=execution_id, project_id=project_id, resource_ids=(),
@@ -161,10 +164,22 @@ class WorkerSkillSpectorProvider:
                 current = runtime.worker_service.store.assignment(assignment.id)
                 attribution.update(assignment_id=assignment.id, worker_id=current.assigned_worker_id if current else None,
                     fence=current.fence if current else assignment.fence)
+            observed = {"scanner_phase": "unobserved", "scanner_completion_returned": False,
+                        "scanner_result_accepted": False}
+            if isinstance(exc, SkillScannerExecutionError):
+                observed.update({f"scanner_{key}": value for key, value in asdict(exc.observation).items()})
+            elif completion is not None:
+                result = completion.result
+                observation = SkillScannerExecutionObservation("backend_returned", result.exit_code,
+                    round(result.duration_seconds, 6), result.timed_out, result.limit_breach, result.output_truncated)
+                observed.update({f"scanner_{key}": value for key, value in asdict(observation).items()})
+                observed.update(scanner_completion_returned=True,
+                                scanner_assignment_status=completion.assignment.status)
             evidence = self.artifacts.create_evidence(EvidenceCreate(project_id=project_id, execution_id=execution_id,
                 execution_workspace_id=workspace.id, evidence_type=EvidenceType.POLICY_EVALUATION,
                 result=EvidenceResult.FAIL, provider=self.provider_id, source=f'skill-scan:{execution_id}',
-                summary='Isolated scanner transport did not produce an accepted result.', metadata=attribution), actor=actor)
+                summary='Isolated scanner transport did not produce an accepted result.',
+                metadata={**attribution, **observed}), actor=actor)
             attribution['evidence_id'] = evidence.id
             raise ScannerUnavailable('scanner_execution_failed', 'The isolated scanner command failed or exceeded its limits. Inspect its canonical worker assignment.', attribution=attribution) from exc
         finally:

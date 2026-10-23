@@ -1192,6 +1192,13 @@ class TurnExecutionService:
         except ThreadBootstrapBindingNotFoundError:
             return None
 
+    def attest_native_provider_preparation(self, assignment, procedures):
+        from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSession
+        _, session = self._session_for_assignment(assignment.id)
+        if not isinstance(session, AssignmentBoundAgentProcessSession):
+            raise ValueError("native preparation requires the actual isolated process session")
+        return session.attest_native_provider_preparation(assignment, procedures)
+
     def _assignment_session_for_thread(self, thread_id: str):
         active = self._active_turn(thread_id)
         assignment_id = active.assignment_id if active is not None else None
@@ -3131,6 +3138,19 @@ class TurnExecutionService:
                     **({"request_checksum": hashlib.sha256(message.encode()).hexdigest(),
                         "input_execution_id": requested_execution_id}
                        if source.removeprefix("queued:").startswith(("home-operator-automation:", "home-goal-continuation:")) else {}))
+
+            if (procedure_discovery is not None and procedure_discovery.admitted
+                    and (procedure_discovery.selected or "canonical:native-empty-physical-scope:" in procedure_discovery.policy_source)):
+                preparation_guard = self.procedure_admission.preparation_input_guard(
+                    procedure_discovery, project=project, actor=actor or self.control_actor,
+                    execution_id=canonical_execution_id, assignment_id=assignment_id,
+                    sandbox=effective_sandbox, request_checksum=hashlib.sha256(message.encode()).hexdigest())
+                previous_input_guard = input_admission_validator
+                def validate_preparation_input():
+                    if previous_input_guard is not None:
+                        previous_input_guard()
+                    preparation_guard()
+                input_admission_validator = validate_preparation_input
 
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(

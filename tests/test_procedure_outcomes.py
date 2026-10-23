@@ -24,6 +24,9 @@ class _ProcedureOutcomeFixture:
     asyncSetUp = execution_fixtures.ProcedureExecutionTests.asyncSetUp
     tearDown = execution_fixtures.ProcedureExecutionTests.tearDown
     configure = execution_fixtures.ProcedureExecutionTests.configure
+    configure_project = execution_fixtures.ProcedureExecutionTests.configure_project
+    skill_create_options = execution_fixtures.ProcedureExecutionTests.skill_create_options
+    assignment_options = execution_fixtures.ProcedureExecutionTests.assignment_options
     rebuild = execution_fixtures.ProcedureExecutionTests.rebuild
     artifact = execution_fixtures.ProcedureExecutionTests.artifact
     proof = execution_fixtures.ProcedureExecutionTests.proof

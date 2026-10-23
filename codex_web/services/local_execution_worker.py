@@ -48,6 +48,24 @@ class LocalExecutionWorkerRuntimeError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class SkillScannerExecutionObservation:
+    """Observed local phases, never scan acceptance or raw command output."""
+
+    phase: str
+    exit_code: int | None = None
+    duration_seconds: float | None = None
+    timed_out: bool | None = None
+    limit_breach: str | None = None
+    output_truncated: bool | None = None
+
+
+class SkillScannerExecutionError(LocalExecutionWorkerRuntimeError):
+    def __init__(self, observation: SkillScannerExecutionObservation):
+        super().__init__("Skill scanner execution did not receive accepted canonical completion")
+        self.observation = observation
+
+
 class LocalExecutionWorkerCapacityError(LocalExecutionWorkerRuntimeError):
     """Compatible work must wait for a canonical worker concurrency slot."""
 
@@ -765,6 +783,29 @@ class LocalExecutionWorkerRuntime:
                                      scanner_operation=True, accepted_exit_codes=(0, 1) if input_directory else (0,))
 
     def _execute_command(self, assignment_id, argv, *, scanner_mounts=(), scanner_operation=False, accepted_exit_codes=(0,)):
+        observation = SkillScannerExecutionObservation(phase="before_backend")
+
+        def observe(phase, result=None):
+            nonlocal observation
+            observation = SkillScannerExecutionObservation(phase=phase, **({
+                "exit_code": result.exit_code,
+                "duration_seconds": round(result.duration_seconds, 6),
+                "timed_out": result.timed_out,
+                "limit_breach": result.limit_breach,
+                "output_truncated": result.output_truncated,
+            } if result is not None else {}))
+
+        try:
+            return self._execute_command_once(assignment_id, argv, scanner_mounts=scanner_mounts,
+                scanner_operation=scanner_operation, accepted_exit_codes=accepted_exit_codes,
+                scanner_observer=observe if scanner_operation else None)
+        except Exception as exc:
+            if scanner_operation:
+                raise SkillScannerExecutionError(observation) from exc
+            raise
+
+    def _execute_command_once(self, assignment_id, argv, *, scanner_mounts=(), scanner_operation=False,
+                              accepted_exit_codes=(0,), scanner_observer=None):
         assignment = self._pending_assignment(assignment_id)
         workspace_path = self._workspace_path(assignment)
         readonly_mounts, writable_mounts = self.repository_mounts(assignment)
@@ -872,10 +913,14 @@ class LocalExecutionWorkerRuntime:
                 run_kwargs["trusted_writable_mounts"] = writable_mounts
             if readonly_disk_bytes:
                 run_kwargs["additional_disk_bytes"] = readonly_disk_bytes
+            if scanner_observer is not None:
+                scanner_observer("backend_unresolved")
             result = self.backend.run(
                 current["assignment"],
                 **run_kwargs,
             )
+            if scanner_observer is not None:
+                scanner_observer("backend_returned", result)
             if scanner_operation:
                 poll()  # Never accept terminal output based on a skipped polling loop.
         except Exception as exc:

@@ -597,7 +597,8 @@ class AssignmentBoundAgentProcessSession:
                         control_broker.mount_destination,
                     ),
                 )
-            process = self.local_worker.backend.spawn_interactive(
+            launch_backend = self.local_worker.backend
+            process = launch_backend.spawn_interactive(
                 assignment,
                 argv=command,
                 workspace_path=workspace_path,
@@ -612,6 +613,7 @@ class AssignmentBoundAgentProcessSession:
                 text=True,
                 bufsize=1,
             )
+            self._native_preparation_backend = launch_backend
             # The returned tuple contains no credential value. SecretBroker.use()
             # still performs its boundary escape check before returning it.
             return (
@@ -926,6 +928,39 @@ class AssignmentBoundAgentProcessSession:
             self._supervision_timings["resource_seconds"] = round(time.monotonic() - resource_started, 6)
         return assignment
 
+    def attest_native_provider_preparation(self, expected: ExecutionAssignment, procedures):
+        """Proof from the actual session owner; metadata alone cannot grant it."""
+        from codex_web.local_execution_backend import BubblewrapExecutionBackend
+        assignment = self.validate_current()
+        status = self.status()
+        broker = self.control_plane_broker
+        backend = self.local_worker.backend
+        if (assignment.id != expected.id or assignment.execution_id != expected.execution_id
+                or assignment.fence != expected.fence or assignment.assigned_worker_id != expected.assigned_worker_id
+                or assignment.execution_profile_definition != expected.execution_profile_definition
+                or assignment.resource_ids != expected.resource_ids
+                or assignment.execution_workspace_id != expected.execution_workspace_id
+                or assignment.repository_scope != expected.repository_scope
+                or assignment.runtime_binding != expected.runtime_binding
+                or assignment.resource_context != expected.resource_context
+                or assignment.network.enabled or not status.running or not status.ready
+                or type(backend) is not BubblewrapExecutionBackend
+                or getattr(self, "_native_preparation_backend", None) is not backend
+                or broker is None or broker._stopping or broker.server is None
+                or getattr(getattr(broker.service, "assignment_reasoning", None), "procedures", None) is not procedures
+                or not broker.server.is_serving() or broker.snapshot.id != assignment.id
+                or broker.snapshot.execution_id != assignment.execution_id
+                or broker.worker_id != self.worker_id or broker.fence != assignment.fence):
+            raise AssignmentBoundAgentProcessSessionStaleError("native provider preparation is not attested")
+        current = broker._validate_current()
+        if current.fence != assignment.fence or current.id != assignment.id:
+            raise AssignmentBoundAgentProcessSessionStaleError("native broker assignment changed")
+        isolation = backend.probe()
+        if not isolation.ready or not isolation.supports_network_disabled or not isolation.supports_resource_limits:
+            raise AssignmentBoundAgentProcessSessionStaleError("native isolation is unavailable")
+        backend.validate_assignment(assignment)
+        return assignment
+
     def _heartbeat_and_renew(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
         # A completed validation may only be *observed* after a delayed event
         # loop resumes. Never renew from its old snapshot: this existing next
@@ -1009,33 +1044,55 @@ class AssignmentBoundAgentProcessSession:
             result = future.result()  # Preserve the actual worker exception.
             if completed_at is None or completed_at >= budget.deadline:
                 raise
-            # Timely work is not a lease extension. The last validated lease
-            # and assignment deadline must still be live at observation.
-            self._lease_budget()
+            # A timely *renewal* may have extended canonical custody while its
+            # predecessor snapshot expired during delayed loop observation.
+            # Its exact result supplies only the budget for a fresh authority
+            # read: never install that result or perform another renewal here.
+            renewal = phase == "renewal"
+            read_budget = (min(seconds, self._renewal_observation_budget(result))
+                           if renewal else self._lease_budget())
             # The same successful work may have finished before authority was
             # revoked while the observer loop remained blocked. Check current
             # canonical authority for *both* validation and renewal results,
             # off-loop in the existing serial executor. Do not repeat resource
             # validation, heartbeat or renewal, or install the old result yet.
-            await self._supervise(
+            current = await self._supervise(
                 f"{phase}_authority", self._validate_current_authority,
-                seconds=self._lease_budget(), reconcile_late=False,
+                seconds=read_budget, reconcile_late=False,
             )
             self._supervision_phase = phase
+            if renewal:
+                self._renewal_observation_budget(current)
+                return current
             return result
         finally:
             self._supervision_timings[f"{phase}_wait_seconds"] = round(time.monotonic() - submitted, 6)
             budget.cancelled.set()
             future.cancel()
 
-    def _lease_budget(self):
-        assignment = self._bound_assignment
+    def _renewal_observation_budget(self, assignment: ExecutionAssignment) -> float:
+        original = self._bound_assignment
+        if (not isinstance(assignment, ExecutionAssignment) or original is None
+                or original.lease is None or assignment.lease is None
+                or (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
+                    assignment.assigned_worker_id, assignment.fence, assignment.lease.worker_id,
+                    assignment.lease.fence, assignment.lease.lease_token)
+                != (original.id, original.execution_id, original.execution_workspace_id,
+                    original.assigned_worker_id, original.fence, original.lease.worker_id,
+                    original.lease.fence, original.lease.lease_token)):
+            raise AssignmentBoundAgentProcessSessionStaleError("renewal observation claim changed")
+        return self._assignment_lease_budget(assignment)
+
+    def _assignment_lease_budget(self, assignment: ExecutionAssignment | None) -> float:
         lease = assignment.lease if assignment else None
         now = self._clock()
         expires = min(lease.expires_at, assignment.deadline_at or lease.expires_at) if lease else now
         if expires <= now:
             raise TimeoutError("last validated lease or assignment deadline expired")
         return min(10.0, expires - now)
+
+    def _lease_budget(self):
+        return self._assignment_lease_budget(self._bound_assignment)
 
     async def _retire_failed_runtime(self, code, message):
         async with self._retirement_lock:

@@ -19,6 +19,7 @@ from codex_web.authority import AuthorityEvaluationRequest
 from codex_web.identity import TenantScope
 from codex_web.procedure_execution import ProcedureCheckpoint, ProcedureStepCheckpoint, ProcedureDeviation
 from codex_web.services.action_providers import ActionRequirementError
+from codex_web.services.code_host_action_contract import CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID
 from codex_web.services.execution_workers import AssignmentNotFoundError, WorkerConflictError
 from codex_web.services.procedure_discovery import OperationContext, ProcedureAdmissionError, checksum
 from codex_web.skills import SkillDefinition, _contains_secret_material
@@ -178,7 +179,7 @@ class ProcedureExecutionService:
 
     def _procedure(self, assignment, actor):
         ref = assignment.procedure_checkpoint.definition
-        self.skills.validate_required_procedure(ref, actor=actor)
+        self.skills.validate_required_procedure(ref, actor=actor, project_id=assignment.project_id)
         return SkillDefinition.model_validate(self.skills.definitions.get_record(ref.record_id).payload).operational_procedure
 
     def _targets(self, procedure, assignment, actor):
@@ -296,7 +297,7 @@ class ProcedureExecutionService:
             return assignment
         if assignment.created_by != actor.identity_id:
             raise ProcedureExecutionError("procedure_assignment_actor_mismatch")
-        self.skills.validate_required_procedure(definition, actor=actor)
+        self.skills.validate_required_procedure(definition, actor=actor, project_id=assignment.project_id)
         procedure = SkillDefinition.model_validate(self.skills.definitions.get_record(definition.record_id).payload).operational_procedure
         data, digest = self._content(input_snapshot_id, actor, assignment)
         values = bounded_data(json.loads(data)); self._values(procedure.inputs, values, actor, assignment)
@@ -326,6 +327,58 @@ class ProcedureExecutionService:
         assignment.procedure_checkpoint = None
         self.workers.record_procedure_discovery(assignment.id, admission, expected_fence=assignment.fence, actor=actor)
         return self._save(assignment, checkpoint)
+
+    def validate_native_preparation_owner(self, assignment):
+        self._live(assignment)
+        hook = getattr(self.intents.execution, "procedure_admission", None)
+        if (getattr(hook, "__self__", None) is not self.intents
+                or getattr(hook, "__func__", None) is not type(self.intents).procedure_provider_admission
+                or self.intents.procedure_execution is not self):
+            raise ProcedureExecutionError("procedure_canonical_provider_hook_unavailable")
+
+    def validate_native_preparation(self, assignment, selected, actor, *, require_targets=True):
+        """Read-only provider contract proof, never a step or credential grant."""
+        from codex_web.services.procedure_discovery import checksum
+        self.validate_native_preparation_owner(assignment)
+        if not selected:
+            raise ProcedureExecutionError("procedure_preparation_pin_missing")
+        for reference in selected:
+            self.skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
+            record = self.skills.definitions.get_record(reference.record_id)
+            procedure = SkillDefinition.model_validate(record.payload).operational_procedure
+            if procedure is None or any(step.worker for step in procedure.steps):
+                raise ProcedureExecutionError("procedure_native_worker_step_unsupported")
+            if require_targets:
+                self._targets(procedure, assignment, actor)
+            action_steps = [step for step in procedure.steps if step.action]
+            if not action_steps:
+                raise ProcedureExecutionError("procedure_native_provider_action_missing")
+            for step in procedure.steps:
+                if step.kind in {"mutation", "recovery"} and step.action is None:
+                    raise ProcedureExecutionError("procedure_native_mutation_owner_unsupported")
+                if step.action is None:
+                    continue
+                contract = step.action
+                if require_targets:
+                    binding = self._binding(step, assignment, actor)
+                else:
+                    # An empty physical scope chooses no future remote target.
+                    # This metadata anchor claims neither target eligibility nor
+                    # uniqueness. The actual broker action resolves its exact binding.
+                    bindings = [binding for binding in self.intents.execution.registry.list_bindings(actor)
+                        if binding.enabled and binding.project_id in {None,assignment.project_id}
+                        and (binding.provider_type,binding.provider_instance) ==
+                            (contract.provider_type,contract.provider_instance)]
+                    if not bindings:
+                        raise ProcedureExecutionError("procedure_native_provider_binding_unavailable")
+                    binding = bindings[0]
+                provider = self.intents.execution.registry.provider(binding.provider_type,
+                    binding.provider_instance, actor=actor)
+                definitions = [item for item in provider.actions() if item.action_id == contract.action_id]
+                if (not binding.enabled or provider.contract_version != contract.provider_contract_version
+                        or len(definitions) != 1 or not definitions[0].capabilities.execute):
+                    raise ProcedureExecutionError("procedure_native_provider_contract_unavailable")
+        return checksum([reference.model_dump(mode="json") for reference in selected])
 
     def _approval_target(self, assignment, step):
         checkpoint = assignment.procedure_checkpoint
@@ -415,7 +468,7 @@ class ProcedureExecutionService:
 
     def _protected(self, assignment, step, actor, procedure, inputs):
         worker = self._live(assignment)
-        self.skills.validate_required_procedure(assignment.procedure_checkpoint.definition, actor=actor)
+        self.skills.validate_required_procedure(assignment.procedure_checkpoint.definition, actor=actor, project_id=assignment.project_id)
         if checksum(self._facts(assignment, actor)) != assignment.procedure_checkpoint.resource_context_checksum:
             raise ProcedureExecutionError("procedure_material_preconditions_changed")
         targets = self._targets(procedure, assignment, actor)
@@ -501,6 +554,91 @@ class ProcedureExecutionService:
                 # The provider may already have changed state. Do not persist
                 # unbounded/sensitive output or label this as an unstarted action.
                 raise RuntimeError("procedure provider output boundary rejected the response; reconcile the effect")
+
+    def _provider_result(self, assignment, step, intent, receipt, history, actor):
+        """Project a registered legacy receipt without executing or verifying it.
+
+        Evidence point writes are deterministic and idempotent, so an interrupted
+        checkpoint save can re-use the SAME original receipt and proof.
+        """
+        adapter = self.intents.execution.registry.procedure_result_adapter(
+            step.action.provider_type, step.action.provider_instance,
+            step.action.action_id, step.action.provider_contract_version, actor=actor)
+        if adapter is None:
+            return receipt.result.output
+        import math
+        result = receipt.result
+        request = intent.request
+        if (intent.status != "succeeded" or result is None or result.status != "succeeded"
+            or (intent.organization_id, intent.workspace_id, intent.project_id, intent.execution_id)
+                != (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.execution_id)
+            or intent.work_item_ref != assignment.work_item_ref
+            or intent.requested_by != assignment.procedure_checkpoint.actor_identity_id
+            or intent.binding_id != result.provider_binding_id
+            or (intent.provider_type, intent.provider_instance, intent.action_id)
+                != (step.action.provider_type, step.action.provider_instance, step.action.action_id)
+            or (request.organization_id, request.workspace_id, request.project_id, request.action_id)
+                != (intent.organization_id, intent.workspace_id, intent.project_id, intent.action_id)
+            or set(request.resource_ids) != set(intent.resource_ids)
+            or not request.resource_ids or set(request.resource_ids) - set(assignment.resource_ids)
+            or receipt.id != intent.last_receipt_id or receipt.intent_id != intent.id
+            or receipt.attempt != intent.attempt or receipt.outcome != "completed"
+            or (receipt.provider_type, receipt.provider_instance, receipt.action_id,
+                receipt.idempotency_key, receipt.correlation_id)
+                != (intent.provider_type, intent.provider_instance, intent.action_id,
+                    intent.idempotency_key, intent.correlation_id)
+            or request.idempotency_key != intent.idempotency_key
+            or intent.idempotency_key != f"procedure:{assignment.id}:{assignment.procedure_checkpoint.definition.checksum}:{step.id}"
+            or not all(math.isfinite(v) for v in (result.started_at, result.completed_at, receipt.received_at))
+            or result.completed_at < result.started_at):
+            raise ProcedureExecutionError("procedure_provider_result_origin_mismatch")
+        try:
+            outputs = adapter.project(request, result)
+        except ValueError as exc:
+            raise ProcedureExecutionError("procedure_provider_result_projection_invalid") from exc
+        self._values(step.outputs, outputs, actor, assignment)
+        proofs = {}
+        for requirement in step.expected_evidence:
+            if (requirement.name, requirement.kind) == ("receipt", "provider_receipt"):
+                evidence_type, observed_at, verification_id = "provider_receipt", result.completed_at, None
+            elif (requirement.name, requirement.kind) == ("verification", "verification"):
+                verification = next((v for v in history.verifications if v.id == intent.last_verification_id), None)
+                if (verification is None or verification.intent_id != intent.id
+                    or not verification.verified or verification.provider_verification is None
+                    or not verification.provider_verification.verified
+                    or not math.isfinite(verification.verified_at)
+                    or verification.verified_at < max(result.completed_at, receipt.received_at)):
+                    raise ProcedureExecutionError("procedure_provider_verification_missing")
+                evidence_type, observed_at, verification_id = "artifact_verification", verification.verified_at, verification.id
+            else:
+                raise ProcedureExecutionError("procedure_provider_evidence_contract_unsupported")
+            payload = EvidenceCreate(project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+                execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
+                resource_ids=request.resource_ids, evidence_type=evidence_type, result="pass",
+                provider=intent.provider_type, source=f"action-intent:{intent.id}",
+                external_id=receipt.id, observed_at=observed_at,
+                summary="Canonical originating provider receipt" if verification_id is None else "Canonical originating provider verification",
+                metadata={"intent_id": intent.id, "receipt_id": receipt.id, "attempt": intent.attempt,
+                    "provider_result_id": result.execution_id, "action_id": intent.action_id,
+                    "provider_instance": intent.provider_instance, "provider_contract_version": adapter.contract_version,
+                    "verification_id": verification_id})
+            evidence = self.evidence.create_evidence(payload, actor=actor,
+                idempotency_key=f"procedure-result:{receipt.id}:{requirement.name}")
+            self._evidence(evidence.id, actor, assignment)
+            proofs[requirement.name] = evidence.id
+        return {"outputs": outputs, "evidence": proofs}
+
+    async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
+        # Projection includes canonical Evidence writes. Keep that blocking work
+        # off the shared loop, and join the actual owner before cancellation can
+        # release the procedure's caller. Existing cooperative store budgets
+        # bound the operation and prevent a cancelled owner making later commits.
+        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        async def operation():
+            return await asyncio.to_thread(self._provider_result,
+                assignment, step, intent, receipt, history, actor)
+        return await PostTurnReadinessService._run_owned(operation, seconds=5.,
+            name="procedure-provider-result-" + intent.id)
 
     def creation_discovery(self, payload, actor):
         if not payload.execution_id:
@@ -615,7 +753,8 @@ class ProcedureExecutionService:
                 or state.rollback_origin_receipt_id != receipt.id):
                 raise ProcedureExecutionError("procedure_rollback_origin_not_current")
             return True
-        if phase != "execute" or step.recovery:
+        if (phase != "execute" and not (phase == "verify"
+                and intent.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID)) or step.recovery:
             raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
         state = checkpoint.steps[step.id]
         if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":
@@ -755,7 +894,7 @@ class ProcedureExecutionService:
                 receipt = next((r for r in history.receipts if r.id == intent.last_receipt_id), None)
                 if receipt is None or receipt.result is None:
                     raise ProcedureExecutionError("procedure_action_receipt_missing")
-                result = receipt.result.output
+                result = await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
             elif step.worker:
                 if state.attempts >= step.max_attempts:
                     raise ProcedureExecutionError("procedure_diagnostic_retry_exhausted")

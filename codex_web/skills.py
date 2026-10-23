@@ -250,6 +250,8 @@ class SkillDefinition(BaseModel):
 class SkillCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+
     skill_id: str = Field(
         min_length=1,
         pattern=r"^[a-z0-9][a-z0-9._-]*$",

@@ -23,6 +23,7 @@ from codex_web.identity import (
 )
 from codex_web.resources import ResourceType
 from codex_web.services.action_provider_conformance import ActionProviderConformanceSuite
+from codex_web.services.code_host_action_contract import CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService, ResourceNotFoundError
 from codex_web.services.secrets import SecretBroker
@@ -78,6 +79,7 @@ class ActionProviderRegistry:
             ActionProvider,
         ] = {}
         self.conformance = ActionProviderConformanceSuite()
+        self._procedure_result_adapters: dict[int, dict[str, Any]] = {}
 
     @staticmethod
     def _provider_key(
@@ -102,6 +104,18 @@ class ActionProviderRegistry:
         )
         if not provider_type or not provider_instance:
             raise ValueError("action provider type and instance are required")
+        adapters = {}
+        actions = {action.action_id for action in provider.actions()}
+        for adapter in getattr(provider, "procedure_result_adapters", ()):
+            if (adapter.provider_type != provider_type
+                or adapter.contract_version != provider.contract_version
+                or not callable(adapter.project)):
+                raise ValueError("procedure result adapter provider contract mismatch")
+            for action_id in adapter.action_ids:
+                if action_id not in actions or action_id in adapters:
+                    raise ValueError("procedure result adapter action mismatch")
+                adapters[action_id] = adapter
+        self._procedure_result_adapters[id(provider)] = adapters
         if tenant_scope is None:
             self.providers[(provider_type, provider_instance)] = provider
             return
@@ -174,6 +188,15 @@ class ActionProviderRegistry:
             )
         ACTION_PROVIDER_CONTRACT.require(provider.contract_version)
         return provider
+
+    def procedure_result_adapter(self, provider_type, provider_instance, action_id,
+                                 contract_version, *, actor):
+        # Resolve the current tenant registration, never another tenant's or a
+        # superseded implementation's adapter. This is not execution authority.
+        provider = self.provider(provider_type, provider_instance, actor=actor)
+        if provider.contract_version != contract_version:
+            raise ValueError("procedure result adapter contract changed")
+        return self._procedure_result_adapters.get(id(provider), {}).get(action_id)
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -417,6 +440,8 @@ class ActionExecutionService:
 
         async def invoke(credential: str | None) -> ActionResult:
             result = await provider.execute(request, binding=binding, credential=credential)
+            if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and self.procedure_admission is not None:
+                await self.procedure_admission(binding,provider,definition,result,actor,"verify")
             return _credential_safe_output(result, credential)
 
         if request.credential_ref:
@@ -449,9 +474,13 @@ class ActionExecutionService:
         )
         definition = self._definition(provider, result.action_id)
         definition.capabilities.require("verification")
+        if result.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and self.procedure_admission is not None:
+            await self.procedure_admission(binding,provider,definition,result,actor,"verify")
 
         async def invoke(credential: str | None) -> ActionVerification:
             verification = await provider.verify(result, binding=binding, credential=credential)
+            if result.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and self.procedure_admission is not None:
+                await self.procedure_admission(binding,provider,definition,result,actor,"verify")
             return _credential_safe_output(verification, credential)
 
         credential_ref = binding.credential_ref
