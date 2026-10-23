@@ -8,12 +8,12 @@ from codex_web.definitions import DefinitionReference
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.runtime.execution import ExecutionPrestartRefusal
 from codex_web.services.procedure_discovery import NativeProcedureAdmissionService,OperationContext
-from tests.test_procedure_native_admission import ProductionNativeProcedureAdmissionTests
+from tests import test_procedure_native_admission as procedure_fixtures
 
 
 class NativeReasoningAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.fixture=ProductionNativeProcedureAdmissionTests()
+        self.fixture=procedure_fixtures.ProductionNativeProcedureAdmissionTests()
         await self.fixture.asyncSetUp()
         f=self.fixture
         current=f.native_assignment
