@@ -1483,11 +1483,15 @@ class TurnExecutionService:
         recorder = getattr(self, "retained_turn_outcome_recorder", None)
         if recorder is None:
             return
-        try:
+        async def observe():
             if inspect.iscoroutinefunction(recorder):
                 await recorder(active, succeeded=succeeded)
             else:
                 await asyncio.to_thread(recorder, active, succeeded=succeeded)
+        try:
+            from codex_web.services.post_turn_readiness import PostTurnReadinessService
+            await PostTurnReadinessService._run_owned(observe, seconds=5.,
+                name='retained-turn-outcome-' + active.assignment_id)
         except Exception:
             self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
                 "thread_id": active.thread_id, "turn_id": active.turn_id})
