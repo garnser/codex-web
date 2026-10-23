@@ -118,6 +118,7 @@ class _FakeExecutionBackend:
         trusted_writable_mounts=(),
         additional_disk_bytes=0,
         git_metadata_path=None,
+        failure_observer=None,
     ):
         self.calls.append(
             (
