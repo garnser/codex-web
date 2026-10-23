@@ -18,6 +18,10 @@ from codex_web.services.goal_continuation import GoalContinuationDispatchResult
 from codex_web.services.queued_native_start import validate_attribution
 
 
+class HomeGoalReservationChanged(ValueError):
+    pass
+
+
 class HomeGoalContinuation:
     def __init__(self, *, continuation, home_host, turns, preflight, usage):
         self.continuation, self.home = continuation, home_host
@@ -87,14 +91,19 @@ class HomeGoalContinuation:
             'approval need or budget exhaustion. Preserve uncertain original actions; do not replay or poll while idle.\n'
             + json.dumps(data, sort_keys=True))
 
-    def mutate(self, binding_id, scope, updater, reason):
+    def mutate(self, binding_id, scope, updater, reason, *, event_id=None):
         result = []
         def apply(state):
             row = self.bindings._binding(state, binding_id, scope)
-            updated = updater(row)
+            updated = updater(row, state)
+            if updated == row:
+                result.append(row)
+                return state
+            updated=updated.model_copy(update={'updated_at':time.time(),'updated_by':self.continuation.owner_id,'change_reason':reason})
             state.bindings = [updated if r.id == row.id else r for r in state.bindings]
             state.events.append(GoalExecutionBindingEvent(binding_id=row.id, goal_id=row.goal_id,
-                event_type='binding_home_continuation', actor_id=self.continuation.owner_id, reason=reason))
+                event_type='binding_home_continuation', actor_id=self.continuation.owner_id, reason=reason,
+                **({'id':event_id} if event_id is not None else {})))
             result.append(updated)
             return state
         self.bindings.store.update(apply)
@@ -121,9 +130,12 @@ class HomeGoalContinuation:
 
     async def _dispatch(self, claimed, *, scope):
         reserved = None
+        current = claimed
         try:
             current, goal, actor, assignment, selected = await asyncio.to_thread(self.context, claimed)
             progress = current.home_continuation or HomeGoalProgress()
+            if progress.delivery is not None and progress.delivery.phase != 'settled':
+                return GoalContinuationDispatchResult(binding_id=current.id,outcome='not_claimed',reason='original_home_goal_delivery_owned')
             budget = goal.budget
             if (budget.max_model_calls is None or budget.max_input_tokens is None or budget.max_output_tokens is None
                     or progress.reserved_calls >= budget.max_model_calls or progress.model_calls >= budget.max_model_calls
@@ -142,9 +154,9 @@ class HomeGoalContinuation:
                 fence=assignment.fence, profile_id=pin.profile_id, profile_revision=pin.profile_revision,
                 profile_record_id=pin.profile_record_id, definition=assignment.execution_profile_definition,
                 message=message, message_sha256=hashlib.sha256(message.encode()).hexdigest())
-            def reserve(row):
+            def reserve(row, state):
                 if row != current or row.home_continuation and row.home_continuation.delivery and row.home_continuation.delivery.phase != 'settled':
-                    raise ValueError('Original Goal delivery or binding changed before reservation')
+                    raise HomeGoalReservationChanged('Original Goal delivery or binding changed before reservation')
                 return row.model_copy(update={'home_continuation':progress.model_copy(update={
                     'reserved_calls':progress.reserved_calls+1, 'delivery':delivery}),
                     'last_execution_id':delivery.requested_execution_id})
@@ -161,9 +173,28 @@ class HomeGoalContinuation:
                 allow_assignment_renewal=False)
             if not result.get('queuedId'):
                 raise RuntimeError('Original Home Goal queue outcome unknown')
-            def accepted(row):
+            def accepted(row, state):
                 d = row.home_continuation.delivery
-                if d.id != delivery.id or d.phase not in {'reserved','queued','started','terminal_pending_usage','settled'}:
+                if d.id != delivery.id:
+                    # A very fast real terminal may already have settled this
+                    # original and admitted the next input. Confirm the old
+                    # positive effect; never overwrite the later delivery.
+                    attempt=self.preflight.store.get('preflight-queued-'+result['queuedId'])
+                    receipt=attempt.queued_start_receipt if attempt else None
+                    if receipt is None:
+                        raise ValueError('Changed delivery lacks original positive queue proof')
+                    original=delivery.model_copy(update={'native_turn_id':receipt.provider_native_turn_id})
+                    self.project_native_start_proof(attempt,original,row)
+                    usage=self._observed_usage(row,original,scope)
+                    if usage is None:
+                        raise ValueError('Changed delivery lacks original settled usage')
+                    events=state.events
+                    if not any(e.id==self.usage_event_id(row.id,usage.id) and e.binding_id==row.id and e.goal_id==row.goal_id
+                            and e.event_type=='binding_home_continuation'
+                            and e.reason=='Actual original Home Goal usage '+usage.id for e in events):
+                        raise ValueError('Original Home Goal accounting transition unavailable')
+                    return row
+                if d.phase not in {'reserved','queued','started','terminal_pending_usage','settled'}:
                     raise ValueError('Original Home Goal delivery changed after queue admission')
                 if d.phase not in {'reserved','queued'}:
                     return row
@@ -173,7 +204,7 @@ class HomeGoalContinuation:
             return GoalContinuationDispatchResult(binding_id=reserved.id,outcome='queued')
         except BaseException as exc:
             if reserved is not None:
-                def unknown(row):
+                def unknown(row, state):
                     d=row.home_continuation.delivery
                     if d.id != delivery.id:
                         raise ValueError('Original delivery changed during outcome reconciliation')
@@ -183,8 +214,20 @@ class HomeGoalContinuation:
                         'home_continuation':row.home_continuation.model_copy(update={'delivery':d.model_copy(update={'phase':phase})})})
                 await asyncio.to_thread(self.mutate,reserved.id,scope,unknown,'Original Home Goal delivery outcome unknown')
             else:
-                await asyncio.to_thread(self.continuation._finish_binding,claimed,scope=scope,
-                    status=GoalExecutionBindingStatus.BLOCKED,reason=str(exc))
+                if isinstance(exc,HomeGoalReservationChanged):
+                    return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='not_claimed',reason=str(exc))
+                # A stale claimant may never block a newer owner's delivery.
+                blocked=[]
+                def block(row, state):
+                    if row != current:
+                        return row
+                    blocked.append(True)
+                    return row.model_copy(update={'status':GoalExecutionBindingStatus.BLOCKED,'stop_reason':str(exc)})
+                stopped=await asyncio.to_thread(self.mutate,claimed.id,scope,block,str(exc))
+                if not blocked:
+                    if isinstance(exc,asyncio.CancelledError):
+                        raise
+                    return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='not_claimed',reason='canonical_binding_changed')
             if isinstance(exc, asyncio.CancelledError):
                 raise
             return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='blocked' if reserved is None else 'unknown',reason=str(exc))
@@ -233,7 +276,7 @@ class HomeGoalContinuation:
                 or (receipt.provider_id,receipt.runtime_id)!=(binding.provider_id,binding.runtime_id)
                 or evidence.provider_native_turn_id != receipt.provider_native_turn_id):
             raise ValueError('Original Home Goal START attribution changed')
-        def started(row):
+        def started(row, state):
             current=row.home_continuation.delivery
             if current.id!=d.id or current.phase=='settled':
                 return row
@@ -257,25 +300,16 @@ class HomeGoalContinuation:
         if attempt is None:
             raise ValueError('Original Home Goal terminal start unavailable')
         self.project_native_start_proof(attempt,d,binding)
-        usage_id='runtime-usage-'+hashlib.sha256(f'{binding.agent_session_id}\n{d.native_turn_id}'.encode()).hexdigest()[:32]
-        usage=self.usage.get(usage_id)
-        if (usage is None or usage.completed_at is None or usage.terminal_outcome=='unknown'
-                or usage.input_tokens is None or usage.output_tokens is None or usage.runtime_duration_seconds is None
-                or usage.model_call_count is None):
+        usage=self._observed_usage(binding,d,scope)
+        if usage is None:
             return False
-        if (usage.organization_id,usage.workspace_id,usage.project_id,usage.assignment_id,usage.execution_id,
-                usage.execution_workspace_id,usage.agent_session_id,usage.provider_id,usage.runtime_id,
-                usage.provider_native_session_id,usage.provider_native_turn_id)!=(
-                scope.organization_id,scope.workspace_id,'home',d.assignment_id,d.execution_id,d.execution_workspace_id,
-                binding.agent_session_id,binding.provider_id,binding.runtime_id,d.thread_id,d.native_turn_id):
-            raise ValueError('Original Home Goal usage attribution changed')
-        goal=self.goal(binding.goal_id,scope)
-        if goal.budget.max_cost_usd is not None and usage.cost_usd is None:
-            return False
-        def settle(row):
+        usage_id=usage.id
+        won=[]
+        def settle(row, state):
             current=row.home_continuation.delivery
             if current.id!=d.id or current.phase!='terminal_pending_usage':
                 return row
+            won.append(True)
             observed=row.home_continuation.model_copy(update={
                 'model_calls':row.home_continuation.model_calls+usage.model_call_count,
                 'cost_usd':row.home_continuation.cost_usd+usage.cost_usd if row.home_continuation.cost_usd is not None and usage.cost_usd is not None else None,
@@ -290,8 +324,31 @@ class HomeGoalContinuation:
                     reason='Original Home Goal terminal/checkpoint did not succeed'
             return row.model_copy(update={'home_continuation':observed,'status':status,'stop_reason':reason,
                 'lease_owner_id':None,'lease_expires_at':None,'heartbeat_at':time.time()})
-        self.mutate(binding.id,scope,settle,'Actual original Home Goal usage '+usage_id)
-        return True
+        self.mutate(binding.id,scope,settle,'Actual original Home Goal usage '+usage_id,
+            event_id=self.usage_event_id(binding.id,usage_id))
+        return bool(won)
+
+    @staticmethod
+    def usage_event_id(binding_id,usage_id):
+        return 'home-goal-usage-'+hashlib.sha256(f'{binding_id}\n{usage_id}'.encode()).hexdigest()[:32]
+
+    def _observed_usage(self,binding,d,scope):
+        usage_id='runtime-usage-'+hashlib.sha256(f'{binding.agent_session_id}\n{d.native_turn_id}'.encode()).hexdigest()[:32]
+        usage=self.usage.get(usage_id)
+        if (usage is None or usage.completed_at is None or usage.terminal_outcome=='unknown'
+                or usage.input_tokens is None or usage.output_tokens is None or usage.runtime_duration_seconds is None
+                or usage.model_call_count is None):
+            return None
+        if (usage.organization_id,usage.workspace_id,usage.project_id,usage.assignment_id,usage.execution_id,
+                usage.execution_workspace_id,usage.agent_session_id,usage.provider_id,usage.runtime_id,
+                usage.provider_native_session_id,usage.provider_native_turn_id)!=(
+                scope.organization_id,scope.workspace_id,'home',d.assignment_id,d.execution_id,d.execution_workspace_id,
+                binding.agent_session_id,binding.provider_id,binding.runtime_id,d.thread_id,d.native_turn_id):
+            raise ValueError('Original Home Goal usage attribution changed')
+        goal=self.goal(binding.goal_id,scope)
+        if goal.budget.max_cost_usd is not None and usage.cost_usd is None:
+            return None
+        return usage
 
     def project_native_start_proof(self, attempt, d, binding):
         correlation,receipt,evidence=(attempt.queued_start_correlation,attempt.queued_start_receipt,attempt.queued_start_evidence)
@@ -336,7 +393,7 @@ class HomeGoalContinuation:
                     active.execution_workspace_id,active.worker_id,active.fence)!=(d.thread_id,d.native_turn_id,
                     d.assignment_id,d.execution_id,d.execution_workspace_id,d.worker_id,d.fence):
                 raise ValueError('Original Home Goal terminal custody changed')
-            def terminal(row):
+            def terminal(row, state):
                 current=row.home_continuation.delivery
                 if current.id!=d.id or current.phase=='settled':return row
                 return row.model_copy(update={'home_continuation':row.home_continuation.model_copy(update={
