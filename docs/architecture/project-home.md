@@ -479,6 +479,14 @@ work refuse visibly. The existing owned operation joins the read worker before
 retiring; it never substitutes a whole-history fallback. Legacy nonstandard JSON
 which cannot be classified safely may refuse rather than be treated as absent.
 
+The PostgreSQL query projects the original intent's query headers through a
+JSON record conversion instead of repeatedly parsing its full retained payload
+for each predicate. The projection is query-local, not a stored index or an
+absence proof. An explicit scope CASE keeps correlated receipt checks behind
+the matching tenant/execution or command predicate. Missing identifying headers
+and non-object originals still reach full canonical validation; receipt identity,
+unknown outcomes, candidate limits and the five-second budget are unchanged.
+
 No derived alias proves an original absent. The abandoned Home index prototype
 was never deployed; deleting any such alias cannot affect this predicate. No new
 records migration is required. The reader explicitly accepts prototype normalized

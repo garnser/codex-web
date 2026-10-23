@@ -51,20 +51,38 @@ def recovery_statement(namespace, query, *, postgres=False):
     table = 'codex_state_documents' if postgres else 'state_documents'
     slot = '%s' if postgres else '?'
     args = []
+    # Project only query headers in one JSON record conversion.  Repeated
+    # payload::json field operators otherwise reparse each full historical
+    # ActionIntent (including its potentially large request/result metadata).
+    headers = ('id','organization_id','workspace_id','status','execution_id',
+        'project_id','action_id','provider_type','provider_instance','requested_by',
+        'last_receipt_id','execution_started_at','attempt','idempotency_key','correlation_id')
+    json_headers = ('resource_ids','request')
+    def document(alias):
+        return f'{alias}.payload::json'
+    def json_value(alias, path):
+        if alias == 'i' and path and path[0] in json_headers:
+            base = f'h.{path[0]}'
+            return base if len(path) == 1 else f"({base} #> '{{{','.join(path[1:])}}}')"
+        return f"({document(alias)} #> '{{{','.join(path)}}}')"
     def param(value):
         args.append(value)
         return slot
     def scalar(alias, *path):
         if postgres:
-            return f"({alias}.payload::json #>> '{{{','.join(path)}}}')"
+            if alias == 'i' and len(path) == 1 and path[0] in headers:
+                return f"(h.{path[0]} #>> '{{}}')"
+            if alias == 'i' and path and path[0] in json_headers:
+                return f"({json_value(alias,path)} #>> '{{}}')"
+            return f"({document(alias)} #>> '{{{','.join(path)}}}')"
         return f"json_extract(CASE WHEN json_valid({alias}.payload) THEN {alias}.payload ELSE '{{}}' END, '$.{'.'.join(path)}')"
     def kind(alias, *path):
         if postgres:
-            return f"json_typeof({alias}.payload::json #> '{{{','.join(path)}}}')"
+            return f"json_typeof({json_value(alias,path)})"
         return f"json_type(CASE WHEN json_valid({alias}.payload) THEN {alias}.payload ELSE '{{}}' END, '$.{'.'.join(path)}')"
     def array(alias, path, expected):
         if postgres:
-            length = f"json_array_length(CASE WHEN {kind(alias,*path)} = 'array' THEN {alias}.payload::json #> '{{{','.join(path)}}}' ELSE '[]'::json END)"
+            length = f"json_array_length(CASE WHEN {kind(alias,*path)} = 'array' THEN {json_value(alias,path)} ELSE '[]'::json END)"
             values = [f"{scalar(alias,*path,str(i))} = {param(value)}" for i,value in enumerate(expected)]
         else:
             length = f"json_array_length(CASE WHEN {kind(alias,*path)} = 'array' THEN {scalar(alias,*path)} ELSE '[]' END)"
@@ -116,6 +134,24 @@ def recovery_statement(namespace, query, *, postgres=False):
     malformed = ('FALSE' if postgres else 'NOT json_valid(i.payload)')
     # Malformed identifying fields cannot safely establish tenant/scope absence.
     missing = ' OR '.join(scalar('i',field) + ' IS NULL' for field in ('id','organization_id','workspace_id','status'))
-    where = f"{bounds} AND ({malformed} OR {missing} OR ({' AND '.join(scope)} AND ({blockers})))"
+    # A boolean AND does not constrain PostgreSQL's evaluation order.  Keep
+    # correlated receipt validation behind an explicit scope CASE so unrelated
+    # settled history cannot consume the bounded original-row query budget.
+    # Indeterminate identifying fields still reach canonical full validation.
+    where = f"""{bounds} AND CASE
+        WHEN {malformed} OR {missing} THEN TRUE
+        WHEN {' AND '.join(scope)} THEN ({blockers})
+        ELSE FALSE END"""
     order = 'i.namespace COLLATE "C"' if postgres else 'i.namespace'
-    return f"SELECT i.namespace, i.payload FROM {table} i WHERE {where} ORDER BY {order} LIMIT 257", tuple(args)
+    relation = f'{table} i'
+    if postgres:
+        # Preserve JSON scalar/array semantics instead of normalizing through
+        # jsonb or coercing projected headers to text. Unsupported retained JSON
+        # still refuses under the existing canonical conversion-error boundary.
+        columns = ', '.join(field+' json' for field in (*headers,*json_headers))
+        # Preserve non-object/missing header behavior: return the original row
+        # for full canonical validation rather than let record conversion hide it.
+        relation += f""" CROSS JOIN LATERAL json_to_record(
+            CASE WHEN json_typeof(i.payload::json) = 'object'
+                THEN i.payload::json ELSE '{{}}'::json END) h({columns})"""
+    return f"SELECT i.namespace, i.payload FROM {relation} WHERE {where} ORDER BY {order} LIMIT 257", tuple(args)
