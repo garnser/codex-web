@@ -464,6 +464,34 @@ replicated fencing serialize preparation. Creation is not delivery: only a
 subsequent original native START qualifies the handoff. Existing source sessions,
 bindings, replacement graphs, queues and unknown outcomes remain unchanged.
 
+A controller refusal after canonical preparation but before worker startup is
+recorded atomically with cancellation as an existing `FailureRecord`. The owner
+must still hold an unclaimed PENDING fence0 with no lease, worker or start time.
+The internal proof records the pre-worker/provider boundary, exception type,
+HTTP status when present, and original recipient-attribution digest. Public
+cancellation reasons cannot create this proof or attach it to historical
+cancellations. A timeout classification does not imply the exact cause of a
+historical refusal; the owned deadline flag is separate from an HTTP504.
+
+The same genuine pending handoff may reserve one deterministic recovery
+bootstrap only from that typed proof and unchanged tenant, actor, Profile,
+definitions, source custody and repository scope. Its cancelled predecessor is
+preserved, not resumed, and is freshly rechecked at every recovery edge. The
+existing canonical assignment reserves the new physical generation. Unknown
+outcomes, legacy reason-only cancellations and a failed or unresolved recovery
+generation remain blocked; no third generation or new nonce is manufactured.
+The Work Item inspector exposes `owner_recipient_bootstrap_recovery_pending`;
+the assignment API retains the structured failure phase, Work/nonce, actor and lineage.
+
+Provider-edge checks freshly read exact current authority and custody while
+avoiding repeated discovery of unrelated candidates. Initial and owned-entry
+discovery remain, and final selection still requires exactly one compatible LIVE
+recipient before work is dispatched. A legitimate concurrent lane may therefore
+make final selection ambiguous; context preparation is not Work START or ACK.
+No five-second limit is increased and no authority snapshot crosses an await as
+a substitute for fresh validation. These additions use existing assignment and
+Failure contracts, with no new store, controller, public mutation or UI grant.
+
 This changes no UI-owned eligibility or control. Existing Work Item handoff,
 worker/bootstrap and preflight inspectors expose the canonical recipient or
 blocker; current denial reasons remain authoritative. No new UI action is

@@ -1726,6 +1726,7 @@ class ExecutionWorkerService:
         payload: AssignmentCancelRequest,
         *,
         actor: AuthenticationActor,
+        preworker_refusal=None,
     ) -> ExecutionAssignment:
         """Fence a bootstrap and release its reservation, retaining all files.
 
@@ -1752,6 +1753,44 @@ class ExecutionWorkerService:
                 AssignmentStatus.RUNNING, AssignmentStatus.LOST,
             }:
                 raise WorkerConflictError("bootstrap assignment is already terminal")
+            failure = None
+            if preworker_refusal is not None:
+                from codex_web.thread_bootstrap import BootstrapPreworkerRefusal, RecipientBootstrapOrigin
+                proof = preworker_refusal
+                if (not isinstance(proof, BootstrapPreworkerRefusal)
+                        or assignment.status != AssignmentStatus.PENDING or assignment.fence != 0
+                        or assignment.lease is not None or assignment.assigned_worker_id is not None
+                        or assignment.started_at is not None
+                        or proof.bootstrap_id != assignment.subject.ref
+                        or proof.execution_id != assignment.execution_id):
+                    raise WorkerConflictError('pre-worker refusal no longer owns an unclaimed bootstrap')
+                details = {'phase': 'before_worker_start', 'provider_start_called': False,
+                    'worker_start_called': False, 'error_type': proof.error_type[:80],
+                    'guard_deadline_exceeded': proof.guard_deadline_exceeded,
+                    'error_http_status': proof.error_http_status,
+                    'reservation_fence': assignment.fence, 'created_by': assignment.created_by}
+                if proof.origin is not None:
+                    origin = proof.origin
+                    if (not isinstance(origin, RecipientBootstrapOrigin) or type(origin.generation) is not int
+                            or origin.generation not in (0, 1)
+                            or len(origin.logical_id) != 32 or len(origin.attribution_sha256) != 64
+                            or not origin.work_item_ref or origin.handoff_requested_at is None
+                            or not origin.binding_id or not origin.actor_id):
+                        raise WorkerConflictError('invalid internal recipient origin')
+                    details.update(logical_id=origin.logical_id, generation=origin.generation,
+                        attribution_sha256=origin.attribution_sha256,
+                        predecessor_assignment_id=origin.predecessor_assignment_id,
+                        work_item_ref=origin.work_item_ref, handoff_requested_at=origin.handoff_requested_at,
+                        binding_id=origin.binding_id, origin_actor_id=origin.actor_id)
+                reason = (FailureReason.EXECUTION_TIMEOUT
+                    if proof.guard_deadline_exceeded or proof.error_http_status == 504 else
+                    FailureReason.AUTHORITY_DENIED if proof.error_http_status in (401, 403) else
+                    FailureReason.STALE_REVISION if proof.error_type == 'OwnerRoutingError' else
+                    FailureReason.UNCLASSIFIED)
+                failure = create_failure(reason,
+                    source_subsystem='thread-bootstrap-admission', correlation_id=assignment.subject.ref,
+                    assignment_id=assignment.id, execution_id=assignment.execution_id,
+                    source_native_code='before_worker_start', details=details)
             self._require_settled_readiness_origin(intents, assignment)
             replacement = assignment.model_copy(update={
                 "status": AssignmentStatus.CANCELLED,
@@ -1761,6 +1800,7 @@ class ExecutionWorkerService:
                 "updated_at": now,
                 "failure_code": "thread_bootstrap_cancelled",
                 "failure_message": payload.reason,
+                **({'failure': failure} if failure is not None else {}),
             })
             state.assignments = [
                 replacement if item.id == assignment.id else item

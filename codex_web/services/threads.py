@@ -1004,6 +1004,7 @@ class ThreadService:
         before_provider_start: Callable[[], None] | None = None,
         admission_guard: Callable[[], None] | None = None,
         assignment_admission=None,
+        recipient_origin=None,
     ) -> dict[str, Any]:
         # Internal recovery correlation; the public create request cannot set it.
         if bootstrap_token is not None:
@@ -1167,13 +1168,21 @@ class ThreadService:
                 await PostTurnReadinessService._run_owned(
                     lambda: asyncio.to_thread(admission_guard), seconds=5.,
                     name='thread-admission-current-guard')
-            except Exception:
+            except Exception as exc:
                 from codex_web.execution_workers import AssignmentCancelRequest
+                from codex_web.thread_bootstrap import BootstrapPreworkerRefusal
                 # A just-prepared bootstrap has not crossed worker startup.
                 # Cancellation is fenced and retains all files, as elsewhere.
                 await asyncio.to_thread(binding_service.workers.cancel_bootstrap,
                     binding.assignment_id, AssignmentCancelRequest(expected_fence=0,
-                        reason="governor admission changed before isolated worker startup"), actor=control_actor)
+                        reason="governor admission changed before isolated worker startup"), actor=control_actor,
+                    preworker_refusal=BootstrapPreworkerRefusal(
+                        bootstrap_id=bootstrap_id, execution_id=execution_id,
+                        error_type=type(exc).__name__,
+                        guard_deadline_exceeded=(isinstance(exc, TimeoutError)
+                            and str(exc) == 'Post-turn readiness operation deadline exceeded'),
+                        origin=recipient_origin,
+                        error_http_status=(exc.status_code if isinstance(exc, HTTPException) else None)))
                 raise
         session = await session_manager.start(binding.assignment_id)
         if resource_context is not None:

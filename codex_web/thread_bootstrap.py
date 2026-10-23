@@ -2,11 +2,38 @@ from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.compatibility import ContractSpec
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
+
+
+@dataclass(frozen=True)
+class RecipientBootstrapOrigin:
+    """Internal controller correlation, never accepted by the public create DTO."""
+
+    logical_id: str
+    generation: int
+    attribution_sha256: str
+    predecessor_assignment_id: str | None = None
+    work_item_ref: str | None = None
+    handoff_requested_at: float | None = None
+    binding_id: str | None = None
+    actor_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BootstrapPreworkerRefusal:
+    """Produced only at ThreadService's before-worker-start exception boundary."""
+
+    bootstrap_id: str
+    execution_id: str
+    error_type: str
+    guard_deadline_exceeded: bool
+    origin: RecipientBootstrapOrigin | None = None
+    error_http_status: int | None = None
 
 
 THREAD_BOOTSTRAP_BINDING_CONTRACT = ContractSpec(
