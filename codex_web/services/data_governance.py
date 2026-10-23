@@ -647,7 +647,8 @@ class DataGovernanceService:
         *,
         actor: AuthenticationActor,
     ) -> ContextFilterResult:
-        state = self.store.load()
+        state = self.store.context_state(payload.record_ids,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         decisions: list[ContextFilterDecision] = []
         for record_id in payload.record_ids:
             record = self._record_from_state(state, record_id, actor)

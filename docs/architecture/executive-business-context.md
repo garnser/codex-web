@@ -232,3 +232,15 @@ invocation.
 - direct external side effect -> unsupported by Executive proposal contract.
 
 These are fail-closed states.
+
+## Selected governance reads
+
+Context filtering reads the complete requested governance records in one fresh,
+scoped statement through the canonical state-store envelope reader. It does not
+transfer unrelated governance records, requests, or audit history into Python.
+The domain decoder still validates the envelope version and every selected record;
+legacy backends and incompatible document shapes retain the full decoder path.
+Request order, duplicate IDs, missing/foreign refusals, lifecycle, classification,
+credential exclusions, deny-model-context flags, and reviewed Home output checks
+remain unchanged. Mutations and audit operations retain their full-state owner.
+This changes no context budget, timeout, cache, API response, or operator controls.
