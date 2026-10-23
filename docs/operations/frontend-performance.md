@@ -79,3 +79,15 @@ accounting reads remain uncached. Runtime rate-limit notifications update quota
 resources from the supplied snapshot and debounce one resources-only refresh;
 they do not request the same provider snapshot again. Manual and project-change
 refreshes coalesce in-flight work and retain a trailing full refresh.
+
+### Initial model discovery and conversation restoration
+
+The chat refresh applies its canonical Project workspace and execution catalog,
+then restores the explicit conversation deep link before waiting for independent
+model discovery. The same refresh signal owns both reads. Late model metadata
+can update only the still-current Project, refresh generation and search; it
+preserves the current model selector value. Failed or superseded workspace loads
+abort the optional read. Model failure remains visible through the existing
+`models.error` diagnostic and does not manufacture a model, execution profile or
+readiness result. Contextual readiness and canonical turn admission continue to
+govern execution. This also applies to existing scratch conversations (#1754).
