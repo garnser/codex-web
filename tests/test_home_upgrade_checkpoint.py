@@ -123,6 +123,20 @@ class HomeUpgradeCheckpointTests(HomeRestartRecoveryTests):
         with self.assertRaises(ExecutionPrestartRefusal):self.planned.resume(artifact.id,operator_actor=self.operator)
         self.assertEqual(len(self.queue.get('operator-thread')),1)
         self.assertEqual(self.effects,0)
+        # A further server restart must retain the actual planned continuation,
+        # rather than trusting its source string or replaying the Upgrade input.
+        self.queue.update('operator-thread', lambda rows: [row for row in rows if row.id != queued.id])
+        recovered = self.restart.retain_startup(actual_active,
+            project=self.host._project('home'), actor=self.actor)
+        self.assertEqual(recovered.home_restart_input.schema_version, '1.3')
+        self.assertEqual(recovered.thread_id, 'operator-thread')
+        next_attempt, next_claim = self.claim(recovered)
+        with self.restart.input_context(recovered, attempt_id=next_attempt, claim_id=next_claim):
+            self.service.home_operator_host.prepare_native_input_guard(project=self.host._project('home'), actor=self.actor,
+                execution_id=self.assignment.execution_id, assignment_id=self.assignment.id,
+                source='queued:restart-recovery:home')()
+        self.assertEqual(self.queue.get('operator-thread'), [recovered])
+        self.assertEqual(self.effects, 0)
 
     async def test_no_completed_or_old_plan_or_wrong_running_source_can_resume(self):
         artifact=self.checkpoint()
