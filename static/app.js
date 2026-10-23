@@ -8,7 +8,7 @@ import{saveIntegrationDraft}from"./integration_mutation.js";
 import{projectCreationEditor}from"./project_creation.js";
 import{installThreadCommands}from"./object_commands.js";
 import*as ep from"./execution_profile_controls.js";
-import{loadProjectUiStateForRefresh,refreshBindingQueueDepth}from"./project_ui_state.js";
+import{loadProjectUiStateForRefresh,refreshBindingQueueDepth,applyProjectModels}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 import{activateProject,createProjectNavigator,initialProjectId,publishProjectsRendered}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
@@ -986,7 +986,7 @@ async function refresh({ reloadProjects = false } = {}) {
   const task=(async()=>{
     const snapshot=await loadProjectUiStateForRefresh({
       api,projectId,search,state,reloadProjects,controller,generation,
-      renderProjects,renderThreads,clearMessages,logEvent,
+      renderProjects,renderThreads,clearMessages,logEvent,deferModels:true,
     });
     if(!snapshot)return;
     if(
@@ -1028,6 +1028,8 @@ async function refresh({ reloadProjects = false } = {}) {
     if (threadRoute.idFromLocation() || threadIdBeforeRefresh !== state.threadId) await threadRoute.restore();
     if (state.usageProjectId !== projectId) refreshTokenUsage();
     markMilestone("project-useful",startedAt);
+    await applyProjectModels(snapshot,{state,controller,generation,projectId,search,getSearch:()=>$("thread-search").value.trim(),getControls:()=>document.querySelectorAll("#thread-model-setting,[data-action=thread-model]"),renderModelOptions,
+    });
   })();
 
   state.refreshInFlight=task;
@@ -1036,6 +1038,7 @@ async function refresh({ reloadProjects = false } = {}) {
   }catch(error){
     if(error?.name!=="AbortError")throw error;
   }finally{
+    controller.abort();
     if(state.refreshInFlight===task)state.refreshInFlight=null;
     if(state.refreshController===controller)state.refreshController=null;
   }
@@ -1047,16 +1050,6 @@ function scheduleRefresh(delay = 100) {
     state.refreshTimer = null;
     refresh().catch(console.error);
   }, delay);
-}
-
-async function refreshModels() {
-  try {
-    const response = await api("/api/models");
-    state.models = Array.isArray(response.data) ? response.data : [];
-  } catch (error) {
-    logEvent("models.error", { message: error.message });
-    state.models = [];
-  }
 }
 
 async function refreshBotConnections() {

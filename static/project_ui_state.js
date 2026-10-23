@@ -31,6 +31,7 @@ export async function loadProjectUiState({
   cachedStatic = null,
   onModelError = () => {},
   signal = null,
+  deferModels = false,
 }) {
   const query = new URLSearchParams({
     thread_limit: "50",
@@ -46,6 +47,21 @@ export async function loadProjectUiState({
     throw new ProjectContextUnavailableError(projectId, projectList);
   }
 
+  // Models are independently useful metadata. A ready workspace may hydrate
+  // its execution context and selected conversation while discovery continues.
+  // The caller still owns/join this promise under its existing refresh signal.
+  const modelsReady = models.length
+    ? Promise.resolve(models)
+    : api("/api/models", { signal })
+      .then((response) => Array.isArray(response.data) ? response.data : [])
+      .catch((error) => {
+        if (error?.name === "AbortError") {
+          if (deferModels) return null;
+          throw error;
+        }
+        onModelError(error);
+        return [];
+      });
   let workspace;
   let modelList;
   try {
@@ -54,17 +70,7 @@ export async function loadProjectUiState({
         `/api/projects/${encodeURIComponent(projectId)}/ui-state?${query}`,
         { signal },
       ),
-      models.length
-        ? Promise.resolve(models)
-        : api("/api/models", { signal })
-          .then((response) => (
-            Array.isArray(response.data) ? response.data : []
-          ))
-          .catch((error) => {
-            if (error?.name === "AbortError") throw error;
-            onModelError(error);
-            return [];
-          }),
+      deferModels ? Promise.resolve(models) : modelsReady,
     ]);
   } catch (error) {
     if (error?.name === "AbortError") throw error;
@@ -101,6 +107,7 @@ export async function loadProjectUiState({
   return {
     projects: nextProjects,
     models: modelList,
+    ...(deferModels ? { modelsReady } : {}),
     staticState,
     resources: workspace.resources?.items || [],
     bindings: workspace.bindings?.items || [],
@@ -123,6 +130,7 @@ export async function loadProjectUiStateForRefresh({
   renderThreads,
   clearMessages,
   logEvent,
+  deferModels = false,
 }) {
   try {
     return await loadProjectUiState({
@@ -134,6 +142,7 @@ export async function loadProjectUiStateForRefresh({
       models: state.models,
       cachedStatic: state.projectUiStatic[projectId] || null,
       signal: controller.signal,
+      deferModels,
       onModelError: (error) => {
         logEvent("models.error", { message: error.message });
       },
@@ -168,5 +177,23 @@ export function refreshBindingQueueDepth(depthByThread, bindings) {
     if (binding.thread_id && Number.isFinite(binding.queueDepth)) {
       depthByThread.set(binding.thread_id, Math.max(0, binding.queueDepth));
     }
+  }
+}
+
+// Reuse the refresh owner and freshness token; no independent loader/controller.
+// The caller invokes this only after publishing its canonical workspace and
+// restoring the selected conversation, then joins the original optional read.
+export async function applyProjectModels(snapshot, {
+  state, controller, generation, projectId, search,
+  getSearch, getControls, renderModelOptions,
+}) {
+  if (!snapshot.modelsReady) return;
+  const models = await snapshot.modelsReady;
+  if (!models || controller.signal.aborted
+      || generation !== state.refreshGeneration || projectId !== state.projectId
+      || search !== getSearch()) return;
+  state.models = models;
+  for (const control of getControls()) {
+    control.innerHTML = renderModelOptions(control.value || "");
   }
 }
