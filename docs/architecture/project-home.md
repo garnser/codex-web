@@ -407,6 +407,11 @@ Agent Profile revision. `GET /api/operator/projects/threads` accepts one declare
 accepts the target Project, existing thread, bounded message and admission key.
 Current membership, invocability, target authority, bootstrap ownership and full
 writable/read-only repository scope are rechecked independently of the Home grant.
+A declared scratch child may receive empty repository fields only when its current
+resolved execution Definition exactly matches the assignment pin and specifies
+`scratch` with `repository_access=none`. A repository contract with missing scope
+is refused. Admission and the final native writer repeat these same checks; a
+contract change cannot reinterpret an already retained input.
 
 A canonical credential-free `home-operator-coordination` / `canonical` binding
 admits one original ActionIntent and one retained input through the existing

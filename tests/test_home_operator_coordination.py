@@ -27,7 +27,7 @@ class HomeCoordinationTests(unittest.TestCase):
             organization_id="local", workspace_id="default", execution_id="target-execution",
             execution_workspace_id="target-workspace", subject="thread:quinn", resource_ids=("resource-data",),
             agent_profile=NS(profile_id="quinn", profile_revision=6, profile_record_id="quinn-definition"),
-            execution_profile_id="repository-write", status="running", deadline_at=200,
+            execution_profile_id="repository-write", execution_profile_definition="target-definition", status="running", deadline_at=200,
             assigned_worker_id="worker-target", lease=NS(fence=3, worker_id="worker-target", expires_at=150),
             repository_scope=NS(writable_repository_ids=("resource-data",), read_only_repository_ids=("resource-core",)))
         self.profile = NS(profile_id="quinn", revision=6, record_id="quinn-definition", execution_profile_id="repository-write")
@@ -52,7 +52,7 @@ class HomeCoordinationTests(unittest.TestCase):
                 "definition_record_id":"home-definition", "target_assignment_id":"target", "target_fence":3,
                 "project_id":"data", "thread_id":"quinn-thread", "message":self.message}))
         self.broker = NS(execution_workers=NS(store=NS(assignment=self.assignments.get, worker=lambda key:self.worker)),
-            execution_profiles=NS(agent_profiles=NS(resolve_for_execution=Mock(return_value=(self.profile,None)))),
+            execution_profiles=NS(resolve=Mock(return_value=(NS(workspace_mode="repository", repository_access="mutable"), "target-definition")), agent_profiles=NS(resolve_for_execution=Mock(return_value=(self.profile,None)))),
             authority=NS(evaluate=Mock(return_value=NS(outcome="allow"))),
             action_intents=NS(get=Mock(side_effect=lambda key, actor:self.intent),
                 execution=NS(registry=NS(binding=lambda key,actor:NS(enabled=True,credential_ref=None,
@@ -112,6 +112,22 @@ class HomeCoordinationTests(unittest.TestCase):
                 original=self.queued;self.queued=self.queued.model_copy(update=changes)
                 try:self.validate()
                 finally:self.queued=original
+
+    def test_missing_repository_scope_cannot_be_reinterpreted_as_scratch(self):
+        self.target.repository_scope = None
+        with self.assertRaises(HTTPException):
+            self.validate()
+
+    def test_scratch_normalization_requires_exact_contract_and_empty_scope(self):
+        contract = NS(workspace_mode="scratch", repository_access="none")
+        self.broker.execution_profiles.resolve.return_value = contract, "target-definition"
+        with self.assertRaises(HTTPException):
+            self.service.target_repository_fields(self.target, self.actor)
+        self.target.repository_scope = None
+        self.assertEqual(self.service.target_repository_fields(self.target, self.actor), (None, (), ()))
+        self.broker.execution_profiles.resolve.return_value = contract, "changed-definition"
+        with self.assertRaises(HTTPException):
+            self.service.target_repository_fields(self.target, self.actor)
 
     def test_unlisted_target_and_denied_current_project_authority_refuse(self):
         self.envelope.project_targets=()
