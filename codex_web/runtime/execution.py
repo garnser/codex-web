@@ -3562,7 +3562,7 @@ class TurnExecutionService:
                     preinput_admission_refused = True
                     raise
                 start_options = {}
-                delegated = (TurnQueuePolicy.source_origin(source) == "project-coordination"
+                delegated = (TurnQueuePolicy.source_origin(source) in {"project-coordination", "home-operator-coordination"}
                              and operator_admission_validator is not None)
                 guarded_owner = owner_routing_pin is not None
                 guarded_input = input_admission_validator is not None
