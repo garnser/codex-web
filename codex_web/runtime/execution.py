@@ -224,6 +224,11 @@ class TurnExecutionService:
         self.procedure_admission = None
         self.native_input_guard_factory = None
         self.home_restart_recovery = None
+        # Observation only: startup already attempted this exact original turn.
+        # Fresh canonical retention/final native guards remain the authority.
+        self._home_startup_control_wait: dict[str, ActiveThreadTurn] = {}
+        self.home_startup_retry_schedule = None
+        self._home_startup_control_revision = 0
         self.readiness_origin_blocker = None
         self.post_turn_readiness = None
         self.readiness_terminal_events = None
@@ -835,6 +840,10 @@ class TurnExecutionService:
     def resume_automated_queues(self) -> None:
         # The canonical control-change request wakes existing queues. Admission
         # still rechecks both controls; a runtime disable marker cannot be overridden.
+        self._home_startup_control_revision += 1
+        if self.home_startup_retry_schedule is not None:
+            for thread_id in tuple(self._home_startup_control_wait):
+                self.home_startup_retry_schedule(thread_id)
         for thread_id in self.host._load_turn_queues():
             current = self.queue_drain_tasks.get(thread_id)
             if current is not None and not current.done():
@@ -4641,9 +4650,17 @@ class TurnExecutionService:
             name=f"turn-queue-drain-{thread_id}",
         )
 
+    def home_startup_control_retry_eligible(self, active: ActiveThreadTurn) -> bool:
+        return self._home_startup_control_wait.get(active.thread_id) == active
+
+    async def resume_control_blocked_home_threads(self, thread_ids: set[str]) -> None:
+        await self.resume_active_threads_after_startup(thread_ids, control_resume=True)
+
     async def resume_active_threads_after_startup(
         self,
         thread_ids: set[str] | None = None,
+        *,
+        control_resume: bool = False,
     ) -> None:
         self._event_loop = asyncio.get_running_loop()
         h = self.host
@@ -4698,12 +4715,18 @@ class TurnExecutionService:
                 continue
 
             if self.home_restart_recovery is not None and project.id == "home":
+                control_revision = self._home_startup_control_revision
                 try:
                     lock = self._turn_start_locks.get(thread_id)
                     if lock is None:
                         lock = asyncio.Lock()
                         self._turn_start_locks[thread_id] = lock
                     async with lock:
+                        if control_resume:
+                            expected = self._home_startup_control_wait.pop(thread_id, None)
+                            current = h._get_active_turn_record(thread_id)
+                            if expected != active or current != active:
+                                continue
                         from codex_web.services.post_turn_readiness import PostTurnReadinessService
                         def retain():
                             requester = (self.actor_resolver(active.agent_profile_actor_id, project)
@@ -4718,12 +4741,18 @@ class TurnExecutionService:
                             if current != active:
                                 raise ExecutionPrestartRefusal(status_code=409, detail={'code':'home_restart_active_turn_changed'})
                             self._delete_active_turn(thread_id)
+                            self._home_startup_control_wait.pop(thread_id, None)
                     if queued is not None:
                         h._append_bot_event({'type':'home_restart_original_retained',
                             'thread_id':thread_id,'queued_id':queued.id})
                         self.schedule_queue_drain(thread_id)
                         continue
                 except Exception as exc:
+                    if isinstance(exc, ValueError) and str(exc) == 'global_autonomy_paused':
+                        self._home_startup_control_wait[thread_id] = active.model_copy(deep=True)
+                        if (self._home_startup_control_revision != control_revision
+                                and self.home_startup_retry_schedule is not None):
+                            self.home_startup_retry_schedule(thread_id)
                     h._append_bot_event({'type':'home_restart_recovery_blocked','thread_id':thread_id,
                         'reason_code':getattr(exc, 'detail', {}).get('code', 'home_restart_authority_unavailable')
                             if isinstance(getattr(exc, 'detail', None), dict) else 'home_restart_authority_unavailable'})
