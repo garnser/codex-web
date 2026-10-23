@@ -195,7 +195,15 @@ owner, tenant/Project and bootstrap, live assignment/fence, no active turn or
 handoff, no pending executor work, inspectable managed-validation custody and a
 provider-confirmed idle state for the same Codex native thread. Running, malformed
 or incomplete managed output vetoes renewal; absence of output alone is never
-idle proof. Each repository member is inspected read-only in the current isolated
+idle proof. Managed validation inspects the complete registered directory under
+its existing 64-total-entry bound (including `.gitignore`), with at most 16 KiB
+per sanitized report. All finished reports within that bound are inspected;
+four completed runs is not a lifetime report limit. A known nonzero exit remains
+a finished, unverified observation, not an unknown running process. Each report
+retains separate canonical Artifact/content and informational Evidence custody;
+no result is promoted to validation PASS. Running or malformed report number 17,
+unknown/transient entries, symlinks, excessive bytes or inventory overflow still
+veto renewal without deleting reports or accepting a truncated prefix. Each repository member is inspected read-only in the current isolated
 worker. Dirty checkouts or commits beyond the original base require a canonical
 handoff before renewal. Inspection and preparation have a 30-second aggregate
 deadline, and owned synchronous work is settled before cancellation returns.

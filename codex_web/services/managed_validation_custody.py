@@ -114,6 +114,42 @@ class ManagedValidationCustody:
                       'observed_exit_code':report['exit_code'],'result':'unknown'}),actor=self.actor,
             idempotency_key=artifact.external_id + ':' + artifact.digest.value)
 
+    @staticmethod
+    def _report_names(descriptor):
+        # This existing slot bound applies to the COMPLETE directory, including
+        # .gitignore and transient/unknown entries; never accept a first-N prefix.
+        names = []
+        with os.scandir(descriptor) as entries:
+            for count, entry in enumerate(entries):
+                check_operation_budget()
+                if count >= 64:
+                    raise ValueError('managed output slot exceeds entry bound')
+                if entry.name == '.gitignore':
+                    continue
+                if not re.fullmatch(r'report-[0-9a-f]{32}\.json', entry.name):
+                    raise ValueError('managed output slot contains unknown entry')
+                names.append(entry.name)
+        return sorted(names)
+
+    @staticmethod
+    def _read_report(descriptor, name):
+        check_operation_budget()
+        fd = os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=descriptor)
+        with os.fdopen(fd,'rb') as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError('managed report must be regular')
+            body = source.read(16385)
+        if len(body) > 16384:
+            raise ValueError('managed validation report exceeds contract')
+        report = sanitize_report(json.loads(body))
+        if name != f"report-{report['run_id']}.json":
+            raise ValueError('managed report identity differs from registration slot')
+        body = json.dumps(report,sort_keys=True,separators=(',',':')).encode()
+        if len(body) > 16384:
+            raise ValueError('canonical managed validation report exceeds contract')
+        check_operation_budget()
+        return report, body
+
     def capture(self):
         """Read only registered bounded JSON. Never discover arbitrary /tmp logs."""
         if self.registration is None or self.service is None or self.service.content is None:
@@ -125,33 +161,11 @@ class ManagedValidationCustody:
             for part in self.parts:
                 replacement = os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=descriptor)
                 os.close(descriptor); descriptor = replacement
-            names = []
-            with os.scandir(descriptor) as entries:
-                for count, entry in enumerate(entries):
-                    check_operation_budget()
-                    if count >= 64:
-                        raise ValueError('managed output slot exceeds entry bound')
-                    if re.fullmatch(r'report-[0-9a-f]{32}\.json',entry.name):
-                        names.append(entry.name)
-            names.sort()
-            if len(names) > 4:
-                self.state = 'unavailable'
-                return ()
+            names = self._report_names(descriptor)
             existing = {a.external_id:a for a in self.service.list_artifacts(self.actor)
                         if a.provider == self.provider and a.execution_id == self.assignment.execution_id}
             for name in names:
-                check_operation_budget()
-                fd = os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=descriptor)
-                with os.fdopen(fd,'rb') as source:
-                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-                        raise ValueError('managed report must be regular')
-                    body = source.read(16385)
-                if len(body) > 16384:
-                    raise ValueError('managed validation report exceeds contract')
-                report = sanitize_report(json.loads(body))
-                if name != f"report-{report['run_id']}.json":
-                    raise ValueError('managed report identity differs from registration slot')
-                body = json.dumps(report,sort_keys=True,separators=(',',':')).encode()
+                report, body = self._read_report(descriptor, name)
                 assignment = self.assignment
                 external_id = f"{assignment.id}:{assignment.fence}:{report['run_id']}"
                 artifact = existing.get(external_id)
@@ -188,29 +202,10 @@ class ManagedValidationCustody:
                 replacement = os.open(part, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=descriptor)
                 os.close(descriptor)
                 descriptor = replacement
-            reports = []
-            with os.scandir(descriptor) as entries:
-                for count, entry in enumerate(entries):
-                    check_operation_budget()
-                    if count >= 64:
-                        return True
-                    if entry.name == '.gitignore':
-                        continue
-                    if not re.fullmatch(r'report-[0-9a-f]{32}\.json', entry.name):
-                        return True
-                    reports.append(entry.name)
-            if len(reports) > 4:
-                return True
+            reports = self._report_names(descriptor)
             for name in reports:
-                fd = os.open(name, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK, dir_fd=descriptor)
-                with os.fdopen(fd, 'rb') as source:
-                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-                        return True
-                    body = source.read(16385)
-                if len(body) > 16384:
-                    return True
-                report = sanitize_report(json.loads(body))
-                if name != f"report-{report['run_id']}.json" or report['state'] != 'finished':
+                report, _ = self._read_report(descriptor, name)
+                if report['state'] != 'finished':
                     return True
             return False
         except (OSError, ValueError, TypeError):
