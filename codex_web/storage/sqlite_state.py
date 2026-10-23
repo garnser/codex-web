@@ -840,10 +840,11 @@ class SQLiteStateStore:
             WHEN EXISTS(SELECT 1 FROM json_each(payload) AS field WHERE field.key NOT IN ({unexpected})) THEN payload
             WHEN {arrays} THEN payload
             ELSE json_object('schema_version', COALESCE(json_extract(payload, '$.schema_version'), '0.0'),
-                ?, json(COALESCE((SELECT json_group_array(json(item.value)) FROM json_each(payload, ?) AS item
-                    WHERE item.type = 'object' AND json_extract(item.value, '$.id') IN (SELECT value FROM json_each(?))
-                      AND json_extract(item.value, '$.organization_id') = ?
-                      AND json_extract(item.value, '$.workspace_id') = ?), '[]')))
+                ?, json(COALESCE((SELECT json_group_array(json(selected.value)) FROM
+                    (SELECT item.value FROM json_each(payload, ?) AS item
+                     WHERE item.type = 'object' AND json_extract(item.value, '$.id') IN (SELECT value FROM json_each(?))
+                       AND json_extract(item.value, '$.organization_id') = ?
+                       AND json_extract(item.value, '$.workspace_id') = ? ORDER BY CAST(item.key AS INTEGER)) AS selected), '[]')))
             END FROM state_documents WHERE namespace = ?"""
         parameters = (*allowed, *(f"$.{name}" for name in names), array_name,
                       f"$.{array_name}", ids_json, organization_id, workspace_id, namespace)

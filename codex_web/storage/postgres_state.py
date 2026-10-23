@@ -990,8 +990,8 @@ class PostgresStateStore:
             WHEN EXISTS(SELECT 1 FROM json_each(payload::json) AS field WHERE NOT field.key = ANY(%s)) THEN payload::json
             WHEN {arrays} THEN payload::json
             ELSE json_build_object('schema_version', COALESCE(payload::json -> 'schema_version', '"0.0"'::json),
-                %s::text, COALESCE((SELECT json_agg(item.value) FROM
-                    (SELECT value FROM json_array_elements(payload::json -> %s) AS member(value)
+                %s::text, COALESCE((SELECT json_agg(item.value ORDER BY item.ordinality) FROM
+                    (SELECT value, ordinality FROM json_array_elements(payload::json -> %s) WITH ORDINALITY AS member(value, ordinality)
                      WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
                        AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s) AS item), '[]'::json))
             END)::text FROM codex_state_documents WHERE namespace = %s"""

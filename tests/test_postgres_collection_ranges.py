@@ -69,6 +69,25 @@ class CollectionRangeContract:
             with self.assertRaises(ValueError):
                 service.filter_context(ContextFilterRequest(record_ids=('selected',)), actor=actor)
 
+    def test_governance_context_preserves_first_scoped_stored_duplicate_and_legacy_empty(self):
+        from codex_web.data_governance import ContextFilterRequest
+        service, selected, actor = self._governance_context()
+        rows = [{**selected.model_dump(mode='json'), 'organization_id': 'foreign', 'deny_model_context': True},
+                selected.model_dump(mode='json'),
+                {**selected.model_dump(mode='json'), 'deny_model_context': True}]
+        for version in ('0.0', '1.0', '1.1'):
+            raw = {'schema_version': version, 'records': rows, 'events': [], 'requests': []}
+            self.backend.put('data_governance', raw)
+            request = ContextFilterRequest(record_ids=('selected','selected'))
+            with patch.object(service.store, 'context_state', return_value=service.store.load()):
+                expected = service.filter_context(request, actor=actor)
+            self.assertEqual(service.filter_context(request, actor=actor), expected)
+            self.assertEqual(expected.allowed_record_ids, ('selected','selected'))
+            self.assertEqual(service.filter_context(ContextFilterRequest(record_ids=()), actor=actor).decisions, ())
+        self.backend.put('data_governance', {**raw, 'schema_version': 'unknown'})
+        with self.assertRaises(ValueError):
+            service.filter_context(ContextFilterRequest(record_ids=()), actor=actor)
+
     def _evidence_point(self, raw, *, item_id="selected", organization_id="local", workspace_id="default"):
         from codex_web.artifact_evidence import Evidence, EvidenceType, EvidenceResult
         selected = Evidence(id=item_id, organization_id=organization_id, workspace_id=workspace_id,
