@@ -847,6 +847,8 @@ class ActiveThreadTurn(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     source: str | None = None
     reply_target: BotReplyTarget | None = None
+    # Observation-only point reference; absence never grants input or replay.
+    queued_admission_attempt_id: str | None = Field(default=None, min_length=1, max_length=256)
     execution_id: str | None = None
     assignment_id: str | None = None
     execution_workspace_id: str | None = None
@@ -871,6 +873,8 @@ class ActiveThreadTurn(BaseModel):
             result.pop("resource_context", None)
         if self.memory_context_binding is None:
             result.pop("memory_context_binding", None)
+        if self.queued_admission_attempt_id is None:
+            result.pop("queued_admission_attempt_id", None)
         return result
 
 

@@ -542,3 +542,42 @@ Its terminal callback returns to that same Automation run. Budget settlement
 requires actual canonical usage for every interrupted and resumed native turn;
 missing or UNKNOWN original usage stays pending instead of contributing zero.
 The existing exact-turn duration interrupt also recognizes that validated chain.
+
+### Delegated child terminal event
+
+A positively started child input carrying the canonical Home coordination proof
+emits `work.transition` with `transition=home_child_native_terminal` at the
+existing owned retained-turn terminal barrier. Its source is
+`home-delegated-native-terminal`. The event contains tenant, child Project,
+thread/native turn, assignment/fence, original Home ActionIntent and admission
+references; it contains no input text, transcripts, command output or secrets.
+Exact canonical usage contributes its original usage ID, tokens and duration.
+Unavailable or unfinished telemetry remains explicitly `outcome=unknown` and
+`usage_available=false`; missing usage is never represented as zero or success.
+The native telemetry outcome and the owned completion/checkpoint boolean
+(`completion_succeeded`) are distinct fields; the latter is true only when
+both the original terminal path and checkpoint succeeded.
+
+Publication uses the original canonical event identity/outbox and is idempotent
+for the same admission and native turn across duplicate terminal observations
+or process reopen. It never sends another child input or replays its provider
+action. Missing or inconsistent positive START/proof/intent attribution refuses
+publication. The original parent action may still be `executing` because its
+queue provider has not returned yet, or `succeeded`; the observed
+`parent_intent_status` is explicit and is not a parent success receipt. Other
+parent dispositions refuse publication. No current parent lease is required to
+record this historically attributed child fact. Unrelated native turns retain their existing event behavior.
+The optional active-turn admission reference is observation metadata, not an
+execution grant: old readers may omit it and legacy markers produce no event.
+Drain active delegated turns before rolling back if completion-event delivery
+is required; an omitted reference cannot be reconstructed by guessing history.
+
+A cross-project child completion must match an explicitly administrator-published
+**workspace-scoped** Home Automation (`schema_version=1.1`), filtering
+`event_type=work.transition`, `event_filter.project_id=<child project>` and
+`event_filter.transition=home_child_native_terminal`. Definitions scoped to Home
+are not selected for a child Project event; child-Project Definitions do not
+acquire Home input authority. Existing Home selection, Profile, current Role,
+controller, custody, final native-send guards and actual native usage accounting
+remain required. The Automations UI and canonical event provenance expose these
+existing objects; this producer adds no activation or default Automation.
