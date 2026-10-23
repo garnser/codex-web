@@ -126,6 +126,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
     @router.get("")
     async def list_skills(
         request: Request,
+        project_id: str | None = None,
         search: str | None = None,
         tag: str | None = None,
         category: str | None = None,
@@ -148,6 +149,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
             cursor = max(0, cursor)
             items = service.list(
                 actor=request_actor(request),
+                project_id=project_id,
                 search=search,
                 tag=tag,
                 category=category,
@@ -256,6 +258,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
     async def get_skill(
         skill_id: str,
         request: Request,
+        project_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, Any]:
         try:
@@ -263,6 +266,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
                 "item": service.get(
                     skill_id,
                     actor=request_actor(request),
+                    project_id=project_id,
                     revision=revision,
                 )
             }
@@ -273,11 +277,13 @@ def build_skills_router(service: SkillService) -> APIRouter:
     async def revisions(
         skill_id: str,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             items = service.revisions(
                 skill_id,
                 actor=request_actor(request),
+                project_id=project_id,
             )
             return {"items": items, "count": len(items)}
         except Exception as exc:
@@ -288,6 +294,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
         skill_id: str,
         payload: SkillUpdate,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             return {
@@ -295,6 +302,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
                     skill_id,
                     payload,
                     actor=request_actor(request),
+                    project_id=project_id,
                 )
             }
         except Exception as exc:
@@ -306,6 +314,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
         record_id: str,
         payload: SkillPublish,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             return {
@@ -314,6 +323,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
                     record_id,
                     payload,
                     actor=request_actor(request),
+                    project_id=project_id,
                 )
             }
         except Exception as exc:
@@ -324,6 +334,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
         lifecycle: SkillLifecycle,
         payload: SkillLifecycleChange,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             return {
@@ -332,6 +343,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
                     lifecycle,
                     payload,
                     actor=request_actor(request),
+                    project_id=project_id,
                 )
             }
         except Exception as exc:
@@ -342,12 +354,14 @@ def build_skills_router(service: SkillService) -> APIRouter:
         skill_id: str,
         payload: SkillLifecycleChange,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         return await change_lifecycle(
             skill_id,
             SkillLifecycle.ARCHIVED,
             payload,
             request,
+            project_id=project_id,
         )
 
     @router.post("/{skill_id}/restore")
@@ -355,12 +369,14 @@ def build_skills_router(service: SkillService) -> APIRouter:
         skill_id: str,
         payload: SkillLifecycleChange,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         return await change_lifecycle(
             skill_id,
             SkillLifecycle.ACTIVE,
             payload,
             request,
+            project_id=project_id,
         )
 
     @router.post("/{skill_id}/rollback")
@@ -368,6 +384,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
         skill_id: str,
         payload: SkillRollback,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             return {
@@ -375,6 +392,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
                     skill_id,
                     payload,
                     actor=request_actor(request),
+                    project_id=project_id,
                 )
             }
         except Exception as exc:
@@ -384,12 +402,14 @@ def build_skills_router(service: SkillService) -> APIRouter:
     async def usage(
         skill_id: str,
         request: Request,
+        project_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, Any]:
         try:
             return service.usage(
                 skill_id,
                 actor=request_actor(request),
+                project_id=project_id,
                 revision=revision,
             )
         except Exception as exc:
@@ -399,12 +419,14 @@ def build_skills_router(service: SkillService) -> APIRouter:
     async def export_skill(
         skill_id: str,
         request: Request,
+        project_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, Any]:
         try:
             return service.export_bundle(
                 skill_id,
                 actor=request_actor(request),
+                project_id=project_id,
                 revision=revision,
             )
         except Exception as exc:

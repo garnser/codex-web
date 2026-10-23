@@ -109,7 +109,7 @@ class ProcedureOutcomeService:
         if SkillDefinition.model_validate(record.payload).lifecycle != "active":
             needs.append("procedure_source_archived")
         try:
-            self.skills.validate_required_procedure(pin.definition, actor=actor)
+            self.skills.validate_required_procedure(pin.definition, actor=actor, project_id=assignment.project_id)
         except (SkillConflict, LookupError, ValueError) as exc:
             needs.append(getattr(exc, "code", "procedure_source_unavailable"))
         if pin.status != "completed":

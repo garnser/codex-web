@@ -1958,7 +1958,7 @@ class ActionIntentService:
                     raise ActionRequirementError("Readiness pinned Definition changed at settlement")
             if current.procedure_discoveries:
                 for pin in current.procedure_discoveries[-1].selected:
-                    self.procedure_discovery.skills.validate_reference(pin, actor=requester)
+                    self.procedure_discovery.skills.validate_reference(pin, actor=requester, project_id=intent.project_id)
         return {"guard_rows": {**domains, ASSIGNMENTS: (origin.assignment_id,), WORKERS: (origin.worker_id,),
                                registry.store.namespace: (None,),
                                self.store.records_namespace: ("intents:" + intent.id,)}, "guard": guard}

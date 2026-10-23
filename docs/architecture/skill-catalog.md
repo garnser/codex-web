@@ -41,3 +41,32 @@ Upstream taxonomy is stored in immutable provenance alongside the upstream locat
 ## Operational procedures
 
 Skills may carry an optional versioned [operational-procedure contract](skill-operational-procedures.md). The same canonical identity, revision/checksum, source import, security and lifecycle boundaries apply. Imported runbooks remain inactive drafts; requirements never grant action or worker authority.
+
+## Project-scoped Skills
+
+`SkillCreate.project_id` optionally creates a PROJECT-scoped `agent.skill` in the
+existing Definition Registry. Omission preserves workspace creation. The Skill
+service resolves the Project through the canonical Project owner in the current
+actor's organization/workspace; a supplied ID cannot grant tenant access.
+
+The Skill browse, detail and revision APIs accept `project_id`, include inherited
+shared Skills and exclude sibling Project records. Canonical scope remains visible
+as `scopeType`/`scopeId`. Scope-aware update, lifecycle, publication, rollback,
+usage and export retain the existing authority and revision/security gates.
+Unscoped administration can inspect authorized Project records, but ambiguous
+same-name detail/mutation must select a Project or an exact revision.
+
+Execution reference validation requires the consuming Project explicitly for a
+PROJECT record, rechecks current Project visibility, and resolves the current
+lifecycle in that same context. Missing context, sibling/foreign scope and deleted
+Projects refuse. Thread assignment resolves the actual canonical Thread owner;
+worker requirements and bounded runtime context use the actual execution Project.
+Shared Agent Profiles cannot implicitly bind a Project-only Skill without Project
+context. Required procedure discovery uses the canonical Definition Project scope,
+not a second Project selector in procedure payloads. No publication grants action,
+worker or credential authority. Existing exact revision, scan, provenance and
+publication controls remain in force; existing workspace records need no migration.
+
+The Skill-specific Project editor and compatible picker adaptation is tracked by
+[#1744](https://github.com/garnser/codex-web/issues/1744). Canonical APIs and the
+existing Project Definitions surface provide the backend administration path.
