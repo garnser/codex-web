@@ -163,7 +163,7 @@ class HomeRestartRecoveryService:
     def _origin(self, active, assignment, actor, project, previous):
         source = (active.source or '').removeprefix('queued:')
         if source == 'web':
-            return None
+            return None, None
         if source == 'restart-recovery:home':
             prior = previous.evidence.get('home_restart') if previous else None
             if prior is None or previous.original.turn_id == active.turn_id:
@@ -177,17 +177,28 @@ class HomeRestartRecoveryService:
             origin = prior.get('event_origin')
             if origin is not None:
                 self._validate_event_origin(origin, actor, project)
-            return origin
+            planned = prior.get('planned_origin')
+            if planned is not None:
+                self._validate_planned_origin(planned)
+            return origin, planned
         if source == 'upgrade-recovery:home' and self.planned_restart is not None:
             attempt, queued = self._started_input(active)
             self.planned_restart.validate_started_origin(active, queued, attempt)
-            return None
+            return None, {'active':active.model_dump(mode='json'), 'queued_id':queued.id}
         if source.startswith('home-operator-automation:') and self.event_followup is not None:
             attempt, queued = self._started_input(active)
             self.event_followup.restart_origin(active, assignment=assignment, actor=actor, project=project,
                 requested_execution_id=attempt.execution_id, message=queued.message)
-            return {'active': active.model_dump(mode='json'), 'queued_id':queued.id}
+            return {'active': active.model_dump(mode='json'), 'queued_id':queued.id}, None
         self.refused('home_restart_original_provenance_unavailable')
+
+    def _validate_planned_origin(self, origin):
+        if (self.planned_restart is None or not isinstance(origin,dict)
+                or set(origin) != {'active','queued_id'}):
+            self.refused('home_restart_planned_authority_unavailable')
+        active = ActiveThreadTurn.model_validate(origin['active'])
+        attempt, queued = self._started_input(active,queued_id=origin['queued_id'])
+        return self.planned_restart.validate_started_origin(active,queued,attempt)
 
     def _validate_event_origin(self, origin, actor, project, *, check_controls=True):
         if self.event_followup is None or not isinstance(origin, dict) or set(origin) != {'active','queued_id'}:
@@ -227,7 +238,7 @@ class HomeRestartRecoveryService:
         if operator.thread_id != active.thread_id:
             self.refused('home_restart_selected_conversation_changed')
         previous = self.store.get(active.thread_id)
-        origin = self._origin(active, assignment, actor, project, previous)
+        origin, planned_origin = self._origin(active, assignment, actor, project, previous)
         fresh_chain = bool(previous and previous.evidence.get('home_restart')
             and (active.source or '').removeprefix('queued:') == 'web')
         archive_id = None
@@ -253,6 +264,7 @@ class HomeRestartRecoveryService:
             evidence={'home_restart':{'proof':proof.model_dump(mode='json'),
                 'source_assignment':assignment.model_dump(mode='json'), 'held_action_ids':[key for key,status in held],
                 **({'event_origin':origin} if origin is not None else {}),
+                **({'planned_origin':planned_origin} if planned_origin is not None else {}),
                 **({'previous_history_id':archive_id} if archive_id is not None else
                    {'previous_history_id':previous.evidence['home_restart']['previous_history_id']}
                    if previous and previous.evidence.get('home_restart', {}).get('previous_history_id') else {}), 'state':'reserved'}}, updated_at=now)
@@ -329,6 +341,8 @@ class HomeRestartRecoveryService:
         home = self.home_host.projects.get('home', actor.tenant).home_operator
         if home is None or home.thread_id != proof.thread_id or home.revision != proof.selection_revision:
             self.refused('home_restart_selected_conversation_changed')
+        if evidence.get('planned_origin') is not None:
+            self._validate_planned_origin(evidence['planned_origin'])
         if evidence.get('event_origin') is not None:
             self._validate_event_origin(evidence['event_origin'], actor, self.home_host.projects.get('home', actor.tenant))
         return saved, original, actor
