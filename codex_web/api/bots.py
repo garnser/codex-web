@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -14,7 +16,7 @@ def build_bots_router(service: BotService) -> APIRouter:
 
     @router.get("/api/bots")
     async def status() -> dict[str, Any]:
-        return service.status()
+        return await asyncio.to_thread(service.status)
 
     @router.get("/api/bots/connections")
     async def list_connections() -> list[dict[str, Any]]:
