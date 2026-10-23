@@ -4900,6 +4900,13 @@ control_plane_broker_service.home_operator_host = HomeOperatorHostService(
     thread_scope=thread_scope_service, thread_index=thread_index_repository,
     bootstrap_bindings=thread_bootstrap_binding_service,
 )
+from codex_web.services.home_restart_recovery import HomeRestartRecoveryService
+home_restart_recovery_service = HomeRestartRecoveryService(
+    home_host=control_plane_broker_service.home_operator_host,
+    recovery_store=active_turn_recovery_store, execution=turn_execution_service,
+    intents=action_intent_service, preflight=execution_preflight_service)
+turn_execution_service.home_restart_recovery = home_restart_recovery_service
+app.state.home_restart_recovery_service = home_restart_recovery_service
 from codex_web.services.home_host_action_provider import HomeHostActionProvider
 _home_host_provider = HomeHostActionProvider(home_host=control_plane_broker_service.home_operator_host,
     worker_runtime=local_execution_worker_runtime, artifacts=artifact_evidence_service, crypto=crypto_key_service)
