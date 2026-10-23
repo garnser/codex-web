@@ -227,3 +227,61 @@ test('runtime inspection refuses an older assignment snapshot than the shared ca
   await expect(page.locator('[data-operator-runtime]')).toContainText('Runner observation was superseded');
   await expect(page.locator('[data-operator-runtime]')).not.toContainText('active work');
 });
+
+test('Home mounts protected output discovery and human byte review without automatic release', async ({ page }) => {
+  const writes = [];
+  let previews = 0;
+  await page.route('**/api/home/operator', route => route.fulfill({ json: configured }));
+  await page.route('**/api/home/operator/host-outputs?expected_home_revision=4', route => route.fulfill({ json: {
+    home_revision: 4, thread_id: 'same-thread', has_more: false,
+    items: [{ artifact_id: 'artifact-original-output', intent_id: 'intent-original', exit_code: 0 }],
+  } }));
+  await page.route('**/api/home/operator/host-outputs/artifact-original-output/preview?expected_home_revision=4', route => {
+    previews++;
+    return route.fulfill({ json: { streams: { stdout: '<script>test result</script>', stderr: '' },
+      expires_at: Date.now() / 1000 + 30 } });
+  });
+  await page.route('**/api/home/operator/host-outputs/artifact-original-output/review', route => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ json: { artifact_id: 'artifact-reviewed-excerpt' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  expect(previews).toBe(0);
+  expect(writes).toEqual([]);
+  await page.getByRole('button', { name: 'Load command output references' }).click();
+  await page.getByRole('button', { name: 'artifact-original-output · exit 0', exact: true }).click();
+  expect(previews).toBe(0);
+  await page.getByRole('button', { name: 'Review protected output' }).click();
+  const text = page.getByLabel('Protected command output for human review');
+  await expect(text).toHaveValue('<script>test result</script>');
+  await expect(page.locator('#operator script')).toHaveCount(0);
+  expect(writes).toEqual([]);
+  await page.getByLabel('Output review reason').fill('Reviewed bounded test result');
+  await page.getByRole('button', { name: 'Release reviewed excerpt' }).click();
+  await expect(page.getByText('Reviewed excerpt released. The original output remains protected.')).toBeVisible();
+  expect(writes).toHaveLength(1);
+  expect(writes[0].expected_home_revision).toBe(4);
+  expect(writes[0].selection.expected_sha256).toMatch(/^[a-f0-9]{64}$/);
+  await expect(text).toHaveCount(0);
+});
+
+test('Home output discovery suppresses stale selection and never fetches secret preview', async ({ page }) => {
+  let changed = false;
+  let previews = 0;
+  await page.route('**/api/home/operator', route => route.fulfill({ json: changed
+    ? { ...configured, binding: { ...configured.binding, revision: 5 } } : configured }));
+  await page.route('**/api/home/operator/host-outputs?expected_home_revision=4', route => {
+    changed = true;
+    return route.fulfill({ json: { home_revision: 4, thread_id: 'same-thread', items: [
+      { artifact_id: 'stale-protected-output', exit_code: 0 },
+    ] } });
+  });
+  await page.route('**/api/home/operator/host-outputs/*/preview*', route => {
+    previews++; return route.fulfill({ status: 403 });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
+  await page.getByRole('button', { name: 'Load command output references' }).click();
+  await expect(page.getByText('Home selection or administrator authority changed. Refresh Home.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /stale-protected-output/ })).toHaveCount(0);
+  expect(previews).toBe(0);
+});
