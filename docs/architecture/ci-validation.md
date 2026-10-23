@@ -66,10 +66,15 @@ the broken module would otherwise belong to a dedicated qualification job.
 Readiness settlement qualification runs the composed provider, broker and intent
 cases on SQLite and again against real PostgreSQL in the distributed job. Its
 additional broad-suite cases retain the same required unit/static check with a
-15-minute job bound. The earlier 10-minute job cancelled after a completed
+30-minute job bound. The earlier 10-minute job cancelled after a completed
 4,169-test Python stage before JavaScript checks could finish; added transaction
 coverage needs room for the entire gate. Test selection, assertions, application
-deadlines and other operational limits remain unchanged.
+deadlines and other operational limits remain unchanged. A subsequent full-code
+run exhausted the 15-minute bound after 4,258 of approximately 6,000 cases,
+without an assertion failure or one stalled case. Its completed modules were
+consistently slower than the preceding 469-second full-suite run. The bounded
+30-minute allowance accommodates that observed hosted-runner variance, including
+setup and the final JavaScript checks; it does not remove or partition coverage.
 
 The unit runner resolves its repository root from its own file and refuses that
 repository's `data` symlink before discovery or application imports, whether the
