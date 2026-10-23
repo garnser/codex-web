@@ -3,13 +3,16 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
+
+from codex_web.definitions import DefinitionReference
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
 
 
-DATA_GOVERNANCE_CONTRACT = ContractSpec("data-governance-state", "1.0", ("1.0",))
+DATA_GOVERNANCE_CONTRACT = ContractSpec("data-governance-state", "1.1", ("1.1",))
 
 
 class DataClassification(StrEnum):
@@ -68,6 +71,46 @@ class GovernanceRequestStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReviewedHostOutputRelease(BaseModel):
+    """Canonical provenance for a narrowly authorized derivative, never its source."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    mode: Literal['policy', 'human-review']
+    source_artifact_id: str = Field(min_length=1)
+    source_record_id: str = Field(min_length=1)
+    source_content_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    source_intent_id: str = Field(min_length=1)
+    source_receipt_id: str = Field(min_length=1)
+    source_assignment_id: str = Field(min_length=1)
+    source_execution_id: str = Field(min_length=1)
+    source_fence: int = Field(ge=1, strict=True)
+    source_key_id: str = Field(min_length=1)
+    source_key_context_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    command_digest: str = Field(pattern=r'^sha256:[0-9a-f]{64}$')
+    worker_id: str = Field(min_length=1)
+    requested_by: str = Field(min_length=1)
+    home_thread_id: str = Field(min_length=1)
+    home_selection_revision: int = Field(ge=1, strict=True)
+    profile_definition: DefinitionReference
+    target_artifact_id: str = Field(min_length=1)
+    target_content_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    stream: Literal['stdout', 'stderr']
+    byte_start: int = Field(ge=0, le=65536, strict=True)
+    byte_end: int = Field(ge=1, le=65536, strict=True)
+    excerpt_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    classification: Literal['internal', 'confidential']
+    policy_ref: DefinitionReference | None = None
+    reviewed_by: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=512)
+    reviewed_at: float = Field(default_factory=time.time, allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def exact_release(self):
+        if (self.byte_end <= self.byte_start or self.reviewed_by != self.requested_by
+                or (self.mode == 'policy') != (self.policy_ref is not None)):
+            raise ValueError('Output release requires exact bounded provenance and approval mode')
+        return self
+
+
 class GovernedDataRecord(BaseModel):
     """Canonical governance metadata for one durable data object.
 
@@ -92,6 +135,7 @@ class GovernedDataRecord(BaseModel):
     residency_tags: tuple[str, ...] = ()
     source_record_ids: tuple[str, ...] = ()
     deny_model_context: bool = False
+    host_output_release: ReviewedHostOutputRelease | None = None
     legal_hold_at: float | None = None
     legal_hold_by: str | None = None
     legal_hold_reason: str | None = None
@@ -111,6 +155,12 @@ class GovernedDataRecord(BaseModel):
             self.requested_classification
         ):
             raise ValueError("effective classification cannot be below requested classification")
+        release = self.host_output_release
+        if release is not None and (self.category != DataCategory.ARTIFACT or self.object_type != 'artifact'
+                or self.object_id != release.target_artifact_id
+                or self.source_record_ids != (release.source_record_id,)
+                or self.classification != release.classification or self.deny_model_context):
+            raise ValueError('Invalid reviewed host output derivative provenance')
         if self.legal_hold_at is None:
             self.legal_hold_by = None
             self.legal_hold_reason = None

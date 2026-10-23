@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from codex_web.definitions import DefinitionReference
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 
@@ -64,6 +66,7 @@ class HomeOperatorEnvelope(BaseModel):
     max_command_seconds: int = Field(default=60, ge=1, le=600, strict=True)
     max_output_bytes: int = Field(default=16384, ge=1024, le=65536, strict=True)
     host_output_key_id: str | None = Field(default=None, min_length=1, max_length=128)
+    output_release_policy: DefinitionReference | None = None
     project_targets: tuple[HomeProjectTarget, ...] = Field(default=(), max_length=8)
 
     @field_validator('host_network_access', mode='before')
@@ -78,6 +81,9 @@ class HomeOperatorEnvelope(BaseModel):
         if (len(set(self.trusted_worker_ids)) != len(self.trusted_worker_ids)
                 or any(not v or v != v.strip() or len(v) > 128 for v in self.trusted_worker_ids)):
             raise ValueError("Home trusted workers must be distinct canonical worker IDs")
+        if self.output_release_policy and (self.output_release_policy.kind != 'home-host-output-release'
+                or self.output_release_policy.definition_schema_version != '1.0'):
+            raise ValueError('Home output policy requires the exact output-release contract')
         if len({t.project_id for t in self.project_targets}) != len(self.project_targets):
             raise ValueError("Home target Projects must be distinct")
         return self

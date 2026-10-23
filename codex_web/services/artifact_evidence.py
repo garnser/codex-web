@@ -573,7 +573,8 @@ class ArtifactEvidenceService:
 
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor,
                         source_artifact_ids: tuple[str, ...] = (),
-                        source_evidence_ids: tuple[str, ...] = (), _commit=None) -> Artifact:
+                        source_evidence_ids: tuple[str, ...] = (), _commit=None,
+                        idempotency_key: str | None = None) -> Artifact:
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
@@ -611,10 +612,25 @@ class ArtifactEvidenceService:
             produced_at=payload.produced_at or time.time(),
             metadata=payload.metadata,
         )
+        if idempotency_key is not None:
+            if not payload.source or not idempotency_key or len(idempotency_key) > 256:
+                raise ArtifactEvidenceConflictError("bounded Artifact idempotency key and source required")
+            artifact.id = self._idempotent_evidence_id(actor, payload.source, idempotency_key).replace('evidence-', 'artifact-', 1)
+            artifact.metadata = {**artifact.metadata, 'idempotency_payload_sha256': hashlib.sha256(
+                json.dumps({'payload': payload.model_dump(mode='json'),
+                    'source_artifact_ids': sorted(set(source_artifact_ids)),
+                    'source_evidence_ids': sorted(set(source_evidence_ids))}, sort_keys=True).encode()).hexdigest()}
         now = time.time()
 
         def apply(current: ArtifactEvidenceState, governance) -> ArtifactEvidenceState:
             nonlocal artifact
+            if idempotency_key is not None:
+                previous = next((item for item in current.artifacts if item.id == artifact.id), None)
+                if previous is not None:
+                    if previous.metadata.get('idempotency_payload_sha256') != artifact.metadata['idempotency_payload_sha256']:
+                        raise ArtifactEvidenceConflictError('Artifact idempotency key has different content')
+                    artifact = previous
+                    return current
             derived_sources = [self._artifact(current, sid, actor) for sid in source_artifact_ids]
             derived_sources += [self._evidence(current, sid, actor) for sid in source_evidence_ids]
             if any(source.project_id != payload.project_id or source.lifecycle not in {"active", "valid"}

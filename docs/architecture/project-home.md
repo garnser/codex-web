@@ -321,3 +321,58 @@ request; a lost response is never resent. Interruption does not settle external
 mutations: original ActionIntent uncertainty and terminal/usage reconciliation
 remain authoritative. Canonical timers and native recovery keep pending state
 visible across restart; they do not revive cancelled custody or create idle turns.
+### Governed command output and reviewed derivatives
+
+Home's optional `output_release_policy` pins a published project/Home
+`home-host-output-release` Definition, schema `1.0`. It is an explicit output
+policy, not a host execution grant. Publication requires the current same human
+administrator and selected Home origin. The policy pins that administrator,
+tenant/workspace, Agent Profile revision, host Environment, trusted worker IDs,
+maximum excerpt bytes and INTERNAL or CONFIDENTIAL classification. Its bounded
+command rules match the entire argv and explicit process exit codes/streams;
+there are no wildcard/path/shell-safety inferences or implicit default rules.
+A known failing test process can expose its errors only when its configured exit
+code is included. Publishing this policy once permits routine configured work
+without a prompt for each output. Nothing auto-publishes or adds commands.
+
+`HomeHostOutputService.read_source` accepts an original Artifact and bounded
+selection through the current assignment-bound `operator.host.output.read`
+capability. It requires the original one-attempt host ActionIntent and canonical
+known process-completion receipt, exact command digest, current host key/context,
+content digest, source assignment/fence, Home selection revision and explicit
+current policy. Timeout, limit breach, truncation and uncertain execution cannot
+release output. Process exit does not become host-effect verification.
+
+The service creates an encrypted canonical Artifact derivative using normal
+source inheritance, initially SECRET/denied. The narrow canonical DataGovernance
+reviewed-release operation then records the immutable original Artifact,
+governance/source IDs, encrypted content digest, exact process receipt/intent,
+key context, selected byte range/digest, current Profile/Home revision and policy
+reference. Only this derivative is released; original source IDs are retained
+and the original remains SECRET/denied. Repeated identical release requests use
+canonical Artifact idempotency and do not repeat the host command. Downstream
+artifacts derived from a released excerpt default to denied model context;
+classification inheritance cannot remove the release's revocation guard.
+
+Every model read calls the canonical context filter and the current release
+validator before and after decrypting. Revoked/superseded policy, changed Home
+selection/Profile/Role/worker/lease, changed source/receipt/content/key, expired
+retention or missing validator denies the read. Previously supplied model
+context cannot be retroactively erased; revocation stops future reads.
+DataGovernance state `1.1` explicitly migrates legacy `1.0` metadata and causes
+old `1.0` filter engines to refuse the new state. Deploy the release-aware reader
+with the host engine before publishing output policy. Rollback needs the normal
+controlled compatible-state procedure; never downgrade released state by
+removing provenance or policy fields.
+
+Unconfigured commands remain denied. A separate human-only no-store preview and
+review API lets the current same Home administrator inspect an output, select an
+exact digest-checked UTF-8 byte range and explicitly release a derivative with a
+reason and classification. This API is not a model broker operation; service
+principals cannot approve their own output. `home_host_output_review.js` provides
+the protected-output review control, checks Home selection before/after requests
+and clears previews at the earlier of lease expiry or 60 seconds. Its host UI
+must dispose the component when Home selection changes. The model cannot choose
+its own classification, replace text, publish a policy or read the SECRET
+original. Broker/startup/UI wiring and deployment activation remain explicit
+integration steps; the standalone service does not enable privileged access.

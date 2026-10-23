@@ -12,12 +12,15 @@ DATA_GOVERNANCE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": DATA_GOVERNANCE_CONTRACT.current,
+        "schema_version": "1.0",
         "records": list(payload.get("records", [])),
         "requests": list(payload.get("requests", [])),
         "events": list(payload.get("events", [])),
     },
 )
+
+DATA_GOVERNANCE_MIGRATIONS.register(
+    "1.0", "1.1", lambda payload: {**payload, "schema_version": "1.1"})
 
 
 class DataGovernanceStore:
