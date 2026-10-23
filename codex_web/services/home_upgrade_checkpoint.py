@@ -51,10 +51,12 @@ class HomeUpgradeCheckpoint(BaseModel):
 
 
 class HomeUpgradeCheckpointService:
-    def __init__(self, *, restart_recovery, upgrades, artifacts, source_revision):
+    def __init__(self, *, restart_recovery, upgrades, artifacts, source_revision,
+                 runner_observer=None, goal_inspection=None, sessions=None):
         self.recovery, self.upgrades, self.artifacts = restart_recovery, upgrades, artifacts
         self.home = restart_recovery.home_host
         self.source_revision = source_revision
+        self.runner_observer, self.goal_inspection, self.sessions = runner_observer, goal_inspection, sessions
 
     def refused(self, reason):
         self.recovery.refused(reason)
@@ -72,6 +74,8 @@ class HomeUpgradeCheckpointService:
         origin = self.home.authorize_operation(snapshot, operation_id=HOST_INSPECTION.id,
             worker_actor=worker_actor, requester_id=snapshot.created_by, mutating=False)
         a, requester, binding = origin.assignment, origin.requester, origin.binding
+        if self._dormant_artifact(plan_id, requester) is not None:
+            self.refused('home_upgrade_preservation_ambiguous')
         if ((plan.organization_id, plan.workspace_id) != (a.organization_id, a.workspace_id)
                 or plan.status not in {'draft','ready','preflight_blocked'} or plan.maintenance_mode or plan.completed_at is not None
                 or plan.post_upgrade_evidence_id is not None):
@@ -123,15 +127,148 @@ class HomeUpgradeCheckpointService:
             return None
         return binding,requester
 
+    def _dormant_snapshot(self, binding, requester, *, require_process=True):
+        """Supervisor metadata only; never a Host grant or native completion."""
+        from codex_web.storage.state_store import check_operation_budget
+        bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
+        assignment = self.recovery._assignment(bootstrap.assignment_id)
+        # This existing metadata validator retains current Human/Admin/Profile,
+        # tenant, authority and selected bootstrap checks. Host.guard remains
+        # unchanged and still requires a live lease for every Host operation.
+        _, selected = self.home._authorize_context(assignment, requester)
+        if selected != binding or assignment.status != 'lost' or assignment.lease is not None:
+            self.refused('home_upgrade_dormant_custody_changed')
+        if self.runner_observer is None or self.goal_inspection is None or self.sessions is None:
+            self.refused('home_upgrade_dormant_observation_unavailable')
+        observed = self.runner_observer(binding.thread_id)
+        if not isinstance(observed, dict) or (observed.get('assignmentId'), observed.get('fence')) != (assignment.id, assignment.fence):
+            self.refused('home_upgrade_dormant_observation_changed')
+        if (observed.get('assignmentStatus') != 'lost' or observed.get('live') is not False
+                or observed.get('leaseValid') is not False):
+            self.refused('home_upgrade_dormant_custody_changed')
+        if require_process:
+            if (observed.get('processRunning') is not False
+                    or type(observed.get('pendingExecutorWork')) is not int
+                    or observed['pendingExecutorWork'] != 0):
+                self.refused('home_upgrade_dormant_process_unsettled')
+        elif ((observed.get('processRunning') is not None and observed.get('processRunning') is not False)
+                or (observed.get('pendingExecutorWork') is not None and
+                    (type(observed['pendingExecutorWork']) is not int or observed['pendingExecutorWork'] != 0))):
+            # After a COMPLETED Upgrade the old session manager may no longer
+            # exist. Omission is not new process-zero proof; the original stopped
+            # observation remains historical and this path grants NO input.
+            self.refused('home_upgrade_dormant_process_unsettled')
+        if self.recovery.execution.thread_is_active(binding.thread_id):
+            self.refused('home_upgrade_dormant_active_input')
+        queues = self.recovery.execution.host._thread_queue(binding.thread_id)
+        if queues:
+            self.refused('home_upgrade_dormant_pending_input')
+        goals = self.goal_inspection.inspect(requester, expected_revision=binding.revision)
+        if goals['items'] or goals['has_more']:
+            self.refused('home_upgrade_dormant_goal_present')
+        runtime = assignment.runtime_binding
+        if runtime is None:
+            self.refused('home_upgrade_dormant_session_unavailable')
+        session = self.sessions.find_unique_by_native_id(binding.thread_id,
+            provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
+        if (session is None or tuple(session.resource_ids) != tuple(assignment.resource_ids)
+                or (session.organization_id, session.workspace_id, session.project_id,
+                session.assignment_id, session.execution_id, session.execution_workspace_id, session.worker_id) !=
+                (assignment.organization_id, assignment.workspace_id, 'home', assignment.id,
+                 assignment.execution_id, assignment.execution_workspace_id, assignment.assigned_worker_id)):
+            self.refused('home_upgrade_dormant_session_changed')
+        held = self.recovery._held({assignment.execution_id}, actor=requester)
+        retained = []
+        for intent_id, outcome in held:
+            intent = self.recovery.intents.get(intent_id, requester)
+            if intent.status not in {'succeeded', 'failed', 'cancelled', 'expired'}:
+                self.refused('home_upgrade_dormant_action_unsettled')
+            # Terminal cancellation is not an outcome correction: original
+            # UNKNOWN receipts remain retained and cannot authorize execution.
+            retained.append({'id':intent.id, 'status':str(intent.status),
+                'last_receipt_id':intent.last_receipt_id, 'outcome':outcome})
+        check_operation_budget()
+        return json.loads(encoded({'schema_version':'1.0', 'thread_id':binding.thread_id,
+            'selection':binding.model_dump(mode='json'),
+            'assignment':{key:getattr(assignment,key) for key in ('id','fence','execution_id',
+                'execution_workspace_id','assigned_worker_id','organization_id','workspace_id','project_id')},
+            'session':{key:getattr(session,key) for key in ('id','provider_id','runtime_id',
+                'provider_native_session_id','assignment_id','execution_id','execution_workspace_id','worker_id',
+                'model','model_class','capability_revision','resource_ids','status','recovery_attempts',
+                'last_recovered_at','created_at','updated_at')},
+            'retained_queue_ids':[], 'goal_binding_ids':[], 'retained_actions':retained,
+            'historical_native_outcome':'UNKNOWN', 'native_input_authorized':False}))
+
+    def _dormant_artifact(self, plan_id, requester):
+        return self.artifacts.find_idempotent_artifact(actor=requester,
+            source='home-upgrade-dormant-preservation', idempotency_key=plan_id)
+
+    def _preserve_dormant(self, plan_id, binding, requester, operator_actor):
+        from codex_web.storage.home_intent_query import recovery_query_budget
+        with recovery_query_budget():
+            plan = self.upgrades.get(plan_id, actor=operator_actor)
+            if (plan.maintenance_mode or plan.status not in {'draft','ready','preflight_blocked'}
+                    or plan.completed_at is not None or plan.post_upgrade_evidence_id is not None
+                    or (plan.organization_id,plan.workspace_id) != (requester.organization_id,requester.workspace_id)):
+                self.refused('home_upgrade_dormant_requires_new_plan')
+            release = self.upgrades.releases.get(plan.release_id, actor=operator_actor)
+            source, target = self.source_revision(), release.build.source_revision
+            if not source or not target or release.version != plan.target_app_version:
+                self.refused('home_upgrade_source_unavailable')
+            if self.artifacts.find_idempotent_artifact(actor=requester,
+                    source='home-upgrade-checkpoint', idempotency_key=plan_id) is not None:
+                self.refused('home_upgrade_preservation_ambiguous')
+            snapshot = self._dormant_snapshot(binding, requester)
+            raw = encoded({'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
+                'release_id':plan.release_id, 'source_revision':source, 'target_revision':target,
+                'target_version':plan.target_app_version, 'snapshot':snapshot,
+                'stopped_process_observed':True, 'pending_executor_work_observed':0})
+            prior = self._dormant_artifact(plan_id, requester)
+            if prior is not None:
+                if (prior.lifecycle != 'active' or prior.source != 'home-upgrade-dormant-preservation'
+                        or prior.external_id != plan.id or prior.project_id != 'home'
+                        or prior.producer_identity_id != requester.identity_id
+                        or prior.retention_expires_at is not None and prior.retention_expires_at <= time.time()
+                        or prior.metadata.get('dormant_preservation') != raw
+                        or prior.digest is None or prior.digest.value != sha(raw)):
+                    self.refused('home_upgrade_dormant_preservation_changed')
+                return prior
+            if self._dormant_snapshot(binding, requester) != snapshot:
+                self.refused('home_upgrade_dormant_preservation_changed')
+            artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
+                execution_id=snapshot['assignment']['execution_id'],
+                execution_workspace_id=snapshot['assignment']['execution_workspace_id'],
+                artifact_type='report', name='Dormant Home preserved; native outcome UNKNOWN; no continuation',
+                provider='codex-web', source='home-upgrade-dormant-preservation', external_id=plan.id,
+                digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
+                metadata={'dormant_preservation':raw}), actor=requester, idempotency_key=plan.id)
+            if self._dormant_snapshot(binding, requester) != snapshot:
+                self.refused('home_upgrade_dormant_preservation_changed')
+            return artifact
+
     def checkpoint_current(self, plan_id, *, worker_runtime, operator_actor):
-        """Optional existing service-drain callback; unconfigured Home is a no-op."""
+        """Existing supervisor boundary: typed denial, never a lease bypass."""
+        from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError
+        from codex_web.services.agent_profiles import AgentProfileError
+        from codex_web.services.identity import IdentityError
         self._operator(operator_actor)
+        try:
+            return self._checkpoint_current(plan_id, worker_runtime=worker_runtime, operator_actor=operator_actor)
+        except (ControlPlaneBrokerDeniedError, AgentProfileError, IdentityError):
+            self.refused('home_upgrade_current_authority_unavailable')
+
+    def _checkpoint_current(self, plan_id, *, worker_runtime, operator_actor):
+        """Unconfigured Home is a no-op; live Host authority stays canonical."""
         selected = self._selected_host(operator_actor)
         if selected is None:
             return None
         binding,requester = selected
         bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
         assignment = self.recovery._assignment(bootstrap.assignment_id)
+        if assignment.status == 'lost':
+            return self._preserve_dormant(plan_id, binding, requester, operator_actor)
+        if self._dormant_artifact(plan_id, requester) is not None:
+            self.refused('home_upgrade_preservation_ambiguous')
         # Only the ALREADY configured registered worker is usable here. No
         # identity construction, new token or arbitrary worker impersonation.
         if (worker_runtime is None or worker_runtime.worker is None or worker_runtime.worker_actor is None
@@ -148,6 +285,32 @@ class HomeUpgradeCheckpointService:
         binding,requester = selected
         artifact = self.artifacts.find_idempotent_artifact(actor=requester,
             source='home-upgrade-checkpoint', idempotency_key=plan_id)
+        dormant = self._dormant_artifact(plan_id, requester)
+        if dormant is not None:
+            if artifact is not None:
+                self.refused('home_upgrade_preservation_ambiguous')
+            raw = dormant.metadata.get('dormant_preservation')
+            saved = json.loads(raw) if isinstance(raw,str) else None
+            plan = self.upgrades.get(plan_id, actor=operator_actor)
+            if (saved is None or dormant.lifecycle != 'active' or dormant.external_id != plan_id
+                    or dormant.source != 'home-upgrade-dormant-preservation'
+                    or dormant.retention_expires_at is not None and dormant.retention_expires_at <= time.time()
+                    or dormant.digest is None or dormant.digest.value != sha(raw)
+                    or saved['schema_version'] != '1.0' or saved['plan_id'] != plan.id
+                    or saved['plan_created_at'] != plan.created_at or saved['release_id'] != plan.release_id
+                    or plan.status != 'completed' or plan.maintenance_mode
+                    or plan.post_upgrade_evidence_id is None or self.source_revision() != saved['target_revision']
+                    or plan.target_app_version != saved['target_version']):
+                self.refused('home_upgrade_dormant_completion_changed')
+            from types import SimpleNamespace
+            actual, completion = self._completed(SimpleNamespace(**saved), operator_actor)
+            if (actual.completed_at < dormant.created_at or completion.observed_at < dormant.created_at
+                    or dormant.project_id != 'home' or dormant.producer_identity_id != requester.identity_id
+                    or dormant.execution_id != saved['snapshot']['assignment']['execution_id']):
+                self.refused('home_upgrade_dormant_completion_changed')
+            if self._dormant_snapshot(binding,requester,require_process=False) != saved['snapshot']:
+                self.refused('home_upgrade_dormant_preservation_changed')
+            return None  # Explicit preservation disposition, NEVER a native continuation.
         if artifact is None:
             self.refused('home_upgrade_checkpoint_missing_for_completed_plan')
         return self.resume(artifact.id, operator_actor=operator_actor)
