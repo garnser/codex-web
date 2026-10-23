@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator,
 from codex_web.resource_context import ReadOnlyResourceIds, ReadOnlyResourceContext
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
 from codex_web.notification_provenance import ProviderNotificationPin
-from codex_web.home_restart import HomeRestartInputProof
+from codex_web.home_restart import HomeRestartInputProof, HomeUpgradeInputProof
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
@@ -946,14 +946,14 @@ class QueuedTurn(BaseModel):
 
     memory_context_binding: UxBriefTurnBinding | None = None
     provider_notification_pin: ProviderNotificationPin | None = None
-    project_coordination_dispatch: ProjectCoordinationDispatch | HomeOperatorCoordinationDispatch | HomeRestartInputProof | None = None
+    project_coordination_dispatch: ProjectCoordinationDispatch | HomeOperatorCoordinationDispatch | HomeRestartInputProof | HomeUpgradeInputProof | None = None
     owner_routing_pin: OwnerRoutingPin | None = None
 
     @property
     def home_restart_input(self):
         """Typed retained proof; never a silently ignored extra queue field."""
         value = self.project_coordination_dispatch
-        return value if isinstance(value, HomeRestartInputProof) else None
+        return value if isinstance(value, (HomeRestartInputProof, HomeUpgradeInputProof)) else None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):

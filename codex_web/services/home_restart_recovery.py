@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from codex_web.definitions import reference_for
 from codex_web.execution_profiles import ExecutionProfileCatalogDefinition
 from codex_web.execution_workers import ExecutionAssignment
-from codex_web.home_restart import HomeRestartInputProof, home_restart_context
+from codex_web.home_restart import HomeRestartInputProof, HomeUpgradeInputProof, home_restart_context
 from codex_web.services.home_operator_host import HOST_INSPECTION
 from codex_web.services.stale_active_turns import ActiveTurnRecoveryRecord
 from codex_web.identity import TenantScope
@@ -33,6 +33,7 @@ class HomeRestartRecoveryService:
     def __init__(self, *, home_host, recovery_store, execution, intents, preflight):
         self.home_host, self.store, self.execution = home_host, recovery_store, execution
         self.intents, self.preflight = intents, preflight
+        self.planned_restart = None
 
     def refused(self, reason):
         from codex_web.runtime.execution import ExecutionPrestartRefusal
@@ -179,6 +180,10 @@ class HomeRestartRecoveryService:
         return saved, original, actor
 
     def input_context(self, queued, *, attempt_id, claim_id):
+        if isinstance(queued.home_restart_input, HomeUpgradeInputProof):
+            if self.planned_restart is None:
+                self.refused('home_upgrade_recovery_unavailable')
+            return self.planned_restart.input_context(queued, attempt_id=attempt_id, claim_id=claim_id)
         service = self
         class Authorizer:
             def validate_input(self, assignment, actor, project, source):

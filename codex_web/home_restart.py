@@ -30,3 +30,17 @@ def home_restart_context(authorizer):
         yield
     finally:
         _current.reset(token)
+
+
+class HomeUpgradeInputProof(BaseModel):
+    """Canonical completed supervisor handoff; never project delegation."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    schema_version: Literal['1.4'] = '1.4'
+    checkpoint_id: str = Field(min_length=1)
+    checkpoint_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    upgrade_plan_id: str = Field(min_length=1)
+    completion_evidence_id: str = Field(min_length=1)
+    resume_evidence_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    requested_by: str = Field(min_length=1)
+    message_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
