@@ -4673,17 +4673,18 @@ class TurnExecutionService:
 
             if self.home_restart_recovery is not None and project.id == "home":
                 try:
-                    requester = (self.actor_resolver(active.agent_profile_actor_id, project)
-                        if active.agent_profile_actor_id and self.actor_resolver else None)
                     lock = self._turn_start_locks.get(thread_id)
                     if lock is None:
                         lock = asyncio.Lock()
                         self._turn_start_locks[thread_id] = lock
                     async with lock:
                         from codex_web.services.post_turn_readiness import PostTurnReadinessService
+                        def retain():
+                            requester = (self.actor_resolver(active.agent_profile_actor_id, project)
+                                if active.agent_profile_actor_id and self.actor_resolver else None)
+                            return self.home_restart_recovery.retain_startup(active, project=project, actor=requester)
                         async def retain_owned():
-                            return await asyncio.to_thread(self.home_restart_recovery.retain_startup,
-                                active, project=project, actor=requester)
+                            return await asyncio.to_thread(retain)
                         queued = await PostTurnReadinessService._run_owned(retain_owned,
                             seconds=10, name='home-startup-retention-' + thread_id)
                         if queued is not None:
