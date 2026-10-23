@@ -31,6 +31,7 @@ class HomeOperatorFollowup:
         self.scheduler, self.sessions, self.runtime_usage = scheduler, sessions, runtime_usage
         self.outcomes = outcomes
         self.launch_handler = None
+        self.restart_recovery = None
 
     def context(self, run, actor=None, *, check_controls=True):
         """Current publication and selected administrator confer authority, never event text."""
@@ -129,6 +130,67 @@ class HomeOperatorFollowup:
         # The normal Home native gate pins this SAME selection/bootstrap, worker,
         # fence and lease again, including after awaited preparation and at send.
         return selected
+
+    def restart_origin(self, active, *, assignment, actor, project, requested_execution_id, message,
+                       check_controls=True):
+        """Original canonical event grant plus a positively started native input.
+
+        Called only after HomeRestartRecovery validates canonical start evidence;
+        current Definition/Admin/selection/event authority is still mandatory.
+        """
+        source = (active.source or '').removeprefix('queued:')
+        if not source.startswith(SOURCE):
+            raise ValueError('Original canonical Home event required')
+        run = self.runs.store.get(source[len(SOURCE):], organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id)
+        automation, _, _ = self.context(run, actor, check_controls=check_controls)
+        custody = run.home_custody
+        if (run.status != AutomationRunStatus.RUNNING or check_controls and run.home_terminal is not None
+                or custody is None or project.id != 'home'
+                or requested_execution_id != f'home-followup-{run.id}'
+                or run.execution_ids != (requested_execution_id,)
+                or message != self.message(run, automation)
+                or automation.target.home_thread_id != active.thread_id
+                or (custody.assignment_id,custody.execution_id,custody.worker_id,custody.fence,custody.execution_workspace_id) !=
+                    (active.assignment_id,active.execution_id,active.worker_id,active.fence,active.execution_workspace_id)
+                or assignment.id != active.assignment_id or assignment.execution_id != active.execution_id
+                or assignment.assigned_worker_id != active.worker_id
+                or assignment.execution_workspace_id != active.execution_workspace_id
+                or assignment.created_by != actor.identity_id
+                or assignment.fence != active.fence and not (assignment.fence == active.fence + 1
+                    and assignment.status in {'lost','cancelled'} and assignment.lease is None)):
+            raise ValueError('Home event restart original custody or grant changed')
+        return run
+
+    async def record_restarted_terminal(self, active, *, succeeded, context):
+        run, prior_turns = context
+        def record():
+            assignment = self.workers.store.assignment(active.assignment_id)
+            if (assignment is None or assignment.fence != active.fence
+                    or assignment.execution_id != active.execution_id
+                    or assignment.assigned_worker_id != active.worker_id
+                    or assignment.execution_workspace_id != active.execution_workspace_id
+                    or assignment.status not in {'claimed','running'} or not assignment.lease
+                    or assignment.lease.fence != active.fence or assignment.lease.worker_id != active.worker_id
+                    or assignment.lease.expires_at <= self.runs.clock()):
+                raise ValueError('Current restarted event terminal custody unavailable')
+            witness = HomeEventTerminal(assignment_id=assignment.id, execution_id=assignment.execution_id,
+                native_session_id=active.thread_id,native_turn_id=active.turn_id,
+                worker_id=active.worker_id,fence=active.fence,checkpoint_succeeded=succeeded,observed_at=self.runs.clock())
+            def settle(state):
+                for index,row in enumerate(state.runs):
+                    if row.id == run.id and row.status == AutomationRunStatus.RUNNING and row.home_terminal is None:
+                        state.runs[index] = row.model_copy(update={'home_terminal':witness,
+                            'result_code':'home_followup_budget_pending',
+                            'result_reason':'Restart continuation finished; original and current native usage remain required'})
+                return state
+            self.runs.store.update(settle)
+            self._finish_budget(run.id, TenantScope(organization_id=run.organization_id,workspace_id=run.workspace_id))
+            current = self.runs.store.get(run.id, organization_id=run.organization_id,workspace_id=run.workspace_id)
+            if current.status == AutomationRunStatus.RUNNING and current.home_terminal is not None:
+                self._schedule(current, 'wakeup', current.home_terminal.observed_at + 1.,generation=current.home_terminal.observed_at)
+        await asyncio.to_thread(record)
+        await self.recover_pending(scope=TenantScope(organization_id=run.organization_id,workspace_id=run.workspace_id))
 
     def _custody(self, thread_id, actor):
         binding = self.bootstrap_bindings.get_by_thread(thread_id, actor)
@@ -327,38 +389,44 @@ class HomeOperatorFollowup:
         witness = run.home_terminal
         if run.status != AutomationRunStatus.RUNNING or witness is None or self.sessions is None or self.runtime_usage is None or self.outcomes is None:
             return
-        assignment = self.workers.store.assignment(witness.assignment_id)
-        runtime = getattr(assignment, 'runtime_binding', None)
-        if runtime is None:
-            return
-        session = self.sessions.find_by_native_id(witness.native_session_id, organization_id=scope.organization_id,
-            workspace_id=scope.workspace_id, provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
-        if session is None or session.assignment_id != witness.assignment_id or session.execution_id != witness.execution_id:
-            return
-        usage_id = 'runtime-usage-' + hashlib.sha256(f'{session.id}\n{witness.native_turn_id}'.encode()).hexdigest()[:32]
-        usage = self.runtime_usage.get(usage_id)
-        if (usage is None or usage.terminal_outcome == 'unknown' or usage.completed_at is None
-                or (usage.organization_id, usage.workspace_id, usage.assignment_id, usage.execution_id,
-                    usage.provider_native_session_id, usage.provider_native_turn_id) !=
-                    (scope.organization_id, scope.workspace_id, witness.assignment_id, witness.execution_id,
-                     witness.native_session_id, witness.native_turn_id)):
-            return
+        turns = [(witness.assignment_id,witness.execution_id,witness.native_session_id,witness.native_turn_id)]
+        if self.restart_recovery is not None:
+            prior = self.restart_recovery.prior_event_turns(witness)
+            turns.extend((item.assignment_id,item.execution_id,item.thread_id,item.turn_id) for item in prior)
+        records = []
+        for assignment_id,execution_id,session_id,turn_id in dict.fromkeys(turns):
+            assignment = self.workers.store.assignment(assignment_id)
+            runtime = getattr(assignment, 'runtime_binding', None)
+            if runtime is None:
+                return
+            session = self.sessions.find_by_native_id(session_id, organization_id=scope.organization_id,
+                workspace_id=scope.workspace_id, provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
+            if session is None or session.assignment_id != assignment_id or session.execution_id != execution_id:
+                return
+            usage_id = 'runtime-usage-' + hashlib.sha256(f'{session.id}\n{turn_id}'.encode()).hexdigest()[:32]
+            usage = self.runtime_usage.get(usage_id)
+            if (usage is None or usage.terminal_outcome == 'unknown' or usage.completed_at is None
+                    or (usage.organization_id,usage.workspace_id,usage.assignment_id,usage.execution_id,
+                        usage.provider_native_session_id,usage.provider_native_turn_id) !=
+                        (scope.organization_id,scope.workspace_id,assignment_id,execution_id,session_id,turn_id)):
+                return  # Unknown/missing original usage is retained, never synthetic zero.
+            records.append(usage)
         automation, _ = self.runs.definitions.resolve_reference(run.definition_ref,
             organization_id=scope.organization_id, workspace_id=scope.workspace_id, project_id=run.project_id)
         # Accounting is for the actual bootstrap execution AND exact native turn,
         # not the zero-token deterministic controller wrapper or unrelated history.
         status, code, reason, evidence = self.outcomes._budget_evaluation(
-            run.model_copy(update={'execution_ids': (witness.execution_id,)}),
-            (SimpleNamespace(completed_at=usage.completed_at),), automation, records=(usage,))
+            run.model_copy(update={'execution_ids': tuple(dict.fromkeys(row.execution_id for row in records))}),
+            tuple(SimpleNamespace(completed_at=row.completed_at) for row in records), automation, records=tuple(records))
         if status == 'pending':
             return
-        succeeded = witness.checkpoint_succeeded and usage.terminal_outcome == 'succeeded' and status == 'ok'
+        succeeded = witness.checkpoint_succeeded and all(row.terminal_outcome == 'succeeded' for row in records) and status == 'ok'
         def finish(state):
             for index, row in enumerate(state.runs):
                 if row.id == run.id and row.status == AutomationRunStatus.RUNNING and row.home_terminal == witness:
                     state.runs[index] = row.model_copy(update={'status': AutomationRunStatus.SUCCEEDED if succeeded else AutomationRunStatus.FAILED,
                         'result_code': code or ('home_followup_completed' if succeeded else 'home_followup_failed'),
-                        'result_reason': reason or f'Native turn {witness.native_turn_id} and canonical runtime usage {usage.id} settled',
+                        'result_reason': reason or f"Native turn {witness.native_turn_id} and canonical runtime usage {','.join(value.id for value in records)} settled",
                         'evidence_ids': tuple(dict.fromkeys((*row.evidence_ids, *evidence))),
                         'completed_at': self.runs.clock(), 'updated_at': self.runs.clock()})
             return state
@@ -430,12 +498,15 @@ class HomeOperatorFollowup:
         if self.runs.clock() < run.started_at + automation.budget.max_duration_seconds:
             return
         active = await asyncio.to_thread(self.turns.execution._active_turn, automation.target.home_thread_id)
-        if (active is None or (active.source or '').removeprefix('queued:') != SOURCE + run.id
-                or not active.turn_id):
+        recovered = None
+        if active is not None and self.restart_recovery is not None:
+            recovered = await asyncio.to_thread(self.restart_recovery.event_terminal_context, active)
+        if (active is None or not active.turn_id or ((active.source or '').removeprefix('queued:') != SOURCE + run.id
+                and (recovered is None or recovered[0].id != run.id))):
             return  # Absence is not proof that an uncertain original stopped.
         assignment = await asyncio.to_thread(self.workers.store.assignment, active.assignment_id)
-        if (not self._matches_custody(run.home_custody, assignment)
-                or assignment.fence != active.fence
+        if ((recovered is None and not self._matches_custody(run.home_custody, assignment))
+                or assignment is None or assignment.fence != active.fence
                 or assignment.execution_id != active.execution_id
                 or assignment.assigned_worker_id != active.worker_id
                 or assignment.execution_workspace_id != active.execution_workspace_id

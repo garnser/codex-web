@@ -522,3 +522,18 @@ Private canonical fixtures cover the real retained admission and guarded
 custody recovery. Application wiring, controlled actual restart and live Home
 continuation qualification are still required; these tests do not claim live
 self-restart or full native Goal lifecycle acceptance.
+An interrupted Home restart continuation can create a later recovery generation
+only when its exact queued input has the canonical positive native START receipt,
+correlation and actual active native-turn/custody identity. An UNKNOWN original
+start never authorizes a new submission. The same thread, pending human queue and
+all previous recovery originals are retained; twenty archived generations is a
+visible fail-closed bound rather than permission to discard earlier proofs.
+
+An active Home event additionally retains the original Automation grant, event,
+selection and custody evidence and revalidates current administrator, Role,
+Definition and control authority. A restart message is a new inspection/
+continuation input, never a replay of the event or an uncertain host action.
+Its terminal callback returns to that same Automation run. Budget settlement
+requires actual canonical usage for every interrupted and resumed native turn;
+missing or UNKNOWN original usage stays pending instead of contributing zero.
+The existing exact-turn duration interrupt also recognizes that validated chain.
