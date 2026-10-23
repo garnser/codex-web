@@ -4411,15 +4411,20 @@ class TurnExecutionService:
                         and progress[1] not in previous[1] and len(previous[1]) < 8
                         and now < previous[2])
                     if wake:
-                        previous[1].add(progress[1])
+                        registered = (progress[0], previous[1] | {progress[1]}, previous[2])
+                        self._readiness_origin_waits[key] = registered
                         # Existing queue scheduler, bounded changing-cursor
                         # continuation only. Rechecks current authority on wake.
                         def wake_after_owner():
+                            if (self._readiness_origin_waits.get(key) is not registered
+                                    or registered[0] != progress[0] or progress[1] not in registered[1]
+                                    or time.monotonic() >= registered[2]):
+                                return
                             owned = self.queue_drain_tasks.get(thread_id)
                             if owned is not None and not owned.done():
                                 # A slow final status publication must not
                                 # consume the wake while this drain still owns it.
-                                owned.add_done_callback(lambda _task: self.schedule_queue_drain(thread_id))
+                                owned.add_done_callback(lambda _task: wake_after_owner())
                             else:
                                 self.schedule_queue_drain(thread_id)
                         asyncio.get_running_loop().call_later(1, wake_after_owner)

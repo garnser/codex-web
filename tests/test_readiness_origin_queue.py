@@ -168,3 +168,28 @@ class ReadinessOriginQueueTests(unittest.IsolatedAsyncioTestCase):
             current=self.runtime.queue_drain_tasks.get('thread')
             if current is not None:await current
         self.assertEqual(calls,2);self.assertEqual(self.preflight.store.get(self.attempt.id).status,'started')
+
+    async def test_late_timer_or_owner_completion_never_crosses_continuation_deadline(self):
+        for owner_pending in (False,True):
+            with self.subTest(owner_pending=owner_pending):
+                await self.asyncSetUp()
+                self.runtime.schedule_queue_drain=TurnExecutionService.schedule_queue_drain.__get__(self.runtime)
+                entered,release=asyncio.Event(),asyncio.Event()
+                async def publish(_thread):
+                    entered.set();await release.wait()
+                self.runtime.publish_queue_status=publish
+                loop=asyncio.get_running_loop();original=loop.call_later
+                def later(delay,callback,*args,**kwargs):
+                    if delay==1:self.wakes.append((delay,callback,*args));return Mock()
+                    return original(delay,callback,*args,**kwargs)
+                with patch.object(loop,'call_later',side_effect=later):
+                    self.runtime.schedule_queue_drain('thread');await asyncio.wait_for(entered.wait(),2)
+                    owned=self.runtime.queue_drain_tasks['thread'];callback=self.wakes[0][1]
+                    if owner_pending:callback()  # Register completion wake while still inside budget.
+                    deadline=self.runtime._readiness_origin_waits[('thread',self.original.id)][2]
+                    with patch('codex_web.runtime.execution.time',SimpleNamespace(monotonic=lambda:deadline+1)):
+                        if not owner_pending:callback()  # Timer itself delivered late.
+                        release.set();await owned;await asyncio.sleep(0)
+                self.runtime.start_thread_turn_now.assert_awaited_once()
+                self.assertEqual(self.preflight.store.get(self.attempt.id).status,'queued')
+                self.assertEqual(self.host._thread_queue('thread')[0].model_dump(mode='json'),self.before)
