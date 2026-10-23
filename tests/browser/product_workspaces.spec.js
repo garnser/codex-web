@@ -700,3 +700,35 @@ test('required section destinations are discoverable in project navigation and r
     await expect(page).toHaveURL(new RegExp(`/codex/projects/home/${pageName}$`));
   }
 });
+
+
+test('prefixed Home entry loads overview and operator while project switcher is initializing', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8')
+    .replace('<body>', '<body data-project-id="home">');
+  const calls = [];
+  await page.route('**/codex/projects/home/overview', route => route.fulfill({
+    contentType: 'text/html', body: html,
+  }));
+  await page.route('**/api/home?project_id=home', route => {
+    calls.push('home');
+    return route.fulfill({ json: {
+      project: { id: 'home', name: 'Home' }, status: 'current', sections: {},
+    } });
+  });
+  await page.route('**/api/home/operator', route => route.fulfill({ json: {
+    status: 'configured', can_configure: false,
+    binding: { thread_id: 'operator-same', revision: 1 },
+    thread: { id: 'operator-same', name: 'Permanent operator',
+      href: '/projects/home/chat?thread=operator-same' },
+  } }));
+  await page.goto('http://127.0.0.1:18766/codex/projects/home/overview');
+  await expect(page.getByLabel('Current Project', { exact: true })).toHaveValue('home');
+  await expect(page.locator('[data-home-overview]')).not.toContainText('Select a Project');
+  await expect(page.locator('[data-home-operator]')).toContainText('Home operator conversation');
+  await expect(page.getByRole('link', { name: 'Open operator conversation' })).toHaveAttribute(
+    'href', '/codex/projects/home/chat?thread=operator-same');
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every(id => id === 'home')).toBe(true);
+});
