@@ -1454,6 +1454,7 @@ def _project_readiness_environment(project, actor):
 
 
 project_readiness_service = ProjectReadinessService(
+    execution_profiles=execution_profile_definition_service,
     projects=project_service,
     resources=resource_catalog_service,
     secrets=secret_broker,

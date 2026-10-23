@@ -17,10 +17,12 @@ from codex_web.execution_workers import (
 )
 from codex_web.identity import AuthenticationActor
 from codex_web.project_readiness import (
+    ExecutionReadinessContext,
     ProjectReadinessCheck,
     ProjectReadinessSnapshot,
     ReadinessCheckStatus,
 )
+from codex_web.models import SandboxMode
 from codex_web.resources import ResourceType
 from codex_web.runtime_credentials import (
     DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
@@ -30,6 +32,8 @@ from codex_web.runtime_credentials import (
 )
 from codex_web.services.configuration import ConfigurationError, ConfigurationNotFoundError, ConfigurationService
 from codex_web.services.execution_workers import ExecutionWorkerService
+from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
+from codex_web.services.definitions import DefinitionConflictError, DefinitionCompatibilityError
 from codex_web.services.projects import ProjectService
 from codex_web.services.resources import (
     RepositoryTargetSelectionError,
@@ -64,6 +68,7 @@ class ProjectReadinessService:
         permitted_codex_authentication_modes: tuple[CodexExecutionAuthenticationMode, ...] | None = None,
         local_session_probe: Callable[[], bool] | None = None,
         local_session_refresh: Callable[[], Awaitable[None]] | None = None,
+        execution_profiles: ExecutionProfileDefinitionService | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.projects = projects
@@ -82,13 +87,17 @@ class ProjectReadinessService:
         self.permitted_codex_authentication_modes = permitted_codex_authentication_modes
         self.local_session_probe = local_session_probe
         self.local_session_refresh = local_session_refresh
+        self.execution_profiles = execution_profiles
         self.clock = clock
 
     async def evaluate_with_refresh(
-        self, project_id: str, *, actor: AuthenticationActor, record: bool = True
+        self, project_id: str, *, actor: AuthenticationActor, record: bool = True,
+        execution_profile_id: str | None = None, sandbox: SandboxMode | None = None,
     ) -> ProjectReadinessSnapshot:
         # Scope and policy are evaluated before touching the operator session.
-        value = await asyncio.to_thread(self.evaluate, project_id, actor=actor, record=False)
+        context = dict(execution_profile_id=execution_profile_id, sandbox=sandbox)
+        record = record and execution_profile_id is None
+        value = await asyncio.to_thread(self.evaluate, project_id, actor=actor, record=False, **context)
         if self.local_session_refresh is not None and any(
             check.id == "runtime:credential-reference"
             and check.code == "local_session_unavailable"
@@ -99,7 +108,7 @@ class ProjectReadinessService:
             except Exception:
                 # Failed metadata reads cannot grant authentication readiness.
                 pass
-            return await asyncio.to_thread(self.evaluate, project_id, actor=actor, record=record)
+            return await asyncio.to_thread(self.evaluate, project_id, actor=actor, record=record, **context)
         if record:
             saved = await asyncio.to_thread(self.store.record, value)
             value = value.model_copy(update={
@@ -142,9 +151,33 @@ class ProjectReadinessService:
         *,
         actor: AuthenticationActor,
         record: bool = False,
+        execution_profile_id: str | None = None,
+        sandbox: SandboxMode | None = None,
     ) -> ProjectReadinessSnapshot:
         project = self.projects.get(project_id, actor.tenant)
         checks: list[ProjectReadinessCheck] = []
+        if sandbox is not None and execution_profile_id is None:
+            raise ValueError("Execution profile is required for contextual sandbox readiness")
+        execution_context = None
+        profile = None
+        if execution_profile_id is not None:
+            reference = None
+            try:
+                if self.execution_profiles is None:
+                    raise ValueError("Canonical execution profile resolution is unavailable")
+                profile, reference = self.execution_profiles.resolve(execution_profile_id,
+                    organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+                    project_id=project.id)
+            except (ValueError, LookupError, DefinitionConflictError, DefinitionCompatibilityError):
+                checks.append(self._check("execution:profile", "execution_profile",
+                    ReadinessCheckStatus.BLOCKED, "execution_profile_unavailable",
+                    "Selected canonical execution profile is unavailable in this Project.",
+                    affected_type="execution_profile", affected_id=execution_profile_id))
+            execution_context = ExecutionReadinessContext(profile_id=execution_profile_id,
+                definition=reference, sandbox=sandbox or project.sandbox)
+            # A contextual readiness observation must never overwrite the
+            # generic Project's repository readiness history.
+            record = False
 
         checks.append(
             self._check(
@@ -665,10 +698,11 @@ class ProjectReadinessService:
             )
 
         worker = self.workers.execution_readiness(
-            required_capabilities=(
+            required_capabilities=(tuple(WorkerCapability(value)
+                for value in profile.required_worker_capabilities) if profile is not None else (
                 WorkerCapability.GIT,
                 WorkerCapability.COMMAND_EXECUTION,
-            ),
+            )),
             execution_contract_version="thread-turn/1.0",
             actor=actor,
         )
@@ -707,7 +741,9 @@ class ProjectReadinessService:
                 "reason": "Project sandbox is a supported canonical mode.",
             }
         else:
-            environment = self.environment_probe(project, actor)
+            environment_project = (project.model_copy(update={"sandbox": execution_context.sandbox})
+                                   if execution_context is not None else project)
+            environment = self.environment_probe(environment_project, actor)
         environment_ready = bool(environment.get("available", False))
         checks.append(
             self._check(
@@ -735,7 +771,7 @@ class ProjectReadinessService:
                     )
                 ),
                 affected_type="sandbox_profile",
-                affected_id=project.sandbox,
+                affected_id=execution_context.sandbox if execution_context else project.sandbox,
                 remediation=(
                     None
                     if environment_ready
@@ -817,6 +853,15 @@ class ProjectReadinessService:
                 )
             )
 
+        if profile is not None and profile.workspace_mode == "scratch" and profile.repository_access == "none":
+            checks = [item.model_copy(update={
+                "status": ReadinessCheckStatus.NOT_APPLICABLE, "required": False,
+                "code": "repository_not_required_for_execution_profile",
+                "message": "Selected canonical scratch execution profile requires no repository.",
+                "remediation": None, "remediation_route": None,
+            }) if item.id in {"repository:resources", "repository:execution-target"} else item
+                for item in checks]
+
         semantic_domains = {
             "project_scope",
             "bootstrap",
@@ -870,6 +915,7 @@ class ProjectReadinessService:
                 else None
             ),
             generated_at=generated_at,
+            execution_context=execution_context,
         )
         if record:
             saved = self.store.record(snapshot)
