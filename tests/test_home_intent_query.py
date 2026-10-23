@@ -83,6 +83,55 @@ class HomeIntentQueryContract:
         with self.assertRaisesRegex(ValueError,'unresolved inventory'):
             self.backend.home_intent_recovery_rows(self.namespace,self.query())
 
+    def test_foreign_settled_history_does_not_validate_its_receipts(self):
+        foreign=self.intent('foreign-settled',organization_id='other-org')
+        matching=self.intent('matching-held',status='uncertain')
+        self.write([foreign,matching])
+        # An unrelated malformed receipt is not evidence about this scope.
+        key='receipts:foreign-settled:000000000001.000000:receipt-foreign-settled'
+        self.backend.record_apply(self.namespace,upserts={key:{'id':foreign['last_receipt_id']}})
+        for mode in (False,True):
+            found=self.backend.home_intent_recovery_rows(self.namespace,self.query(mode))
+            self.assertEqual([i['id'] for i in found],['matching-held'])
+
+    def test_missing_identifying_fields_still_reach_full_validation(self):
+        rows={}
+        for field in ('id','organization_id','workspace_id','status'):
+            item=self.intent('missing-'+field,organization_id='other-org')
+            del item[field]
+            rows['intents:missing-'+field]=item
+        self.backend.record_apply(self.namespace,upserts=rows)
+        for mode in (False,True):
+            found=self.backend.home_intent_recovery_rows(self.namespace,self.query(mode))
+            self.assertEqual(len(found),4)
+
+    def test_unknown_scope_does_not_acquire_receipt_authority(self):
+        item=self.intent('scope-unknown',requested_by=None,execution_id=None)
+        self.write([item])
+        for mode in (False,True):
+            self.assertEqual(self.backend.home_intent_recovery_rows(self.namespace,self.query(mode)),[])
+
+    def test_unsupported_legacy_escapes_cannot_prove_absence(self):
+        for escape in ('\x00','\ud800'):
+            item=self.intent('escape-header',organization_id='other-org',provider_instance=escape)
+            self.write([item])
+            for mode in (False,True):
+                if type(self.backend).__name__ == 'PostgresStateStore':
+                    # PostgreSQL's original JSON operators already refuse these
+                    # retained escapes; header projection must not turn them into
+                    # a settled/absent proof. SQLite can classify this scope.
+                    with self.assertRaisesRegex(ValueError,'original JSON unavailable'):
+                        self.backend.home_intent_recovery_rows(self.namespace,self.query(mode))
+                else:
+                    self.assertEqual(self.backend.home_intent_recovery_rows(self.namespace,self.query(mode)),[])
+
+    def test_nonobject_originals_reach_canonical_validation(self):
+        values=[[],7,None,'not-an-intent']
+        self.backend.record_apply(self.namespace,upserts={
+            'intents:nonobject-'+str(index):value for index,value in enumerate(values)})
+        for mode in (False,True):
+            self.assertEqual(self.backend.home_intent_recovery_rows(self.namespace,self.query(mode)),values)
+
 
 class SQLiteHomeIntentQueryTests(HomeIntentQueryContract,unittest.TestCase):
     def setUp(self):
