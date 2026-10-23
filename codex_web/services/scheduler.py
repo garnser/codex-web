@@ -87,12 +87,14 @@ class SchedulerService:
 
         self._wake.set()
 
-    def create(self, payload: ScheduleCreate, *, actor_id: str) -> ScheduleRecord:
+    def create(self, payload: ScheduleCreate, *, actor_id: str, schedule_id: str | None = None) -> ScheduleRecord:
         schedule = ScheduleRecord.from_create(
             payload,
             actor_id=actor_id,
             now=self.clock(),
         )
+        if schedule_id is not None:
+            schedule = schedule.model_copy(update={"id": schedule_id})
         result = self.store.create(schedule)
         self._wake.set()
         return result

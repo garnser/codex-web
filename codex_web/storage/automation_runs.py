@@ -74,6 +74,10 @@ AUTOMATION_RUN_MIGRATIONS.register(
 )
 
 
+AUTOMATION_RUN_MIGRATIONS.register(
+    "1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"})
+
+
 class AutomationRunNotFoundError(KeyError):
     pass
 

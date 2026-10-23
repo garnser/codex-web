@@ -13,8 +13,8 @@ from codex_web.definitions import DefinitionReference
 
 AUTOMATION_RUN_STATE_CONTRACT = ContractSpec(
     "automation-run-state",
-    "1.3",
-    ("1.0", "1.1", "1.2", "1.3"),
+    "1.4",
+    ("1.0", "1.1", "1.2", "1.3", "1.4"),
 )
 
 
@@ -28,6 +28,7 @@ class AutomationRunTriggerKind(StrEnum):
 class AutomationRunStatus(StrEnum):
     ADMITTED = "admitted"
     RUNNING = "running"
+    WAITING_FOR_CAPACITY = "waiting_for_capacity"
     WAITING_FOR_WORK_ITEM = "waiting_for_work_item"
     WAITING_FOR_APPROVAL = "waiting_for_approval"
     SUCCEEDED = "succeeded"
@@ -40,6 +41,7 @@ ACTIVE_AUTOMATION_RUN_STATUSES = frozenset(
     {
         AutomationRunStatus.ADMITTED,
         AutomationRunStatus.RUNNING,
+        AutomationRunStatus.WAITING_FOR_CAPACITY,
         AutomationRunStatus.WAITING_FOR_WORK_ITEM,
         AutomationRunStatus.WAITING_FOR_APPROVAL,
     }
@@ -70,6 +72,28 @@ class AutomationRunTrigger(BaseModel):
         return self
 
 
+class HomeEventCustody(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    assignment_id: str
+    execution_id: str
+    worker_id: str
+    execution_workspace_id: str
+    fence: int
+
+
+class HomeEventTerminal(BaseModel):
+    """Positive retained-turn witness, not permission to send another input."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    assignment_id: str
+    execution_id: str
+    native_session_id: str
+    native_turn_id: str
+    worker_id: str
+    fence: int
+    checkpoint_succeeded: bool
+    observed_at: float
+
+
 class AutomationRun(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -93,6 +117,9 @@ class AutomationRun(BaseModel):
     approval_request_id: str | None = None
     execution_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+    home_custody: HomeEventCustody | None = None
+    home_terminal: HomeEventTerminal | None = None
+    home_interrupt_attempted_at: float | None = None
     attempt: int = Field(default=1, ge=1)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)

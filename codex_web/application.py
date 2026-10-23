@@ -1698,6 +1698,9 @@ def _notify_automation_runtime_usage(record):
         except RuntimeError:
             loop = None
         if loop is not None:
+            recovery = getattr(app.state, "native_recovery_service", None)
+            if recovery is not None:
+                recovery.schedule(reason="home-runtime-usage-observed")
             for automation_run in outcome_runs:
                 if automation_run.status.value in {"succeeded", "failed"}:
                     loop.create_task(
@@ -4242,9 +4245,16 @@ async def _reconcile_native_goal_runners():
             observer=owner_lane_recovery_service.native_goal_blocker)
 
 
+async def _recover_home_event_runs():
+    followup = getattr(app.state, "home_operator_followup", None)
+    if followup is not None:
+        await followup.recover_pending()
+
+
 native_recovery_service = NativeRecoveryService(
     policy=runtime_policy,
     cycles=(
+        _recover_home_event_runs,
         _reconcile_native_goal_runners,
         autonomy_service.run_owner_work_cycle,
         autonomy_service.run_release_gate_cycle,
@@ -4887,7 +4897,18 @@ home_operator_followup = HomeOperatorFollowup(
     controller=autonomy_controller, authority=authority_role_service,
     event_triggers=automation_event_trigger_service, workers=execution_worker_service,
     bootstrap_bindings=thread_bootstrap_binding_service,
+    scheduler=scheduler_service, sessions=agent_session_store,
+    runtime_usage=agent_runtime_usage_store,
+    outcomes=automation_outcome_reconciliation_service,
 )
+async def _launch_home_event_run(run):
+    return await automation_execution_service.launch(run.id,
+        organization_id=run.organization_id, workspace_id=run.workspace_id)
+
+home_operator_followup.launch_handler = _launch_home_event_run
+app.state.home_operator_followup = home_operator_followup
+app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
+    home_operator_followup.on_schedule, event_types=("schedule.due",))
 turn_execution_service.retained_turn_outcome_recorder = home_operator_followup.record_terminal
 automation_execution_service.home_operator_followup = home_operator_followup
 control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input

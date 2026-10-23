@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import contextlib
 import contextvars
 import hashlib
@@ -1465,6 +1466,19 @@ class TurnExecutionService:
         if clear_active:
             self.clear_thread_active(thread_id)
 
+    async def _record_retained_outcome(self, active, *, succeeded):
+        recorder = getattr(self, "retained_turn_outcome_recorder", None)
+        if recorder is None:
+            return
+        try:
+            if inspect.iscoroutinefunction(recorder):
+                await recorder(active, succeeded=succeeded)
+            else:
+                await asyncio.to_thread(recorder, active, succeeded=succeeded)
+        except Exception:
+            self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
+                "thread_id": active.thread_id, "turn_id": active.turn_id})
+
     def _schedule_assignment_completion(
         self,
         active: ActiveThreadTurn,
@@ -1530,15 +1544,6 @@ class TurnExecutionService:
                         "repository_checkpoint_error": checkpoint_error,
                     }
                 )
-                retained_outcome = getattr(self, "retained_turn_outcome_recorder", None)
-                if retained_outcome is not None:
-                    # Observational settlement after the same checkpoint/readiness
-                    # barrier; it cannot send native input or retry an action.
-                    try:
-                        retained_outcome(active, succeeded=succeeded and checkpoint_succeeded)
-                    except Exception:
-                        self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
-                            "thread_id": active.thread_id, "turn_id": active.turn_id})
                 if (
                     completion_work_item_ref
                     and self.work_item_outcome_recorder is not None
@@ -1554,7 +1559,8 @@ class TurnExecutionService:
                             ),
                         )
 
-            if callable(checkpoint) or self.post_turn_readiness is not None:
+            if (callable(checkpoint) or self.post_turn_readiness is not None
+                    or getattr(self, "retained_turn_outcome_recorder", None) is not None):
                 existing = self.assignment_completion_tasks.get(assignment_id)
                 if existing is not None and not existing.done():
                     return
@@ -1574,8 +1580,10 @@ class TurnExecutionService:
                         await self._settle_post_turn_readiness(active, manager)
                         record_bootstrap_result(checkpoint_count=len(values),
                             checkpoint_error=checkpoint_error)
+                        await self._record_retained_outcome(active, succeeded=succeeded and checkpoint_error is None)
                     except Exception as exc:
                         record_bootstrap_result(checkpoint_error=checkpoint_error or str(exc)[:500])
+                        await self._record_retained_outcome(active, succeeded=False)
                     finally:
                         current_task = asyncio.current_task()
                         if self.assignment_completion_tasks.get(assignment_id) is current_task:

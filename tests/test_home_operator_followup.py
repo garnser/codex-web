@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 
 from codex_web.automation_definitions import AutomationDefinition
+from codex_web.agent_runtime_usage import AgentRuntimeUsage
+from codex_web.services.automation_outcomes import AutomationOutcomeReconciliationService
 from codex_web.automation_runs import AutomationRunTrigger
 from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
@@ -41,12 +43,12 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.selected = {'status': 'configured', 'binding': {'revision': 2, 'selected_by': 'admin',
             'agent_profile_id': 'operator', 'agent_profile_revision': 3},
             'thread': {'id': 'permanent-home-thread', 'execution_profile_id': 'orchestration-only'}}
-        self.control = NS(mode='active', dry_run=False, simulation=False)
-        async def process(event, observation, *, cycle_key, reasoner):
+        self.control = NS(mode='active', dry_run=False, simulation=False, cooldown_seconds=0)
+        async def process(event, observation, *, cycle_key, reasoner, actor=None):
             if self.control.mode == 'active':
                 await reasoner()
             return NS(reason='fixture-control')
-        self.controller = NS(store=NS(control=lambda: self.control), process=process,
+        self.controller = NS(store=NS(control=lambda: self.control, recent_cycles=lambda limit: []), process=process,
             _scoped_pause_reason=lambda *a, **k: None, _exclusive_goal_scope_reason=lambda *a: None)
         self.allowed = True
         self.calls = []
@@ -65,9 +67,18 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
             identity=self.identity, events=self.events, turns=self.turns, controller=self.controller,
             authority=NS(evaluate=lambda *a, **k: NS(outcome='allow' if self.allowed else 'deny')),
             event_triggers=self.triggers)
+        self.assignment = NS(id='assignment', fence=1, execution_id='bootstrap-execution',
+            assigned_worker_id='worker', execution_workspace_id='workspace', status='running',
+            organization_id='local', workspace_id='default', created_by='admin', project_id='home',
+            lease=NS(fence=1, worker_id='worker', expires_at=200.),
+            agent_profile=NS(profile_id='operator', profile_revision=3),
+            runtime_binding=NS(provider_id='openai', runtime_id='codex'))
+        self.followup.workers = NS(store=NS(assignment=lambda _: self.assignment))
+        self.followup.bootstrap_bindings = NS(get_by_thread=lambda *a: NS(assignment_id='assignment', execution_id='bootstrap-execution'))
         self.execution = AutomationExecutionService(self.runs, identity=self.identity, threads=None,
             turns=self.turns, teams=None, events=self.events)
         self.execution.home_operator_followup = self.followup
+        self.followup.launch_handler = self.launch
         self.payload = {'name': 'Home CI follow-up', 'lifecycle': 'enabled',
             'trigger': {'type': 'canonical_event', 'event_type': 'ci.pipeline'},
             'target': {'kind': 'home_operator', 'id': 'operator', 'home_thread_id': 'permanent-home-thread',
@@ -149,7 +160,7 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
     async def test_pause_blocks_before_claim_and_queue(self):
         row = self.admit().run
         self.control.mode = 'paused'
-        self.assertEqual((await self.launch(row)).status, 'blocked')
+        self.assertEqual((await self.launch(row)).status, 'waiting_for_capacity')
         self.assertEqual(self.calls, [])
 
     async def test_superseded_publication_and_wrong_publisher_refuse(self):
@@ -164,13 +175,13 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         late = self.admit(event_id='late').run
         self.runs.clock = lambda: 1000.
         with self.assertRaises(ValueError):
-            self.followup.context(late)
+            self.followup.context(late.model_copy(update={'started_at': 100.}))
 
     async def test_current_input_pins_message_execution_profile_and_run(self):
         row = self.admit().run
         await self.launch(row)
         _, payload, kwargs = self.calls[0]
-        assignment = NS(project_id='home', created_by='admin', agent_profile=NS(profile_id='operator', profile_revision=3))
+        assignment = self.assignment
         params = dict(source='queued:'+SOURCE+row.id, assignment=assignment, actor=self.actor, project=NS(id='home'),
             request_checksum=hashlib.sha256(payload.message.encode()).hexdigest(), input_execution_id=kwargs['execution_id'])
         self.followup.authorize_input(**params)
@@ -197,8 +208,8 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
             source_id='ci-one', event_id='ci-one'), organization_id='local', workspace_id='default',
             project_id='delegated-project').run
         result = await self.launch(second)
-        self.assertEqual(result.status, 'blocked')
-        self.assertEqual(result.block_code, 'home_followup_delivery_pending')
+        self.assertEqual(result.status, 'waiting_for_capacity')
+        self.assertEqual(result.block_code, 'home_followup_deferred')
         self.assertEqual(len(self.calls), 1)
 
     async def test_foreign_event_and_oversized_input_refuse_before_native_input(self):
@@ -230,26 +241,40 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('good-head', text)
         self.assertIn('never authority', text)
 
-    async def test_retained_completion_releases_event_claim_without_retiring_conversation(self):
-        run = self.admit().run
-        await self.launch(run)
+    def terminal_fixture(self, run):
         assignment = NS(id='assignment', fence=1, execution_id='bootstrap-execution',
             assigned_worker_id='worker', execution_workspace_id='workspace', status='running',
-            organization_id='local', workspace_id='default', created_by='admin',
+            organization_id='local', workspace_id='default', created_by='admin', project_id='home',
             lease=NS(fence=1, worker_id='worker', expires_at=200.),
-            agent_profile=NS(profile_id='operator', profile_revision=3))
+            agent_profile=NS(profile_id='operator', profile_revision=3),
+            runtime_binding=NS(provider_id='openai', runtime_id='codex'))
+        self.assignment = assignment
         self.followup.workers = NS(store=NS(assignment=lambda _: assignment))
         self.followup.bootstrap_bindings = NS(get_by_thread=lambda *a: NS(assignment_id='assignment', execution_id='bootstrap-execution'))
         active = NS(source='queued:'+SOURCE+run.id, turn_id='actual-native-turn', thread_id='permanent-home-thread',
             assignment_id='assignment', fence=1, execution_id='bootstrap-execution',
             worker_id='worker', execution_workspace_id='workspace')
+        self.followup.sessions = NS(find_by_native_id=lambda *a, **k: NS(id='session', assignment_id='assignment', execution_id='bootstrap-execution'))
+        self.usage = AgentRuntimeUsage(id='runtime-usage-'+hashlib.sha256(b'session\nactual-native-turn').hexdigest()[:32],
+            organization_id='local', workspace_id='default', assignment_id='assignment', execution_id='bootstrap-execution',
+            provider_id='openai', runtime_id='codex', runtime_type='native', provider_native_session_id='permanent-home-thread',
+            provider_native_turn_id='actual-native-turn', input_tokens=20, output_tokens=10,
+            terminal_outcome='succeeded', started_at=100., completed_at=101.)
+        self.followup.runtime_usage = NS(get=lambda identifier: self.usage if identifier == self.usage.id else None)
+        self.followup.outcomes = AutomationOutcomeReconciliationService(self.runs, None, runtime_usage=self.followup.runtime_usage)
+        return assignment, active
+
+    async def test_retained_completion_releases_event_claim_without_retiring_conversation(self):
+        run = self.admit().run
+        await self.launch(run)
+        assignment, active = self.terminal_fixture(run)
         assignment.fence = 2
-        self.followup.record_terminal(active, succeeded=True)
+        await self.followup.record_terminal(active, succeeded=True)
         self.assertEqual(self.runs.store.get(run.id, organization_id='local', workspace_id='default').status, 'running')
         assignment.fence = 1
         self.control.mode = 'paused'  # historical completion grants no new input
-        self.followup.record_terminal(active, succeeded=True)
-        self.followup.record_terminal(active, succeeded=False)  # duplicate cannot rewrite the first fact
+        await self.followup.record_terminal(active, succeeded=True)
+        await self.followup.record_terminal(active, succeeded=False)  # duplicate cannot rewrite the first fact
         done = self.runs.store.get(run.id, organization_id='local', workspace_id='default')
         self.assertEqual(done.status, 'succeeded')
         self.assertIn('actual-native-turn', done.result_reason)
@@ -259,6 +284,114 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         await self.launch(next_run)
         self.assertEqual(len(self.calls), 2)
         self.assertTrue(all(call[0] == 'permanent-home-thread' for call in self.calls))
+
+    async def test_simultaneous_same_definition_events_advance_after_exact_terminal(self):
+        first = self.admit().run
+        await self.launch(first)
+        second = self.admit(event_id='second-real-completion').run
+        self.assertEqual(second.status, 'waiting_for_capacity')
+        assignment, active = self.terminal_fixture(first)
+        await self.followup.record_terminal(active, succeeded=True)
+        self.assertEqual(len(self.calls), 2)
+        delivered = self.runs.store.get(second.id, organization_id='local', workspace_id='default')
+        self.assertEqual(delivered.status, 'running')
+        self.assertEqual(delivered.execution_ids, (f'home-followup-{second.id}',))
+        await self.followup.record_terminal(active, succeeded=True)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(assignment.status, 'running')
+
+    async def test_different_definition_deferred_event_advances_without_human_or_poll(self):
+        first = self.admit().run
+        await self.launch(first)
+        self.publish(identifier='parallel-ci')
+        second = self.runs.admit('parallel-ci', AutomationRunTrigger(kind='canonical_event',
+            source_id='ci-one', event_id='ci-one'), organization_id='local', workspace_id='default',
+            project_id='delegated-project').run
+        self.assertEqual((await self.launch(second)).status, 'waiting_for_capacity')
+        _, active = self.terminal_fixture(first)
+        await self.followup.record_terminal(active, succeeded=True)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[-1][2]['execution_id'], f'home-followup-{second.id}')
+
+    async def test_unknown_original_keeps_deferred_event_across_restart_without_replay(self):
+        self.throw_after_effect = True
+        first = self.admit().run
+        await self.launch(first)
+        second = self.admit(event_id='other-completion').run
+        self.runs.store = AutomationRunStore(SQLiteStateStore(Path(self.temp.name) / 'private.sqlite'))
+        await self.followup.recover_pending()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.runs.store.get(second.id, organization_id='local', workspace_id='default').status,
+            'waiting_for_capacity')
+
+    async def test_missing_usage_is_pending_and_real_output_budget_failure_is_not_zero(self):
+        first = self.admit().run
+        await self.launch(first)
+        _, active = self.terminal_fixture(first)
+        actual = self.usage
+        self.usage = actual.model_copy(update={'terminal_outcome': 'unknown', 'completed_at': None})
+        await self.followup.record_terminal(active, succeeded=True)
+        pending = self.runs.store.get(first.id, organization_id='local', workspace_id='default')
+        self.assertEqual(pending.status, 'running')
+        self.assertEqual(pending.result_code, 'home_followup_budget_pending')
+        self.usage = actual.model_copy(update={'output_tokens': 501})
+        await self.followup.recover_pending()
+        failed = self.runs.store.get(first.id, organization_id='local', workspace_id='default')
+        self.assertEqual(failed.status, 'failed')
+        self.assertEqual(failed.result_code, 'automation_output_tokens_budget_exhausted')
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_duration_interrupt_is_exact_original_fence_and_never_replayed(self):
+        first = self.admit().run
+        await self.launch(first)
+        assignment, active = self.terminal_fixture(first)
+        calls = []
+        async def request(thread, method, params):
+            calls.append((thread, method, params))
+            raise TimeoutError('original interrupt outcome unknown')
+        self.turns.execution = NS(_active_turn=lambda thread: active, request_for_thread=request)
+        self.runs.clock = lambda: 161.
+        assignment.lease.expires_at = 200.
+        assignment.fence = 2
+        await self.followup._deadline(first.model_copy(update={'status':'running', 'started_at':100.}), 100.)
+        self.assertEqual(calls, [])
+        assignment.fence = 1
+        with self.assertRaises(TimeoutError):
+            await self.followup._deadline(self.runs.store.get(first.id, organization_id='local', workspace_id='default'), 100.)
+        current = self.runs.store.get(first.id, organization_id='local', workspace_id='default')
+        await self.followup._deadline(current, 100.)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2]['turnId'], 'actual-native-turn')
+        self.assertEqual(current.status, 'running')
+
+    async def test_canonical_deadline_schedule_is_deduped_and_ignores_foreign_scope(self):
+        from codex_web.services.scheduler import SchedulerService
+        from codex_web.storage.scheduler import SchedulerStore
+        self.followup.scheduler = SchedulerService(SchedulerStore(self.sql), None, clock=lambda:100.)
+        first = self.admit().run
+        await self.launch(first)
+        rows = self.followup.scheduler.list()
+        self.assertEqual(len(rows), 1)
+        deadline = rows[0]
+        self.assertEqual(deadline.trigger_type, 'home-operator-deadline')
+        self.assertEqual(deadline.due_at, 160.)
+        self.followup._schedule(first, 'deadline', 160., generation=100.)
+        self.assertEqual(len(self.followup.scheduler.list()), 1)
+        event = CanonicalEventEnvelope(event_id='foreign-timer',event_type='schedule.due',occurred_at=160.,
+            source='scheduler:'+deadline.id,tenant_id='foreign',workspace_id='default',
+            payload={'schedule_id':deadline.id})
+        await self.followup.on_schedule(event)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_legacy_run_state_migrates_and_unknown_new_status_is_not_legacy_readable(self):
+        self.sql.put('automation_runs', {'schema_version':'1.3', 'runs':[]})
+        reopened = AutomationRunStore(self.sql)
+        self.assertEqual(reopened.load().schema_version, '1.4')
+        reopened.update(lambda state: state)
+        self.assertEqual(self.sql.get('automation_runs')['schema_version'], '1.4')
+        from codex_web.compatibility import ContractSpec
+        with self.assertRaises(Exception):
+            ContractSpec('automation-run-state', '1.3', ('1.0','1.1','1.2','1.3')).require('1.4')
 
     def test_home_definition_requires_bounded_explicit_event_opt_in(self):
         for change in ({'retry': {'max_attempts': 2}}, {'budget': {'max_concurrency': 2}},
