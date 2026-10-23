@@ -417,3 +417,36 @@ Revoked authority and uncertain delivery retain the original input for normal
 reconciliation rather than choosing another thread or creating a replacement key.
 `HomeOperatorCoordinationDispatch` schema `1.2` requires compatible queue readers;
 reconcile or drain retained dispatches before rolling back to an older reader.
+## Retained Home restart input
+
+Home startup continuation uses the existing `ActiveTurnRecoveryStore` record,
+retained Turn queue and QueuedPreflight claim. An interrupted human Home turn is
+retained once on the SAME conversation with its original actor, Profile, selection
+revision, assignment and message checksums. The old active marker is removed only
+after positive durable retention. A source string alone grants no authority: the
+common native input and final-send guards require the exact canonical recovery
+record, current queue attempt/claim and current Home/worker/lease authority.
+Ordinary Project startup recovery is unchanged.
+
+The existing typed `project_coordination_dispatch` queue field has a distinct
+Home restart proof schema `1.3`; it conveys no project delegation. Legacy dispatch
+readers reject this proof rather than silently rewriting a queue without its
+witness. Absent proofs preserve ordinary queue serialization. Deploy the matching
+reader/writer together; rollback must retain these rows behind the normal compatible
+state boundary. A retained or unknown native start never automatically acquires a
+second claim. Missing evidence is an actionable retained blocker, not an invitation
+to reconstruct human origin from a source prefix.
+
+Known NOT-SENT human input remains the original queued row while existing canonical
+lease expiry, bootstrap cancellation, fresh worker custody and strong-CAS binding
+recovery heal the SAME conversation. An uncertain host action does not block all
+conversation inspection. Its original intent remains held; a new intent with the
+same requester, host resource and exact argv cannot replay that action across
+assignment incarnations. Other independently authorized operations may proceed.
+Exact argv matching does not establish semantic shell equivalence or command safety.
+
+This slice covers interrupted human turns and retained human inputs. Planned idle
+restart checkpoints, completed Upgrade supervisor provenance, repeated restart
+chains and claimed event custody rollover require their explicit canonical handoff;
+they are not inferred from an empty active marker or a successful process exit.
+Private canonical admission/custody tests do not establish live restart acceptance.

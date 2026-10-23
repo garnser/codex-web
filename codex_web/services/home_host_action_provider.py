@@ -132,6 +132,31 @@ class HomeHostActionProvider:
             'host_filesystem_and_network': True, 'native_sandbox_unchanged': True,
             'effect_verification': False, 'unknown_outcome_replay': False}
 
+    def _refuse_held_duplicate(self, service, initial):
+        # One bounded canonical scan before effects, not a whole-ledger scan in
+        # every worker poll. Existing terminal outcomes never auto-reopen work.
+        after = None
+        while True:
+            rows, after = service.store.intent_page(after=after, limit=100)
+            for prior in rows:
+                if (prior.id != initial.id and prior.action_id == HOST_COMMAND_ACTION
+                        and prior.provider_type == initial.provider_type and prior.provider_instance == initial.provider_instance
+                        and prior.requested_by == initial.requested_by
+                        and (prior.organization_id, prior.workspace_id, prior.project_id) ==
+                            (initial.organization_id, initial.workspace_id, initial.project_id)
+                        and prior.resource_ids == initial.resource_ids
+                        and tuple(prior.request.parameters.get('argv', ())) == tuple(initial.request.parameters['argv'])):
+                    held = prior.status not in {'succeeded','failed','cancelled','expired'}
+                    if prior.last_receipt_id:
+                        receipts = service.store.load(intent_id=prior.id).receipts
+                        held = held or any(r.id == prior.last_receipt_id and r.outcome == 'unknown' for r in receipts)
+                    elif prior.execution_started_at is not None:
+                        held = True
+                    if held:
+                        raise ActionRequirementError('Original matching host command is held; reconcile intent ' + prior.id)
+            if after is None:
+                return
+
     def _execution_guard(self, request, binding):
         context = _executor.get()
         if context is None:
@@ -143,6 +168,7 @@ class HomeHostActionProvider:
                 or initial.retry_policy.max_attempts != 1):
             raise ActionRequirementError('Host command original one-attempt intent required')
 
+        self._refuse_held_duplicate(service, initial)
         _, _, _, _, selected_home = self._input(request, binding)
 
         def guard():

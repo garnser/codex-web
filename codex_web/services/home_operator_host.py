@@ -10,6 +10,7 @@ import platform
 import shutil
 import sys
 from dataclasses import dataclass
+from codex_web.home_restart import current_home_restart, home_restart_context
 from types import SimpleNamespace
 
 from codex_web.authority import AuthorityLevel
@@ -162,7 +163,11 @@ class HomeOperatorHostService:
                     or (actor.organization_id, actor.workspace_id) !=
                         (assignment.organization_id, assignment.workspace_id)):
                 raise AuthorizationError('Operator-profile native input requires its exact human administrator')
-            if source not in {'web', 'queued:web'}:
+            effective_source = source
+            restart_authorizer = current_home_restart()
+            if restart_authorizer is not None:
+                effective_source = restart_authorizer.validate_input(assignment, actor, project, source)
+            if effective_source not in {'web', 'queued:web'}:
                 raise AuthorizationError('Home operator input requires canonical human web ingress')
             current_actor = self.broker.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
             IdentityService.require_admin(current_actor)
@@ -206,6 +211,8 @@ class HomeOperatorHostService:
                 'message': 'Current Home operator input authority or custody changed',
             })
 
+        restart_authorizer = current_home_restart()
+
         def current():
             try:
                 if self.projects.get('home', actor.tenant).home_operator != operator_snapshot:
@@ -226,8 +233,9 @@ class HomeOperatorHostService:
                         or assignment.lease.expires_at <= now
                         or assignment.deadline_at is not None and assignment.deadline_at <= now):
                     refuse()
-                self.authorize_native_input(assignment=assignment, actor=actor, project=project, source=source,
-                    request_checksum=request_checksum, input_execution_id=input_execution_id)
+                with home_restart_context(restart_authorizer):
+                    self.authorize_native_input(assignment=assignment, actor=actor, project=project, source=source,
+                        request_checksum=request_checksum, input_execution_id=input_execution_id)
             except (IdentityError, ValueError, LookupError):
                 refuse()
 

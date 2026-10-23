@@ -1,0 +1,32 @@
+"""Server-produced reference to existing canonical interrupted-turn recovery."""
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class HomeRestartInputProof(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    schema_version: Literal['1.3'] = '1.3'
+    recovery_id: str = Field(min_length=1, max_length=512)
+    original_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    thread_id: str = Field(min_length=1, max_length=200)
+    requested_by: str = Field(min_length=1, max_length=200)
+    selection_revision: int = Field(ge=1, strict=True)
+    message_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+_current = ContextVar('canonical_home_restart_input', default=None)
+
+
+def current_home_restart():
+    return _current.get()
+
+
+@contextmanager
+def home_restart_context(authorizer):
+    token = _current.set(authorizer)
+    try:
+        yield
+    finally:
+        _current.reset(token)
