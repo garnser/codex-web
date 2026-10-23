@@ -259,6 +259,7 @@ class AutomationOutcomeReconciliationService:
         run: AutomationRun,
         assignments,
         automation,
+        *, records=None,
     ) -> tuple[str, str | None, str | None, tuple[str, ...]]:
         budget = automation.budget
         metric_limits = (
@@ -271,7 +272,7 @@ class AutomationOutcomeReconciliationService:
             for field, limit, label in metric_limits
             if limit is not None
         ]
-        records = self._usage_records(run)
+        records = self._usage_records(run) if records is None else records
         usage_evidence = tuple(
             dict.fromkeys(
                 evidence_id

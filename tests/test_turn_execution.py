@@ -2741,6 +2741,27 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcomes, [('turn-1', True)])
         self.assertEqual(sessions.completed, [])
 
+    async def test_slow_retained_observer_runs_off_loop_and_stays_joined_to_barrier(self):
+        import threading
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
+        entered, release = threading.Event(), threading.Event()
+        def observe(active, *, succeeded):
+            entered.set()
+            release.wait(2.)
+        service.retained_turn_outcome_recorder = observe
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method':'turn/completed',
+            'params':{'threadId':'t1', 'turn':{'id':'turn-1'}}})
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 1.))
+            await asyncio.wait_for(asyncio.sleep(0), .2)
+            self.assertIn('t1', service.thread_completion_tasks)
+            self.assertFalse(service.thread_completion_tasks['t1'].done())
+        finally:
+            release.set()
+            await asyncio.gather(*service.assignment_completion_tasks.values())
+        self.assertEqual(service.thread_completion_tasks, {})
+
     async def test_retained_event_failure_observation_preserves_checkpoint_error(self):
         host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
         sessions.checkpoint = AsyncMock(side_effect=RuntimeError('checkpoint failed'))

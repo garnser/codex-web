@@ -259,12 +259,24 @@ needs no Work Item creation: its subject is the retained operator conversation.
 Only bounded identifier references are appended to the published instructions;
 raw event bodies, logs, transcripts and credentials are excluded. The new message
 contribution is conservatively bounded by its byte length against the configured
-input-token allocation. Existing native history/model limits and Automation usage
-accounting still apply; this input bound is not a new whole-transcript estimator.
+input-token allocation. This is not a whole-transcript estimator. Settlement
+uses canonical runtime usage for the exact assignment, session and native turn,
+including actual input/output tokens and duration; missing usage remains pending,
+not zero. The current native request API exposes no provider-side hard output-token
+limit. An observed over-budget output is recorded as a failed Automation, rather
+than claimed to have been prevented by the deterministic controller wrapper.
 
 Before enqueueing, an atomic transition of the existing AutomationRun records its
 original delivery claim and requested execution ID. At most one Home delivery may
-remain unresolved in a workspace. The existing TurnService enters a deferred turn
+remain unresolved in a workspace. Other genuine events stay in
+`waiting_for_capacity`, including events from the same Automation. They keep their
+original dedupe identity and are admitted in creation order after positive terminal
+settlement. Up to 128 active Home events are retained per workspace; overflow is an
+explicit recorded capacity refusal. Completion, real usage, startup/idle recovery
+and canonical cooldown wakeups advance deferred delivery without model polling.
+Unknown claimed deliveries are never requalified as no-effect.
+
+The existing TurnService enters a deferred turn
 in the **same** selected conversation without assignment replacement or renewal.
 Human queue policy remains authoritative. Current publication, owner membership,
 explicit capability, selection and Profile pins are rechecked at queue admission,
@@ -283,8 +295,9 @@ resume a native Goal or duplicate an uncertain external action.
 
 Retained threads keep their assignment alive after a turn, so assignment-terminal
 Automation reconciliation alone cannot settle these runs. The existing runtime
-checkpoint barrier reports the actual native terminal outcome to the Automation
-ledger, without creating another execution. It validates the original run/thread/
+checkpoint barrier joins the retained-turn outcome observer; synchronous storage
+work runs in a worker thread, without blocking the shared async loop. It reports
+the actual native terminal outcome to the Automation ledger, without creating another execution. It validates the original run/thread/
 Profile and current bootstrap/fence/lease; checkpoint failure remains failure.
 A duplicate callback cannot overwrite the first terminal fact. Historical outcome
 recording grants no new input and does not change pause state or provider receipts.
@@ -292,3 +305,19 @@ A missing or incompatible terminal witness remains unresolved for reconciliation
 Browser disconnection does not own delivery or settlement: both use canonical
 persisted records. This implements the event-delivery engine, not the full #1669
 live UI/restart/lease-expiry qualification or privileged host mutation capability.
+
+
+Home event runs use AutomationRun state schema **1.4**, with a migration from 1.3,
+a durable waiting status, immutable positive terminal witness and one interrupt
+attempt marker. This is a canonical state compatibility change, including ordinary
+run-store writes; a rollback requires a reader supporting 1.4 or the documented
+state compatibility procedure. It must not be described as a migration-free install.
+
+Each original claimed run creates one canonical duration deadline. At expiry the
+engine may request the existing guarded `turn/interrupt` operation only for that
+run's exact active native turn and current original assignment/worker/fence/lease.
+A changed turn or custody refuses. The interrupt attempt is persisted before the
+request; a lost response is never resent. Interruption does not settle external
+mutations: original ActionIntent uncertainty and terminal/usage reconciliation
+remain authoritative. Canonical timers and native recovery keep pending state
+visible across restart; they do not revive cancelled custody or create idle turns.
