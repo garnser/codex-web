@@ -7,6 +7,7 @@ validator; those are checked by the same credential owner at every lease edge.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,11 +52,12 @@ class NativeReasoningComponents:
     model_adapter: NativeCodexModelProviderAdapter
     bridge: CanonicalNativeReasoningBridge
     invocation_authorizer: object
+    preparation_context: object
 
 
 def build_native_reasoning_components(*, binding, local_worker, host, codex_home: Path,
         executable: str, catalog_path: Path, catalog_sha256: str,
-        validate_profile, invocation_authorizer, threads, turns, sessions, usage,
+        validate_profile, invocation_authorizer, agent_profiles, execution_profiles, threads, turns, sessions, usage,
         preflight, execution, hub, executives):
     """Build inert components; registration is explicit and never enables a Profile.
 
@@ -74,7 +76,7 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
              assignment.assigned_worker_id, assignment.execution_profile_id) !=
             (context.organization_id, context.workspace_id, context.project_id,
              binding.worker_id, binding.execution_profile_id)
-                or assignment.resource_ids or assignment.secret_refs or assignment.skill_refs
+                or assignment.resource_ids or assignment.secret_refs
                 or assignment.repository_scope is not None or assignment.resource_context is not None
                 or assignment.sandbox != 'read-only' or assignment.network.enabled
                 or profile is None or profile.profile_id != binding.agent_profile_id
@@ -84,11 +86,41 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
                 or runtime.authentication_mode != 'trusted_local_session'
                 or context.concrete_model != binding.concrete_model):
             raise NativeReasoningPolicyError('Native reasoning assignment scope changed')
+        if context.requester is None:
+            raise NativeReasoningPolicyError('Actual consultation requester unavailable')
+        current_profile, _ = agent_profiles.resolve_for_execution(binding.agent_profile_id,
+            actor=context.requester, project_id=context.project_id,
+            revision=binding.agent_profile_revision)
+        if current_profile.record_id != profile.profile_record_id:
+            raise NativeReasoningPolicyError('Native reasoning AgentProfile pin changed')
+        contract, reference = execution_profiles.resolve(binding.execution_profile_id,
+            organization_id=context.organization_id, workspace_id=context.workspace_id,
+            project_id=context.project_id)
+        workspace = local_worker.workspace_service.get(assignment.execution_workspace_id,
+                                                       local_worker.control_actor)
+        lease = local_worker.workspace_service.store.lease(workspace.lease_id)
+        if (reference != assignment.execution_profile_definition
+                or contract.workspace_mode != 'scratch' or contract.repository_access != 'none'
+                or contract.control_plane_operations or contract.administrative_repository_ids
+                or contract.project_coordination or contract.home_operator
+                or contract.network_enabled or contract.host_mutation
+                or workspace.kind != 'scratch' or workspace.status != 'active'
+                or (workspace.organization_id, workspace.workspace_id, workspace.project_id,
+                    workspace.execution_id, workspace.subject) !=
+                   (assignment.organization_id, assignment.workspace_id, assignment.project_id,
+                    assignment.execution_id, assignment.subject)
+                or workspace.resource_ids or workspace.read_only_resource_ids
+                or workspace.writable_repository_ids or workspace.resource_context is not None
+                or lease is None or lease.released_at is not None or lease.expires_at <= time.time()
+                or lease.resource_ids or lease.resource_modes
+                or lease.execution_workspace_id != workspace.id
+                or lease.execution_id != assignment.execution_id):
+            raise NativeReasoningPolicyError('Native reasoning empty physical scope unavailable')
         validate_profile(assignment)
 
     credentials = TrustedLocalReasoningCredentialProvider(codex_home=codex_home,
         executable=executable, catalog_path=catalog_path, catalog_sha256=catalog_sha256,
-        validate_context=validate_scope)
+        validate_context=validate_scope, concrete_model=binding.concrete_model)
     runtime_binding = ExecutionRuntimeBinding(provider_id='openai', runtime_id='codex-reasoning',
         capability_revision=1, sandbox_profiles=('read-only',),
         authentication_mode='trusted_local_session')
@@ -109,7 +141,14 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
         runtime = serving.runtime
         backend = local_worker.backend
         status = serving.status()
-        if (assignment != expected or serving.credential_provider is not credentials
+        if ((assignment.id, assignment.execution_id, assignment.fence,
+                assignment.assigned_worker_id, assignment.execution_workspace_id,
+                assignment.execution_profile_definition, assignment.agent_profile,
+                assignment.resource_ids, assignment.repository_scope, assignment.runtime_binding) !=
+               (expected.id, expected.execution_id, expected.fence, expected.assigned_worker_id,
+                expected.execution_workspace_id, expected.execution_profile_definition,
+                expected.agent_profile, expected.resource_ids, expected.repository_scope,
+                expected.runtime_binding) or serving.credential_provider is not credentials
                 or type(backend) is not BubblewrapExecutionBackend
                 or getattr(serving, '_reasoning_launch_backend', None) is not backend
                 or serving.control_plane_broker is not None
@@ -124,6 +163,33 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
             raise NativeReasoningPolicyError('Actual native isolation unavailable')
         backend.validate_assignment(assignment)
 
+    def preparation_context(*, assignment, actor, project, sandbox, request_checksum):
+        from codex_web.services.procedure_discovery import OperationContext, checksum
+        context = current_native_model_invocation()
+        serving = manager.get(assignment.id)
+        if (serving is None or context.requester is None
+                or (actor.identity_id,actor.organization_id,actor.workspace_id,actor.principal_kind) !=
+                   (context.actor_id,context.organization_id,context.workspace_id,context.requester.principal_kind)
+                or project.id != context.project_id
+                or sandbox != 'read-only' or not request_checksum
+                or request_checksum != context.input_message_sha256):
+            raise NativeReasoningPolicyError('Native reasoning original input proof unavailable')
+        attest(serving, assignment, context, SimpleNamespace(concrete_model=binding.concrete_model))
+        proof = checksum({'assignment':assignment.id,'fence':assignment.fence,
+            'execution':assignment.execution_id,'workspace':assignment.execution_workspace_id,
+            'activation':context.activation_id,'role':context.role_id,
+            'invocation':context.execution_id,'input':request_checksum,
+            'profile':assignment.agent_profile.model_dump(mode='json'),
+            'definition':assignment.execution_profile_definition.model_dump(mode='json'),
+            'catalog':catalog_sha256})
+        return OperationContext(actor=actor,project_id=project.id,resource_ids=(),
+            operation='model.reasoning',provider_capabilities=(),worker_capabilities=(),
+            operation_capabilities=(),policy_source='canonical:native-reasoning:' + proof,
+            capability_sources=('canonical:actual-native-reasoning-tools-empty:' + proof,),
+            policy_allows=True,enforcement='bounded_read_only',request_checksum=request_checksum,
+            required_skill_refs=tuple(dict.fromkeys((*assignment.skill_refs,
+                                                     *assignment.agent_profile.skill_refs))))
+
     bridge = CanonicalNativeReasoningBridge(binding=binding, threads=threads, turns=turns,
         sessions=sessions, usage=usage, preflight=preflight, execution=execution, hub=hub,
         attest_session=attest)
@@ -131,7 +197,7 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
     # Root composition must register all components atomically before exposing
     # the matching canonical provider/Profile/Definition.
     return NativeReasoningComponents(manager, adapter, NativeCodexModelProviderAdapter(bridge), bridge,
-                                     invocation_authorizer)
+                                     invocation_authorizer, preparation_context)
 
 
 def register_native_reasoning_components(components, *, gateway, registry, telemetry,
@@ -147,6 +213,9 @@ def register_native_reasoning_components(components, *, gateway, registry, telem
         accounting_mode=AgentRuntimeAccountingMode.ALLOCATION)
     gateway.register_adapter(components.model_adapter)
     executives.native_invocation_authorizer = components.invocation_authorizer
+    if turn_execution.procedure_admission is None:
+        raise NativeReasoningPolicyError('Canonical native procedure admission unavailable')
+    turn_execution.procedure_admission.reasoning_preparation = components.preparation_context
     previous_notifier = telemetry.observation_notifier
     def observed(record):
         try:

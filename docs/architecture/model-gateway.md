@@ -374,3 +374,40 @@ native adapter does not change projectless ordinary priced consultations: native
 caller authorization is evaluated only if a scoped native route is selected.
 Native completed commentary and final answers remain separate; only a bounded
 completed final answer is returned as the model result.
+
+Native reasoning startup uses the existing Configuration Registry, category
+`Model & Provider`, with startup-only `model.native_reasoning.*` keys:
+`enabled` (default false), `provider_id`, `model_id`, `concrete_model`,
+`agent_profile_id`, `agent_profile_revision`, `execution_profile_id`, `worker_id`,
+`catalog_path`, and `catalog_sha256`. Only explicit published deployment/global
+values enable registration; an incomplete enabled set refuses startup. These
+values select existing canonical objects and a reviewed, reduced public catalog;
+they publish no provider, model, routing policy, Profile, permission or credential.
+The actual existing worker ID and ambient credential-owner reference must match.
+Changing/disabling any selected configuration record refuses further inference
+until reviewed startup composition is repeated. Configuration inspection and
+publication use the existing configuration UI/API, with ordinary canonical
+provider/model/routing and AgentProfile/Definition administration alongside it.
+
+The configured execution contract is an explicitly published scratch/none,
+network-disabled, host-mutation-disabled, read-only contract, without broker,
+Home or project coordination operations/targets. The Profile must be visible and
+invokable by the actual consultation requester. A session uses only the existing
+Codex sign-in authentication mode; API-key mode cannot silently replace it.
+Current tenant, Profile revision, Definition, worker, empty physical workspace
+and live resource lease are revalidated at preparation and final input. Existing
+Skill discovery receives the exact `model.reasoning` operation and attested empty
+tool capability sets: unrelated remote mutation procedures are unmatched, while
+explicit missing/quarantined/version-skewed Skill pins and applicable procedures
+still refuse. This is not an unconditional discovery bypass.
+
+Native authorization rechecks the original canonical caller. Existing local
+trusted identity, browser session expiry/revocation/assurance, service-token
+metadata and membership remain owned by IdentityService. A credential-free broker
+requester additionally requires its original canonical assignment-origin guard;
+resolving membership never creates authentication or MFA. The existing Executive
+consulting reservation and original broker custody remain current through the
+same final native writer guard. Default-disabled composition is inert and makes
+no model call. Actual subscription authentication, complete effective tool
+restrictions, bounded usage and a genuine consultation still require qualified
+runtime evidence before enabling this route.

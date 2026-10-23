@@ -23,7 +23,7 @@ class NativeExecutiveContextTests(unittest.IsolatedAsyncioTestCase):
             state.activations=[updated if x.id==updated.id else x for x in state.activations]
             return state,updated
         activation=f.store.update(activation.id,pin)
-        f.service.native_invocation_authorizer=lambda activation,actor:lambda:None
+        f.service.native_invocation_authorizer=lambda activation,actor,**kwargs:lambda:None
         guards=[]
         original=f.gateway.invoke
         async def invoke(request,*,actor,native_context):
@@ -44,7 +44,7 @@ class NativeExecutiveContextTests(unittest.IsolatedAsyncioTestCase):
         activation=f.service.create(ExecutiveActivationCreate(subject='Architecture migration',
             request='Assess one bounded architecture migration decision',requested_role_ids=('cto',)),actor=f.actor)
         self.assertEqual(f.service._native_context(activation,'cto',f.actor,1000,1000),{})
-        f.service.native_invocation_authorizer=lambda activation,actor:lambda:None
+        f.service.native_invocation_authorizer=lambda activation,actor,**kwargs:lambda:None
         self.assertEqual(f.service._native_context(activation,'cto',f.actor,1000,1000),{})
         # The existing ordinary gateway accepts no native-only keyword/context.
         # Native opt-in must not break a legitimate projectless consultation.

@@ -415,6 +415,7 @@ class NativeProcedureAdmissionService:
         self.input_authorizer = None
         self.native_session_attestor = None
         self.procedure_execution = None
+        self.reasoning_preparation = None
 
     def _native_policy(self, assignment, actor, project, sandbox):
         """Existing exact profile permits isolated preparation, never host operations.
@@ -575,6 +576,23 @@ class NativeProcedureAdmissionService:
             raise ValueError("physical-scope candidates changed or are unsupported")
         return discovery, text
 
+    def _reasoning_context(self, assignment, actor, project, sandbox, request_checksum):
+        if (self.reasoning_preparation is None or assignment is None
+                or assignment.runtime_binding is None
+                or assignment.runtime_binding.runtime_id != 'codex-reasoning'):
+            raise ValueError('Actual native reasoning preparation unavailable')
+        context = self.reasoning_preparation(assignment=assignment, actor=actor,
+            project=project, sandbox=sandbox, request_checksum=request_checksum)
+        if (not isinstance(context, OperationContext) or context.actor != actor
+                or context.project_id != project.id or context.resource_ids != ()
+                or context.operation != 'model.reasoning'
+                or context.provider_capabilities != () or context.worker_capabilities != ()
+                or context.operation_capabilities != ()
+                or context.request_checksum != request_checksum
+                or context.enforcement != 'bounded_read_only' or not context.policy_allows):
+            raise ValueError('Native reasoning operation scope unavailable')
+        return context
+
     def preparation_input_guard(self, discovery, *, project, actor, execution_id, assignment_id, sandbox, request_checksum):
         """A fresh read-only check at the existing guarded native send boundary."""
         def validate():
@@ -583,7 +601,12 @@ class NativeProcedureAdmissionService:
                 current = self.workers.assignment_for_execution(execution_id, actor=self.control_actor)
                 if current.id != assignment_id:
                     raise ValueError("native assignment changed")
-                if discovery.selected:
+                if (discovery.operation == 'model.reasoning'
+                        and current.runtime_binding is not None
+                        and current.runtime_binding.runtime_id == 'codex-reasoning'):
+                    context = self._reasoning_context(current, actor, project, sandbox, request_checksum)
+                    fresh, _ = self.discovery.discover(context)
+                elif discovery.selected:
                     fresh, _ = self._preparation_discovery(current, actor, project, sandbox, request_checksum, discovery.selected)
                 else:
                     fresh, _ = self._empty_preparation_discovery(current, actor, project, sandbox, request_checksum,
@@ -624,18 +647,32 @@ class NativeProcedureAdmissionService:
                 raise ExecutionPrestartRefusal(status_code=403, detail={
                     'code': 'native_input_authority_denied', 'message': str(exc),
                 }) from exc
-        targets = assignment.resource_ids if assignment is not None else ()
-        enforcement, policy_source = await asyncio.to_thread(self._native_policy, assignment, actor, project, sandbox)
-        context = OperationContext(actor=actor, project_id=project.id, resource_ids=targets, operation=None,
-            request_checksum=request_checksum, policy_source=policy_source, policy_allows=True, enforcement=enforcement,
-            **await asyncio.to_thread(self.discovery.resource_facts, targets, actor))
-        if assignment is not None:
-            context = await asyncio.to_thread(self.discovery.assignment_context, context, assignment, actor=actor)
-            if context.worker_capabilities is None or context.provider_capabilities is None:
-                from dataclasses import replace
-                context = replace(context, enforcement="native_tools")
+        is_reasoning = (assignment is not None and assignment.runtime_binding is not None
+                        and assignment.runtime_binding.runtime_id == 'codex-reasoning')
+        if is_reasoning:
+            from codex_web.services.post_turn_readiness import PostTurnReadinessService
+            try:
+                context = await PostTurnReadinessService._run_owned(
+                    lambda: asyncio.to_thread(self._reasoning_context, assignment, actor, project,
+                                              sandbox, request_checksum),
+                    seconds=5., name='native-reasoning-procedure-context')
+            except Exception as exc:
+                raise ExecutionPrestartRefusal(status_code=409, detail={
+                    'code':'native_reasoning_preparation_unavailable',
+                    'message':'Current canonical tool-free reasoning preparation is unavailable'}) from exc
+        else:
+            targets = assignment.resource_ids if assignment is not None else ()
+            enforcement, policy_source = await asyncio.to_thread(self._native_policy, assignment, actor, project, sandbox)
+            context = OperationContext(actor=actor, project_id=project.id, resource_ids=targets, operation=None,
+                request_checksum=request_checksum, policy_source=policy_source, policy_allows=True, enforcement=enforcement,
+                **await asyncio.to_thread(self.discovery.resource_facts, targets, actor))
+            if assignment is not None:
+                context = await asyncio.to_thread(self.discovery.assignment_context, context, assignment, actor=actor)
+                if context.worker_capabilities is None or context.provider_capabilities is None:
+                    from dataclasses import replace
+                    context = replace(context, enforcement="native_tools")
         discovery, text = await asyncio.to_thread(self.discovery.discover, context)
-        if (assignment is not None and assignment.resource_ids == () and discovery.candidates
+        if (not is_reasoning and assignment is not None and assignment.resource_ids == () and discovery.candidates
                 and context.enforcement in {"bounded_read_only", "isolated_preparation"}
                 and self.native_session_attestor is not None and self.procedure_execution is not None):
             try:
@@ -644,7 +681,7 @@ class NativeProcedureAdmissionService:
                     tuple(candidate.reference for candidate in discovery.candidates))
             except Exception:
                 pass  # Unknown/unsupported scope retains the original refusal.
-        if (assignment is not None and discovery.outcome == "unsupported_enforcement"
+        if (not is_reasoning and assignment is not None and discovery.outcome == "unsupported_enforcement"
                 and discovery.selected and len(discovery.blockers) == 1
                 and discovery.blockers[0].startswith("procedure_tool_enforcement_unsupported:")
                 and context.enforcement in {"bounded_read_only", "isolated_preparation"}

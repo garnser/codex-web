@@ -1383,7 +1383,7 @@ class ExecutiveManagementService:
         def validate_current():
             # Ordinary priced adapters never execute this native-only validator.
             # Resolve the configured caller owner lazily under its storage budget.
-            caller_guard = self.native_invocation_authorizer(activation, actor)
+            caller_guard = self.native_invocation_authorizer(activation, actor, origin_guard=origin_guard)
             if not callable(caller_guard):
                 raise ExecutiveConsultationError('Native consultation authorization unavailable')
             caller_guard()

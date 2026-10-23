@@ -34,11 +34,12 @@ class TrustedLocalReasoningCredentialProvider(TrustedLocalCodexCredentialProvide
     """Same canonical lease grant, without ambient Codex configuration access."""
 
     def __init__(self, *, catalog_path: Path, catalog_sha256: str,
-                 validate_context: Callable[[Any], None], **kwargs):
+                 validate_context: Callable[[Any], None], concrete_model: str, **kwargs):
         super().__init__(**kwargs)
         self.catalog_path = catalog_path
         self.catalog_sha256 = catalog_sha256
         self.validate_context = validate_context
+        self.concrete_model = concrete_model
 
     def use(self, assignment, *, worker_id, fence, actor, consumer):
         self._require_worker_actor(actor)
@@ -58,6 +59,7 @@ class TrustedLocalReasoningCredentialProvider(TrustedLocalCodexCredentialProvide
         catalog = json.loads(payload)
         rows = catalog.get('models')
         if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+                or rows[0].get('slug') != self.concrete_model
                 or rows[0].get('shell_type') != 'disabled'
                 or rows[0].get('apply_patch_tool_type') is not None
                 or rows[0].get('experimental_supported_tools') != []

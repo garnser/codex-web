@@ -3737,6 +3737,18 @@ turn_execution_service.upgrade_turn_admission_guard = (
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
+from codex_web.services.native_reasoning_configuration import compose_native_reasoning
+app.state.native_reasoning_components = compose_native_reasoning(
+    configuration=configuration_service, identity=identity_service,
+    agent_profiles=agent_profile_service, execution_profiles=execution_profile_definition_service,
+    local_worker=local_execution_worker_runtime, host=core,
+    codex_home=(_ambient_codex_home if trusted_local_codex_delegation is not None else None),
+    executable=_ambient_codex_executable, threads=thread_service, turns=turn_service,
+    sessions=agent_session_store, usage=agent_runtime_usage_store,
+    preflight=execution_preflight_service, execution=turn_execution_service, hub=event_hub,
+    executives=executive_management_service, gateway=model_gateway_service,
+    registry=agent_runtime_registry, telemetry=agent_runtime_telemetry_service,
+    session_managers=assignment_session_managers)
 from codex_web.services.project_coordination import ProjectCoordinationService, ProjectCoordinationActionProvider
 project_coordination_service = ProjectCoordinationService(control_plane_broker_service,
     threads=thread_service, turns=turn_service, scope=thread_scope_service,
