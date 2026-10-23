@@ -111,3 +111,51 @@ class ProjectWorkspaceRouteTests(unittest.TestCase):
                 response = client.get(f'{prefix}/projects/project-a', follow_redirects=False)
                 self.assertEqual(response.status_code, 307)
                 self.assertEqual(response.headers['location'], f'http://testserver{prefix}/projects/project-a/overview')
+
+
+class ProjectLandingQueryTests(unittest.TestCase):
+    """Exercise the actual redirect, rather than only checking shortcut markup."""
+
+    def client(self, prefix: str):
+        service = _UiService()
+        app = FastAPI()
+        app.include_router(build_ui_router(service))
+        parent = FastAPI()
+        parent.mount(prefix or '/', app)
+        return TestClient(parent), service
+
+    def test_existing_conversation_survives_project_landing_at_both_mounts(self):
+        from urllib.parse import urlsplit, parse_qs
+        for prefix in ('', '/codex'):
+            with self.subTest(prefix=prefix), self.client(prefix)[0] as client:
+                response = client.get(
+                    f'{prefix}/projects/home?thread=same-existing-thread',
+                    follow_redirects=False,
+                )
+                self.assertEqual(response.status_code, 307)
+                target = urlsplit(response.headers['location'])
+                self.assertEqual(target.path, f'{prefix}/projects/home/overview')
+                self.assertEqual(parse_qs(target.query), {'thread': ['same-existing-thread']})
+                landed = client.get(response.headers['location'])
+                self.assertEqual(landed.status_code, 200)
+                self.assertEqual(landed.url.params['thread'], 'same-existing-thread')
+
+    def test_encoded_and_duplicate_query_values_remain_data_on_same_origin(self):
+        from urllib.parse import urlsplit, parse_qsl
+        query = 'thread=existing%2Fid%3Fvalue%3Dx&filter=one&filter=two&return_to=https%3A%2F%2Fother.invalid%2Fx%3Fa%3Db&empty='
+        with self.client('/codex')[0] as client:
+            response = client.get('/codex/projects/home?' + query, follow_redirects=False)
+            target = urlsplit(response.headers['location'])
+            self.assertEqual((target.scheme, target.netloc), ('http', 'testserver'))
+            self.assertEqual(target.path, '/codex/projects/home/overview')
+            self.assertEqual(target.query, query)
+            self.assertEqual(parse_qsl(target.query, keep_blank_values=True),
+                             parse_qsl(query, keep_blank_values=True))
+
+    def test_ordinary_project_without_query_keeps_canonical_destination(self):
+        for prefix in ('', '/codex'):
+            with self.subTest(prefix=prefix), self.client(prefix)[0] as client:
+                response = client.get(f'{prefix}/projects/project-a', follow_redirects=False)
+                self.assertEqual(response.status_code, 307)
+                self.assertEqual(response.headers['location'],
+                                 f'http://testserver{prefix}/projects/project-a/overview')
