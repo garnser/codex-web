@@ -143,10 +143,10 @@ class ProcedureDiscoveryService:
                 raise ValueError("procedure_required_skill_limit")
             for required in context.required_skill_refs:
                 try:
-                    self.skills.validate_reference(required, actor=actor)
+                    self.skills.validate_reference(required, actor=actor, project_id=context.project_id)
                     required_record = self.skills.definitions.get_record(required.record_id)
                     if required_record.payload.get("operational_procedure") is not None:
-                        self.skills.validate_required_procedure(required, actor=actor)
+                        self.skills.validate_required_procedure(required, actor=actor, project_id=context.project_id)
                 except Exception as exc:
                     reason = exc.code if isinstance(exc, SkillResolutionFailure) else "required_skill_unavailable"
                     candidates.append(ProcedureCandidate(reference=required, outcome="blocked", reasons=(reason,)))
@@ -189,6 +189,13 @@ class ProcedureDiscoveryService:
                 if p is None:
                     continue
                 ref = reference_for(record)
+                from codex_web.services.native_procedure_preparation import current_preparation
+                physical_proof = current_preparation()
+                if (not resources and context.operation is None and physical_proof is not None
+                        and physical_proof.excludes(ref, context)):
+                    candidates.append(ProcedureCandidate(reference=ref, outcome="rejected",
+                        reasons=("native_physical_scope_empty",)))
+                    continue
                 rejected = []
                 # Trigger matching also uses canonical capability requirements:
                 # changing a provider/action name cannot bypass a procedure
@@ -244,7 +251,7 @@ class ProcedureDiscoveryService:
                 except DefinitionCompatibilityError:
                     reasons.append("procedure_incompatible")
                 try:
-                    self.skills.validate_required_procedure(ref, actor=actor)
+                    self.skills.validate_required_procedure(ref, actor=actor, project_id=context.project_id)
                 except SkillResolutionFailure as exc:
                     reasons.append(exc.code)
                 except SkillNotFound:
@@ -482,10 +489,14 @@ class NativeProcedureAdmissionService:
         except Exception:
             return "native_tools", "canonical:execution-policy-unavailable"
 
-    def _preparation_context(self, assignment, actor, project, sandbox, request_checksum):
+    def _preparation_context(self, assignment, actor, project, sandbox, request_checksum, *, require_operations=True):
         enforcement, source = self._native_policy(assignment, actor, project, sandbox)
         if enforcement not in {"bounded_read_only", "isolated_preparation"}:
             raise ValueError("native preparation policy changed")
+        profile, _ = self.execution_profiles.resolve(assignment.execution_profile_id,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
+        if require_operations and not {"procedure.read", "procedure.start", "procedure.advance"}.issubset(profile.control_plane_operations):
+            raise ValueError("current execution Definition does not declare procedure operations")
         context = OperationContext(actor=actor, project_id=project.id,
             resource_ids=assignment.resource_ids, operation=None, request_checksum=request_checksum,
             policy_source=source, policy_allows=True, enforcement=enforcement,
@@ -503,7 +514,7 @@ class NativeProcedureAdmissionService:
         context = self._preparation_context(assignment, actor, project, sandbox, request_checksum)
         expected_context = context
         def validate():
-            self.native_session_attestor(assignment)
+            self.native_session_attestor(assignment, self.procedure_execution)
             self.procedure_execution.validate_native_preparation(assignment, selected, actor)
             if self._preparation_context(assignment, actor, project, sandbox, request_checksum) != expected_context:
                 raise ValueError("native preparation context changed")
@@ -520,6 +531,50 @@ class NativeProcedureAdmissionService:
             raise ProcedureAdmissionError(discovery)
         return discovery, text
 
+    def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references):
+        from dataclasses import replace
+        from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
+        if self.native_session_attestor is None or self.procedure_execution is None:
+            raise ValueError("physical scope is not attested")
+        def validate():
+            self.native_session_attestor(assignment, self.procedure_execution)
+            self.procedure_execution.validate_native_preparation_owner(assignment)
+            profile, _ = self.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
+            workspace = self.workers.workspaces.get(assignment.execution_workspace_id, self.control_actor)
+            lease = self.workers.workspaces.store.lease(workspace.lease_id)
+            if (profile.workspace_mode != "scratch" or profile.repository_access != "none"
+                    or assignment.resource_ids != () or assignment.resource_context is not None
+                    or workspace.kind != "scratch" or workspace.resource_ids != ()
+                    or workspace.resource_context is not None or workspace.read_only_resource_ids != ()
+                    or workspace.writable_repository_ids != () or lease is None
+                    or lease.resource_ids != () or lease.resource_modes != {}):
+                raise ValueError("physical scope is not exactly empty")
+            self._preparation_context(assignment, actor, project, sandbox, request_checksum, require_operations=False)
+        validate()
+        context = self._preparation_context(assignment, actor, project, sandbox, request_checksum, require_operations=False)
+        source = "canonical:native-empty-physical-scope:" + checksum({
+            "assignment":assignment.id,"fence":assignment.fence,"workspace":assignment.execution_workspace_id,
+            "definitions":[ref.model_dump(mode="json") for ref in references],"policy":context.policy_source})
+        context = replace(context, policy_source=context.policy_source + ";" + source,
+            capability_sources=(*context.capability_sources,source))
+        excluded = []
+        def excludes(reference):
+            if reference not in references:
+                return False
+            try:
+                self.procedure_execution.validate_native_preparation(assignment, (reference,), actor, require_targets=False)
+            except Exception:
+                return False
+            excluded.append(reference)
+            return True
+        proof = NativeProviderPreparation((),source,validate,context=context,exclude_empty=excludes)
+        with native_provider_preparation(proof):
+            discovery, text = self.discovery.discover(context)
+        if not excluded or tuple(candidate.reference for candidate in discovery.candidates) != tuple(references):
+            raise ValueError("physical-scope candidates changed or are unsupported")
+        return discovery, text
+
     def preparation_input_guard(self, discovery, *, project, actor, execution_id, assignment_id, sandbox, request_checksum):
         """A fresh read-only check at the existing guarded native send boundary."""
         def validate():
@@ -528,7 +583,13 @@ class NativeProcedureAdmissionService:
                 current = self.workers.assignment_for_execution(execution_id, actor=self.control_actor)
                 if current.id != assignment_id:
                     raise ValueError("native assignment changed")
-                fresh, _ = self._preparation_discovery(current, actor, project, sandbox, request_checksum, discovery.selected)
+                if discovery.selected:
+                    fresh, _ = self._preparation_discovery(current, actor, project, sandbox, request_checksum, discovery.selected)
+                else:
+                    fresh, _ = self._empty_preparation_discovery(current, actor, project, sandbox, request_checksum,
+                        tuple(candidate.reference for candidate in discovery.candidates))
+                if not fresh.admitted:
+                    raise ProcedureAdmissionError(fresh)
                 if fresh.context_checksum != discovery.context_checksum:
                     raise ValueError("native preparation fingerprint changed")
             except Exception as exc:
@@ -574,6 +635,15 @@ class NativeProcedureAdmissionService:
                 from dataclasses import replace
                 context = replace(context, enforcement="native_tools")
         discovery, text = await asyncio.to_thread(self.discovery.discover, context)
+        if (assignment is not None and assignment.resource_ids == () and discovery.candidates
+                and context.enforcement in {"bounded_read_only", "isolated_preparation"}
+                and self.native_session_attestor is not None and self.procedure_execution is not None):
+            try:
+                discovery, text = await asyncio.to_thread(self._empty_preparation_discovery,
+                    assignment, actor, project, sandbox, request_checksum,
+                    tuple(candidate.reference for candidate in discovery.candidates))
+            except Exception:
+                pass  # Unknown/unsupported scope retains the original refusal.
         if (assignment is not None and discovery.outcome == "unsupported_enforcement"
                 and discovery.selected and len(discovery.blockers) == 1
                 and discovery.blockers[0].startswith("procedure_tool_enforcement_unsupported:")
