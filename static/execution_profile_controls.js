@@ -36,7 +36,15 @@ export function setCatalog(value, projectId = activeProjectId) {
         definition: null,
       };
   if (!value) clearControls(activeProjectId ? 'Loading execution profiles…' : 'Select a Project to view execution profiles.');
+  window.dispatchEvent(new Event('codex:execution-context-changed'));
   return catalog;
+}
+
+export function readinessSelection() {
+  const profile_id = document.getElementById('execution-profile')?.value;
+  const sandbox = document.getElementById('sandbox')?.value;
+  if (!activeProjectId || !selected(profile_id) || !sandbox || !catalog.definition) return null;
+  return {project_id:activeProjectId, profile_id, sandbox, definition:catalog.definition};
 }
 
 export async function load(projectId) {
@@ -113,6 +121,7 @@ export function render(profileId, escapeHtml) {
   if (mutable) mutable.disabled = !profile || scratch;
   if (writable) writable.disabled = !profile || scratch;
   if (readOnly) readOnly.disabled = !profile || scratch;
+  window.dispatchEvent(new Event('codex:execution-context-changed'));
 }
 
 window.addEventListener('codex:project-changed', event => {

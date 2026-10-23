@@ -2,6 +2,7 @@ import { preserveSetupEditor, mountSetupEditor, discardSetupEditor, setupSubmiss
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
 import { showPageEditor } from './page_editor.js';
+import { createExecutionReadinessGate } from './execution_readiness_gate.js';
 
 const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
 const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null, actionState: null, applying: false };
@@ -10,6 +11,7 @@ let refreshGeneration = 0;
 let planGeneration = 0;
 let refreshController = null;
 let loading = false;
+const executionGate = createExecutionReadinessGate({read:api, getProjectId:activeProjectId});
 
 function projectContext() {
   const projectId = state.projectId;
@@ -72,14 +74,7 @@ function inferredManifest() {
   };
 }
 function gateExecution() {
-  const value = blocked();
-  for (const id of ["new-thread", "send", "prompt"]) {
-    const element = document.getElementById(id);
-    if (!element) continue;
-    element.disabled = value;
-    element.setAttribute("aria-disabled", String(value));
-    if (value) element.title = "Project readiness is blocked. Open Project Setup for remediation.";
-  }
+  executionGate.update({projectId:state.projectId, readiness:state.readiness, loading});
 }
 function setPanel(name) {
   document.querySelectorAll("[data-setup-panel]").forEach((node) => { node.hidden = node.dataset.setupPanel !== name; });
@@ -285,6 +280,7 @@ async function refresh() {
   const current = () => context.current() && generation === refreshGeneration;
   state.error = null;
   loading = Boolean(projectId);
+  void executionGate.refresh({force:true});
   if (!projectId) {
     state.error = 'Select a Project to inspect setup and readiness.';
     render();

@@ -77,3 +77,24 @@ global navigation uses the shared unsaved-edit guard. An accepted apply acknowle
 only the submitted text, retaining newer edits as unsaved. Project changes clear the
 previous Project draft after the shell's navigation decision. Browser storage does
 not retain manifests or credential-shaped input.
+
+### Selected execution context readiness
+
+`GET /api/projects/{project_id}/readiness` keeps the generic Project repository
+readiness contract. Optional `execution_profile_id` and `sandbox` query parameters
+evaluate the selected execution context instead. The server resolves the current
+published execution-profile catalog in the caller's tenant and Project scope; the
+response includes the exact Definition reference, profile ID, and sandbox. A
+sandbox parameter requires an execution profile. Unknown profiles remain blocked.
+
+For a canonical scratch profile with repository access `none`, only repository
+resource and execution-target prerequisites become not applicable. Authentication,
+worker capabilities, sandbox support, and other required checks remain enforced.
+Contextual observations never replace generic Project readiness history. They are
+advisory: normal native admission still validates current identity, Profile,
+Definitions, worker, and authority.
+
+The chat gate requests one contextual observation per selected Project, profile,
+catalog reference, and sandbox, or on explicit refresh. Late responses from a
+previous selection cannot enable the composer. The Project Setup panel continues
+to show generic Project readiness separately.
