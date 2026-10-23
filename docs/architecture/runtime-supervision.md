@@ -1121,3 +1121,23 @@ input takes precedence. The witness is never restart authority: a later drain
 cannot recreate it to accept a cancelled or unrelated successor. External
 source cancellation, changed custody, revoked claims or scope leave the exact
 retained original blocked on the existing operator surfaces, without replay.
+
+
+## Bounded readiness-origin index admission wait
+
+A queue drain can encounter the canonical readiness-origin index while it is
+advancing its bounded process-reader cursor before bootstrap retirement. That
+specific local typed refusal retains the exact original queued snapshot and
+admission identity. The preflight owner atomically returns it to queued only
+while its claim remains current and no START/RESUME correlation, evidence,
+receipt, started timestamp or scheduling retirement exists. Native/provider
+errors that merely repeat the public progress code remain UNKNOWN.
+
+The existing delayed queue scheduler continues only a changing cursor in the
+same epoch, at most eight times within thirty seconds per retained original.
+The process-local scheduling book is capped at 256 originals; exhaustion or
+unchanged/changed-epoch progress retains the request without an immediate spin.
+Every wake uses normal current actor, scope, profile and execution admission.
+No page size, worker authority, native replay, model budget or persisted schema
+changes. Existing queue state and bot events show the wait and whether a bounded
+continuation was scheduled; no separate UI action or new domain object is added.

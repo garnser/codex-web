@@ -5,7 +5,7 @@ import json
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from codex_web.action_intents import ActionIntentClaimRequest
 from codex_web.execution_workers import AssignmentCancelRequest, AssignmentCompleteRequest
@@ -248,3 +248,75 @@ class ReadinessOriginRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retired.status.value, 'cancelled')
         self.assertEqual(retired.fence, before.fence + 1)
         self.assertIsNone(retired.lease)
+
+    async def test_cold_index_queue_preserves_original_and_continues_same_process_cursor(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from codex_web.action_intents import ActionIntentStatus
+        from codex_web.models import Project
+        from codex_web.runtime.execution import TurnExecutionService
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.storage.execution_preflight import ExecutionPreflightStore
+        from tests.test_turn_execution import _Host
+        response=await self.public_ready('queued-cold-index')
+        current=self.intents.store.get(response.json()['item']['id'])
+        terminal=current.model_copy(update={'status':ActionIntentStatus.SUCCEEDED,'readiness_origin':None}).model_dump(mode='json')
+        self.sqlite.record_apply(self.intents.store.records_namespace,upserts={
+            'intents:terminal-%04d'%i:{**terminal,'id':'terminal-%04d'%i} for i in range(1100)})
+        host=_Host();host._project=lambda _:Project(id='project-a',name='Project',path='/private')
+        runtime=TurnExecutionService(host);runtime.schedule_queue_drain=Mock()
+        preflight=ExecutionPreflightService(ExecutionPreflightStore(self.sqlite));runtime.queued_preflight=preflight
+        original=runtime.enqueue_turn(thread_id='same-native',project_id='project-a',message='useful same request',source='web')
+        snapshot=original.model_dump(mode='json');attempt=preflight.retain_queued(original,organization_id='local',workspace_id='default')
+        before=self.workers.store.assignment(self.assignment.id);wakes=[];native=[];tries=0
+        async def complete(*args,**kwargs):return self.cancel()
+        runtime.session_managers={'openai/codex':SimpleNamespace(get=lambda _:object(),complete=complete)}
+        runtime._assignment_record=lambda _:before
+        async def start(*args,**kwargs):
+            nonlocal tries
+            tries+=1
+            if tries==1:
+                await runtime._supersede_thread_bootstrap(thread_id='same-native',project=host._project(None),
+                    runtime_binding=SimpleNamespace(provider_id='openai',runtime_id='codex'),sandbox='workspace-write',
+                    approval_policy='on-request',execution_profile_id='orchestration-admin',agent_profile=before.agent_profile,
+                    explicit_repository_id=None,previous_assignment_id=before.id,retirement_reason='procedure_assignment_exhausted')
+            self.cancel()  # Same process finishes the real index and canonical retirement.
+            from codex_web.execution_workers import ExecutionAssignmentCreate, AssignmentClaimRequest, AssignmentStartRequest
+            from codex_web.runtime.codex import CodexRuntime
+            from codex_web.services.queued_native_start import QueuedNativeStartCapture
+            from tests import test_codex_runtime as wire_fixture
+            renewed=self.workers.create_assignment(ExecutionAssignmentCreate(
+                subject=before.subject,execution_id=before.execution_id+'-renewed',project_id=before.project_id,
+                resource_ids=before.resource_ids,execution_contract_version=before.execution_contract_version,
+                required_capabilities=before.required_capabilities,sandbox=before.sandbox,approval_policy=before.approval_policy,
+                execution_profile_id=before.execution_profile_id,execution_profile_definition=before.execution_profile_definition,
+                agent_profile=before.agent_profile),actor=self.admin)
+            claimed=self.workers.claim(self.worker.id,AssignmentClaimRequest(),actor=self.worker_actor,assignment_id=renewed.id)
+            renewed=self.workers.start(self.worker.id,renewed.id,AssignmentStartRequest(
+                fence=claimed.fence,lease_token=claimed.lease.lease_token),actor=self.worker_actor)
+            admission=preflight.store.get(attempt.id)
+            capture=QueuedNativeStartCapture(preflight,attempt.id,admission.queued_admission_claim_id,
+                admission.execution_id,'same-native',self.admin.identity_id).bind_assignment(renewed,
+                    worker_id=self.worker.id,fence=renewed.fence,
+                    validator=lambda:self.workers.assignment_for_execution(renewed.execution_id,actor=self.admin))
+            wire=CodexRuntime(wire_fixture._Host(),restart_on_timeout=False);wire.ensure_started=AsyncMock()
+            async def send(message,*,start_guard,expected_generation):
+                start_guard();native.append(kwargs['message'])
+                await wire._dispatch_message({'id':message['id'],'result':{'thread':{'id':'same-native'},
+                    'turn':{'id':'actual-original-start','threadId':'same-native','status':'inProgress'}}})
+            wire._send=send
+            return await wire.request('turn/start',{'threadId':'same-native','input':[{'type':'text','text':kwargs['message']}]},start_capture=capture)
+        runtime.start_thread_turn_now=start
+        with patch('codex_web.storage.action_intents._ORIGIN_INDEX_EPOCH','d'*32):
+            with patch.object(asyncio.get_running_loop(),'call_later',side_effect=lambda *a:wakes.append(a)):
+                await runtime.drain_thread_queue('same-native')
+            self.assertEqual(self.workers.store.assignment(self.assignment.id),before)
+            self.assertEqual([q.model_dump(mode='json') for q in host._thread_queue('same-native')],[snapshot])
+            self.assertEqual(preflight.store.get(attempt.id).status,'queued');self.assertEqual(len(wakes),1)
+            self.assertEqual(native,[])
+            await runtime.drain_thread_queue('same-native');await runtime.drain_thread_queue('same-native')
+        self.assertEqual(native,[original.message]);self.assertEqual(preflight.store.get(attempt.id).status,'started')
+        self.assertEqual(preflight.store.get(attempt.id).queued_turn_snapshot,snapshot)
+        self.assertEqual(preflight.store.get(attempt.id).queued_start_receipt.provider_native_turn_id,'actual-original-start')
+        self.assertIsNotNone(preflight.store.get(attempt.id).queued_start_evidence)
+        self.assertEqual(self.workers.store.assignment(self.assignment.id).status.value,'cancelled')
