@@ -175,7 +175,8 @@ class ExecutionProfileDefinitionService:
             raise ValueError("administrative operation or repository target is not explicitly declared")
         # Scratch administration has no Git workspace or executable publication.
         administrative_operation = (
-            operation_id.startswith("repository.read.")
+            operation_id.startswith(("procedure.", "executive.activation."))
+            or operation_id.startswith("repository.read.")
             or operation_id.startswith("work_item.")
             or operation_id in {
                 "repository.issue.create", "repository.issue.comment", "repository.issue.update",

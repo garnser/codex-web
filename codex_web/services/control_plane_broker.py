@@ -98,6 +98,11 @@ from codex_web.services.project_coordination import (
     PREFIX as COORDINATION_PREFIX, PROJECT_COORDINATION_OPERATIONS, resolve_operation,
 )
 
+from codex_web.services.assignment_reasoning_broker import (
+    OPERATIONS as REASONING_OPERATIONS, resolve as resolve_reasoning_operation, ProcedureStart,
+)
+from codex_web.executive_roles import ExecutiveActivationCreate
+
 from codex_web.services.home_operator_host import HOST_INSPECTION
 from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
 from codex_web.services.home_host_output import OUTPUT_READ
@@ -150,6 +155,7 @@ HOST_OUTPUT_READ = ControlPlaneBrokerOperation(id=OUTPUT_READ, method='GET',
     authority_level=AuthorityLevel.READ)
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
+    *REASONING_OPERATIONS,
     HOST_INSPECTION,
     HOST_COMMAND,
     HOST_OUTPUT_READ,
@@ -535,6 +541,7 @@ class ControlPlaneBrokerService:
         self._clock = clock
         self._monotonic = monotonic
         self._local_installers = {}
+        self.assignment_reasoning = None
         self.procedure_admission = None
         self.project_coordination = None
         self.home_host_outputs = None
@@ -554,6 +561,14 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        reasoning_model = {"procedure.start": ProcedureStart,
+            "executive.activation.create": ExecutiveActivationCreate}.get(item.id)
+        if reasoning_model is not None:
+            result["request_body"] = reasoning_model.model_json_schema()
+        if item.id.startswith(("procedure.", "executive.")):
+            result["scope"] = "Exact current assignment/fence, requester, project and explicit current execution Definition"
+            result["query_parameters"] = {"allowed": False}
+            result["response_loss"] = "Read current procedure checkpoint or assignment-origin Executive activation; never blind replay"
         work_item_model = {
             "work_item.handoff": WorkItemHandoffCreate,
             "work_item.acknowledge": WorkItemAckCreate,
@@ -968,6 +983,11 @@ class ControlPlaneBrokerService:
                 "absolute-form/control-plane proxy targets are not allowed"
             )
         path = parsed.path
+        reasoning = resolve_reasoning_operation(method, path)
+        if reasoning is not None:
+            operation, target = reasoning
+            return _ResolvedOperation(operation=operation, target_ref=target,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         verification_operation = resolve_verification_operation(method, path)
         if verification_operation is not None:
             operation, target = verification_operation
@@ -1866,6 +1886,7 @@ class ControlPlaneBrokerService:
             or operation.id == "control_plane.operations.list"
             or operation.id.startswith("project.")
             or operation.id.startswith("verification.")
+            or operation.id.startswith(("procedure.", "executive."))
             or operation.id == "upgrade.approval.request"
             or operation.id.startswith('operator.host.')
             or operation.id.startswith('operator.project.')
@@ -1886,6 +1907,8 @@ class ControlPlaneBrokerService:
                     assignment, operation.id, resolved.query, actor=requester_actor
                 ),
             )
+        elif operation.id.startswith(("procedure.", "executive.")):
+            resource_ids = tuple(assignment.resource_ids)
         elif resolved.target_ref is not None:
             state = self._state_for_target(assignment, resolved.target_ref)
             resource_ids = tuple(state.resource_ids)
@@ -2043,7 +2066,14 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id == OUTPUT_READ:
+        if operation.id.startswith(("procedure.", "executive.")):
+            if self.assignment_reasoning is None:
+                raise ControlPlaneBrokerDeniedError("assignment reasoning adapters unavailable")
+            result = await self.assignment_reasoning.dispatch(assignment, worker_actor,
+                operation, resolved.target_ref, payload, resolved.query, assignment_validator)
+            if isinstance(result.get("item"), dict):
+                resolved = _ResolvedOperation(operation, result["item"]["id"], resolved.query)
+        elif operation.id == OUTPUT_READ:
             if (body or self.home_host_outputs is None or set(resolved.query) - {'kind', 'stream', 'max_bytes'}
                     or any(len(v) != 1 or not v[0] for v in resolved.query.values())):
                 raise ControlPlaneBrokerRequestError('Host output requires a bounded read without a request body')

@@ -1489,6 +1489,10 @@ class ExecutiveManagementService:
             )
 
         def mark_consulting(state, current):
+            if (current.status != ExecutiveActivationStatus.PLANNED
+                    or current.revision != activation.revision
+                    or current.budget != activation.budget):
+                raise ExecutiveConsultationError("Executive consultation already reserved or changed")
             now = float(self.clock())
             updated = current.model_copy(
                 update={
