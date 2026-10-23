@@ -530,7 +530,7 @@ class ModelGoalUsage(BaseModel):
     calls: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
-    cost_usd: float = Field(ge=0.0)
+    cost_usd: float | None = Field(default=None, ge=0.0)
 
 
 class ModelDecisionUsage(BaseModel):
@@ -540,7 +540,7 @@ class ModelDecisionUsage(BaseModel):
     calls: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
-    cost_usd: float = Field(ge=0.0)
+    cost_usd: float | None = Field(default=None, ge=0.0)
 
 
 class ModelGatewayState(BaseModel):

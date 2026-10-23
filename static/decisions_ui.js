@@ -519,7 +519,7 @@ function renderDetail() {
         <div><span>Calls</span><strong>${esc(usage.calls ?? 0)} / ${esc(decision.budget?.max_model_calls ?? '—')}</strong></div>
         <div><span>Input tokens</span><strong>${esc(usage.input_tokens ?? 0)} / ${esc(decision.budget?.max_input_tokens ?? '—')}</strong></div>
         <div><span>Output tokens</span><strong>${esc(usage.output_tokens ?? 0)} / ${esc(decision.budget?.max_output_tokens ?? '—')}</strong></div>
-        <div><span>Cost</span><strong>$${esc(usage.cost_usd ?? 0)} / $${esc(decision.budget?.max_cost_usd ?? '—')}</strong></div>
+        <div><span>Cost</span><strong>${usage.cost_usd == null ? 'Unknown / entitlement' : `$${esc(usage.cost_usd)}`} / $${esc(decision.budget?.max_cost_usd ?? '—')}</strong></div>
       </div>
       <div class="decision-rounds">${renderRounds(decision)}</div>
     </section>

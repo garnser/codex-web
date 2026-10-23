@@ -182,6 +182,9 @@ class DecisionDeliberationService:
             )
         remaining_input = decision.budget.max_input_tokens - usage.input_tokens
         remaining_output = decision.budget.max_output_tokens - usage.output_tokens
+        if usage.cost_usd is None:
+            raise DecisionDeliberationError(
+                "Decision USD usage is not attested; inspect entitlement usage before priced reasoning")
         remaining_cost = decision.budget.max_cost_usd - usage.cost_usd
         if remaining_input < required_calls * self.MIN_INPUT_TOKENS_PER_CALL:
             raise DecisionDeliberationError(

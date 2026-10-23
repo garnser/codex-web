@@ -9,6 +9,8 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
+from codex_web.services.post_turn_readiness import PostTurnReadinessService
+
 from fastapi import HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSessionRequest
@@ -1124,7 +1126,9 @@ class ThreadService:
         execution_id = f"thread-bootstrap-{token}"
 
         if admission_guard is not None:
-            admission_guard()
+            await PostTurnReadinessService._run_owned(
+                lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                name='thread-admission-current-guard')
         try:
             binding = await asyncio.to_thread(
                 binding_service.prepare_bootstrap,
@@ -1155,7 +1159,9 @@ class ThreadService:
             ) from exc
         if admission_guard is not None:
             try:
-                admission_guard()
+                await PostTurnReadinessService._run_owned(
+                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    name='thread-admission-current-guard')
             except Exception:
                 from codex_web.execution_workers import AssignmentCancelRequest
                 # A just-prepared bootstrap has not crossed worker startup.
@@ -1241,7 +1247,9 @@ class ThreadService:
         )
         try:
             if admission_guard is not None:
-                admission_guard()
+                await PostTurnReadinessService._run_owned(
+                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    name='thread-admission-current-guard')
             if before_provider_start is not None:
                 before_provider_start()
             runtime_result = await runtime_adapter.create_session(runtime_request)

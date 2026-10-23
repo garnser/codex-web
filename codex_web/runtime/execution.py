@@ -3140,7 +3140,10 @@ class TurnExecutionService:
                        if source.removeprefix("queued:").startswith(("home-operator-automation:", "home-goal-continuation:")) else {}))
 
             if (procedure_discovery is not None and procedure_discovery.admitted
-                    and (procedure_discovery.selected or "canonical:native-empty-physical-scope:" in procedure_discovery.policy_source)):
+                    and (procedure_discovery.selected or "canonical:native-empty-physical-scope:" in procedure_discovery.policy_source
+                         or (procedure_discovery.operation == 'model.reasoning'
+                             and runtime_binding is not None
+                             and runtime_binding.runtime_id == 'codex-reasoning'))):
                 preparation_guard = self.procedure_admission.preparation_input_guard(
                     procedure_discovery, project=project, actor=actor or self.control_actor,
                     execution_id=canonical_execution_id, assignment_id=assignment_id,

@@ -161,6 +161,13 @@ def runtime_authentication_requirement(
 
     provider_id = runtime_binding.provider_id
     runtime_id = runtime_binding.runtime_id
+    if (provider_id, runtime_id) == ("openai", "codex-reasoning"):
+        mode = CodexExecutionAuthenticationMode.TRUSTED_LOCAL_SESSION
+        if runtime_binding.authentication_mode not in {None, mode.value}:
+            raise RuntimeAuthenticationConfigurationError('Native reasoning requires trusted-local sign-in')
+        return RuntimeAuthenticationRequirement(provider_id=provider_id,runtime_id=runtime_id,
+            codex_mode=mode,source='restricted_native_reasoning_contract',local_session=True,
+            permitted=(permitted_codex_modes is None or mode in permitted_codex_modes))
     if (provider_id, runtime_id) != ("openai", "codex"):
         key = runtime_credential_config_key(runtime_binding, credential_mapping)
         return RuntimeAuthenticationRequirement(

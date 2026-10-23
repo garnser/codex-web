@@ -488,6 +488,51 @@ class IdentityService:
             )
         raise AuthenticationError("identity not found or disabled")
 
+    def revalidate_authenticated_origin(self, actor: AuthenticationActor, *, origin_guard=None) -> AuthenticationActor:
+        """Recheck an already authenticated internal caller without copying credentials.
+
+        This is not request authentication. Credential-free delegated callers
+        require their original canonical origin guard; membership alone is not
+        an authentication or step-up witness.
+        """
+        current = self.actor_for_identity(actor.identity_id, scope=actor.tenant)
+        if (current.principal_kind != actor.principal_kind or current.roles != actor.roles
+                or current.team_ids != actor.team_ids):
+            raise AuthenticationError('Authenticated caller authority changed')
+        if actor.assurance == AuthenticationAssurance.LOCAL_TRUSTED:
+            if not self.local_trusted_actor().has_same_authority(actor):
+                raise AuthenticationError('Local trusted caller changed')
+            return actor
+        now = time.time()
+        state = self.store.load()
+        if actor.session_id:
+            session = next((r for r in state.sessions if r.id == actor.session_id), None)
+            if (session is None or session.revoked_at is not None
+                    or now >= session.idle_expires_at or now >= session.absolute_expires_at
+                    or (session.identity_id, session.organization_id, session.workspace_id) !=
+                       (actor.identity_id, actor.organization_id, actor.workspace_id)
+                    or actor.principal_kind != PrincipalKind.HUMAN):
+                raise AuthenticationError('Original authenticated session is unavailable')
+            assurance = (AuthenticationAssurance.MFA if session.step_up_until is not None
+                         and session.step_up_until > now else session.assurance)
+            if assurance != actor.assurance or actor.service_token_id is not None:
+                raise AuthenticationError('Original authenticated session assurance changed')
+        elif actor.service_token_id:
+            token = next((r for r in state.service_tokens if r.id == actor.service_token_id), None)
+            if (token is None or token.revoked_at is not None
+                    or (token.expires_at is not None and now >= token.expires_at)
+                    or (token.service_identity_id, token.organization_id, token.workspace_id) !=
+                       (actor.identity_id, actor.organization_id, actor.workspace_id)
+                    or actor.principal_kind != PrincipalKind.SERVICE
+                    or actor.assurance != AuthenticationAssurance.SERVICE_TOKEN
+                    or tuple(sorted(token.scopes)) != tuple(sorted(actor.service_scopes))):
+                raise AuthenticationError('Original authenticated service token is unavailable')
+        elif not callable(origin_guard):
+            raise AuthenticationError('Original authenticated origin is required')
+        else:
+            origin_guard()
+        return actor
+
     def create_session(
         self,
         *,

@@ -122,6 +122,7 @@ class ExecutiveManagementService:
         data_governance: DataGovernanceService | None = None,
         *,
         clock=time.time,
+        native_invocation_authorizer=None,
     ) -> None:
         self.store = store
         self.roles = roles
@@ -138,6 +139,7 @@ class ExecutiveManagementService:
         self.business_kpis = business_kpis
         self.data_governance = data_governance
         self.clock = clock
+        self.native_invocation_authorizer = native_invocation_authorizer
 
     @staticmethod
     def _same_scope(
@@ -671,6 +673,7 @@ class ExecutiveManagementService:
                             "conflict": resolution.conflict,
                             "conflict_fact_ids": resolution.conflict_fact_ids,
                             "candidate_fact_ids": resolution.candidate_fact_ids,
+                            "source_governance_record_ids": governance_ids,
                             "stale_fact_ids": resolution.stale_fact_ids,
                             "revoked_source_fact_ids": resolution.revoked_source_fact_ids,
                             "classification": classification.value,
@@ -799,6 +802,8 @@ class ExecutiveManagementService:
                         "id": definition.id,
                         "key": definition.key,
                         "name": definition.name,
+                        "source_governance_record_ids": tuple(item.governance_record_id for item in source_facts
+                                                              if item.governance_record_id),
                         "domain": definition.domain.value,
                         "classification": classification.value,
                         "kpi_revision": definition.revision,
@@ -949,6 +954,7 @@ class ExecutiveManagementService:
                 {
                     "citation": f"[memory:{item.knowledge_id}@v{item.version}]",
                     "knowledge_id": item.knowledge_id,
+                    "governance_record_id": getattr(item, "governance_record_id", None),
                     "logical_key": item.logical_key,
                     "version": item.version,
                     "object_type": item.object_type.value,
@@ -1372,6 +1378,82 @@ class ExecutiveManagementService:
             )
         return output
 
+    def _validate_native_context_sources(self, activation, role_id, catalog, actor):
+        """Recheck exact retained source metadata, never replace it with fresher data.
+
+        All source IDs were retained by the existing governed activation builder.
+        No business/memory catalog scan occurs at a native input boundary.
+        """
+        roles = ([catalog.role_map[selection.role_id] for selection in activation.selections]
+                 if role_id == 'synthesis' else [catalog.role_map[role_id]])
+        for role in roles:
+            context = self._filter_context(activation.context, role)
+            references = []
+            for key in ('business_entities', 'business_facts', 'business_kpis', 'memory'):
+                rows = context.get(key, ())
+                if len(rows) > 64:
+                    raise ExecutiveConsultationError('Native governed context source bound exceeded')
+                for row in rows:
+                    ids = list(row.get('source_governance_record_ids') or ())
+                    ids.extend((row.get('provenance') or {}).get('source_governance_record_ids') or ())
+                    direct = row.get('governance_record_id')
+                    if direct:
+                        ids.append(direct)
+                    if key == 'business_facts':
+                        selected = row.get('selected') or {}
+                        if selected.get('governance_record_id'):
+                            ids.append(selected['governance_record_id'])
+                    # A numeric KPI is derived from original fact records. Older
+                    # contexts lacking their IDs must be recreated, not guessed.
+                    descriptive = ((key == 'business_kpis' and (row.get('current') or {}).get('value') is None)
+                                   or (key == 'business_facts' and row.get('selected') is None
+                                       and not row.get('candidate_fact_ids')))
+                    if not ids and not descriptive:
+                        raise ExecutiveConsultationError('Native context lacks original governed source references')
+                    if any(not isinstance(value, str) or not value for value in ids):
+                        raise ExecutiveConsultationError('Native governed context source reference invalid')
+                    references.extend(ids)
+            references = tuple(dict.fromkeys(references))
+            if len(references) > 256:
+                raise ExecutiveConsultationError('Native governed context source bound exceeded')
+            decisions = self._governed_context_decisions(references, actor=actor,
+                                                        max_classification=role.max_data_classification)
+            if any(value not in decisions or not decisions[value].allowed for value in references):
+                raise ExecutiveConsultationError('Native context original governance permission changed')
+
+    def _native_context(self, activation, role_id, actor, max_input, max_output, origin_guard=None):
+        if self.native_invocation_authorizer is None or not activation.project_id:
+            return {}
+        from codex_web.services.native_model_provider import NativeModelInvocationContext
+        # This configured owner must validate the original authenticated caller
+        # (including broker custody where applicable), never actor labels alone.
+        def validate_current():
+            # Ordinary priced adapters never execute this native-only validator.
+            # Resolve the configured caller owner lazily under its storage budget.
+            caller_guard = self.native_invocation_authorizer(activation, actor, origin_guard=origin_guard)
+            if not callable(caller_guard):
+                raise ExecutiveConsultationError('Native consultation authorization unavailable')
+            caller_guard()
+            if origin_guard is not None:
+                origin_guard()
+            current = self.store.get_scoped(activation.id,
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+            if (current.status != ExecutiveActivationStatus.CONSULTING
+                    or current != activation):
+                raise ExecutiveConsultationError('Native consultation reservation changed')
+            catalog, reference = self._catalog(actor=actor, project_id=current.project_id)
+            if reference != activation.role_catalog:
+                raise ExecutiveConsultationError('Native consultation role catalog changed')
+            self._validate_native_context_sources(current, role_id, catalog, actor)
+
+        return {'native_context': NativeModelInvocationContext(
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+            actor_id=actor.identity_id, project_id=activation.project_id,
+            activation_id=activation.id, role_id=role_id,
+            execution_id=f'executive:{activation.id}:{role_id}',
+            max_input_tokens=max_input, max_output_tokens=max_output,
+            validate_current=validate_current)}
+
     async def _consult_role(
         self,
         activation: ExecutiveActivation,
@@ -1381,6 +1463,7 @@ class ExecutiveManagementService:
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost_usd: float,
+        native_origin_guard=None,
     ) -> ExecutiveConsultation:
         started = float(self.clock())
         filtered_context = self._filter_context(activation.context, role)
@@ -1419,8 +1502,14 @@ class ExecutiveManagementService:
                     reasoning_effort="medium",
                     text_verbosity="low",
                     purpose=f"executive-role:{role.id}",
+                    execution_id=f"executive:{activation.id}:{role.id}",
+                    goal_id=activation.goal_ids[0] if len(activation.goal_ids) == 1 else None,
+                    work_item_ref=activation.work_item_refs[0] if len(activation.work_item_refs) == 1 else None,
+                    decision_id=activation.decision_ids[0] if len(activation.decision_ids) == 1 else None,
                 ),
                 actor=actor,
+                **self._native_context(activation, role.id, actor, max_input_tokens,
+                                       min(max_output_tokens, self.MAX_OUTPUT_PER_CALL), native_origin_guard),
             )
         except ModelGatewayError as exc:
             raise ExecutiveConsultationError(
@@ -1457,6 +1546,7 @@ class ExecutiveManagementService:
         activation_id: str,
         *,
         actor: AuthenticationActor,
+        native_origin_guard=None,
     ) -> ExecutiveActivation:
         activation = self.get(activation_id, actor=actor)
         if activation.status == ExecutiveActivationStatus.COMPLETED:
@@ -1523,6 +1613,7 @@ class ExecutiveManagementService:
                             max_input_tokens=per_call_input,
                             max_output_tokens=per_call_output,
                             max_cost_usd=per_call_cost,
+                            native_origin_guard=native_origin_guard,
                         )
                         for role in roles
                     )
@@ -1585,8 +1676,14 @@ class ExecutiveManagementService:
                         reasoning_effort="high",
                         text_verbosity="low",
                         purpose="executive-synthesis",
+                        execution_id=f"executive:{consulting.id}:synthesis",
+                        goal_id=consulting.goal_ids[0] if len(consulting.goal_ids) == 1 else None,
+                        work_item_ref=consulting.work_item_refs[0] if len(consulting.work_item_refs) == 1 else None,
+                        decision_id=consulting.decision_ids[0] if len(consulting.decision_ids) == 1 else None,
                     ),
                     actor=actor,
+                    **self._native_context(consulting, "synthesis", actor, per_call_input,
+                                           min(per_call_output, self.MAX_OUTPUT_PER_CALL), native_origin_guard),
                 )
                 try:
                     raw = json.loads(result.text)

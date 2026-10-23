@@ -29,6 +29,7 @@ from codex_web.input_plugins import (
 )
 from codex_web.model_gateway import (
     ModelAccessSource,
+    ModelUsageSemantics,
     ModelAuthenticationStatus,
     ModelAvailabilitySource,
     ModelCatalogEntry,
@@ -75,7 +76,9 @@ from codex_web.model_providers import (
     ModelProviderAdapterError,
     ModelProviderCapacityError,
     ModelProviderTransientError,
+    ModelProviderOutcomeUnknownError,
 )
+from codex_web.services.native_model_provider import NativeCodexModelProviderAdapter, NativeModelInvocationContext
 from codex_web.observability import current_correlation
 from codex_web.provider_capacity import (
     ProviderCapacityReport,
@@ -1377,6 +1380,7 @@ class ModelGatewayService:
         request: ModelInvocationRequest,
         *,
         actor: AuthenticationActor,
+        native_context: NativeModelInvocationContext | None = None,
     ) -> ModelRouteResult:
         state = self.store.load()
         template = self._template(state, request, actor)
@@ -1651,11 +1655,16 @@ class ModelGatewayService:
                 rejected.append(f"{model.id}:context_limit")
                 continue
             cost = self._price(model, input_tokens, output_tokens)
+            adapter = self.adapters.get(provider.adapter_type)
+            native_entitlement = (isinstance(adapter, NativeCodexModelProviderAdapter)
+                and adapter.entitlement_route(provider, model, request, actor=actor, context=native_context))
+            if native_entitlement:
+                cost = None  # Entitlement usage has no attested USD price.
             if effective_max_cost is not None:
-                if cost is None:
+                if cost is None and not native_entitlement:
                     rejected.append(f"{model.id}:pricing_required_for_budget")
                     continue
-                if cost > effective_max_cost:
+                if cost is not None and cost > effective_max_cost:
                     rejected.append(f"{model.id}:budget_exceeded")
                     continue
             if self.provider_capacity is not None:
@@ -2009,13 +2018,14 @@ class ModelGatewayService:
         request: ModelInvocationRequest,
         *,
         actor: AuthenticationActor,
+        native_context: NativeModelInvocationContext | None = None,
     ) -> ModelInvocationResponse:
         effective_request, input_result = await self._compose_input(
             request,
             actor=actor,
         )
         try:
-            route = self.route(effective_request, actor=actor)
+            route = self.route(effective_request, actor=actor, native_context=native_context)
         except ModelCapacityRoutingError as exc:
             wait_id = None
             if (
@@ -2098,16 +2108,17 @@ class ModelGatewayService:
 
             async def call(credential: str | None):
                 try:
+                    operation = (adapter.invoke_scoped(provider, model, rendered_request,
+                        credential=credential, actor=actor, context=native_context)
+                        if isinstance(adapter, NativeCodexModelProviderAdapter)
+                        else adapter.invoke(provider, model, rendered_request, credential=credential))
                     return await asyncio.wait_for(
-                        adapter.invoke(
-                            provider,
-                            model,
-                            rendered_request,
-                            credential=credential,
-                        ),
+                        operation,
                         timeout=effective_request.timeout_seconds,
                     )
                 except asyncio.TimeoutError as exc:
+                    if isinstance(adapter, NativeCodexModelProviderAdapter):
+                        raise ModelProviderOutcomeUnknownError('Native inference timeout; inspect original invocation') from exc
                     raise ModelProviderTransientError(
                         f"provider attempt timed out after {effective_request.timeout_seconds}s",
                         reason_code=FailureReason.PROVIDER_NETWORK,
@@ -2220,6 +2231,17 @@ class ModelGatewayService:
                     )
                 final_error = exc
                 continue
+            except ModelProviderOutcomeUnknownError as exc:
+                completed = time.time()
+                attempts.append(ModelInvocationAttempt(provider_id=provider.id, model_id=model.id,
+                    concrete_model=model.concrete_model, model_version=model.model_version,
+                    outcome='unknown', error_code=type(exc).__name__,
+                    failure=self._provider_failure(exc, provider=provider, model=model,
+                        request=effective_request, attempt=len(attempts)+1),
+                    estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
+                    started_at=started, completed_at=completed))
+                final_error = exc
+                break
             except ModelProviderAdapterError as exc:
                 completed = time.time()
                 access_rejected = self._record_runtime_access_rejection(
@@ -2478,7 +2500,14 @@ class ModelGatewayService:
                 input_result.gated_proposals if input_result is not None else ()
             ),
             attempts=tuple(attempts),
-            status=("waiting_for_capacity" if all_capacity_failures else "failed"),
+            selected_usage_semantics=(provider.usage_semantics
+                if any(item.outcome == 'unknown' for item in attempts)
+                and isinstance(adapter, NativeCodexModelProviderAdapter) else None),
+            selected_access_source=(provider.access_source
+                if any(item.outcome == 'unknown' for item in attempts)
+                and isinstance(adapter, NativeCodexModelProviderAdapter) else None),
+            status=("uncertain" if any(item.outcome == 'unknown' for item in attempts)
+                    else "waiting_for_capacity" if all_capacity_failures else "failed"),
             completed_at=completed,
         )
         self._append_invocation(record)
@@ -2536,7 +2565,10 @@ class ModelGatewayService:
         input_tokens = 0
         output_tokens = 0
         cost_usd = 0.0
+        unknown_entitlement = False
         for row in rows:
+            if row.selected_usage_semantics == ModelUsageSemantics.ENTITLEMENT:
+                unknown_entitlement |= any(a.actual_cost_usd is None for a in row.attempts)
             for attempt in row.attempts:
                 input_tokens += int(attempt.input_tokens or 0)
                 output_tokens += int(attempt.output_tokens or 0)
@@ -2546,7 +2578,7 @@ class ModelGatewayService:
             calls=len(rows),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=cost_usd,
+            cost_usd=None if unknown_entitlement else cost_usd,
         )
 
     def decision_usage(
@@ -2563,7 +2595,10 @@ class ModelGatewayService:
         input_tokens = 0
         output_tokens = 0
         cost_usd = 0.0
+        unknown_entitlement = False
         for row in rows:
+            if row.selected_usage_semantics == ModelUsageSemantics.ENTITLEMENT:
+                unknown_entitlement |= any(a.actual_cost_usd is None for a in row.attempts)
             for attempt in row.attempts:
                 input_tokens += int(attempt.input_tokens or 0)
                 output_tokens += int(attempt.output_tokens or 0)
@@ -2573,7 +2608,7 @@ class ModelGatewayService:
             calls=len(rows),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=cost_usd,
+            cost_usd=None if unknown_entitlement else cost_usd,
         )
 
     def invocations(

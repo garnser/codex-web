@@ -89,6 +89,9 @@ class GoalDecompositionGenerationService:
         remaining_calls = int(budget.max_model_calls or 0) - usage.calls
         remaining_input = int(budget.max_input_tokens or 0) - usage.input_tokens
         remaining_output = int(budget.max_output_tokens or 0) - usage.output_tokens
+        if usage.cost_usd is None:
+            raise GoalDecompositionGenerationError(
+                "Goal USD usage is not attested; inspect entitlement usage before priced reasoning")
         remaining_cost = float(budget.max_cost_usd or 0.0) - usage.cost_usd
 
         if remaining_calls < 1:

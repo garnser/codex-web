@@ -14,6 +14,8 @@ class TestDiscoveryOwnershipTests(unittest.TestCase):
             'test_project_readiness_refresh': 'ProjectReadinessRefreshTests',
             'test_usage_history_preservation': 'UsageHistoryPreservationTests',
             'test_preservation_crypto_batch': 'PreservationCryptoBatchTests',
+            'test_native_reasoning_admission': 'NativeReasoningAdmissionTests',
+            'test_native_reasoning_canonical_bridge': 'NativeCanonicalBridgeTests',
         }
         loader = unittest.TestLoader()
         for name, owner in consumers.items():

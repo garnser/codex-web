@@ -583,7 +583,7 @@ class QueuedNativeStartCorrelation(BaseModel):
     resource_context: ReadOnlyResourceContext | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     admission_claim_id: str = Field(min_length=1)
     requested_execution_id: str = Field(min_length=1)
@@ -606,11 +606,17 @@ class QueuedNativeStartCorrelation(BaseModel):
     thread_id: str = Field(min_length=1)
     provider_native_session_id: str = Field(min_length=1, max_length=256)
     provider_id: Literal["openai"] = "openai"
-    runtime_id: Literal["codex"] = "codex"
+    runtime_id: Literal["codex", "codex-reasoning"] = "codex"
     runtime_generation: str = Field(min_length=1, max_length=128)
     rpc_request_id: str = Field(min_length=1, max_length=128)
     prepared_at: float
 
+
+    @model_validator(mode="after")
+    def exact_native_runtime_version(self):
+        if ((self.runtime_id == "codex-reasoning") != (self.schema_version == "1.1")):
+            raise ValueError("Native reasoning START requires explicit correlation 1.1")
+        return self
 
     @model_serializer(mode="wrap")
     def serialize_resource_context(self, handler):

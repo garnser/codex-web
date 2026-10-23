@@ -31,6 +31,10 @@ class ModelProviderAdapterError(RuntimeError):
         super().__init__(message)
 
 
+class ModelProviderOutcomeUnknownError(ModelProviderAdapterError):
+    """An admitted inference may have occurred; no fallback or retry is authorized."""
+
+
 class ModelProviderTransientError(ModelProviderAdapterError):
     def __init__(
         self,

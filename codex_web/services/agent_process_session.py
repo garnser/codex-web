@@ -11,6 +11,7 @@ import time
 import weakref
 import contextvars
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -1536,11 +1537,12 @@ class AssignmentBoundAgentProcessSessionManager:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not registered"
             )
-        session.validate_current()
-        return await asyncio.to_thread(
+        from codex_web.services.async_operations import run_settled
+        await run_settled(session.validate_current)
+        return await run_settled(partial(
             self.local_worker.checkpoint_assignment,
             assignment_id,
-        )
+        ))
 
     async def complete(
         self,
@@ -1566,14 +1568,15 @@ class AssignmentBoundAgentProcessSessionManager:
                     assignment_id,
                     reason=failure_message or failure_code or "bootstrap failed",
                 )
-        assignment = session.validate_current()
+        from codex_web.services.async_operations import run_settled
+        assignment = await run_settled(session.validate_current)
         lease = assignment.lease
         if lease is None or session.fence is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no completable fenced lease"
             )
         await self.checkpoint(assignment_id)
-        completed = self.local_worker.worker_service.complete(
+        completed = await run_settled(partial(self.local_worker.worker_service.complete,
             session.worker_id,
             assignment.id,
             AssignmentCompleteRequest(
@@ -1586,11 +1589,11 @@ class AssignmentBoundAgentProcessSessionManager:
                 evidence_ids=evidence_ids,
             ),
             actor=self.local_worker.worker_actor,
-        )
+        ))
         await self.stop(assignment_id)
         if assignment.execution_workspace_id:
             with contextlib.suppress(Exception):
-                self.local_worker.workspace_service.release(
+                await run_settled(partial(self.local_worker.workspace_service.release,
                     assignment.execution_workspace_id,
                     ExecutionWorkspaceRelease(
                         discard=False,
@@ -1598,7 +1601,7 @@ class AssignmentBoundAgentProcessSessionManager:
                     ),
                     actor=self.local_worker.control_actor,
                     preserve_files=True,
-                )
+                ))
         return completed
 
     async def stop(self, assignment_id: str) -> None:
