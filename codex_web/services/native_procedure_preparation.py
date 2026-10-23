@@ -17,6 +17,13 @@ class NativeProviderPreparation:
     source: str
     validate: Callable[[], None] = field(repr=False, compare=False)
     context: object | None = field(default=None, repr=False, compare=False)
+    exclude_empty: Callable[[DefinitionReference], bool] | None = field(default=None, repr=False, compare=False)
+
+    def excludes(self, reference, context):
+        if self.context is not context or self.selected or self.exclude_empty is None:
+            return False
+        self.validate()
+        return self.exclude_empty(reference)
 
     def permits(self, selected, context):
         if self.context is not context or not self.selected or set(self.selected) != set(selected):

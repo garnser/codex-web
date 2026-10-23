@@ -179,7 +179,7 @@ class ProcedureExecutionService:
 
     def _procedure(self, assignment, actor):
         ref = assignment.procedure_checkpoint.definition
-        self.skills.validate_required_procedure(ref, actor=actor)
+        self.skills.validate_required_procedure(ref, actor=actor, project_id=assignment.project_id)
         return SkillDefinition.model_validate(self.skills.definitions.get_record(ref.record_id).payload).operational_procedure
 
     def _targets(self, procedure, assignment, actor):
@@ -297,7 +297,7 @@ class ProcedureExecutionService:
             return assignment
         if assignment.created_by != actor.identity_id:
             raise ProcedureExecutionError("procedure_assignment_actor_mismatch")
-        self.skills.validate_required_procedure(definition, actor=actor)
+        self.skills.validate_required_procedure(definition, actor=actor, project_id=assignment.project_id)
         procedure = SkillDefinition.model_validate(self.skills.definitions.get_record(definition.record_id).payload).operational_procedure
         data, digest = self._content(input_snapshot_id, actor, assignment)
         values = bounded_data(json.loads(data)); self._values(procedure.inputs, values, actor, assignment)
@@ -328,38 +328,52 @@ class ProcedureExecutionService:
         self.workers.record_procedure_discovery(assignment.id, admission, expected_fence=assignment.fence, actor=actor)
         return self._save(assignment, checkpoint)
 
-    def validate_native_preparation(self, assignment, selected, actor):
-        """Read-only proof that selected mutations have canonical provider owners.
-
-        This is not step admission and accepts no input values or credentials.
-        The normal interpreter still validates governed inputs, current step,
-        authority, approvals and the exact ActionIntent before provider dispatch.
-        """
-        from codex_web.services.procedure_discovery import checksum
+    def validate_native_preparation_owner(self, assignment):
         self._live(assignment)
         hook = getattr(self.intents.execution, "procedure_admission", None)
         if (getattr(hook, "__self__", None) is not self.intents
                 or getattr(hook, "__func__", None) is not type(self.intents).procedure_provider_admission
                 or self.intents.procedure_execution is not self):
             raise ProcedureExecutionError("procedure_canonical_provider_hook_unavailable")
+
+    def validate_native_preparation(self, assignment, selected, actor, *, require_targets=True):
+        """Read-only provider contract proof, never a step or credential grant."""
+        from codex_web.services.procedure_discovery import checksum
+        self.validate_native_preparation_owner(assignment)
         if not selected:
             raise ProcedureExecutionError("procedure_preparation_pin_missing")
         for reference in selected:
-            self.skills.validate_required_procedure(reference, actor=actor)
+            self.skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
             record = self.skills.definitions.get_record(reference.record_id)
             procedure = SkillDefinition.model_validate(record.payload).operational_procedure
             if procedure is None or any(step.worker for step in procedure.steps):
                 raise ProcedureExecutionError("procedure_native_worker_step_unsupported")
-            self._targets(procedure, assignment, actor)
+            if require_targets:
+                self._targets(procedure, assignment, actor)
+            action_steps = [step for step in procedure.steps if step.action]
+            if not action_steps:
+                raise ProcedureExecutionError("procedure_native_provider_action_missing")
             for step in procedure.steps:
                 if step.kind in {"mutation", "recovery"} and step.action is None:
                     raise ProcedureExecutionError("procedure_native_mutation_owner_unsupported")
                 if step.action is None:
                     continue
-                binding = self._binding(step, assignment, actor)
+                contract = step.action
+                if require_targets:
+                    binding = self._binding(step, assignment, actor)
+                else:
+                    # An empty physical scope chooses no future remote target.
+                    # This metadata anchor claims neither target eligibility nor
+                    # uniqueness. The actual broker action resolves its exact binding.
+                    bindings = [binding for binding in self.intents.execution.registry.list_bindings(actor)
+                        if binding.enabled and binding.project_id in {None,assignment.project_id}
+                        and (binding.provider_type,binding.provider_instance) ==
+                            (contract.provider_type,contract.provider_instance)]
+                    if not bindings:
+                        raise ProcedureExecutionError("procedure_native_provider_binding_unavailable")
+                    binding = bindings[0]
                 provider = self.intents.execution.registry.provider(binding.provider_type,
                     binding.provider_instance, actor=actor)
-                contract = step.action
                 definitions = [item for item in provider.actions() if item.action_id == contract.action_id]
                 if (not binding.enabled or provider.contract_version != contract.provider_contract_version
                         or len(definitions) != 1 or not definitions[0].capabilities.execute):
@@ -454,7 +468,7 @@ class ProcedureExecutionService:
 
     def _protected(self, assignment, step, actor, procedure, inputs):
         worker = self._live(assignment)
-        self.skills.validate_required_procedure(assignment.procedure_checkpoint.definition, actor=actor)
+        self.skills.validate_required_procedure(assignment.procedure_checkpoint.definition, actor=actor, project_id=assignment.project_id)
         if checksum(self._facts(assignment, actor)) != assignment.procedure_checkpoint.resource_context_checksum:
             raise ProcedureExecutionError("procedure_material_preconditions_changed")
         targets = self._targets(procedure, assignment, actor)

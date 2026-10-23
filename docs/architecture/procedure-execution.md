@@ -298,3 +298,5 @@ repository edits cannot publish remotely through the isolated network envelope;
 remote operations retain canonical broker/ActionIntent checks. Existing trace UI
 shows the selected revisions and `canonical:native-provider-preparation` source;
 the source string itself confers no authority.
+
+A native scratch context can prove its physical resource scope is exactly empty through the same live broker/session owner, current scratch/none Definition, workspace and resource lease. Only registered provider-only procedures may then be rejected as `native_physical_scope_empty` for that single discovery; pinned-reference errors and local/worker procedures retain ordinary refusal. This does not select or authorize a future remote target. Later broker actions resolve their actual target and enforce the required procedure normally. The proof is rechecked at native input. Nonempty preparation additionally requires the current Definition to declare all three procedure broker operations and the actual broker to use the same interpreter.

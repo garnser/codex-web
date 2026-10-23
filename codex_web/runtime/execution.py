@@ -1192,12 +1192,12 @@ class TurnExecutionService:
         except ThreadBootstrapBindingNotFoundError:
             return None
 
-    def attest_native_provider_preparation(self, assignment):
+    def attest_native_provider_preparation(self, assignment, procedures):
         from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSession
         _, session = self._session_for_assignment(assignment.id)
         if not isinstance(session, AssignmentBoundAgentProcessSession):
             raise ValueError("native preparation requires the actual isolated process session")
-        return session.attest_native_provider_preparation(assignment)
+        return session.attest_native_provider_preparation(assignment, procedures)
 
     def _assignment_session_for_thread(self, thread_id: str):
         active = self._active_turn(thread_id)
@@ -3139,7 +3139,8 @@ class TurnExecutionService:
                         "input_execution_id": requested_execution_id}
                        if source.removeprefix("queued:").startswith(("home-operator-automation:", "home-goal-continuation:")) else {}))
 
-            if procedure_discovery is not None and procedure_discovery.selected and procedure_discovery.admitted:
+            if (procedure_discovery is not None and procedure_discovery.admitted
+                    and (procedure_discovery.selected or "canonical:native-empty-physical-scope:" in procedure_discovery.policy_source)):
                 preparation_guard = self.procedure_admission.preparation_input_guard(
                     procedure_discovery, project=project, actor=actor or self.control_actor,
                     execution_id=canonical_execution_id, assignment_id=assignment_id,
