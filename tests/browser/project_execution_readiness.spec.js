@@ -54,3 +54,15 @@ test('failed contextual request cannot enable the composer',async({page})=>{
  await expect(page.locator('#prompt')).toBeDisabled();
  await expect(page.locator('#execution-readiness-status')).toContainText('readiness unavailable');
 });
+
+
+test('explicit refresh invalidates an older pending response for the same context',async({page})=>{
+ await open(page);await expect(page.locator('#send')).toBeEnabled();
+ await page.evaluate(()=>{window.fixture.hold={};void window.CodexProjectSetup.refresh();});
+ await expect.poll(()=>page.evaluate(()=>window.fixture.hold.pending)).toBe(true);
+ await page.evaluate(async()=>{window.fixture.workerReady=false;await window.CodexProjectSetup.refresh();});
+ await expect(page.locator('#send')).toBeDisabled();
+ await page.evaluate(()=>window.fixture.hold.release());
+ await expect.poll(()=>page.evaluate(()=>window.fixture.hold.settled)).toBe(true);
+ await expect(page.locator('#send')).toBeDisabled();
+});
