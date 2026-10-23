@@ -51,6 +51,7 @@ class GoalContinuationService:
         self.agent_sessions = agent_sessions
         self.autonomy = autonomy
         self.owner_id = owner_id
+        self.home_continuation = None
         self.lease_seconds = max(1.0, float(lease_seconds))
         self.max_recovery_attempts = max(1, int(max_recovery_attempts))
         self.retry_base_seconds = max(0.0, float(retry_base_seconds))
@@ -231,6 +232,11 @@ class GoalContinuationService:
                 reason="canonical_goal_work_graph_blocked",
             )
 
+        if self.home_continuation is not None and self.home_continuation.handles(binding):
+            retained = await self.home_continuation.reconcile(binding, scope=scope)
+            if retained is not None:
+                return retained
+
         claimed = self.bindings.claim_continuation(
             binding.id,
             scope=scope,
@@ -244,6 +250,9 @@ class GoalContinuationService:
                 outcome="not_claimed",
                 reason="lease_or_retry_gate_unavailable",
             )
+
+        if self.home_continuation is not None and self.home_continuation.handles(claimed):
+            return await self.home_continuation.dispatch(claimed, scope=scope)
 
         try:
             result = await self.agent_sessions.start_turn(

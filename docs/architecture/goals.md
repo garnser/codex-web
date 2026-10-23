@@ -244,3 +244,41 @@ preserve current records and drain old writers. Existing blocked legacy bindings
 need a fresh audited operator authorization, never an automated status patch.
 Delivery and remaining installed acceptance are tracked by #1499, with shared
 operator UI scope #125/#127; native Goal lifecycle control remains #1500.
+
+### Selected Home application continuation
+
+A Home application binding uses the existing GoalContinuation owner and canonical
+TurnService queue, rather than the generic AgentSession service actor. The current
+ACTIVE Goal owner, binding creator/execution owner and selected Home administrator
+must be the same authenticated human. Current Home selection, Profile/Definition,
+canonical AgentSession, assignment/fence, worker, lease, Goal revision and global
+exclusive Goal control are checked again at the native send boundary. A source
+string only locates the original binding; it grants no service authority.
+
+Before queue admission the binding retains one typed input identity and its exact
+message/custody witness. An unresolved, expired or unknown original is held for
+canonical START/terminal/usage reconciliation and is never submitted as a new
+input. Pause, stop, scope or authority changes deny subsequent sends. Ordinary
+non-Home continuation retains its existing behavior and generic service actors
+remain unable to enter Home.
+
+Home bindings require finite model-call, input-token and output-token budgets.
+Each admitted input reserves a call slot; canonical attributed runtime usage
+separately accounts actual model calls and tokens. Missing terminal usage holds
+continuation, and a configured cost ceiling also requires known cost. These are
+admission and observed-usage limits: they do not invent a provider-side hard
+output cap. Existing native assignment/runtime deadlines still apply. An owned
+terminal callback settles the same binding and re-enters the existing Goal owner
+only after successful checkpoint and known usage; deterministic Goal completion,
+concrete blockers, pause or exhausted budgets stop it. There is no idle model poll.
+Existing Goal controls and their canonical binding status/stop reason remain the
+operator surface; an exhausted budget is not a completed Goal.
+
+Goal execution binding state is **1.2**. Reads migrate legacy 1.0/1.1 in memory;
+ordinary bindings omit the optional Home proof. **Every binding-store write,
+including an ordinary binding write, persists 1.2.** Older readers must reject it.
+A release containing this writer is a state migration and cannot promise rollback
+to a 1.1-only binary after any such write. Cold backup/restore composition must not
+write binding state before restoring an older service. Rollback then requires a
+qualified compatible reader or an explicitly reviewed data migration; dropping
+Home proof or clearing uncertain inputs is not a rollback operation.

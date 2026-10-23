@@ -132,6 +132,18 @@ class HomeOperatorHostService:
         undeclared profiles retain their existing admission path.
         """
         event_source = (source.removeprefix('queued:') if isinstance(source, str) else '')
+        if event_source.startswith('home-goal-continuation:'):
+            authorizer = getattr(self, 'goal_input_authorizer', None)
+            try:
+                if authorizer is None or actor is None or assignment is None:
+                    raise ValueError('Canonical Home Goal input authority unavailable')
+                authorizer(source=source, assignment=assignment, actor=actor, project=project,
+                    request_checksum=request_checksum, input_execution_id=input_execution_id)
+                self._authorize_context(assignment, actor)
+                return True
+            except (IdentityError, AgentProfileError, DefinitionConflictError, DefinitionCompatibilityError,
+                    ThreadBootstrapBindingError, ValueError, LookupError, RuntimeError, HTTPException):
+                raise AuthorizationError('Current Home Goal input authority unavailable') from None
         if event_source.startswith('home-operator-automation:'):
             try:
                 if actor is None or assignment is None or self.event_input_authorizer is None:
