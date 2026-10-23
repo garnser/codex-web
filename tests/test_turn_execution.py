@@ -2762,6 +2762,35 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(*service.assignment_completion_tasks.values())
         self.assertEqual(service.thread_completion_tasks, {})
 
+    async def test_cancelled_retained_observer_waiter_keeps_writer_and_barrier_joined(self):
+        import threading
+        host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
+        entered, release, exited = threading.Event(), threading.Event(), threading.Event()
+        def observe(active, *, succeeded):
+            entered.set()
+            try:
+                release.wait(2.)
+            finally:
+                exited.set()
+        service.retained_turn_outcome_recorder = observe
+        service.mark_thread_active('t1', turn_id='turn-1', assignment_id='assignment-1')
+        service.record_thread_activity({'method':'turn/completed',
+            'params':{'threadId':'t1', 'turn':{'id':'turn-1'}}})
+        self.assertTrue(await asyncio.to_thread(entered.wait, 1.))
+        task = service.thread_completion_tasks['t1']
+        task.cancel()
+        try:
+            await asyncio.sleep(.01)
+            self.assertFalse(task.done())
+            self.assertFalse(exited.is_set())
+            self.assertIs(service.thread_completion_tasks['t1'], task)
+        finally:
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertTrue(exited.is_set())
+        self.assertEqual(service.thread_completion_tasks, {})
+
     async def test_retained_event_failure_observation_preserves_checkpoint_error(self):
         host, _binding, sessions, service = self._service(bootstrap_thread_id='t1')
         sessions.checkpoint = AsyncMock(side_effect=RuntimeError('checkpoint failed'))
