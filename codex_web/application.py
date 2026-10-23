@@ -4967,7 +4967,12 @@ home_operator_followup.launch_handler = _launch_home_event_run
 app.state.home_operator_followup = home_operator_followup
 app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
     home_operator_followup.on_schedule, event_types=("schedule.due",))
-turn_execution_service.retained_turn_outcome_recorder = home_operator_followup.record_terminal
+home_restart_recovery_service.event_followup = home_operator_followup
+home_operator_followup.restart_recovery = home_restart_recovery_service
+async def _record_home_retained_terminal(active, *, succeeded):
+    await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
+    await home_operator_followup.record_terminal(active, succeeded=succeeded)
+turn_execution_service.retained_turn_outcome_recorder = _record_home_retained_terminal
 automation_execution_service.home_operator_followup = home_operator_followup
 control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input
 turn_execution_service.procedure_admission.input_authorizer = (
