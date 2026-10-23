@@ -70,7 +70,8 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
     session = custody.SupervisionCustodyTests.session
     observations = custody.SupervisionCustodyTests.observations
 
-    async def exercise(self, *, phase="validation", fault=None, worker_delay=0):
+    async def exercise(self, *, phase="validation", fault=None, worker_delay=0,
+                       expire_predecessor=False):
         session, _ = await self.session()
         clock = ObservationClock()
         # Patch only these two consumers, never asyncio's own real clock/timers.
@@ -93,6 +94,17 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
         session.runtime.proc = session._owned_process = process
         self.backend.terminate_process = BubblewrapExecutionBackend._kill_process_group
         session._clock = time.time
+        if expire_predecessor:
+            # Real canonical renewal must happen while this lease is live.
+            # Only its observer is held beyond the predecessor's expiry.
+            def shorten(state):
+                for index, item in enumerate(state.assignments):
+                    if item.id == session.assignment_id:
+                        state.assignments[index] = item.model_copy(update={
+                            "lease": item.lease.model_copy(update={"expires_at": time.time() + 1})})
+                return state
+            self.worker_service.store.update(shorten)
+            session._bound_assignment = self.worker_service.store.assignment(session.assignment_id)
         start = asyncio.Event()
         cycle = asyncio.Event()
         hold = asyncio.Event()
@@ -153,7 +165,11 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 clock.advance(.18)
             if fault == "worker_failure":
                 raise RuntimeError("actual worker validation failed")
-            return function(*args)
+            result = function(*args)
+            if fault == "fabricated_renewal":
+                return result.model_copy(update={"lease": result.lease.model_copy(
+                    update={"lease_token": "fabricated-claim-token-that-never-existed"})})
+            return result
         setattr(session, name, Mock(side_effect=work))
         renewal = session._heartbeat_and_renew
         if phase != "renewal":
@@ -167,6 +183,11 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 clock.advance(.17)
             else:
                 self.assertTrue(completed.wait(2))
+            if expire_predecessor:
+                self.assertGreater(future_expiry := selected[0].result().lease.expires_at,
+                                   session._bound_assignment.lease.expires_at)
+                time.sleep(max(0, session._bound_assignment.lease.expires_at - time.time()) + .05)
+                self.assertGreater(future_expiry, time.time())
             before_observation.append(session._bound_assignment.model_dump(mode="json"))
             if fault == "authority":
                 self.delegation.validation_error = CodexAuthDelegationStaleError("revoked credential")
@@ -192,12 +213,14 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
             if fault == "quarantine":
                 self.worker_service.set_lifecycle(self.worker.id, WorkerLifecycle.QUARANTINED,
                                                  actor=self.admin, reason="fixture revocation")
-            if fault in {"lease", "deadline", "fence"}:
+            if fault in {"lease", "deadline", "fence", "token"}:
                 def change(state):
                     for index, item in enumerate(state.assignments):
                         if item.id == session.assignment_id:
                             values = ({"fence": item.fence + 1} if fault == "fence" else
                                       {"deadline_at": time.time() - 1} if fault == "deadline" else
+                                      {"lease": item.lease.model_copy(update={"lease_token": "changed-current-canonical-lease-token"})}
+                                      if fault == "token" else
                                       {"lease": item.lease.model_copy(update={"expires_at": time.time() - 1})})
                             state.assignments[index] = item.model_copy(update=values)
                     return state
@@ -241,7 +264,7 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(session._failure_observation["cleanup_state"], "stopped")
                 if fault in {"over_budget", "worker_failure"}:
                     self.assertIsNotNone(future.exception())
-                if fault in {"authority", "quarantine", "lease", "deadline", "fence"}:
+                if fault in {"authority", "quarantine", "lease", "deadline", "fence", "token", "fabricated_renewal"}:
                     self.assertEqual(session._failure_observation["code"], "agent_runtime_validation_failed")
                     self.assertFalse(cycle.is_set(), "reject before another watchdog sleep")
                     self.assertEqual(session._bound_assignment.model_dump(mode="json"),
@@ -281,6 +304,24 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_renewal_observed_after_deadline_is_not_repeated(self):
         await self.exercise(phase="renewal")
+
+    async def test_timely_canonical_renewal_survives_expired_predecessor_snapshot(self):
+        await self.exercise(phase="renewal", expire_predecessor=True)
+
+    async def test_expired_predecessor_does_not_accept_expired_canonical_renewal(self):
+        await self.exercise(phase="renewal", expire_predecessor=True, fault="lease")
+
+    async def test_expired_predecessor_does_not_accept_revoked_renewal_authority(self):
+        await self.exercise(phase="renewal", expire_predecessor=True, fault="authority")
+
+    async def test_expired_predecessor_does_not_accept_changed_canonical_token(self):
+        await self.exercise(phase="renewal", expire_predecessor=True, fault="token")
+
+    async def test_expired_predecessor_does_not_accept_changed_canonical_fence(self):
+        await self.exercise(phase="renewal", expire_predecessor=True, fault="fence")
+
+    async def test_expired_predecessor_does_not_accept_fabricated_renewal_result(self):
+        await self.exercise(phase="renewal", expire_predecessor=True, fault="fabricated_renewal")
 
     async def test_actual_unfinished_work_times_out_and_cleans_process(self):
         await self.exercise(fault="unfinished")

@@ -1009,33 +1009,55 @@ class AssignmentBoundAgentProcessSession:
             result = future.result()  # Preserve the actual worker exception.
             if completed_at is None or completed_at >= budget.deadline:
                 raise
-            # Timely work is not a lease extension. The last validated lease
-            # and assignment deadline must still be live at observation.
-            self._lease_budget()
+            # A timely *renewal* may have extended canonical custody while its
+            # predecessor snapshot expired during delayed loop observation.
+            # Its exact result supplies only the budget for a fresh authority
+            # read: never install that result or perform another renewal here.
+            renewal = phase == "renewal"
+            read_budget = (min(seconds, self._renewal_observation_budget(result))
+                           if renewal else self._lease_budget())
             # The same successful work may have finished before authority was
             # revoked while the observer loop remained blocked. Check current
             # canonical authority for *both* validation and renewal results,
             # off-loop in the existing serial executor. Do not repeat resource
             # validation, heartbeat or renewal, or install the old result yet.
-            await self._supervise(
+            current = await self._supervise(
                 f"{phase}_authority", self._validate_current_authority,
-                seconds=self._lease_budget(), reconcile_late=False,
+                seconds=read_budget, reconcile_late=False,
             )
             self._supervision_phase = phase
+            if renewal:
+                self._renewal_observation_budget(current)
+                return current
             return result
         finally:
             self._supervision_timings[f"{phase}_wait_seconds"] = round(time.monotonic() - submitted, 6)
             budget.cancelled.set()
             future.cancel()
 
-    def _lease_budget(self):
-        assignment = self._bound_assignment
+    def _renewal_observation_budget(self, assignment: ExecutionAssignment) -> float:
+        original = self._bound_assignment
+        if (not isinstance(assignment, ExecutionAssignment) or original is None
+                or original.lease is None or assignment.lease is None
+                or (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
+                    assignment.assigned_worker_id, assignment.fence, assignment.lease.worker_id,
+                    assignment.lease.fence, assignment.lease.lease_token)
+                != (original.id, original.execution_id, original.execution_workspace_id,
+                    original.assigned_worker_id, original.fence, original.lease.worker_id,
+                    original.lease.fence, original.lease.lease_token)):
+            raise AssignmentBoundAgentProcessSessionStaleError("renewal observation claim changed")
+        return self._assignment_lease_budget(assignment)
+
+    def _assignment_lease_budget(self, assignment: ExecutionAssignment | None) -> float:
         lease = assignment.lease if assignment else None
         now = self._clock()
         expires = min(lease.expires_at, assignment.deadline_at or lease.expires_at) if lease else now
         if expires <= now:
             raise TimeoutError("last validated lease or assignment deadline expired")
         return min(10.0, expires - now)
+
+    def _lease_budget(self):
+        return self._assignment_lease_budget(self._bound_assignment)
 
     async def _retire_failed_runtime(self, code, message):
         async with self._retirement_lock:
