@@ -273,6 +273,53 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(status,200)
         self.assertEqual(self.evidence.store.load().verifications,[])
 
+    def use_pinned_role_owner(self):
+        self.items.put(self.ref, self.items.get(self.ref).model_copy(
+            update={'current_owner': self.assignment.agent_profile.role_id}))
+        self.assertNotEqual(self.assignment.agent_profile.profile_id,
+                            self.assignment.agent_profile.role_id)
+
+    async def test_pinned_role_owner_reads_exact_evidence_and_artifact(self):
+        self.use_pinned_role_owner()
+        artifact = self.evidence.create_artifact(ArtifactCreate(
+            work_item_ref=self.ref, project_id='project-a',
+            resource_ids=(self.target.id,), artifact_type='report',
+            name='Synthetic exact issue input'), actor=self.admin)
+        for path, record in (('/api/evidence/', self.original),
+                             ('/api/artifacts/', artifact)):
+            status, _, body = await self._request('GET', path + record.id)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body['item']['id'], record.id)
+        self.assertEqual(self.evidence.get_evidence(self.original.id, actor=self.admin),
+                         self.original)
+        self.assertEqual(self.evidence.store.load().verifications, [])
+
+    async def test_pinned_role_does_not_admit_unscoped_or_foreign_record(self):
+        self.use_pinned_role_owner()
+        for overrides in ({'work_item_ref': None}, {'project_id': 'another-project'}):
+            payload = dict(work_item_ref=self.ref, project_id='project-a',
+                           resource_ids=(self.target.id,),
+                           evidence_type='runtime_result', result='pass')
+            payload.update(overrides)
+            record = self.evidence.create_evidence(EvidenceCreate(**payload), actor=self.admin)
+            status, _, body = await self._request('GET', '/api/evidence/' + record.id)
+            self.assertEqual(status, 403, body)
+        self.assertEqual(self.evidence.store.load().verifications, [])
+
+    async def test_pinned_role_read_refuses_changed_owner(self):
+        self.use_pinned_role_owner()
+        self.items.put(self.ref, self.items.get(self.ref).model_copy(
+            update={'current_owner': 'unrelated-owner'}))
+        status, _, body = await self._request('GET', '/api/evidence/' + self.original.id)
+        self.assertEqual(status, 403, body)
+
+    async def test_pinned_role_read_refuses_revoked_current_profile(self):
+        self.use_pinned_role_owner()
+        self.agent_profiles.update('developer', AgentProfileUpdate(
+            description='Changed current role pin', reason='Synthetic revocation'), actor=self.admin)
+        status, _, body = await self._request('GET', '/api/evidence/' + self.original.id)
+        self.assertEqual(status, 403, body)
+
     async def test_current_work_item_owner_change_denies_old_scope(self):
         self.items.put(self.ref,self.items.get(self.ref).model_copy(update={'current_owner':'another-developer'}))
         status,_,_=await self.post()

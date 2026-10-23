@@ -212,7 +212,8 @@ A service-channel API policy check for B is additional to A's operational
 authority, not a grant of A's identity or scopes to B.
 
 The adapter requires a live assignment/fence, pinned current AgentProfile and
-execution profile, writable workspace lease, current Work Item ownership, tenant,
+execution profile, writable workspace lease, current Work Item ownership by the
+exact pinned Profile ID or its pinned role ID, tenant,
 Project/resource visibility, current procedure/security admission and current
 original firing/schedule/policy/state digests. Reference validation and Verification
 append use the existing shared StateStore transaction with those canonical
