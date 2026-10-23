@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from typing import Any, Callable
 from urllib.parse import quote
 
-from codex_web.action_intents import ActionIntent, ActionIntentState, ActionIntentStatus
+from codex_web.action_intents import ActionIntent, ActionIntentState, ActionIntentStatus, ActionIntentReceipt
 from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.state_store import StateStore
 
@@ -253,7 +253,7 @@ class ActionIntentStore:
                         raise ValueError("unsupported action intent records schema")
                     return {self._meta_key: {"schema_version": "1.3"}}
                 self.store.record_mutate(self.records_namespace, (self._meta_key,), upgrade)
-            elif meta not in ({"schema_version": "1.3"}, {"schema_version": "1.4"}):
+            elif meta not in ({"schema_version": "1.3"}, {"schema_version": "1.4"}, {"schema_version": "1.5"}):
                 raise ValueError("unsupported action intent records schema")
             return
         # Upgrade both namespaces under the shared transaction lock. The old
@@ -283,9 +283,9 @@ class ActionIntentStore:
         if progress is not None and not self._valid_publication_progress(progress):
             raise ValueError('publication_index_metadata_invalid')
         def fence(current):
-            if current[self._meta_key] not in ({'schema_version': '1.3'}, {'schema_version': '1.4'}):
+            if current[self._meta_key] not in ({'schema_version': '1.3'}, {'schema_version': '1.4'}, {'schema_version': '1.5'}):
                 raise ValueError('unsupported action intent records schema')
-            return {self._meta_key: {'schema_version': '1.4'}}
+            return {self._meta_key: {'schema_version': '1.5' if current[self._meta_key] == {'schema_version':'1.5'} else '1.4'}}
         self.store.record_mutate(self.records_namespace, (self._meta_key,), fence)
         while True:
             progress = self.store.record_get(self.records_namespace, self._publication_marker)
@@ -313,7 +313,7 @@ class ActionIntentStore:
         if not self.store.record_collection_exists(self.records_namespace):
             return False
         marker = self.store.record_get(self.records_namespace, self._publication_marker)
-        return (self.store.record_get(self.records_namespace, self._meta_key) == {'schema_version': '1.4'}
+        return (self.store.record_get(self.records_namespace, self._meta_key) in ({'schema_version': '1.4'}, {'schema_version': '1.5'})
             and self._valid_publication_progress(marker) and marker['ready'] is True)
 
     @staticmethod
@@ -371,7 +371,7 @@ class ActionIntentStore:
             self._ensure_records()
         elif (not self.store.record_collection_exists(self.records_namespace)
                 or self.store.record_get(self.records_namespace, self._meta_key)
-                    not in ({'schema_version':'1.3'}, {'schema_version':'1.4'})):
+                    not in ({'schema_version':'1.3'}, {'schema_version':'1.4'}, {'schema_version':'1.5'})):
             raise ValueError('readiness origin records require canonical preparation')
         # Separate cursors keep current replicated readers from restarting
         # each other's bounded migration. Aliases remain shared canonical data.
@@ -457,6 +457,55 @@ class ActionIntentStore:
             item = self.get(alias["id"])
             if item is not None:
                 yield item
+
+    def home_recovery_candidates(self, query):
+        """Original-row predicate, never derived alias completeness."""
+        from codex_web.storage.home_intent_query import HomeIntentRecoveryQuery
+        if not isinstance(query, HomeIntentRecoveryQuery):
+            raise ValueError('Typed Home recovery query required')
+        self._ensure_records()
+        reader = getattr(self.store, 'home_intent_recovery_rows', None)
+        if not callable(reader):
+            raise ValueError('Canonical Home recovery query unsupported')
+        rows = reader(self.records_namespace, query)
+        result = []
+        for raw in rows:
+            item = ActionIntent.model_validate(raw)
+            if (item.organization_id,item.workspace_id) != (query.organization_id,query.workspace_id):
+                raise ValueError('Home recovery original scope indeterminate')
+            if query.execution_id is not None:
+                if item.execution_id != query.execution_id:
+                    raise ValueError('Home recovery original execution indeterminate')
+            else:
+                command = query.command
+                if (item.project_id != 'home' or item.action_id != 'operator.host.command'
+                        or item.provider_type != command.provider_type or item.provider_instance != command.provider_instance
+                        or item.requested_by != command.requested_by or item.resource_ids != command.resource_ids
+                        or tuple(item.request.parameters.get('argv', ())) != command.argv):
+                    raise ValueError('Home recovery original command indeterminate')
+            result.append(item)
+        return tuple(result)
+
+    def recovery_last_receipt(self, intent):
+        if not intent.last_receipt_id:
+            return None
+        rows, after = self.store.record_page(self.records_namespace,
+            key_prefix='receipts:' + quote(intent.id, safe='') + ':', limit=128)
+        if after is not None:
+            raise ValueError('Home recovery original receipt inventory exceeded')
+        found = []
+        for raw in rows.values():
+            receipt = ActionIntentReceipt.model_validate(raw)
+            if receipt.intent_id != intent.id:
+                raise ValueError('Home recovery receipt origin invalid')
+            if receipt.id == intent.last_receipt_id:
+                if any(getattr(receipt,field) != getattr(intent,field) for field in
+                        ('attempt','provider_type','provider_instance','action_id','idempotency_key','correlation_id')):
+                    raise ValueError('Home recovery receipt identity invalid')
+                found.append(receipt)
+        if len(found) != 1:
+            raise ValueError('Home recovery original receipt unavailable')
+        return found[0]
 
     def intent_page(self, *, after: str | None = None, limit: int = 100):
         """Read complete validated intents without receipt/verification history.

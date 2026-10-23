@@ -46,30 +46,25 @@ class HomeRestartRecoveryService:
             self.refused('home_restart_original_custody_unavailable')
         return value
 
-    def _held(self, execution_ids):
-        after = None
+    def _held(self, execution_ids, *, actor):
+        from codex_web.storage.home_intent_query import HomeIntentRecoveryQuery
         held = []
-        scanned = 0
-        deadline = time.monotonic() + 5
-        while True:
-            if scanned >= 10000 or time.monotonic() >= deadline:
-                self.refused('home_restart_action_history_budget_exhausted')
-            rows, after = self.intents.store.intent_page(after=after, limit=100)
-            scanned += len(rows)
-            if time.monotonic() >= deadline:
-                self.refused('home_restart_action_history_budget_exhausted')
-            for intent in rows:
-                if intent.execution_id not in execution_ids:
-                    continue
-                if intent.status not in {'succeeded', 'failed', 'cancelled', 'expired'}:
-                    held.append((intent.id, str(intent.status)))
-                    continue
-                if intent.last_receipt_id:
-                    receipts = self.intents.store.load(intent_id=intent.id).receipts
-                    if any(r.id == intent.last_receipt_id and r.outcome == 'unknown' for r in receipts):
-                        held.append((intent.id, 'unknown_receipt'))
-            if after is None:
-                return tuple(held)
+        for execution_id in execution_ids:
+            try:
+                rows = self.intents.store.home_recovery_candidates(HomeIntentRecoveryQuery(
+                    organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+                    execution_id=execution_id))
+                for intent in rows:
+                    if intent.status not in {'succeeded', 'failed', 'cancelled', 'expired'}:
+                        held.append((intent.id, str(intent.status)))
+                    elif intent.last_receipt_id:
+                        if self.intents.store.recovery_last_receipt(intent).outcome == 'unknown':
+                            held.append((intent.id, 'unknown_receipt'))
+                    elif intent.execution_started_at is not None:
+                        held.append((intent.id, 'missing_receipt'))
+            except ValueError:
+                self.refused('home_restart_original_action_inventory_unavailable')
+        return tuple(held)
 
     def retain_startup(self, active, *, project, actor):
         """Reserve exact interrupted Home once, then enqueue through normal admission.
@@ -99,7 +94,7 @@ class HomeRestartRecoveryService:
         project, operator = self.home_host.authorize(assignment, actor)
         if operator.thread_id != active.thread_id:
             self.refused('home_restart_selected_conversation_changed')
-        held = self._held({assignment.execution_id})
+        held = self._held({assignment.execution_id}, actor=actor)
         message = RESTART_MESSAGE + (' Held original actions (inspect/reconcile; never replay): ' + ', '.join(
             key + ':' + status for key,status in held[:32]) if held else '')
         original = active.model_dump(mode='json')

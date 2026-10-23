@@ -57,18 +57,16 @@ class HomeRestartRecoveryTests(HomeHostActionIntentTests):
         self.assertTrue(self.preflight.begin_queued_start(attempt.id,claim_id=claim))
         return attempt.id,claim
 
-    async def test_history_budget_exhaustion_never_means_no_original(self):
+    async def test_unsupported_original_query_never_falls_back_to_full_history(self):
         from unittest.mock import patch
         from codex_web.services.action_providers import ActionRequirementError
         intent = self.create()
-        with patch.object(self.intents.store, 'intent_page', return_value=([intent] * 100, 'more')) as pages:
-            with self.assertRaises(ActionRequirementError):
-                self.provider._refuse_held_duplicate(self.intents, intent)
-            self.assertEqual(pages.call_count, 100)
-        with patch.object(self.intents.store, 'intent_page', return_value=([intent] * 100, 'more')) as pages:
-            with self.assertRaises(ExecutionPrestartRefusal):
-                self.restart._held(set())
-            self.assertEqual(pages.call_count, 100)
+        with patch.object(self.f.sqlite, 'home_intent_recovery_rows', side_effect=ValueError('unavailable')):
+            with patch.object(self.intents.store, 'intent_page', side_effect=AssertionError('whole history read')):
+                with self.assertRaises(ActionRequirementError):
+                    self.provider._refuse_held_duplicate(self.intents, intent)
+                with self.assertRaises(ExecutionPrestartRefusal):
+                    self.restart._held({self.assignment.execution_id}, actor=self.actor)
 
     async def test_host_admission_history_reads_run_outside_event_loop(self):
         import threading

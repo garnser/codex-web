@@ -450,3 +450,28 @@ restart checkpoints, completed Upgrade supervisor provenance, repeated restart
 chains and claimed event custody rollover require their explicit canonical handoff;
 they are not inferred from an empty active marker or a successful process exit.
 Private canonical admission/custody tests do not establish live restart acceptance.
+
+Host duplicate prevention and startup inspection use a typed, parameterized
+canonical state-backend query over ORIGINAL ActionIntent and receipt rows. The
+predicate pins tenant and exact native execution or Home command identity
+(requester/provider/resources/argv). It selects unresolved statuses, an original
+unknown/missing receipt, and terminal executions without a receipt. Positive
+terminal receipts must match the original intent's identity, attempt and known
+outcome. A single original receipt is required; conflicting/unknown headers
+cannot establish settled history. Selected full models and original receipts are
+validated again. This is a current recovery predicate, not an integrity audit of
+all positively settled historical result payloads.
+
+The query has a five-second statement budget and returns at most 256 unresolved
+candidates. Settled history does not consume that limit, so 300 successful repeats
+of one command or native execution cannot disable the next action. Unsupported
+backend/query semantics, conversion failure or genuinely excessive unresolved
+work refuse visibly. The existing owned operation joins the read worker before
+retiring; it never substitutes a whole-history fallback. Legacy nonstandard JSON
+which cannot be classified safely may refuse rather than be treated as absent.
+
+No derived alias proves an original absent. The abandoned Home index prototype
+was never deployed; deleting any such alias cannot affect this predicate. No new
+records migration is required. The reader explicitly accepts prototype normalized
+metadata `1.5` without downgrading it; publication/readiness compatibility remains
+intact. Ordinary canonical `1.4` writes and serialization stay unchanged.

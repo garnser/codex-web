@@ -133,36 +133,26 @@ class HomeHostActionProvider:
             'effect_verification': False, 'unknown_outcome_replay': False}
 
     def _refuse_held_duplicate(self, service, initial):
-        # Conservative finite fallback until a canonical digest index exists.
-        # Exhaustion refuses; it never proves absence from a partial history.
-        after = None
-        scanned = 0
-        deadline = time.monotonic() + 5
-        while True:
-            if scanned >= 10000 or time.monotonic() >= deadline:
-                raise ActionRequirementError('Held-command inspection budget exhausted; original history retained')
-            rows, after = service.store.intent_page(after=after, limit=100)
-            scanned += len(rows)
-            if time.monotonic() >= deadline:
-                raise ActionRequirementError('Held-command inspection budget exhausted; original history retained')
-            for prior in rows:
-                if (prior.id != initial.id and prior.action_id == HOST_COMMAND_ACTION
-                        and prior.provider_type == initial.provider_type and prior.provider_instance == initial.provider_instance
-                        and prior.requested_by == initial.requested_by
-                        and (prior.organization_id, prior.workspace_id, prior.project_id) ==
-                            (initial.organization_id, initial.workspace_id, initial.project_id)
-                        and prior.resource_ids == initial.resource_ids
-                        and tuple(prior.request.parameters.get('argv', ())) == tuple(initial.request.parameters['argv'])):
-                    held = prior.status not in {'succeeded','failed','cancelled','expired'}
-                    if prior.last_receipt_id:
-                        receipts = service.store.load(intent_id=prior.id).receipts
-                        held = held or any(r.id == prior.last_receipt_id and r.outcome == 'unknown' for r in receipts)
-                    elif prior.execution_started_at is not None:
-                        held = True
-                    if held:
-                        raise ActionRequirementError('Original matching host command is held; reconcile intent ' + prior.id)
-            if after is None:
-                return
+        from codex_web.storage.home_intent_query import HomeIntentRecoveryQuery, HomeCommandIdentity
+        query = HomeIntentRecoveryQuery(organization_id=initial.organization_id,
+            workspace_id=initial.workspace_id, command=HomeCommandIdentity(
+                requested_by=initial.requested_by,provider_type=initial.provider_type,
+                provider_instance=initial.provider_instance,resource_ids=initial.resource_ids,
+                argv=tuple(initial.request.parameters['argv'])))
+        try:
+            candidates = service.store.home_recovery_candidates(query)
+            for prior in candidates:
+                if prior.id == initial.id:
+                    continue
+                held = prior.status not in {'succeeded','failed','cancelled','expired'}
+                if not held and prior.last_receipt_id:
+                    held = service.store.recovery_last_receipt(prior).outcome == 'unknown'
+                elif prior.execution_started_at is not None:
+                    held = True
+                if held:
+                    raise ActionRequirementError('Original matching host command is held; reconcile intent ' + prior.id)
+        except ValueError:
+            raise ActionRequirementError('Canonical original host command/receipt inventory unavailable') from None
 
     def _execution_guard(self, request, binding):
         context = _executor.get()

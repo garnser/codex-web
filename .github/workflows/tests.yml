@@ -322,7 +322,7 @@ jobs:
           PY
         if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Exercise PostgreSQL and Redis replicated semantics
-        run: python -m unittest tests.test_distributed_backends tests.test_artifact_governance_atomicity tests.test_keyed_revisions tests.test_postgres_collection_ranges tests.test_postgres_update_many_delta tests.test_postgres_documents_streaming tests.test_storage_preservation tests.test_recovery_storage_operator tests.test_recovery_preservation_setting_refusal
+        run: python -m unittest tests.test_distributed_backends tests.test_artifact_governance_atomicity tests.test_keyed_revisions tests.test_postgres_collection_ranges tests.test_postgres_update_many_delta tests.test_postgres_documents_streaming tests.test_home_intent_query tests.test_storage_preservation tests.test_recovery_storage_operator tests.test_recovery_preservation_setting_refusal
           tests.test_autonomy_append_scaling tests.test_agent_session_custody_postgres tests.test_custody_bootstrap_recovery_postgres tests.test_project_delegation_recovery_postgres tests.test_pull_request_ready_postgres
           tests.test_recovery_governed_verification tests.test_recovery_scheduled_postgres tests.test_recovery_operator_postgres tests.test_recovery_mutation_postgres tests.test_worker_verifications_postgres tests.test_worker_upgrade_approvals_postgres tests.test_upgrade_contract_cancellation_postgres tests.test_worker_capacity_verifications tests.test_read_only_resource_context_postgres tests.test_read_only_resource_context_reconciliation tests.test_read_only_resource_context_authenticated_steer tests.test_admitted_context_capacity tests.test_queued_native_resume_postgres
         if: ${{ needs.changes.outputs.full == 'true' }}
