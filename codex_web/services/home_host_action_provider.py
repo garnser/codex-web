@@ -133,11 +133,18 @@ class HomeHostActionProvider:
             'effect_verification': False, 'unknown_outcome_replay': False}
 
     def _refuse_held_duplicate(self, service, initial):
-        # One bounded canonical scan before effects, not a whole-ledger scan in
-        # every worker poll. Existing terminal outcomes never auto-reopen work.
+        # Conservative finite fallback until a canonical digest index exists.
+        # Exhaustion refuses; it never proves absence from a partial history.
         after = None
+        scanned = 0
+        deadline = time.monotonic() + 5
         while True:
+            if scanned >= 10000 or time.monotonic() >= deadline:
+                raise ActionRequirementError('Held-command inspection budget exhausted; original history retained')
             rows, after = service.store.intent_page(after=after, limit=100)
+            scanned += len(rows)
+            if time.monotonic() >= deadline:
+                raise ActionRequirementError('Held-command inspection budget exhausted; original history retained')
             for prior in rows:
                 if (prior.id != initial.id and prior.action_id == HOST_COMMAND_ACTION
                         and prior.provider_type == initial.provider_type and prior.provider_instance == initial.provider_instance
@@ -215,8 +222,15 @@ class HomeHostActionProvider:
     async def execute(self, request, *, binding, credential=None):
         if credential is not None:
             raise ActionRequirementError('Host command accepts no credential material')
-        intent_id, guard = self._execution_guard(request, binding)
-        payload, actor, assignment, envelope = guard()
+        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        def prepare():
+            intent_id, guard = self._execution_guard(request, binding)
+            return intent_id, guard, guard()
+        async def prepare_owned():
+            return await asyncio.to_thread(prepare)
+        intent_id, guard, current = await PostTurnReadinessService._run_owned(
+            prepare_owned, seconds=10, name='home-host-admission')
+        payload, actor, assignment, envelope = current
         started = time.time()
 
         def operation():

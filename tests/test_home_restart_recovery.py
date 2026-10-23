@@ -57,6 +57,35 @@ class HomeRestartRecoveryTests(HomeHostActionIntentTests):
         self.assertTrue(self.preflight.begin_queued_start(attempt.id,claim_id=claim))
         return attempt.id,claim
 
+    async def test_history_budget_exhaustion_never_means_no_original(self):
+        from unittest.mock import patch
+        from codex_web.services.action_providers import ActionRequirementError
+        intent = self.create()
+        with patch.object(self.intents.store, 'intent_page', return_value=([intent] * 100, 'more')) as pages:
+            with self.assertRaises(ActionRequirementError):
+                self.provider._refuse_held_duplicate(self.intents, intent)
+            self.assertEqual(pages.call_count, 100)
+        with patch.object(self.intents.store, 'intent_page', return_value=([intent] * 100, 'more')) as pages:
+            with self.assertRaises(ExecutionPrestartRefusal):
+                self.restart._held(set())
+            self.assertEqual(pages.call_count, 100)
+
+    async def test_host_admission_history_reads_run_outside_event_loop(self):
+        import threading
+        from unittest.mock import patch
+        caller = threading.get_ident()
+        observed = []
+        original = self.provider._refuse_held_duplicate
+        def inspect(*args):
+            observed.append(threading.get_ident())
+            return original(*args)
+        intent = self.create()
+        with patch.object(self.provider, '_refuse_held_duplicate', side_effect=inspect):
+            await self.execute(intent)
+        self.assertEqual(len(observed), 1)
+        self.assertNotEqual(observed[0], caller)
+        self.assertEqual(self.effects, 1)
+
     async def test_legacy_dispatch_reader_refuses_restart_proof_without_dropping_it(self):
         from codex_web.models import ProjectCoordinationDispatch, QueuedTurn
         from pydantic import ValidationError

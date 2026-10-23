@@ -4280,8 +4280,12 @@ class TurnExecutionService:
             if queued.home_restart_input is not None:
                 if self.home_restart_recovery is None or retained_attempt is None or admission_claim_id is None:
                     raise ExecutionPrestartRefusal(status_code=409, detail={'code':'home_restart_admission_unavailable'})
-                restart_context = self.home_restart_recovery.input_context(queued,
-                    attempt_id=retained_attempt.id, claim_id=admission_claim_id)
+                from codex_web.services.post_turn_readiness import PostTurnReadinessService
+                async def prepare_restart_context():
+                    return await asyncio.to_thread(self.home_restart_recovery.input_context, queued,
+                        attempt_id=retained_attempt.id, claim_id=admission_claim_id)
+                restart_context = await PostTurnReadinessService._run_owned(prepare_restart_context,
+                    seconds=10, name='home-restart-admission-' + queued.id)
             with restart_context:
                 start_response = await self.start_thread_turn_now(
                     thread_id,
@@ -4676,8 +4680,12 @@ class TurnExecutionService:
                         lock = asyncio.Lock()
                         self._turn_start_locks[thread_id] = lock
                     async with lock:
-                        queued = await asyncio.to_thread(self.home_restart_recovery.retain_startup,
-                            active, project=project, actor=requester)
+                        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+                        async def retain_owned():
+                            return await asyncio.to_thread(self.home_restart_recovery.retain_startup,
+                                active, project=project, actor=requester)
+                        queued = await PostTurnReadinessService._run_owned(retain_owned,
+                            seconds=10, name='home-startup-retention-' + thread_id)
                         if queued is not None:
                             current = h._get_active_turn_record(thread_id) if callable(getattr(h, '_get_active_turn_record', None)) else h._load_active_turns().get(thread_id)
                             if current != active:

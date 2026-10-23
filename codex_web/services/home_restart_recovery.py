@@ -49,8 +49,15 @@ class HomeRestartRecoveryService:
     def _held(self, execution_ids):
         after = None
         held = []
+        scanned = 0
+        deadline = time.monotonic() + 5
         while True:
+            if scanned >= 10000 or time.monotonic() >= deadline:
+                self.refused('home_restart_action_history_budget_exhausted')
             rows, after = self.intents.store.intent_page(after=after, limit=100)
+            scanned += len(rows)
+            if time.monotonic() >= deadline:
+                self.refused('home_restart_action_history_budget_exhausted')
             for intent in rows:
                 if intent.execution_id not in execution_ids:
                     continue
@@ -176,7 +183,6 @@ class HomeRestartRecoveryService:
             self.refused('home_restart_selected_conversation_changed')
         return saved, original, actor
 
-    @contextmanager
     def input_context(self, queued, *, attempt_id, claim_id):
         service = self
         class Authorizer:
@@ -199,5 +205,4 @@ class HomeRestartRecoveryService:
                 return 'web'
         authorizer = Authorizer()
         self.validate(queued, attempt_id=attempt_id, claim_id=claim_id)
-        with home_restart_context(authorizer):
-            yield
+        return home_restart_context(authorizer)
