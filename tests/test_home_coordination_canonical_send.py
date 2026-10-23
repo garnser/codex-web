@@ -17,6 +17,7 @@ from codex_web.action_providers import ActionProviderBindingCreate
 from codex_web.agent_profiles import AgentProfileCreate, AgentProfileUpdate
 from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentSession
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
 from codex_web.execution_workers import AssignmentClaimRequest, AssignmentStartRequest
 from codex_web.identity import MembershipRole
 from codex_web.models import IndexedThread, Project
@@ -60,6 +61,8 @@ class _NativeSessions:
 
 
 class HomeCanonicalSendTests(unittest.IsolatedAsyncioTestCase):
+    target_execution_profile = "repository-write"
+    target_has_repositories = True
     # Reuse only setup/helpers, never inherit the parent's test methods.
     select = home_fixture.HomeOperatorHostTests.select
     current = home_fixture.HomeOperatorHostTests.current
@@ -91,11 +94,14 @@ class HomeCanonicalSendTests(unittest.IsolatedAsyncioTestCase):
         self.repository = self.repository_resource('Data',Path(self.data.path))
         self.core = self.repository_resource('Core',self.root/'core-read-only')
         f._publish_secret(scope_id='data')
-        profile = self.profiles.create(AgentProfileCreate(profile_id='quinn',name='Data Quinn',execution_profile_id='repository-write',
+        self.prepare_target_catalog()
+        profile = self.profiles.create(AgentProfileCreate(profile_id='quinn',name='Data Quinn',execution_profile_id=self.target_execution_profile,
             sandbox_requirement='workspace-write',authority_role_id='local-admin'),actor=self.actor)
         bound = f.service.prepare_bootstrap(bootstrap_id='data-existing',execution_id='data-existing-execution',project_id='data',
-            sandbox='workspace-write',approval_policy='on-request',execution_profile_id='repository-write',
-            explicit_repository_id=self.repository.id,writable_repository_ids=(self.repository.id,),read_only_repository_ids=(self.core.id,),
+            sandbox='workspace-write',approval_policy='on-request',execution_profile_id=self.target_execution_profile,
+            explicit_repository_id=self.repository.id if self.target_has_repositories else None,
+            writable_repository_ids=(self.repository.id,) if self.target_has_repositories else (),
+            read_only_repository_ids=(self.core.id,) if self.target_has_repositories else (),
             agent_profile=self.profiles.binding_for(profile))
         claimed = f.workers.claim(f.worker.id,AssignmentClaimRequest(),actor=self.worker_actor,assignment_id=bound.assignment_id)
         self.target = f.workers.start(f.worker.id,bound.assignment_id,AssignmentStartRequest(fence=claimed.fence,
@@ -157,6 +163,9 @@ class HomeCanonicalSendTests(unittest.IsolatedAsyncioTestCase):
             authority=self.authority,identity=f.identity,execution_workers=f.workers,execution_profiles=f.execution_profiles)
         self.service.action_intents = self.intents
         await self.attach_native()
+
+    def prepare_target_catalog(self):
+        pass
 
     def repository_resource(self,name,path):
         path.mkdir(exist_ok=True)
@@ -259,6 +268,9 @@ class HomeCanonicalSendTests(unittest.IsolatedAsyncioTestCase):
                 self.select(None,1)
             elif kind=='home-definition':
                 self.publish(self.payload)
+            elif kind=='target-contract':
+                self.registry.quarantine(self.target.execution_profile_definition.record_id,
+                    actor=self.actor.identity_id, reason='Target execution contract revoked at writer')
             elif kind=='target-fence':
                 self.f.workers.store.update(lambda state:state.model_copy(update={'assignments':[
                     row.model_copy(update={'fence':row.fence+1}) if row.id==self.target.id else row for row in state.assignments]}))
@@ -317,5 +329,55 @@ class HomeCanonicalSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.completed,[])
 
 
+class HomeScratchCanonicalSendTests(HomeCanonicalSendTests):
+    target_execution_profile = "orchestration-admin"
+    target_has_repositories = False
+
+    def prepare_target_catalog(self):
+        payload = execution_profile_catalog_seed_payload()
+        admin = next(p for p in payload['profiles'] if p['id'] == 'orchestration-only').copy()
+        admin.update(id='orchestration-admin', name='Project coordinator')
+        payload['profiles'].append(admin)
+        for scope in ({}, {'scope_type': 'project', 'scope_id': 'data'}):
+            record = self.registry.create_draft(DefinitionDraftCreate(
+                definition_id='execution.profiles.default', kind='execution-profile-catalog',
+                definition_schema_version='1.1', payload=payload, actor=self.actor.identity_id, **scope))
+            self.registry.publish(record.record_id, DefinitionPublishRequest(actor=self.actor.identity_id))
+
+    async def test_actual_scratch_home_intent_queue_and_native_start(self):
+        self.assertFalse(self.target.repository_scope.writable_repository_ids)
+        self.assertFalse(self.target.repository_scope.read_only_repository_ids)
+        result = await self.message()
+        self.assertEqual(result['item']['status'], 'succeeded', result['item']['last_error'])
+        original = self.queue_store.get(self.thread)[0].model_copy(deep=True)
+        self.assertIsNone(original.repository_resource_id)
+        self.assertEqual(original.writable_repository_resource_ids, ())
+        self.assertEqual(original.read_only_repository_resource_ids, ())
+        await self.execution.drain_thread_queue(self.thread)
+        self.assertEqual(len(self.starts()), 1, self.host.events)
+        saved = self.execution.queued_preflight.store.get('preflight-queued-'+original.id)
+        self.assertEqual(saved.status, 'started')
+        self.assertEqual(saved.queued_start_receipt.provider_native_turn_id, 'canonical-home-delegated-turn')
+        self.assertEqual(self.queue_store.get(self.thread), [])
+        self.assertEqual(len(self.intents.store.load().intents), 1)
+        self.assertEqual(len(self.intents.history(result['item']['id'], self.actor)['receipts']), 1)
+        self.assertEqual(self.completed, [])
+
+    async def test_scratch_unknown_admission_never_replays(self):
+        await self.test_accept_then_lost_queue_response_keeps_one_uncertain_original()
+
+    async def test_scratch_final_fence_revocation_preserves_original(self):
+        await self.revoke_at_writer('target-fence')
+
+    async def test_scratch_final_contract_revocation_preserves_original(self):
+        await self.revoke_at_writer('target-contract')
+
+
 def load_tests(loader,tests,pattern):
-    return loader.loadTestsFromTestCase(HomeCanonicalSendTests)
+    suite = loader.loadTestsFromTestCase(HomeCanonicalSendTests)
+    suite.addTests(HomeScratchCanonicalSendTests(name) for name in (
+        'test_actual_scratch_home_intent_queue_and_native_start',
+        'test_scratch_unknown_admission_never_replays',
+        'test_scratch_final_fence_revocation_preserves_original',
+        'test_scratch_final_contract_revocation_preserves_original'))
+    return suite

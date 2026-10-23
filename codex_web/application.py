@@ -4972,9 +4972,18 @@ app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
     home_operator_followup.on_schedule, event_types=("schedule.due",))
 home_restart_recovery_service.event_followup = home_operator_followup
 home_operator_followup.restart_recovery = home_restart_recovery_service
+from codex_web.services.home_child_terminal import HomeChildTerminalService
+home_child_terminal_service = HomeChildTerminalService(
+    preflight=execution_preflight_service, events=canonical_event_ingestion,
+    intents=action_intent_store, sessions=agent_session_store, usage=agent_runtime_usage_store)
 async def _record_home_retained_terminal(active, *, succeeded):
-    await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
-    await home_operator_followup.record_terminal(active, succeeded=succeeded)
+    try:
+        await home_child_terminal_service.record_terminal(active, succeeded=succeeded)
+    finally:
+        try:
+            await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
+        finally:
+            await home_operator_followup.record_terminal(active, succeeded=succeeded)
 turn_execution_service.retained_turn_outcome_recorder = _record_home_retained_terminal
 automation_execution_service.home_operator_followup = home_operator_followup
 control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input

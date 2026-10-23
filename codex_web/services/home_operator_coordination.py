@@ -127,6 +127,23 @@ class HomeOperatorCoordinationService:
                 denied("Target custody requires canonical recovery before delegation")
         return binding, target, profile
 
+    def target_repository_fields(self, target, actor):
+        """Normalize input scope only after resolving the exact current contract."""
+        contract, reference = self.broker.execution_profiles.resolve(
+            target.execution_profile_id, organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id, project_id=target.project_id)
+        if reference != target.execution_profile_definition:
+            denied("Target execution contract changed")
+        scope = target.repository_scope
+        if contract.workspace_mode == "scratch" and contract.repository_access == "none":
+            if scope is not None and (scope.writable_repository_ids or scope.read_only_repository_ids):
+                denied("Scratch target carries unexpected repository custody")
+            return None, (), ()
+        if (contract.workspace_mode != "repository" or scope is None
+                or not scope.writable_repository_ids):
+            denied("Canonical target repository scope is unavailable")
+        return scope.writable_repository_ids[0], scope.writable_repository_ids, scope.read_only_repository_ids
+
     def inspect(self, *, assignment_id, fence, project_id, query):
         current, actor, home, envelope = self.origin(assignment_id, fence, "operator.project.threads.list")
         if project_id not in {p.project_id for p in envelope.project_targets}:
@@ -194,15 +211,14 @@ class HomeOperatorCoordinationService:
             denied("Retained input does not match its original canonical Home action")
         _, target, profile = self.target(project_id=queued.project_id, thread_id=queued.thread_id,
             actor=actor, envelope=envelope, require_live=True)
-        scope = target.repository_scope
+        repository_id, writable, read_only = self.target_repository_fields(target, actor)
         if (target.id != proof.target_assignment_id or target.fence != proof.target_fence
                 or queued.agent_profile_actor_id != actor.identity_id
                 or queued.agent_profile_id != profile.profile_id or queued.agent_profile_revision != profile.revision
                 or queued.execution_profile_id != target.execution_profile_id
-                or scope is None or not scope.writable_repository_ids
-                or queued.repository_resource_id != scope.writable_repository_ids[0]
-                or queued.writable_repository_resource_ids != scope.writable_repository_ids
-                or queued.read_only_repository_resource_ids != scope.read_only_repository_ids):
+                or queued.repository_resource_id != repository_id
+                or queued.writable_repository_resource_ids != writable
+                or queued.read_only_repository_resource_ids != read_only):
             denied("Retained input target identity, profile or repository custody changed")
 
     async def message(self, *, assignment_id, fence, payload, worker_actor):
@@ -298,11 +314,13 @@ class HomeOperatorCoordinationActionProvider:
             assignment_id=current.id, fence=current.fence, home_revision=home.revision,
             target_assignment_id=target.id, target_fence=target.fence,
             message_sha256=hashlib.sha256(data.message.encode()).hexdigest())
-        scope = target.repository_scope
-        if scope is None or not scope.writable_repository_ids or self.service.turns is None:
+        repository_id, writable, read_only = self.service.target_repository_fields(target, actor)
+        if self.service.turns is None:
             denied("Canonical target repository scope or input service is unavailable")
         def guard():
             context = self.context(request, binding)
+            if self.service.target_repository_fields(context[5], actor) != (repository_id, writable, read_only):
+                denied("Target repository custody changed during input admission")
             original = self.service.broker.action_intents.get(intent.id, actor)
             if (original.status != "executing" or original.request != request or original.attempt != 1
                     or original.execution_id != current.execution_id or original.lease is None
@@ -314,9 +332,9 @@ class HomeOperatorCoordinationActionProvider:
             return context
         guard()
         result = await self.service.turns.start(data.thread_id, TurnCreate(message=data.message,
-            project_id=data.project_id, repository_resource_id=scope.writable_repository_ids[0],
-            writable_repository_resource_ids=scope.writable_repository_ids,
-            read_only_repository_resource_ids=scope.read_only_repository_ids,
+            project_id=data.project_id, repository_resource_id=repository_id,
+            writable_repository_resource_ids=writable,
+            read_only_repository_resource_ids=read_only,
             execution_profile_id=target.execution_profile_id, agent_profile_id=profile.profile_id,
             agent_profile_revision=profile.revision, defer_start=True), actor=actor,
             admission_guard=guard, source=SOURCE, project_coordination_dispatch=proof,

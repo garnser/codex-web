@@ -1369,6 +1369,7 @@ class TurnExecutionService:
         reasoning_effort: str | None = None,
         source: str | None = None,
         reply_target: BotReplyTarget | None = None,
+        queued_admission_attempt_id: str | None = None,
         execution_id: str | None = None,
         assignment_id: str | None = None,
         execution_workspace_id: str | None = None,
@@ -1406,6 +1407,7 @@ class TurnExecutionService:
             ),
             source=source or (current.source if current else None),
             reply_target=reply_target or (current.reply_target if current else None),
+            queued_admission_attempt_id=(queued_admission_attempt_id or (current.queued_admission_attempt_id if current else None)),
             execution_id=execution_id or (current.execution_id if current else None),
             assignment_id=assignment_id or (current.assignment_id if current else None),
             execution_workspace_id=(
@@ -3475,6 +3477,7 @@ class TurnExecutionService:
                 self.mark_thread_active(
                     thread_id,
                     project_id=project.id,
+                    queued_admission_attempt_id=queued_admission_attempt_id,
                     sandbox=effective_sandbox,
                     approval_policy=effective_approval_policy,
                     model=effective_model,
