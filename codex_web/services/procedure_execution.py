@@ -328,6 +328,44 @@ class ProcedureExecutionService:
         self.workers.record_procedure_discovery(assignment.id, admission, expected_fence=assignment.fence, actor=actor)
         return self._save(assignment, checkpoint)
 
+    def validate_native_preparation(self, assignment, selected, actor):
+        """Read-only proof that selected mutations have canonical provider owners.
+
+        This is not step admission and accepts no input values or credentials.
+        The normal interpreter still validates governed inputs, current step,
+        authority, approvals and the exact ActionIntent before provider dispatch.
+        """
+        from codex_web.services.procedure_discovery import checksum
+        self._live(assignment)
+        hook = getattr(self.intents.execution, "procedure_admission", None)
+        if (getattr(hook, "__self__", None) is not self.intents
+                or getattr(hook, "__func__", None) is not type(self.intents).procedure_provider_admission
+                or self.intents.procedure_execution is not self):
+            raise ProcedureExecutionError("procedure_canonical_provider_hook_unavailable")
+        if not selected:
+            raise ProcedureExecutionError("procedure_preparation_pin_missing")
+        for reference in selected:
+            self.skills.validate_required_procedure(reference, actor=actor)
+            record = self.skills.definitions.get_record(reference.record_id)
+            procedure = SkillDefinition.model_validate(record.payload).operational_procedure
+            if procedure is None or any(step.worker for step in procedure.steps):
+                raise ProcedureExecutionError("procedure_native_worker_step_unsupported")
+            self._targets(procedure, assignment, actor)
+            for step in procedure.steps:
+                if step.kind in {"mutation", "recovery"} and step.action is None:
+                    raise ProcedureExecutionError("procedure_native_mutation_owner_unsupported")
+                if step.action is None:
+                    continue
+                binding = self._binding(step, assignment, actor)
+                provider = self.intents.execution.registry.provider(binding.provider_type,
+                    binding.provider_instance, actor=actor)
+                contract = step.action
+                definitions = [item for item in provider.actions() if item.action_id == contract.action_id]
+                if (not binding.enabled or provider.contract_version != contract.provider_contract_version
+                        or len(definitions) != 1 or not definitions[0].capabilities.execute):
+                    raise ProcedureExecutionError("procedure_native_provider_contract_unavailable")
+        return checksum([reference.model_dump(mode="json") for reference in selected])
+
     def _approval_target(self, assignment, step):
         checkpoint = assignment.procedure_checkpoint
         return ApprovalTarget(operation="procedure.step", object_type="execution_assignment", object_id=assignment.id,

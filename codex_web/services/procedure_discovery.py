@@ -326,7 +326,12 @@ class ProcedureDiscoveryService:
                     outcome = "failed"
                     blockers.append("procedure_context_limit")
                     return result()
-            if context.enforcement != "canonical_action" and (selected or context.enforcement not in {"bounded_read_only", "isolated_preparation", "canonical_rollback"}):
+            from codex_web.services.native_procedure_preparation import current_preparation
+            proof = current_preparation()
+            provider_preparation = (
+                context.enforcement in {"bounded_read_only", "isolated_preparation"}
+                and proof is not None and not blockers and proof.permits(tuple(selected)))
+            if not provider_preparation and context.enforcement != "canonical_action" and (selected or context.enforcement not in {"bounded_read_only", "isolated_preparation", "canonical_rollback"}):
                 outcome = "unsupported_enforcement"
                 blockers.append("procedure_tool_enforcement_unsupported: use a canonical ActionIntent operation or policy-authorized isolated preparation")
                 blockers.extend(context.capability_reasons)
@@ -401,6 +406,8 @@ class NativeProcedureAdmissionService:
         self.control_actor = control_actor
         self.execution_profiles = execution_profiles
         self.input_authorizer = None
+        self.native_session_attestor = None
+        self.procedure_execution = None
 
     def _native_policy(self, assignment, actor, project, sandbox):
         """Existing exact profile permits isolated preparation, never host operations.
@@ -475,6 +482,61 @@ class NativeProcedureAdmissionService:
         except Exception:
             return "native_tools", "canonical:execution-policy-unavailable"
 
+    def _preparation_context(self, assignment, actor, project, sandbox, request_checksum):
+        enforcement, source = self._native_policy(assignment, actor, project, sandbox)
+        if enforcement not in {"bounded_read_only", "isolated_preparation"}:
+            raise ValueError("native preparation policy changed")
+        context = OperationContext(actor=actor, project_id=project.id,
+            resource_ids=assignment.resource_ids, operation=None, request_checksum=request_checksum,
+            policy_source=source, policy_allows=True, enforcement=enforcement,
+            **self.discovery.resource_facts(assignment.resource_ids, actor))
+        context = self.discovery.assignment_context(context, assignment, actor=actor)
+        if context.worker_capabilities is None or context.provider_capabilities is None:
+            raise ValueError("native preparation capabilities unavailable")
+        return context
+
+    def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected):
+        from dataclasses import replace
+        from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
+        if self.native_session_attestor is None or self.procedure_execution is None:
+            raise ValueError("native provider preparation is unavailable")
+        context = self._preparation_context(assignment, actor, project, sandbox, request_checksum)
+        expected_context = context
+        def validate():
+            self.native_session_attestor(assignment)
+            self.procedure_execution.validate_native_preparation(assignment, selected, actor)
+            if self._preparation_context(assignment, actor, project, sandbox, request_checksum) != expected_context:
+                raise ValueError("native preparation context changed")
+        validate()
+        source = "canonical:native-provider-preparation:" + checksum({
+            "assignment":assignment.id,"fence":assignment.fence,"execution":assignment.execution_id,
+            "definitions":[ref.model_dump(mode="json") for ref in selected],"policy":context.policy_source})
+        proof = NativeProviderPreparation(tuple(selected), source, validate)
+        context = replace(context, policy_source=context.policy_source + ";" + source,
+            capability_sources=(*context.capability_sources, source))
+        with native_provider_preparation(proof):
+            discovery, text = self.discovery.discover(context)
+        if not discovery.admitted or tuple(discovery.selected) != tuple(selected):
+            raise ProcedureAdmissionError(discovery)
+        return discovery, text
+
+    def preparation_input_guard(self, discovery, *, project, actor, execution_id, assignment_id, sandbox, request_checksum):
+        """A fresh read-only check at the existing guarded native send boundary."""
+        def validate():
+            from codex_web.runtime.execution import ExecutionPrestartRefusal
+            try:
+                current = self.workers.assignment_for_execution(execution_id, actor=self.control_actor)
+                if current.id != assignment_id:
+                    raise ValueError("native assignment changed")
+                fresh, _ = self._preparation_discovery(current, actor, project, sandbox, request_checksum, discovery.selected)
+                if fresh.context_checksum != discovery.context_checksum:
+                    raise ValueError("native preparation fingerprint changed")
+            except Exception as exc:
+                raise ExecutionPrestartRefusal(status_code=409, detail={
+                    "code":"procedure_native_preparation_changed",
+                    "message":"Current isolated provider preparation proof is unavailable"}) from exc
+        return validate
+
     async def __call__(self, *, project, actor, thread_id, execution_id, assignment_id, sandbox, source, request_checksum=None, input_actor=_INPUT_ACTOR_UNSET):
         import asyncio
         from codex_web.runtime.execution import ExecutionPrestartRefusal
@@ -512,6 +574,18 @@ class NativeProcedureAdmissionService:
                 from dataclasses import replace
                 context = replace(context, enforcement="native_tools")
         discovery, text = await asyncio.to_thread(self.discovery.discover, context)
+        if (assignment is not None and discovery.outcome == "unsupported_enforcement"
+                and discovery.selected and len(discovery.blockers) == 1
+                and discovery.blockers[0].startswith("procedure_tool_enforcement_unsupported:")
+                and context.enforcement in {"bounded_read_only", "isolated_preparation"}
+                and self.native_session_attestor is not None and self.procedure_execution is not None):
+            try:
+                discovery, text = await asyncio.to_thread(self._preparation_discovery,
+                    assignment, actor, project, sandbox, request_checksum, discovery.selected)
+            except Exception:
+                # Preserve the genuine unsupported refusal; no weaker no-match
+                # or preparation claim when any live proof is unavailable.
+                pass
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
         if assignment is not None:
             from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
@@ -704,9 +778,11 @@ class ProcedureExecutionCapabilityService:
             capability_sources=tuple(sources), capability_reasons=tuple(reasons))
 
 
-def install_native_procedure_admission(turns, sessions, discovery, workers, history, control_actor, execution_profiles):
+def install_native_procedure_admission(turns, sessions, discovery, workers, history, control_actor, execution_profiles, procedure_execution=None):
     """One production wiring point for native turns and provider-neutral sessions."""
     admission = NativeProcedureAdmissionService(discovery, workers, history, control_actor, execution_profiles)
+    admission.native_session_attestor = getattr(turns, "attest_native_provider_preparation", None)
+    admission.procedure_execution = procedure_execution
     turns.procedure_admission = admission
     sessions.procedure_admission = admission.agent_session_admission
     return admission
