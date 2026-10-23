@@ -62,6 +62,18 @@ to 2,000,000 bytes stdout and 64,000 bytes stderr; overflow is an error. Scratch
 workspaces are released after each request. No idle timer, model invocation or
 hidden scan retry is introduced.
 
+Scanner failure Evidence retains the observed local execution phase separately
+from scan acceptance. `before_backend` means the worker did not enter its backend
+call; `backend_unresolved` does not establish whether a process started or exited.
+Only a returned backend result supplies exit code, elapsed time, timeout, limit
+and truncation metadata. A later lease/poll or completion failure preserves that
+observation with `scanner_completion_returned=false`; it does not fabricate a
+terminal assignment or accepted scan. A returned canonical completion rejected
+by the transport is identified separately. Raw stdout/stderr, command arguments
+and exception text are excluded from this failure metadata. Historical failures
+without these observations remain unknown; installing the reader does not
+reconstruct an earlier process result or prove scanner readiness.
+
 The code-owned wire adapter currently supports SkillSpector 2.12.0, verified
 against upstream commit `240421219409dc0bafef9f618a10d80c2d7e83a3`:
 `src/skillspector/cli.py`, `nodes/report.py`, `models.py`, `__init__.py` and
