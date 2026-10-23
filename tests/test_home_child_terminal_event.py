@@ -185,12 +185,14 @@ class HomeChildTerminalTests(HomeCanonicalSendTests):
         self.execution.record_thread_activity({'method':'turn/completed','params':{
             'threadId':self.thread,'turn':{'id':active.turn_id}}})
         task = self.execution.assignment_completion_tasks[self.target.id]
-        await entered.wait()
-        task.cancel()
-        await asyncio.sleep(0)
-        self.assertFalse(task.done())
-        self.assertIs(self.execution.assignment_completion_tasks[self.target.id],task)
-        release.set()
+        try:
+            await asyncio.wait_for(entered.wait(),5.)
+            task.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            self.assertIs(self.execution.assignment_completion_tasks[self.target.id],task)
+        finally:
+            release.set()
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertNotIn(self.target.id,self.execution.assignment_completion_tasks)
