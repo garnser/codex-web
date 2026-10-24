@@ -111,6 +111,58 @@ class UxBriefMemoryServiceTests(unittest.TestCase):
     tearDown=UxBriefRetrievalFoundationTests.tearDown
     create_memory=UxBriefRetrievalFoundationTests.create_memory
 
+    def test_ancestry_context_reads_do_not_materialize_unrelated_governance(self):
+        from unittest.mock import patch
+        from codex_web.organizational_memory import KnowledgeQuery
+        source = self.create_memory("ux.ancestry-cost")
+        brief = self.create_brief(source)
+        state = self.governance.store.load()
+        root = next(row for row in state.records if row.id == source.governance_record_id)
+        ancestors = [root.model_copy(update={"id": f"ancestor-{i}", "object_id": f"ancestor-{i}",
+            "source_record_ids": (f"ancestor-{i+1}",) if i < 11 else ()}) for i in range(12)]
+        state.records = [row.model_copy(update={"source_record_ids": (ancestors[0].id,)})
+            if row.id == root.id else row for row in state.records]
+        state.records.extend(ancestors)
+        state.records.extend(root.model_copy(update={"id": f"unrelated-{i}", "object_id": f"unrelated-{i}",
+            "source_record_ids": ()}) for i in range(800))
+        self.governance.store.store.put(self.governance.store.namespace, state.model_dump(mode="json"))
+        query = KnowledgeQuery(knowledge_ids=(brief.id,), project_ids=("project-a",))
+        original_get = self.governance.get_record
+        with patch.object(self.governance, "get_record",
+                side_effect=lambda identity, actor, **_: original_get(identity, actor)):
+            expected = self.service.search(query, actor=self.actor)
+        with patch.object(self.governance.store, "load", side_effect=AssertionError("whole governance catalog")):
+            actual = self.service.search(query, actor=self.actor)
+        self.assertEqual(actual.model_dump(exclude={"retrieval_id"}), expected.model_dump(exclude={"retrieval_id"}))
+        self.assertEqual([row.knowledge_id for row in actual.items], [brief.id])
+        # A current ancestor denial still excludes the brief on the next read.
+        state.records = [row.model_copy(update={"deny_model_context": True})
+            if row.id == ancestors[-1].id else row for row in state.records]
+        self.governance.store.store.put(self.governance.store.namespace, state.model_dump(mode="json"))
+        self.assertEqual(self.service.search(query, actor=self.actor).items, ())
+
+    def test_ancestry_context_preserves_missing_foreign_and_cycle_decisions(self):
+        from codex_web.data_governance import DataClassification
+        from codex_web.services.ux_brief_sources import brief_context_allowed
+        source = self.create_memory("ux.ancestry-negative")
+        brief = self.create_brief(source)
+        baseline = self.governance.store.load()
+        root = next(row for row in baseline.records if row.id == source.governance_record_id)
+        ancestor = root.model_copy(update={"id": "ancestor", "object_id": "ancestor", "source_record_ids": ()})
+        for changed, expected in ((None, False),
+                (ancestor.model_copy(update={"organization_id": "foreign"}), False),
+                (ancestor.model_copy(update={"deny_model_context": True}), False),
+                (ancestor.model_copy(update={"source_record_ids": (root.id,)}), True)):
+            with self.subTest(ancestor=changed, expected=expected):
+                rows = [row.model_copy(update={"source_record_ids": (ancestor.id,)})
+                    if row.id == root.id else row for row in baseline.records]
+                if changed is not None:
+                    rows.append(changed)
+                state = baseline.model_copy(update={"records": rows})
+                self.governance.store.store.put(self.governance.store.namespace, state.model_dump(mode="json"))
+                self.assertEqual(brief_context_allowed(self.service, brief, self.actor,
+                    DataClassification.INTERNAL), expected)
+
     def create_brief(self, source=None, key="ux.curated", **changes):
         from codex_web.organizational_memory import KnowledgeCreate
         sections={"observed_needs":UxBriefSection(text="Show recovery status beside the failed task."),
