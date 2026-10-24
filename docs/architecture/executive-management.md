@@ -207,3 +207,16 @@ configuration. Runtime-only native selection has no ModelInvocationRequest and
 therefore does not consume the Profile's model-request budget defaults; normal
 AgentRouting model requests still apply them. A null request under a finite
 Profile ceiling adopts that ceiling, rather than raising a type error. See #1790.
+### Native preparation diagnostics
+
+The existing runtime event journal records `native_reasoning_preparation_failed`
+with the original Executive execution, activation, role and tenant scope, a fixed
+preparation stage, and a closed exception category. It excludes exception text,
+tracebacks, prompts and credentials. A validated controller-owned ThreadService
+prestart refusal may also carry its closed bootstrap stage and exception category.
+Only that refusal proves provider thread startup was not called. Other failures
+before native input admission do not establish that no provider thread exists.
+
+Diagnostic failure cannot replace the original refusal or its cleanup. Failures
+after native input admission retain their existing unknown-outcome semantics.
+These events confer no retry, replay, START, completion or accounting authority.

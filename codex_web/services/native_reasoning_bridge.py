@@ -16,6 +16,7 @@ from codex_web.model_providers import ModelProviderAdapterError, ModelProviderOu
 from codex_web.models import TurnCreate
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
 from codex_web.services.queued_native_start import validate_attribution
+from codex_web.services.threads import bootstrap_exception_type, bootstrap_preparation_diagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +121,23 @@ class CanonicalNativeReasoningBridge:
             waiter.cancel()
             await asyncio.gather(waiter, return_exceptions=True)
 
+    def _preparation_failed(self, context, stage, exc):
+        # This is diagnostic evidence, not permission to retry or proof that a
+        # provider thread was never created. Only ThreadService owns that proof.
+        event = dict(type='native_reasoning_preparation_failed',
+            organization_id=context.organization_id, workspace_id=context.workspace_id,
+            project_id=context.project_id, execution_id=context.execution_id,
+            activation_id=context.activation_id, role_id=context.role_id,
+            native_preparation_stage=stage, native_exception_type=bootstrap_exception_type(exc),
+            native_input_admitted=False)
+        try:
+            event.update(bootstrap_preparation_diagnostic(exc) or {})
+            self.threads.event_sink(event)
+        except Exception:
+            # An unavailable diagnostic sink must not change the original error,
+            # its cleanup ownership, or the no-replay outcome.
+            pass
+
     def _result(self, *, context, actor, session, assignment, thread_id,
                 turn_id, queued_id, text):
         context.validate_current()
@@ -199,7 +217,11 @@ class CanonicalNativeReasoningBridge:
     async def _invoke_owned(self, provider, model, request, *, actor, context, cancelled):
         if not self.supports(provider, model, context):
             raise ModelProviderAdapterError('Native reasoning binding unavailable')
-        await self._owned(context.validate_current)
+        try:
+            await self._owned(context.validate_current)
+        except Exception as exc:
+            self._preparation_failed(context, 'initial_current_guard', exc)
+            raise
         b = self.binding
         manager = serving = None
         assignment = session = None
@@ -252,6 +274,7 @@ class CanonicalNativeReasoningBridge:
             loop.call_soon_threadsafe(observe_on_loop, event)
 
         self.hub.subscribe_filtered(observe, event_types=('codex.event',))
+        preparation_stage = 'thread_bootstrap'
         try:
             # Stable bootstrap correlation is provenance, never permission to
             # retry an unknown invocation. Executive owns the single reservation.
@@ -263,22 +286,28 @@ class CanonicalNativeReasoningBridge:
                 agent_profile_id=b.agent_profile_id, agent_profile_revision=b.agent_profile_revision,
                 actor=actor, bootstrap_token=bootstrap, admission_guard=context.validate_current)
             thread_id = response['thread']['id']
+            preparation_stage = 'session_lookup'
             context.process_owner.bind_native_session(thread_id)
             session = await self._owned(lambda: self.sessions.get(response['agentSessionId'],
                 organization_id=context.organization_id, workspace_id=context.workspace_id))
+            preparation_stage = 'session_binding'
             if (session.provider_id != 'openai' or session.runtime_id != self.runtime_id
                     or session.provider_native_session_id != thread_id
                     or session.project_id != context.project_id or session.resource_ids
                     or session.worker_id != b.worker_id or session.model != b.concrete_model):
                 raise ValueError('Native reasoning canonical session binding changed')
+            preparation_stage = 'assignment_lookup'
             manager, serving = self.execution._session_for_assignment(session.assignment_id)
             native_runtime = serving.runtime
             usage_ready = loop.create_future()
             self._usage_waiters[session.id] = (loop, usage_ready)
+            preparation_stage = 'assignment_validation'
             assignment = await self._owned(serving.validate_current)
+            preparation_stage = 'session_attestation'
             await self._owned(lambda: self.attest_session(serving, assignment, context, model))
             # JSON keeps individual message boundaries as data. The system
             # policy is separately installed by the restricted native runtime.
+            preparation_stage = 'input_preparation'
             message = json.dumps([item.model_dump(mode='json') for item in request.messages],
                                  ensure_ascii=False, separators=(',', ':'))
             if cancelled.is_set():
@@ -312,6 +341,7 @@ class CanonicalNativeReasoningBridge:
             if native_admitted:
                 raise ModelProviderOutcomeUnknownError(
                     'Native inference original retained; inspect canonical START/usage') from exc
+            self._preparation_failed(context, preparation_stage, exc)
             raise ModelProviderAdapterError('Native reasoning preparation refused') from exc
         finally:
             self.hub.unsubscribe(observe)
