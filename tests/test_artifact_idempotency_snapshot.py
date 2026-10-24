@@ -361,3 +361,20 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 self.preserve()
         self.assertIsNone(f.planned._dormant_artifact(f.plan.id, f.actor))
         self.assertEqual(f.effects, 0)
+
+    async def test_foreign_only_computed_id_with_matching_payload_hash_refuses(self):
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        f = self.fixture
+        f.lose(); first = self.preserve(); backend = f.artifacts.store.store
+        raw = backend.get('artifact_evidence')
+        original_hash = first.metadata['idempotency_payload_sha256']
+        for item in raw['artifacts']:
+            if item['id'] == first.id:
+                item['organization_id'] = 'foreign'
+                self.assertEqual(item['metadata']['idempotency_payload_sha256'], original_hash)
+        backend.put('artifact_evidence', raw)
+        before = self.storage_digest()
+        with patch.object(f.artifacts.governance, 'register_domain_record', side_effect=AssertionError('no Gov write')):
+            with self.assertRaisesRegex(ExecutionPrestartRefusal, 'home_upgrade_dormant_preservation_changed'):
+                self.preserve()
+        self.assertEqual(self.storage_digest(), before)
