@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
@@ -25,6 +26,23 @@ def _routing_dispatch(method):
         except OwnerRoutingError as exc:
             if self.owner_routing is not None:
                 self.owner_routing.record_failure(state, exc)
+            if method.__name__ == 'dispatch_structured_handoff' and state.handoff is not None:
+                # The canonical blocker CAS can refuse a stale snapshot. Keep
+                # this attempted handoff's refusal inspectable without retrying
+                # or claiming a native input outcome from the handled result.
+                code = str(exc)
+                try:
+                    self.append_event({
+                        'type': 'work_item_handoff_dispatch_failed', 'ref': state.ref,
+                        'source': kwargs.get('source'),
+                        'handoff_requested_at': state.handoff.requested_at,
+                        'recipient': state.handoff.to_agent,
+                        'reason_code': code if re.fullmatch(r'(?:owner_|work_item_)[a-z0-9_]{1,112}', code) else 'owner_routing_refused',
+                        'dispatch_outcome': 'owner_routing_blocked',
+                        'native_outcome': 'not_inferred',
+                    })
+                except Exception:
+                    pass  # A journal failure cannot turn a refusal into dispatch.
             return {'status': 'owner_routing_blocked', 'code': str(exc), 'dispatched': False}
     return dispatch
 

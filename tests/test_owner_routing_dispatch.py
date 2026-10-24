@@ -263,6 +263,80 @@ class OwnerRoutingContinuityTests(unittest.IsolatedAsyncioTestCase):
             coordination_channel='coordination')
         self.continuity.owner_routing = self.fixture.service
 
+    async def test_scheduled_handoff_refusal_survives_blocker_CAS_drift(self):
+        env = self.fixture.env
+        pending = env.pending()
+        pending.handoff.owner_routing = env.machine._owner_routing(pending).binding('operator')
+        env.states.put(pending.ref, pending)
+        events = []
+        self.continuity.append_event = events.append
+
+        async def refused(*args, **kwargs):
+            current = env.states.get(pending.ref)
+            current.updated_at += 1
+            env.states.put(current.ref, current)
+            raise OwnerRoutingError('owner_recipient_preparation_changed')
+
+        self.fixture.service.prepare_compatible_pin = AsyncMock(side_effect=refused)
+        self.continuity.schedule_structured_handoff_dispatch(pending, source='work-item-handoff')
+        task = self.continuity.dispatch_coordinator._tasks['handoff-dispatch:'+pending.ref]
+        await task
+        self.assertEqual(self.continuity.dispatch_coordinator.status()['completed'], 1)
+        self.assertEqual(self.continuity.dispatch_coordinator.status()['failed'], 0)
+        self.assertIsNone(env.states.get(pending.ref).owner_routing_blocker)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0], {
+            'type': 'work_item_handoff_dispatch_failed', 'ref': pending.ref,
+            'source': 'work-item-handoff', 'handoff_requested_at': 1,
+            'recipient': 'operator', 'reason_code': 'owner_recipient_preparation_changed',
+            'dispatch_outcome': 'owner_routing_blocked', 'native_outcome': 'not_inferred',
+        })
+        self.assertEqual(env.states.get(pending.ref).handoff.requested_at, 1)
+        self.assertEqual(env.states.get(pending.ref).handoff.status, 'pending')
+        self.fixture.service.prepare_compatible_pin.assert_awaited_once()
+        self.dispatch.assert_not_called()
+        await self.continuity.stop()
+
+    async def test_direct_continuity_refusal_preserves_result_without_error_prose(self):
+        env = self.fixture.env
+        pending = env.pending()
+        pending.handoff.owner_routing = env.machine._owner_routing(pending).binding('operator')
+        env.states.put(pending.ref, pending)
+        events = []
+        self.continuity.append_event = events.append
+        self.fixture.service.prepare_compatible_pin = AsyncMock(side_effect=OwnerRoutingError('opaque_private_refusal'))
+        result = await self.continuity.dispatch_structured_handoff(pending, source='work-item-handoff-continuity')
+        self.assertEqual(result, {'status': 'owner_routing_blocked', 'code': 'opaque_private_refusal', 'dispatched': False})
+        self.assertEqual(events[0]['reason_code'], 'owner_routing_refused')
+        self.assertNotIn('private', str(events))
+        self.dispatch.assert_not_called()
+
+    async def test_refusal_event_write_failure_preserves_blocked_result(self):
+        env = self.fixture.env
+        pending = env.pending()
+        pending.handoff.owner_routing = env.machine._owner_routing(pending).binding('operator')
+        env.states.put(pending.ref, pending)
+        self.continuity.append_event = Mock(side_effect=OSError('private journal failure'))
+        self.fixture.service.prepare_compatible_pin = AsyncMock(side_effect=OwnerRoutingError('owner_recipient_preparation_changed'))
+        result = await self.continuity.dispatch_structured_handoff(pending, source='work-item-handoff')
+        self.assertEqual(result['code'], 'owner_recipient_preparation_changed')
+        self.assertFalse(result['dispatched'])
+        self.dispatch.assert_not_called()
+
+    async def test_superseded_pending_handoff_does_not_create_refusal_event(self):
+        env = self.fixture.env
+        pending = env.pending()
+        events = []
+        self.continuity.append_event = events.append
+        self.continuity.schedule_structured_handoff_dispatch(pending, source='work-item-handoff')
+        changed = env.states.get(pending.ref)
+        changed.handoff.requested_at = 2
+        env.states.put(changed.ref, changed)
+        await self.continuity.dispatch_coordinator._tasks['handoff-dispatch:'+pending.ref]
+        self.assertEqual(events, [])
+        self.dispatch.assert_not_called()
+        await self.continuity.stop()
+
     async def test_alias_dispatch_keeps_claims_and_actual_canonical_executor(self):
         state = self.fixture.state
         result = await self.continuity.dispatch_actionable_owner(state, source='owner-work-watchdog')
