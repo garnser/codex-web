@@ -1,5 +1,6 @@
 """A bounded idempotency snapshot retains canonical point-selection semantics."""
 import os
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -163,7 +164,7 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.addAsyncCleanup(self.fixture.asyncTearDown)
 
-    async def test_real_drain_preserves_home_with_one_artifact_snapshot_and_atomic_creation(self):
+    async def test_real_drain_uses_one_atomic_catalog_without_preliminary_lookup(self):
         f = self.fixture
         f.lose(); before = f.preserved()
         backend = f.artifacts.store.store
@@ -173,7 +174,7 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
                     wraps=backend.document_array_item_envelope) as point, \
                 patch.object(f.artifacts, '_commit_creation', wraps=f.artifacts._commit_creation) as commit:
             self.assertTrue(f.drain().maintenance_mode)
-        self.assertEqual(batch.call_count, 1)
+        self.assertEqual(batch.call_count, 0)
         self.assertEqual(point.call_count, 0)
         self.assertEqual(commit.call_count, 1)
         self.assertEqual(f.preserved(), before)
@@ -185,18 +186,20 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(f.planned.resume_completed(f.plan.id, operator_actor=f.operator))
         self.assertEqual(f.preserved(), before)
 
-    async def test_checkpoint_ambiguity_still_refuses_before_snapshot_or_creation(self):
+    async def test_checkpoint_ambiguity_refuses_before_governance_or_catalog_writes(self):
         from codex_web.artifact_evidence import ArtifactCreate
         from codex_web.runtime.execution import ExecutionPrestartRefusal
         f = self.fixture
         f.lose(); before = f.preserved()
         f.artifacts.create_artifact(ArtifactCreate(artifact_type='report', name='Existing checkpoint',
             source='home-upgrade-checkpoint'), actor=f.actor, idempotency_key=f.plan.id)
-        with patch.object(f.planned, '_dormant_snapshot',
-                side_effect=AssertionError('ambiguous checkpoint must refuse first')), \
-                patch.object(f.artifacts, '_commit_creation') as commit:
+        with patch.object(f.planned, '_dormant_snapshot', wraps=f.planned._dormant_snapshot) as snapshots, \
+                patch.object(f.artifacts.governance, 'register_domain_record',
+                    side_effect=AssertionError('checkpoint must refuse before governance')), \
+                patch('codex_web.artifact_evidence.ArtifactEvidenceState.model_dump',
+                    side_effect=AssertionError('checkpoint must refuse before catalog export')):
             with self.assertRaises(ExecutionPrestartRefusal): f.drain()
-        commit.assert_not_called()
+        self.assertEqual(snapshots.call_count, 2)
         self.assertEqual(f.preserved(), before)
         self.assertEqual(f.effects, 0)
 
@@ -207,9 +210,9 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(f.drain().maintenance_mode)
         saved = f.planned._dormant_artifact(f.plan.id, f.actor)
         f.put_plan(f.plan)  # The SAME original draft, without changing Home custody.
-        with patch.object(f.artifacts, '_commit_creation') as commit:
+        with patch.object(f.artifacts, '_commit_creation', wraps=f.artifacts._commit_creation) as commit:
             self.assertTrue(f.drain().maintenance_mode)
-        commit.assert_not_called()
+        self.assertEqual(commit.call_count, 1)
         self.assertEqual(f.planned._dormant_artifact(f.plan.id, f.actor), saved)
         f.put_plan(f.plan)
         def invalidate(state):
@@ -217,8 +220,144 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 if a.id == saved.id else a for a in state.artifacts]
             return state
         f.artifacts.store.update(invalidate)
-        with patch.object(f.artifacts, '_commit_creation') as commit:
+        with patch.object(f.artifacts, '_commit_creation', wraps=f.artifacts._commit_creation) as commit:
             with self.assertRaises(ExecutionPrestartRefusal): f.drain()
-        commit.assert_not_called()
+        self.assertEqual(commit.call_count, 1)
         self.assertEqual(f.preserved(), before)
+        self.assertEqual(f.effects, 0)
+
+    def storage_digest(self):
+        return hashlib.sha256(b''.join(self.fixture.artifacts.store.store.iter_storage_snapshot())).hexdigest()
+
+    def warm_readiness(self):
+        f = self.fixture
+        binding = f.projects.get('home', f.actor.tenant).home_operator
+        f.planned._dormant_snapshot(binding, f.actor)
+
+    def preserve(self):
+        f = self.fixture
+        binding = f.projects.get('home', f.actor.tenant).home_operator
+        return f.planned._preserve_dormant(f.plan.id, binding, f.actor, f.operator)
+
+    async def test_valid_prior_without_payload_hash_reuses_before_governance_decode_and_writes(self):
+        f = self.fixture
+        f.lose(); first = self.preserve()
+        def legacy(state):
+            state.artifacts = [a.model_copy(update={'metadata': {k:v for k,v in a.metadata.items()
+                if k != 'idempotency_payload_sha256'}}) if a.id == first.id else a for a in state.artifacts]
+            return state
+        f.artifacts.store.update(legacy)
+        backend = f.artifacts.store.store
+        backend.put('data_governance', {'schema_version':'99.0', 'records':[]})
+        before = self.storage_digest()
+        with patch.object(f.artifacts.governance.store, '_decode', side_effect=AssertionError('prior must not decode Gov')), \
+                patch.object(f.artifacts.governance, 'register_domain_record', side_effect=AssertionError('prior must not register Gov')), \
+                patch('codex_web.artifact_evidence.ArtifactEvidenceState.model_dump', side_effect=AssertionError('prior must not export')):
+            result = self.preserve()
+        self.assertEqual(result.id, first.id)
+        self.assertNotIn('idempotency_payload_sha256', result.metadata)
+        self.assertEqual(self.storage_digest(), before)
+        self.assertEqual(f.effects, 0)
+
+    async def test_first_scoped_prior_ignores_foreign_first_and_keeps_legacy_fallback(self):
+        f = self.fixture
+        f.lose(); first = self.preserve(); backend = f.artifacts.store.store
+        raw = backend.get('artifact_evidence')
+        raw['artifacts'].insert(0, {**first.model_dump(mode='json'), 'organization_id':'foreign'})
+        raw['artifacts'].append({'id':'unrelated-invalid-artifact'})
+        backend.put('artifact_evidence', raw)
+        before = self.storage_digest()
+        with patch.object(f.artifacts, 'find_idempotent_artifacts', wraps=f.artifacts.find_idempotent_artifacts) as fallback, \
+                patch.object(f.artifacts.governance, 'register_domain_record', side_effect=AssertionError('no new Gov')):
+            result = self.preserve()
+        self.assertEqual((result.id,result.organization_id), (first.id,'local'))
+        self.assertEqual(fallback.call_count, 1)
+        self.assertEqual(self.storage_digest(), before)
+
+    async def test_artifact_decode_failure_without_prior_rethrows_and_never_registers(self):
+        f = self.fixture
+        f.lose(); backend = f.artifacts.store.store
+        backend.put('artifact_evidence', {'schema_version':'1.3','artifacts':[{'id':'unrelated-invalid'}]})
+        self.warm_readiness()
+        before = self.storage_digest()
+        with patch.object(f.artifacts.governance, 'register_domain_record', side_effect=AssertionError('no Gov')):
+            with self.assertRaises(ValueError): self.preserve()
+        self.assertEqual(self.storage_digest(), before)
+
+    async def test_updater_failure_is_not_reclassified_as_prewrite_legacy_lookup(self):
+        f = self.fixture
+        f.lose(); backend = f.artifacts.store.store
+        self.warm_readiness()
+        before = self.storage_digest()
+        with patch.object(f.artifacts.governance, 'register_domain_record', side_effect=ValueError('updater failed')), \
+                patch.object(f.artifacts, 'find_idempotent_artifacts', side_effect=AssertionError('no legacy retry')):
+            with self.assertRaisesRegex(ValueError, 'updater failed'): self.preserve()
+        self.assertEqual(self.storage_digest(), before)
+
+    async def test_all_snapshots_and_session_readiness_run_outside_artifact_governance_locks(self):
+        f = self.fixture
+        f.lose(); backend = f.artifacts.store.store; inside = False
+        original = backend.record_mutate_many
+        def mutate(domains, updater):
+            nonlocal inside
+            is_creation = 'artifact_evidence' in domains
+            if is_creation: inside = True
+            try: return original(domains, updater)
+            finally:
+                if is_creation: inside = False
+        original_snapshot = f.planned._dormant_snapshot
+        def snapshot(*args, **kwargs):
+            self.assertFalse(inside)
+            return original_snapshot(*args, **kwargs)
+        original_ready = f.planned.sessions._ensure_records
+        def readiness():
+            self.assertFalse(inside)
+            return original_ready()
+        with patch.object(backend,'record_mutate_many',side_effect=mutate), \
+                patch.object(f.planned,'_dormant_snapshot',side_effect=snapshot) as snapshots, \
+                patch.object(f.planned.sessions,'_ensure_records',side_effect=readiness) as ready:
+            self.preserve()
+        self.assertEqual(snapshots.call_count, 3)
+        self.assertGreater(ready.call_count, 0)
+
+    async def test_raw_governance_corruption_refuses_even_prior_reuse_without_fallback_or_writes(self):
+        f = self.fixture
+        f.lose(); self.preserve(); backend = f.artifacts.store.store
+        with backend._connection() as connection:
+            connection.execute('UPDATE state_documents SET payload=? WHERE namespace=?',
+                ('{', 'data_governance'))
+            connection.commit()
+        before = self.storage_digest()
+        with patch.object(f.artifacts, 'find_idempotent_artifacts', side_effect=AssertionError('raw corruption has no fallback')):
+            with self.assertRaises(json.JSONDecodeError): self.preserve()
+        self.assertEqual(self.storage_digest(), before)
+
+    async def test_private_guard_rejects_composed_writer_before_any_callback(self):
+        from codex_web.artifact_evidence import ArtifactCreate
+        from codex_web.services.artifact_evidence import ArtifactEvidenceConflictError
+        f = self.fixture
+        guard = unittest.mock.Mock(); composed = unittest.mock.Mock()
+        before = self.storage_digest()
+        with self.assertRaises(ArtifactEvidenceConflictError):
+            f.artifacts.create_artifact(ArtifactCreate(artifact_type='report', name='No composed guard'),
+                actor=f.actor, _commit=composed, _catalog_guard=guard)
+        guard.assert_not_called(); composed.assert_not_called()
+        self.assertEqual(self.storage_digest(), before)
+
+    async def test_checkpoint_arriving_after_snapshot_refuses_in_atomic_catalog(self):
+        from codex_web.artifact_evidence import ArtifactCreate
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        f = self.fixture
+        f.lose(); calls = 0; snapshot = f.planned._dormant_snapshot
+        def concurrent_checkpoint(*args, **kwargs):
+            nonlocal calls
+            value = snapshot(*args, **kwargs); calls += 1
+            if calls == 2:
+                f.artifacts.create_artifact(ArtifactCreate(artifact_type='report', name='Concurrent checkpoint',
+                    source='home-upgrade-checkpoint'), actor=f.actor, idempotency_key=f.plan.id)
+            return value
+        with patch.object(f.planned, '_dormant_snapshot', side_effect=concurrent_checkpoint):
+            with self.assertRaisesRegex(ExecutionPrestartRefusal, 'home_upgrade_preservation_ambiguous'):
+                self.preserve()
+        self.assertIsNone(f.planned._dormant_artifact(f.plan.id, f.actor))
         self.assertEqual(f.effects, 0)
