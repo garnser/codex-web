@@ -76,17 +76,21 @@ class GitLabCodeHostProvider:
     @staticmethod
     def _classify(exc: Exception) -> CodeHostError:
         if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
-            return CodeHostTransientError(f"{type(exc).__name__}: {exc}")
-        status = getattr(exc, "status_code", None)
+            return CodeHostTransientError("Code-host provider transport failed", transport_failure=True)
+        declared_status = getattr(exc, "status_code", None)
+        status = declared_status
         message = str(exc)
         if status is None and "HTTP " in message:
             try:
                 status = int(message.split("HTTP ", 1)[1].split()[0])
             except (ValueError, IndexError):
                 status = None
-        if status in {408, 409, 429} or (isinstance(status, int) and status >= 500):
-            return CodeHostTransientError(message)
-        return CodeHostError(message)
+        if type(declared_status) is int and 400 <= declared_status <= 599:
+            error_type = CodeHostTransientError if declared_status in {408, 409, 429} or declared_status >= 500 else CodeHostError
+            return error_type(f"Code-host provider returned HTTP {declared_status}", provider_http_status=declared_status)
+        if status in {408, 409, 429} or (type(status) is int and status >= 500):
+            return CodeHostTransientError(message)  # Legacy text is not a typed HTTP witness.
+        return CodeHostError(str(exc))
 
     async def _get(
         self,

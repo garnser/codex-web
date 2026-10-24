@@ -2172,13 +2172,30 @@ class ControlPlaneBrokerService:
             from codex_web.services.broker_merge_requirements import read_merge_requirements
             result = await read_merge_requirements(self, assignment, worker_actor, resolved, assignment_validator)
         elif repository_read:
-            result = await self._read_repository_fact(
-                assignment=assignment,
-                actor=actor,
-                operation=operation,
-                target_ref=resolved.target_ref,
-                query=resolved.query,
-            )
+            try:
+                result = await self._read_repository_fact(
+                    assignment=assignment,
+                    actor=actor,
+                    operation=operation,
+                    target_ref=resolved.target_ref,
+                    query=resolved.query,
+                )
+            except CodeHostError as exc:
+                provider_status = getattr(exc, "provider_http_status", None)
+                if type(provider_status) is int and 400 <= provider_status <= 599:
+                    message = f"Governed repository read returned provider HTTP {provider_status}."
+                    code = "repository_read_provider_error"
+                elif getattr(exc, "transport_failure", False) is True:
+                    message = "Governed repository read transport failed."
+                    code = "repository_read_transport_error"
+                else:
+                    raise  # Unknown/internal failures retain their original classification.
+                # A hidden/inaccessible repository can also return404. This is
+                # never an absence witness or permission to publish/retry.
+                raise ControlPlaneBrokerRequestError(
+                    message + " Remote absence and permission are unproven; no retry is authorized.",
+                    status_code=409, code=code,
+                ) from None
         elif operation.id == "repository.workspace.refresh":
             if self.execution_workspaces is None or not assignment.execution_workspace_id:
                 raise ControlPlaneBrokerDeniedError(

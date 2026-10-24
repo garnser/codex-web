@@ -92,10 +92,11 @@ class GitHubCodeHostProvider:
     @staticmethod
     def _classify(exc: Exception) -> CodeHostError:
         if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
-            return CodeHostTransientError(f"{type(exc).__name__}: {exc}")
+            return CodeHostTransientError("Code-host provider transport failed", transport_failure=True)
         status = getattr(exc, "status_code", None)
-        if status in {408, 409, 429} or (isinstance(status, int) and status >= 500):
-            return CodeHostTransientError(str(exc))
+        if type(status) is int and 400 <= status <= 599:
+            error_type = CodeHostTransientError if status in {408, 409, 429} or status >= 500 else CodeHostError
+            return error_type(f"Code-host provider returned HTTP {status}", provider_http_status=status)
         return CodeHostError(str(exc))
 
     async def repository(
