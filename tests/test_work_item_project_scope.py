@@ -1,5 +1,7 @@
 """Requested Project fences supplement the existing tenant boundary on Work Items."""
 from types import SimpleNamespace
+import asyncio
+import threading
 from unittest.mock import AsyncMock, Mock, patch
 
 import unittest
@@ -122,6 +124,37 @@ class WorkItemProjectScopeTests(unittest.TestCase):
             actor="canonical-operator",
             reason="repair attribution",
         )
+
+
+class HandoffInspectionOffloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_blocked_readiness_does_not_block_the_request_loop(self):
+        fixture = WorkItemProjectScopeTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        started, release = threading.Event(), threading.Event()
+        observed_release = []
+        def blocked_read():
+            started.set()
+            observed_release.append(release.wait(timeout=1))
+        fixture.operator.require_handoff_inspection_ready.side_effect = blocked_read
+        with patch('codex_web.api.work_items.WorkItemOperatorService', return_value=fixture.operator):
+            router = build_work_items_router(fixture.service)
+        endpoint = next(route.endpoint for route in router.routes
+            if getattr(route, 'path', '') == '/api/work-items/{ref:path}/operator/handoff-eligibility')
+        request = SimpleNamespace(state=SimpleNamespace(tenant_scope=SimpleNamespace(
+            organization_id='org-a', workspace_id='workspace-a')), query_params={'project_id':'project-a'})
+        task = asyncio.create_task(endpoint('item-a', request, expected_requested_at=1,
+            expected_recipient='quinn', project_id='project-a'))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            await asyncio.sleep(.01)
+            self.assertFalse(task.done())
+        finally:
+            release.set()
+            result = await task
+        self.assertEqual(observed_release, [True])
+        self.assertTrue(result['inspection_only'])
+        fixture.operator.detail.assert_not_called()
 
 
 class NestedReconcileAuthorityTests(unittest.TestCase):

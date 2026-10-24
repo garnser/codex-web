@@ -481,10 +481,12 @@ class WorkItemContinuityService:
             # Deliberately synchronous: the async preparer can create a worker.
             # These are the same selection and fresh pin checks used by dispatch.
             pin = self.owner_routing.compatible_pin(state, binding,
-                handoff.to_agent, writable_repository_ids=writable)
+                handoff.to_agent, writable_repository_ids=writable,
+                lookup_actor=self.owner_routing.inspection_actor)
             if pin is None:
                 return verdict('unavailable', 'owner_routing_pin_unavailable')
-            profile, _ = self.owner_routing.context_for_pin(pin, binding)
+            profile, _ = self.owner_routing.context_for_pin(pin, binding,
+                lookup_actor=self.owner_routing.inspection_actor)
             latest = self.get_state(state.ref)
             if latest.model_dump(mode='json') != observed:
                 return verdict('changed', 'work_item_handoff_changed')

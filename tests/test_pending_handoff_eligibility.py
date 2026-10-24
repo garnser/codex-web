@@ -16,6 +16,7 @@ class PendingHandoffEligibilityTests(unittest.TestCase):
         self.owner = self.fixture.continuity
         self.routing = self.fixture.fixture.service
         self.routing.inspection_ready = lambda: True
+        self.routing.inspection_actor = lambda: self.fixture.fixture.actor
         self.env = self.fixture.fixture.env
         self.state = self.env.pending()
         self.state.handoff.owner_routing = self.env.machine._owner_routing(self.state).binding('operator')
@@ -41,6 +42,16 @@ class PendingHandoffEligibilityTests(unittest.TestCase):
         self.assertEqual(result['recipient'], 'operator')
         self.routing.prepare_compatible_pin.assert_not_called()
         self.routing.record_failure.assert_not_called()
+        self.fixture.dispatch.assert_not_called()
+
+    def test_real_pin_and_context_checks_never_fall_back_to_bootstrap_lookup_actor(self):
+        self.routing.control_actor = Mock(side_effect=AssertionError('bootstrap lookup prohibited'))
+        self.routing.inspection_actor = Mock(return_value=self.fixture.fixture.actor)
+        result = self.inspect()
+        self.assertEqual(result['status'], 'eligible')
+        self.assertGreaterEqual(self.routing.inspection_actor.call_count, 2)
+        self.routing.control_actor.assert_not_called()
+        self.routing.prepare_compatible_pin.assert_not_called()
         self.fixture.dispatch.assert_not_called()
 
     def test_changed_nonce_or_recipient_does_not_discover_or_prepare(self):
@@ -72,7 +83,7 @@ class PendingHandoffEligibilityTests(unittest.TestCase):
         self.routing.compatible_pin = Mock(return_value=SimpleNamespace(recipient=None))
         self.routing.context_for_pin = Mock(side_effect=OwnerRoutingError('owner_executor_authority_changed'))
         self.assertEqual(self.inspect()['blocked_reason'], 'owner_executor_authority_changed')
-        def drift(*args):
+        def drift(*args, **kwargs):
             newer = self.env.states.get(self.state.ref)
             newer.updated_at += 1
             self.env.states.put(newer.ref, newer)
@@ -112,6 +123,57 @@ class PendingHandoffEligibilityTests(unittest.TestCase):
 
 
 class InspectionReadinessTests(unittest.TestCase):
+    def test_readonly_lookup_actor_reaches_missing_predecessor_and_current_recipient_checks(self):
+        from tests import test_owner_missing_native_predecessor as missing_fixtures
+        fixture = missing_fixtures.MissingNativePredecessorTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        native = fixture.n
+        actor = native.routing.control_actor()
+        native.routing.control_actor = Mock(side_effect=AssertionError('bootstrap lookup prohibited'))
+        lookup = Mock(return_value=actor)
+        pin = native.routing.compatible_pin(native.state, native.binding, 'orchestrator',
+            writable_repository_ids=('platform',), lookup_actor=lookup)
+        self.assertEqual(pin.recipient.thread_id, 'platform-thread')
+        native.routing.context_for_pin(pin, native.binding, lookup_actor=lookup)
+        self.assertGreaterEqual(lookup.call_count, 5)
+        native.routing.control_actor.assert_not_called()
+
+    def test_existing_local_lookup_actor_cannot_bootstrap_or_restore_revoked_identity(self):
+        import tempfile
+        from pathlib import Path
+        from codex_web.storage.sqlite_state import SQLiteStateStore
+        from codex_web.storage.identity_state import IdentityStateStore
+        from codex_web.services.identity import IdentityService, IdentityError
+        with tempfile.TemporaryDirectory() as root:
+            service = IdentityService(IdentityStateStore(SQLiteStateStore(Path(root)/'state.db')))
+            with patch.object(service, 'bootstrap_local', side_effect=AssertionError('bootstrap prohibited')):
+                with self.assertRaises(IdentityError):
+                    service.existing_local_trusted_actor()
+            self.assertEqual(service.store.load().humans, [])
+            service.bootstrap_local()
+            expected = service.local_trusted_actor()
+            with patch.object(service, 'bootstrap_local', side_effect=AssertionError('bootstrap prohibited')):
+                self.assertEqual(service.existing_local_trusted_actor().model_dump(exclude={'authenticated_at'}),
+                    expected.model_dump(exclude={'authenticated_at'}))
+            def revoke(state):
+                state.memberships[0].revoked_at = 1
+                return state
+            service.store.update(revoke)
+            with patch.object(service, 'bootstrap_local', side_effect=AssertionError('bootstrap prohibited')):
+                with self.assertRaises(IdentityError):
+                    service.existing_local_trusted_actor()
+            self.assertEqual(service.store.load().memberships[0].revoked_at, 1)
+            def disable(state):
+                state.memberships[0].revoked_at = None
+                state.humans[0].disabled_at = 1
+                return state
+            service.store.update(disable)
+            with patch.object(service, 'bootstrap_local', side_effect=AssertionError('bootstrap prohibited')):
+                with self.assertRaises(IdentityError):
+                    service.existing_local_trusted_actor()
+            self.assertEqual(service.store.load().humans[0].disabled_at, 1)
+
     def test_readiness_never_initializes_worker_or_session_records(self):
         import tempfile
         from pathlib import Path
