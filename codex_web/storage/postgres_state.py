@@ -962,7 +962,7 @@ class PostgresStateStore:
                   AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s
                 ORDER BY member.ordinality LIMIT 1)
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
-            WHEN EXISTS(SELECT 1 FROM jsonb_each(document) AS field WHERE NOT field.key = ANY(%s)) THEN payload
+            WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
             WHEN {arrays} THEN payload
             WHEN COALESCE(jsonb_typeof(document -> 'schema_version'), 'string') NOT IN ('string','null') THEN payload
             ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', ''"0.0"'::jsonb),
