@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import math
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -15,6 +16,67 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def _put_document_text(self, namespace, raw):
+        self.backend.put(namespace, {})
+        postgres = isinstance(self.backend, PostgresStateStore)
+        table, slot = ('codex_state_documents', '%s') if postgres else ('state_documents', '?')
+        with self.backend._connection() as connection:
+            connection.execute(f'UPDATE {table} SET payload = {slot} WHERE namespace = {slot}', (raw, namespace))
+            connection.commit()
+
+    def test_batch_envelope_preserves_original_numeric_unicode_and_stored_order(self):
+        raw = r'''{"schema_version":"1.1","records":[
+            {"id":"selected","organization_id":"foreign","workspace_id":"default"},
+            {"id":"selected","organization_id":"local","workspace_id":"default",
+             "value":{"scientific":1e0,"signedzero":-0.0,"bigint":BIGINT,"unicode":"\u96ea",
+                      "duplicate":1,"duplicate":2}},
+            {"id":"selected","organization_id":"local","workspace_id":"default","value":"later"}],
+            "requests":[],"events":[{"unrelated":"retained"}]}'''.replace('BIGINT', str(2**100 + 1))
+        self._put_document_text('batch-envelope', raw)
+        with patch.object(self.backend, 'get', side_effect=AssertionError('whole document transfer')):
+            actual = self.backend.document_array_items_envelope('batch-envelope', 'records',
+                ('selected','selected'), organization_id='local', workspace_id='default',
+                collection_names=('records','requests','events'))
+        self.assertEqual(actual['records'], json.loads(raw)['records'][1:])
+        value = actual['records'][0]['value']
+        self.assertIs(type(value['scientific']), float)
+        self.assertEqual(math.copysign(1, value['signedzero']), -1)
+        self.assertEqual(value['bigint'], 2**100 + 1)
+        self.assertEqual(value['unicode'], '雪')
+        self.assertEqual(value['duplicate'], 2)
+        self.assertNotIn('events', actual)
+
+    def test_batch_envelope_legacy_numeric_schema_and_json_fallback_preserve_transaction(self):
+        service, selected, actor = self._governance_context()
+        raw = json.dumps({'schema_version': 1.0, 'records': [selected.model_dump(mode='json')],
+            'requests': [], 'events': []}).replace('"schema_version": 1.0', '"schema_version": 1e0')
+        self._put_document_text('data_governance', raw)
+        self.assertEqual(service.store.context_state(('selected',), organization_id='local',
+            workspace_id='default'), service.store.load())
+        for case, value in (('nonfinite', float('nan')), ('nul', 'before\0after'),
+                            ('surrogate', 'before\ud800after'), ('overflow', 'overflow-number')):
+            with self.subTest(case=case):
+                row = {'id': 'selected', 'organization_id': 'local', 'workspace_id': 'default',
+                    'value': value}
+                raw = json.dumps({'schema_version': '1.1', 'records': [row], 'requests': [], 'events': []})
+                if case == 'overflow':
+                    raw = raw.replace('"overflow-number"', '1e1000000')
+                self._put_document_text('batch-envelope', raw)
+                self.backend.put('batch-sentinel', {'ok': False})
+                def update(current):
+                    actual = self.backend.document_array_items_envelope('batch-envelope', 'records',
+                        ('selected',), organization_id='local', workspace_id='default',
+                        collection_names=('records','requests','events'))['records'][0]['value']
+                    if case == 'nonfinite':
+                        self.assertTrue(math.isnan(actual))
+                    elif case == 'overflow':
+                        self.assertEqual(actual, float('inf'))
+                    else:
+                        self.assertEqual(actual, value)
+                    return {'ok': True}
+                self.backend.update('batch-sentinel', update, default={})
+                self.assertEqual(self.backend.get('batch-sentinel'), {'ok': True})
+
     def _governance_context(self):
         from codex_web.data_governance import GovernedDataRecord, DataCategory, DataClassification
         from codex_web.storage.data_governance import DataGovernanceStore
@@ -454,6 +516,44 @@ class PostgresCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
         with self.backend._connection() as connection:
             connection.execute(sql.SQL('ALTER TABLE codex_state_documents ALTER COLUMN namespace '
                 'TYPE TEXT COLLATE {}').format(sql.Identifier(self.collation)))
+
+    def test_batch_envelope_does_not_reparse_whole_history_for_each_predicate(self):
+        from contextlib import contextmanager
+        row = {'id': 'selected', 'organization_id': 'local', 'workspace_id': 'default'}
+        self.backend.put('batch-parse-cost', {'schema_version': '1.1', 'records': [row],
+            'requests': [], 'events': [{'retained': 'history ' * 1000} for _ in range(150)]})
+        with self.backend._connection() as connection:
+            connection.execute('CREATE TEMP TABLE batch_parse_calls(kind text)')
+            for kind in ('json','jsonb'):
+                connection.execute(f'''CREATE FUNCTION pg_temp.count_{kind}(text) RETURNS {kind}
+                    LANGUAGE plpgsql AS $$ BEGIN
+                    INSERT INTO pg_temp.batch_parse_calls VALUES ('{kind}');
+                    RETURN $1::{kind}; END $$''')
+            class TracedCursor:
+                def __init__(self, cursor): self.cursor = cursor
+                def __enter__(self): self.cursor.__enter__(); return self
+                def __exit__(self, *args): return self.cursor.__exit__(*args)
+                def __getattr__(self, name): return getattr(self.cursor, name)
+                def execute(self, query, *args, **kwargs):
+                    # Instrument the real server-side envelope conversion, not
+                    # rows/fields returned or the canonical selection predicates.
+                    query = query.replace('payload::jsonb', 'pg_temp.count_jsonb(payload)')
+                    query = query.replace('payload::json', 'pg_temp.count_json(payload)')
+                    return self.cursor.execute(query, *args, **kwargs)
+            class TracedConnection:
+                def cursor(self, *args, **kwargs): return TracedCursor(connection.cursor(*args, **kwargs))
+                def transaction(self): return connection.transaction()
+            @contextmanager
+            def tracing(): yield TracedConnection()
+            with patch.object(self.backend, '_read_connection', tracing):
+                actual = self.backend.document_array_items_envelope('batch-parse-cost', 'records',
+                    ('selected',), organization_id='local', workspace_id='default',
+                    collection_names=('records','requests','events'))
+            counts = dict(connection.execute('SELECT kind,count(*) FROM pg_temp.batch_parse_calls GROUP BY kind').fetchall())
+        self.assertEqual(actual, {'schema_version': '1.1', 'records': [row]})
+        self.assertLessEqual(sum(counts.values()), 2,
+            'Envelope predicates must share one binary parse and one original-record pass')
+        self.assertEqual(counts, {'jsonb': 1, 'json': 1})
 
     def test_real_collection_read_plan_uses_namespace_range_index(self):
         self.backend.record_replace('unrelated', {str(i): i for i in range(8000)})

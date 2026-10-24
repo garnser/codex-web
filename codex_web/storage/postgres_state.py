@@ -950,18 +950,29 @@ class PostgresStateStore:
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
-        arrays = " OR ".join("COALESCE(json_typeof(payload::json -> %s), 'array') != 'array'" for _ in names)
-        query = f"""SELECT (CASE WHEN json_typeof(payload::json) != 'object' THEN payload::json
-            WHEN EXISTS(SELECT 1 FROM json_each(payload::json) AS field WHERE NOT field.key = ANY(%s)) THEN payload::json
-            WHEN {arrays} THEN payload::json
-            ELSE json_build_object('schema_version', COALESCE(payload::json -> 'schema_version', '"0.0"'::json),
-                %s::text, COALESCE((SELECT json_agg(item.value) FROM
-                    (SELECT value FROM json_array_elements(payload::json -> %s) AS member(value)
-                     WHERE json_typeof(value) = 'object' AND value ->> 'id' = %s
-                       AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s LIMIT 1) AS item), '[]'::json))
-            END)::text FROM codex_state_documents WHERE namespace = %s"""
-        parameters = (["schema_version", *names], *names, array_name, array_name,
-                      item_id, organization_id, workspace_id, namespace)
+        arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
+        # Share the shape parse and materialize original JSON members once.
+        # Original field comparisons preserve even legacy numeric identity text.
+        query = f"""WITH parsed AS MATERIALIZED (
+            SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
+            members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
+                json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
+                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
+            selected AS MATERIALIZED (SELECT ordinality FROM members
+                WHERE json_typeof(value) = 'object' AND value ->> 'id' = %s
+                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s
+                ORDER BY ordinality LIMIT 1)
+            SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
+            WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
+            WHEN {arrays} THEN payload
+            WHEN COALESCE(jsonb_typeof(document -> 'schema_version'), 'string') NOT IN ('string','null') THEN payload
+            ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', '"0.0"'::jsonb),
+                %s::text, COALESCE((SELECT json_agg(original.value ORDER BY original.ordinality)
+                    FROM members AS original
+                    WHERE original.ordinality IN (SELECT ordinality FROM selected)), '[]'::json))::text
+            END FROM parsed"""
+        parameters = (namespace, array_name, array_name, item_id, organization_id, workspace_id,
+                      ["schema_version", *names], *names, array_name)
         try:
             with self._read_connection() as connection:
                 with connection.transaction():
@@ -985,18 +996,28 @@ class PostgresStateStore:
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
-        arrays = " OR ".join("COALESCE(json_typeof(payload::json -> %s), 'array') != 'array'" for _ in names)
-        query = f"""SELECT (CASE WHEN json_typeof(payload::json) != 'object' THEN payload::json
-            WHEN EXISTS(SELECT 1 FROM json_each(payload::json) AS field WHERE NOT field.key = ANY(%s)) THEN payload::json
-            WHEN {arrays} THEN payload::json
-            ELSE json_build_object('schema_version', COALESCE(payload::json -> 'schema_version', '"0.0"'::json),
-                %s::text, COALESCE((SELECT json_agg(item.value ORDER BY item.ordinality) FROM
-                    (SELECT value, ordinality FROM json_array_elements(payload::json -> %s) WITH ORDINALITY AS member(value, ordinality)
-                     WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
-                       AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s) AS item), '[]'::json))
-            END)::text FROM codex_state_documents WHERE namespace = %s"""
-        parameters = (["schema_version", *names], *names, array_name, array_name,
-                      list(dict.fromkeys(item_ids)), organization_id, workspace_id, namespace)
+        arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
+        # Share the shape parse and original JSON members without normalizing
+        # identity comparisons, numeric values, signed zero, or legacy decoding.
+        query = f"""WITH parsed AS MATERIALIZED (
+            SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
+            members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
+                json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
+                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
+            selected AS MATERIALIZED (SELECT ordinality FROM members
+                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
+                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s)
+            SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
+            WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
+            WHEN {arrays} THEN payload
+            WHEN COALESCE(jsonb_typeof(document -> 'schema_version'), 'string') NOT IN ('string','null') THEN payload
+            ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', '"0.0"'::jsonb),
+                %s::text, COALESCE((SELECT json_agg(original.value ORDER BY original.ordinality)
+                    FROM members AS original
+                    WHERE original.ordinality IN (SELECT ordinality FROM selected)), '[]'::json))::text
+            END FROM parsed"""
+        parameters = (namespace, array_name, array_name, list(dict.fromkeys(item_ids)),
+                      organization_id, workspace_id, ["schema_version", *names], *names, array_name)
         try:
             with self._read_connection() as connection:
                 with connection.transaction():
