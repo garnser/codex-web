@@ -512,15 +512,24 @@ class OwnerRoutingService:
             except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
                 raise OwnerRoutingError('owner_executor_replacement_unverified') from exc
             if not replacement or replacement == binding.thread_id:
-                if str(source_assignment.status) == 'cancelled' and self.sessions is not None:
+                native = self.sessions.native_custody(binding.thread_id) if self.sessions is not None else None
+                if (str(source_assignment.status) == 'cancelled' and native is not None
+                        and native.assignment_id == source_assignment.id):
                     self.cancelled_recipient_source(state, binding, owner, requested, lookup_actor=lookup_actor)
                     required_replacement = self._prepared_cancelled_recipient(
                         state, binding, configured_owner, requested, lookup_actor=lookup_actor)
                 else:
+                    # Historical native custody on another terminal assignment
+                    # retains ordinary same-thread recovery; it is not the new
+                    # positive current-cancellation preparation boundary.
                     return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
             elif self.sessions is not None:
-                replacement_bootstrap = self.bootstraps.get_by_thread(replacement, actor)
-                replacement_assignment = self.assignments(replacement_bootstrap.assignment_id)
+                try:
+                    replacement_bootstrap = self.bootstraps.get_by_thread(replacement, actor)
+                except LookupError:
+                    replacement_bootstrap = None
+                replacement_assignment = (self.assignments(replacement_bootstrap.assignment_id)
+                    if replacement_bootstrap is not None else None)
                 if replacement_assignment is not None and str(replacement_assignment.status) == 'cancelled':
                     self.cancelled_recipient_source(state, binding, owner, requested, lookup_actor=lookup_actor)
                     required_replacement = self._prepared_cancelled_recipient(
@@ -612,6 +621,8 @@ class OwnerRoutingService:
                     raise OwnerRoutingError('owner_recipient_custody_changed')
             else:
                 source_scope = original.repository_scope
+                source_native = (self.sessions.native_custody(binding.thread_id)
+                    if self.sessions is not None else None)
                 _, requested = work_item_repository_scope(state)
                 if (native_compatible and str(original.status) == 'cancelled'
                         and source_scope is not None
@@ -620,7 +631,8 @@ class OwnerRoutingService:
                         and pin.recipient.thread_id != binding.thread_id
                         and self.replacement_resolver(binding.thread_id, project_id=state.project_id,
                             organization_id=state.organization_id, workspace_id=state.workspace_id)
-                            != pin.recipient.thread_id):
+                            != pin.recipient.thread_id
+                        and source_native is not None and source_native.assignment_id == original.id):
                     self.cancelled_recipient_source(state, binding, pin.binding.canonical_owner,
                         requested, lookup_actor=lookup_actor)
                     target = self._prepared_cancelled_recipient(state, binding,
