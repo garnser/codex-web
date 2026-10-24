@@ -290,10 +290,13 @@ whole-catalog parsing. It changes no authority, schema, timeout or UI contract.
 
 Dormant Home preservation resolves checkpoint and preservation source/key IDs
 from one actor- and tenant-scoped Artifact snapshot. The existing batch envelope
-read selects only those computed IDs; the Artifact owner selects the first stored
-scoped duplicate before applying the same versioned decoder and `get_artifact`
-scope checks as point reads. Nonstandard envelopes and older backends retain
-canonical full-state validation. No lifecycle filtering turns inactive artifacts
+read selects only those computed IDs, with an optional first-per-ID selection
+matching the original point predicate and stored order. Default batch readers
+still return every match. The Artifact owner always applies its complete versioned
+decoder to the returned envelope and uses the same `get_artifact` scope checks as
+point reads. Full fallback cannot be identified by document shape: a legacy full
+catalog can have the same fields as a projection. Nonstandard/conversion fallback
+envelopes and older backends therefore retain canonical full-state validation. No lifecycle filtering turns inactive artifacts
 into absence: Home still validates existing preservation metadata, lifecycle and
 digest, and refuses checkpoint ambiguity.
 
