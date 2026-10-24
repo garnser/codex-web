@@ -7,6 +7,7 @@ from codex_web.compatibility import MigrationRegistry
 from codex_web.organizational_memory import (
     ORGANIZATIONAL_MEMORY_CONTRACT,
     KnowledgeRecord,
+    KnowledgeRetrievalRun,
     OrganizationalMemoryState,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -73,6 +74,20 @@ class OrganizationalMemoryStore:
     def load(self) -> OrganizationalMemoryState:
         return self._decode(self.store.get(self.namespace))
 
+    def append_retrieval_run(self, run: KnowledgeRetrievalRun) -> None:
+        """Append to the current locked document without decoding our unused result.
+
+        The complete current document is still validated inside the canonical
+        atomic update. Concurrent Knowledge/audit changes and retention survive.
+        """
+        def apply(raw: Any) -> dict[str, Any]:
+            state = self._decode(raw)
+            state.retrieval_runs.append(run)
+            if len(state.retrieval_runs) > 5000:
+                state.retrieval_runs = state.retrieval_runs[-5000:]
+            return state.model_dump(mode='json')
+        self.store.update(self.namespace, apply, default=self.default_document())
+
     def list(
         self,
         *,
@@ -106,6 +121,32 @@ class OrganizationalMemoryStore:
         )
         if item is None:
             raise KnowledgeNotFoundError(knowledge_id)
+        return item
+
+    def get_for_context(self, knowledge_id: str, *, organization_id: str,
+                        workspace_id: str) -> KnowledgeRecord:
+        """Current complete point record, without unrelated content/audit history.
+
+        First global ID wins before tenant filtering, as ordinary get() followed
+        by its service scope check. Legacy/custom backends retain full reads.
+        """
+        reader = getattr(self.store, 'document_array_items_envelope', None)
+        if not callable(reader) or getattr(self.store, 'supports_document_array_scope_after_first', False) is not True:
+            return self.get(knowledge_id)
+        raw = reader(self.namespace, 'records', (knowledge_id,),
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('records', 'relationships', 'embeddings', 'retrieval_runs'),
+            first_per_id=True, scope_after_first=True)
+        # The generic envelope denotes a missing version as 0.0. Let the full
+        # original document retain this domain's exact legacy/refusal behavior.
+        if isinstance(raw, dict) and raw.get('schema_version') == '0.0':
+            return self.get(knowledge_id)
+        state = self._decode(raw)
+        item = next((row for row in state.records if row.id == knowledge_id), None)
+        if item is None:
+            # Missing scope fields or a foreign first duplicate must retain the
+            # ordinary decoder/refusal, never substitute a later local row.
+            return self.get(knowledge_id)
         return item
 
     def create(self, item: KnowledgeRecord) -> KnowledgeRecord:

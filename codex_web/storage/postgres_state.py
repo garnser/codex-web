@@ -64,6 +64,8 @@ class PostgresStateStore:
     StateStore contract.
     """
 
+    supports_document_array_scope_after_first = True
+
     SCHEMA_VERSION = 1
 
     def __init__(
@@ -996,7 +998,8 @@ class PostgresStateStore:
 
     def document_array_items_envelope(self, namespace: str, array_name: str, item_ids: tuple[str, ...], *,
                                      organization_id: str, workspace_id: str,
-                                     collection_names: tuple[str, ...], first_per_id: bool = False) -> Any | None:
+                                     collection_names: tuple[str, ...], first_per_id: bool = False,
+                                     scope_after_first: bool = False) -> Any | None:
         """Scoped complete records/schema read; optional, without a new index.
 
         A savepoint protects an owning transaction from legacy TEXT JSON
@@ -1004,6 +1007,8 @@ class PostgresStateStore:
         """
         if type(first_per_id) is not bool:
             raise ValueError("first_per_id must be a boolean")
+        if type(scope_after_first) is not bool or (scope_after_first and not first_per_id):
+            raise ValueError("scope_after_first requires first_per_id")
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
@@ -1012,14 +1017,18 @@ class PostgresStateStore:
         # identity comparisons, numeric values, signed zero, or legacy decoding.
         first = "DISTINCT ON (value ->> 'id') " if first_per_id else ""
         first_order = " ORDER BY value ->> 'id', ordinality" if first_per_id else ""
+        selection = f"""SELECT {first}ordinality{', value' if scope_after_first else ''} FROM members
+                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
+                  {'' if scope_after_first else "AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"}{first_order}"""
+        if scope_after_first:
+            selection = f"""SELECT ordinality FROM ({selection}) AS first_match
+                WHERE value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"""
         query = f"""WITH parsed AS MATERIALIZED (
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
             members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
                 json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
                     THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
-            selected AS MATERIALIZED (SELECT {first}ordinality FROM members
-                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
-                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s{first_order})
+            selected AS MATERIALIZED ({selection})
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
             WHEN {arrays} THEN payload

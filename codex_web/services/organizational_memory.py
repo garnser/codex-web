@@ -1344,8 +1344,11 @@ class OrganizationalMemoryService:
         *,
         actor: AuthenticationActor,
         include_inactive: bool = False,
+        context_only: bool = False,
     ) -> KnowledgeRecord:
-        item = self.store.get(knowledge_id)
+        item = (self.store.get_for_context(knowledge_id,
+                    organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+                if context_only else self.store.get(knowledge_id))
         if not self._same_scope(item, actor):
             raise KnowledgeNotFoundError(knowledge_id)
         allowed, reasons = self._can_read(
@@ -1908,15 +1911,7 @@ class OrganizationalMemoryService:
             created_at=now,
         )
 
-        def save_run(
-            current: OrganizationalMemoryState,
-        ) -> OrganizationalMemoryState:
-            current.retrieval_runs.append(run)
-            if len(current.retrieval_runs) > 5000:
-                current.retrieval_runs = current.retrieval_runs[-5000:]
-            return current
-
-        self.store.update_state(save_run)
+        self.store.append_retrieval_run(run)
         return KnowledgeRetrievalResult(
             retrieval_id=run.id,
             items=tuple(items),
