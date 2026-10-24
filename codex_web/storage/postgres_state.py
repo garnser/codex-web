@@ -987,26 +987,30 @@ class PostgresStateStore:
 
     def document_array_items_envelope(self, namespace: str, array_name: str, item_ids: tuple[str, ...], *,
                                      organization_id: str, workspace_id: str,
-                                     collection_names: tuple[str, ...]) -> Any | None:
+                                     collection_names: tuple[str, ...], first_per_id: bool = False) -> Any | None:
         """Scoped complete records/schema read; optional, without a new index.
 
         A savepoint protects an owning transaction from legacy TEXT JSON
         conversion errors. Only those conversion errors use the full read path.
         """
+        if type(first_per_id) is not bool:
+            raise ValueError("first_per_id must be a boolean")
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
         # Share the shape parse and original JSON members without normalizing
         # identity comparisons, numeric values, signed zero, or legacy decoding.
+        first = "DISTINCT ON (value ->> 'id') " if first_per_id else ""
+        first_order = " ORDER BY value ->> 'id', ordinality" if first_per_id else ""
         query = f"""WITH parsed AS MATERIALIZED (
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
             members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
                 json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
                     THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
-            selected AS MATERIALIZED (SELECT ordinality FROM members
+            selected AS MATERIALIZED (SELECT {first}ordinality FROM members
                 WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
-                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s)
+                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s{first_order})
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
             WHEN {arrays} THEN payload

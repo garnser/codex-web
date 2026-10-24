@@ -169,8 +169,14 @@ class DataGovernanceService:
             items = [item for item in items if item.lifecycle == GovernedDataLifecycle.ACTIVE]
         return sorted(items, key=lambda item: (item.created_at, item.id), reverse=True)
 
-    def get_record(self, record_id: str, actor: AuthenticationActor) -> GovernedDataRecord:
-        return self._record_from_state(self.store.load(), record_id, actor)
+    def get_record(
+        self, record_id: str, actor: AuthenticationActor, *, context_only: bool = False,
+    ) -> GovernedDataRecord:
+        # Context ancestry needs the complete selected record, not unrelated
+        # records or retained audit history. Keep ordinary callers unchanged.
+        state = (self.store.context_state((record_id,), organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id) if context_only else self.store.load())
+        return self._record_from_state(state, record_id, actor)
 
     def register(
         self,

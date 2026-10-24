@@ -13,6 +13,7 @@ from codex_web.definitions import DefinitionReference
 from codex_web.home_restart import HomeUpgradeInputProof, home_restart_context
 from codex_web.identity import TenantScope
 from codex_web.services.home_operator_host import HOST_INSPECTION
+from codex_web.services.artifact_evidence import ArtifactNotFoundError, _ArtifactDecodeBeforeCreation
 
 
 def encoded(value):
@@ -231,9 +232,9 @@ class HomeUpgradeCheckpointService:
             source, target = self.source_revision(), release.build.source_revision
             if not source or not target or release.version != plan.target_app_version:
                 self.refused('home_upgrade_source_unavailable')
-            if self.artifacts.find_idempotent_artifact(actor=requester,
-                    source='home-upgrade-checkpoint', idempotency_key=plan_id) is not None:
-                self.refused('home_upgrade_preservation_ambiguous')
+            # Observe current metadata outside Artifact/Governance locks. These
+            # canonical owners may initialize their own readiness/migration rows;
+            # neither observation grants input or changes retained outcomes.
             process = {}
             snapshot = self._dormant_snapshot(binding, requester, process_evidence=process)
             preservation = {'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
@@ -244,27 +245,58 @@ class HomeUpgradeCheckpointService:
                 preservation.update(schema_version='1.1', stopped_process_observed=None,
                     pending_executor_work_observed=None, process_ownership=process)
             raw = encoded(preservation)
-            prior = self._dormant_artifact(plan_id, requester)
-            if prior is not None:
-                if (prior.lifecycle != 'active' or prior.source != 'home-upgrade-dormant-preservation'
-                        or prior.external_id != plan.id or prior.project_id != 'home'
-                        or prior.producer_identity_id != requester.identity_id
-                        or prior.retention_expires_at is not None and prior.retention_expires_at <= time.time()
-                        or prior.metadata.get('dormant_preservation') != raw
-                        or prior.digest is None or prior.digest.value != sha(raw)):
+            def prior_or_refuse(checkpoint, prior):
+                if checkpoint is not None:
+                    self.refused('home_upgrade_preservation_ambiguous')
+                if prior is not None:
+                    if (prior.lifecycle != 'active' or prior.source != 'home-upgrade-dormant-preservation'
+                            or prior.external_id != plan.id or prior.project_id != 'home'
+                            or prior.producer_identity_id != requester.identity_id
+                            or prior.retention_expires_at is not None and prior.retention_expires_at <= time.time()
+                            or prior.metadata.get('dormant_preservation') != raw
+                            or prior.digest is None or prior.digest.value != sha(raw)):
+                        self.refused('home_upgrade_dormant_preservation_changed')
+                return prior
+
+            def catalog_guard(current):
+                found = []
+                for kind in ('home-upgrade-checkpoint', 'home-upgrade-dormant-preservation'):
+                    key = self.artifacts._idempotent_evidence_id(requester, kind, plan_id).replace(
+                        'evidence-', 'artifact-', 1)
+                    try:
+                        found.append(self.artifacts.get_artifact(key, actor=requester, state=current))
+                    except ArtifactNotFoundError:
+                        found.append(None)
+                prior = prior_or_refuse(*found)
+                # Ordinary creation's generic idempotency lookup is unscoped.
+                # A corrupt foreign-only collision must never become reuse;
+                # a valid scoped prior still wins even if a foreign row is first.
+                if prior is None and any(item.id == key for item in current.artifacts):
                     self.refused('home_upgrade_dormant_preservation_changed')
                 return prior
+
             if self._dormant_snapshot(binding, requester) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')
-            artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
-                execution_id=snapshot['assignment']['execution_id'],
-                execution_workspace_id=snapshot['assignment']['execution_workspace_id'],
-                artifact_type='report', name=('Unowned LOST Home preserved; process/executor UNKNOWN; no continuation'
-                    if process['state'] == 'unowned_lost' else
-                    'Dormant Home preserved; native outcome UNKNOWN; no continuation'),
-                provider='codex-web', source='home-upgrade-dormant-preservation', external_id=plan.id,
-                digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
-                metadata={'dormant_preservation':raw}), actor=requester, idempotency_key=plan.id)
+            try:
+                artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
+                    execution_id=snapshot['assignment']['execution_id'],
+                    execution_workspace_id=snapshot['assignment']['execution_workspace_id'],
+                    artifact_type='report', name=('Unowned LOST Home preserved; process/executor UNKNOWN; no continuation'
+                        if process['state'] == 'unowned_lost' else
+                        'Dormant Home preserved; native outcome UNKNOWN; no continuation'),
+                    provider='codex-web', source='home-upgrade-dormant-preservation', external_id=plan.id,
+                    digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
+                    metadata={'dormant_preservation':raw}), actor=requester, idempotency_key=plan.id, _catalog_guard=catalog_guard)
+            except _ArtifactDecodeBeforeCreation as refusal:
+                # Only the explicitly typed pre-write Artifact domain decoder
+                # can enter this compatibility path. Guard/updater/DB/export
+                # errors never use a second read or become successful reuse.
+                checkpoint, prior = self.artifacts.find_idempotent_artifacts(actor=requester, requests=(
+                    ('home-upgrade-checkpoint', plan_id),
+                    ('home-upgrade-dormant-preservation', plan_id)))
+                artifact = prior_or_refuse(checkpoint, prior)
+                if artifact is None:
+                    raise refusal.original
             if self._dormant_snapshot(binding, requester) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')
             return artifact

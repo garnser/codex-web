@@ -71,11 +71,20 @@ class ArtifactEvidenceConflictError(ArtifactEvidenceError):
     pass
 
 
+class _ArtifactDecodeBeforeCreation(Exception):
+    """Internal pre-write domain-decode refusal; never an updater/DB failure."""
+
+    def __init__(self, original):
+        self.original = original
+        super().__init__("artifact catalog validation refused before creation")
+
+
 class _GovernedCreation:
     """Prepared domain/governance mutation for one owning StateStore transaction."""
 
-    def __init__(self, service, updater):
+    def __init__(self, service, updater, catalog_guard=None):
         self.service, self.updater = service, updater
+        self.catalog_guard, self.reused = catalog_guard, None
         self.domains = {service.store.namespace: (None,)}
         if service.governance is not None:
             if service.governance.store.store is not service.store.store:
@@ -84,7 +93,20 @@ class _GovernedCreation:
 
     def apply(self, rows):
         service = self.service
-        state = service.store._decode(rows[service.store.namespace][None])
+        try:
+            state = service.store._decode(rows[service.store.namespace][None])
+        except (ValueError, TypeError) as error:
+            if self.catalog_guard is None:
+                raise
+            raise _ArtifactDecodeBeforeCreation(error) from error
+        # A trusted internal guard may reuse an existing exact scoped Artifact.
+        # Run before Governance decoding/registration or any export/upsert.
+        if self.catalog_guard is not None:
+            self.reused = self.catalog_guard(state)
+            if self.reused is not None:
+                if not isinstance(self.reused, Artifact):
+                    raise TypeError("catalog guard must return an Artifact or None")
+                return {}
         governance = (service.governance.store._decode(rows[service.governance.store.namespace][None])
                       if service.governance is not None else None)
         updated = self.updater(state, governance)
@@ -121,14 +143,17 @@ class ArtifactEvidenceService:
         self.content_backend_resolver = content_backend_resolver
         self.organizational_memory = organizational_memory
 
-    def _commit_creation(self, updater, composed_commit):
-        creation = _GovernedCreation(self, updater)
+    def _commit_creation(self, updater, composed_commit, *, catalog_guard=None):
+        if catalog_guard is not None and composed_commit is not None:
+            raise ArtifactEvidenceConflictError("catalog guard requires ordinary creation")
+        creation = _GovernedCreation(self, updater, catalog_guard)
         if composed_commit is not None:
             composed_commit(creation)
-        elif self.governance is None:
+        elif self.governance is None and catalog_guard is None:
             self.store.update(creation)
         else:
             self.store.store.record_mutate_many(creation.domains, creation.apply)
+        return creation
 
     def _research_sources(self, ids, *, actor, project_id):
         try:
@@ -576,7 +601,9 @@ class ArtifactEvidenceService:
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor,
                         source_artifact_ids: tuple[str, ...] = (),
                         source_evidence_ids: tuple[str, ...] = (), _commit=None,
-                        idempotency_key: str | None = None) -> Artifact:
+                        idempotency_key: str | None = None, _catalog_guard=None) -> Artifact:
+        if _catalog_guard is not None and _commit is not None:
+            raise ArtifactEvidenceConflictError("catalog guard requires ordinary creation")
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
@@ -694,7 +721,12 @@ class ArtifactEvidenceService:
             current.artifacts.append(artifact)
             return current
 
-        self._commit_creation(apply, _commit)
+        if _catalog_guard is None:
+            self._commit_creation(apply, _commit)
+        else:
+            creation = self._commit_creation(apply, _commit, catalog_guard=_catalog_guard)
+            if creation.reused is not None:
+                return creation.reused
         return artifact
 
     @staticmethod
@@ -709,6 +741,21 @@ class ArtifactEvidenceService:
             return self.get_artifact(key, actor=actor)
         except ArtifactNotFoundError:
             return None
+
+    def find_idempotent_artifacts(self, *, actor: AuthenticationActor,
+                                  requests: tuple[tuple[str, str], ...]) -> tuple[Artifact | None, ...]:
+        """Resolve actor-scoped source/key identities from one canonical read."""
+        ids = tuple(self._idempotent_evidence_id(actor, source, key).replace(
+            'evidence-', 'artifact-', 1) for source, key in requests)
+        states = self.store.artifact_states(ids, organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id)
+        found = []
+        for key in ids:
+            try:
+                found.append(self.get_artifact(key, actor=actor, state=states[key]))
+            except ArtifactNotFoundError:
+                found.append(None)
+        return tuple(found)
 
     def find_idempotent_evidence(self, *, actor: AuthenticationActor, source: str,
                                 idempotency_key: str) -> Evidence | None:

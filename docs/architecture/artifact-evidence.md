@@ -285,3 +285,33 @@ predicates. It selects the first scoped member by stored ordinality and returns
 its original JSON value. This preserves duplicate order,
 numeric types and legacy decoder/savepoint fallback while avoiding repeated
 whole-catalog parsing. It changes no authority, schema, timeout or UI contract.
+
+### Home preservation atomic catalog guard
+
+Dormant Home preservation computes actor/tenant/source/key identities and checks
+checkpoint ambiguity and exact prior preservation within ordinary governed
+Artifact creation's existing cross-domain transaction. Full Artifact validation
+runs first. The private guard checks the first stored actor-scoped checkpoint,
+then dormant preservation, before Governance domain decoding, registration, model
+export or upsert. A valid prior returns an empty delta without requiring the
+ordinary creation payload-hash metadata. If no scoped prior exists, a foreign-only
+collision on the computed preservation ID refuses before ordinary unscoped
+idempotency can return that row. A valid scoped prior still wins over an earlier
+foreign row. New creation retains complete typed
+Artifact/Governance validation, current authorization and atomic rollback.
+
+Snapshot observations and canonical readiness initialization remain outside these
+locks and inside the original five-second budget. This intentionally permits a
+metadata observation refusal before checkpoint ambiguity; ambiguity still forbids
+any new Artifact/Governance write or native input. Composed writers and all
+ordinary creations without the private guard retain their existing path.
+
+Only the explicitly identified pre-write Artifact domain-decode refusal may use
+the original scoped batch lookup to recover an already-valid prior or reject a
+checkpoint. No prior means the original decode error is re-raised. Guard, updater,
+Governance, database, export and write errors never enter this fallback. Raw JSON
+parsing happens earlier in the shared backend: syntactically corrupt shared rows
+can refuse even prior reuse, and are never written past. Malformed typed Governance
+objects remain irrelevant to valid prior reuse because its domain decoder is not
+called. No new store, schema, cache, timeout or UI object is introduced; existing
+Artifact inspection and typed Home refusal surfaces remain sufficient.

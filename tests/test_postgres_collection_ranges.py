@@ -16,6 +16,54 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_context_record_opt_in_preserves_complete_first_scoped_record_and_default(self):
+        service, selected, actor = self._governance_context()
+        rows = [selected.model_copy(update={"organization_id": "foreign", "deny_model_context": True}),
+            selected, selected.model_copy(update={"deny_model_context": True})]
+        for version in ('0.0', '1.0', '1.1'):
+            with self.subTest(version=version):
+                self.backend.put('data_governance', {'schema_version': version,
+                    'records': [row.model_dump(mode='json') for row in rows], 'requests': [], 'events': []})
+                expected = service.get_record(selected.id, actor)
+                with patch.object(service.store, 'load', side_effect=AssertionError('full context read')):
+                    self.assertEqual(service.get_record(selected.id, actor, context_only=True), expected)
+                with patch.object(service.store, 'context_state', side_effect=AssertionError('default changed')):
+                    self.assertEqual(service.get_record(selected.id, actor), expected)
+
+    def test_context_record_missing_foreign_malformed_and_fallback_contract(self):
+        from codex_web.services.data_governance import GovernanceNotFoundError
+        service, selected, actor = self._governance_context()
+        raw = {'schema_version': '1.1', 'records': [selected.model_dump(mode='json')],
+            'requests': [], 'events': []}
+        for records in ([], [{**raw['records'][0], 'organization_id': 'foreign'}]):
+            self.backend.put('data_governance', {**raw, 'records': records})
+            for context in (False, True):
+                with self.assertRaises(GovernanceNotFoundError):
+                    service.get_record(selected.id, actor, context_only=context)
+        for changed in ({**raw, 'schema_version': 'unknown'}, {**raw, 'events': 'invalid'},
+                {**raw, 'unexpected': True},
+                {**raw, 'records': [raw['records'][0], {**raw['records'][0], 'classification': 'invalid'}]}):
+            self.backend.put('data_governance', changed)
+            for context in (False, True):
+                with self.assertRaises(ValueError):
+                    service.get_record(selected.id, actor, context_only=context)
+        # An optional backend without the selected-envelope API retains the
+        # original full decoder, including unrelated malformed-record refusal.
+        for records, valid in ((raw['records'], True),
+                ([*raw['records'], {**raw['records'][0], 'id': 'foreign',
+                    'organization_id': 'foreign', 'classification': 'invalid'}], False)):
+            self.backend.put('data_governance', {**raw, 'records': records})
+            with patch.object(self.backend, 'document_array_items_envelope', None):
+                if valid:
+                    self.assertEqual(service.get_record(selected.id, actor, context_only=True), selected)
+                else:
+                    with self.assertRaises(ValueError):
+                        service.get_record(selected.id, actor, context_only=True)
+        # Optimized context reads retain the existing scoped-reader contract;
+        # foreign malformed records never become selected local records.
+        with patch.object(service.store, 'load', side_effect=AssertionError('full context read')):
+            self.assertEqual(service.get_record(selected.id, actor, context_only=True), selected)
+
     def _put_document_text(self, namespace, raw):
         self.backend.put(namespace, {})
         postgres = isinstance(self.backend, PostgresStateStore)
@@ -45,6 +93,22 @@ class CollectionRangeContract:
         self.assertEqual(value['unicode'], '雪')
         self.assertEqual(value['duplicate'], 2)
         self.assertNotIn('events', actual)
+
+    def test_batch_first_per_id_keeps_first_scoped_member_and_stored_order(self):
+        rows = [
+            {'id': 'one', 'organization_id': 'foreign', 'workspace_id': 'default'},
+            {'id': 'two', 'organization_id': 'local', 'workspace_id': 'default', 'value': 'first-two'},
+            {'id': 'one', 'organization_id': 'local', 'workspace_id': 'default', 'value': 'first-one'},
+            {'id': 'two', 'organization_id': 'local', 'workspace_id': 'default', 'value': 'later-two'},
+            {'id': 'one', 'organization_id': 'local', 'workspace_id': 'default', 'value': 'later-one'}]
+        self.backend.put('batch-first', {'schema_version': '1.1', 'records': rows})
+        scope = {'organization_id': 'local', 'workspace_id': 'default',
+                 'collection_names': ('records', 'requests', 'events')}
+        actual = self.backend.document_array_items_envelope('batch-first', 'records',
+            ('one', 'two', 'one', 'missing'), first_per_id=True, **scope)
+        self.assertEqual(actual, {'schema_version': '1.1', 'records': rows[1:3]})
+        self.assertEqual(self.backend.document_array_items_envelope('batch-first', 'records',
+            ('one', 'two'), **scope)['records'], rows[1:])
 
     def test_batch_envelope_legacy_numeric_schema_and_json_fallback_preserve_transaction(self):
         service, selected, actor = self._governance_context()

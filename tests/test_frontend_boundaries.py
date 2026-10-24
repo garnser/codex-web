@@ -543,6 +543,12 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("visible.map((item)", source)
         self.assertIn("limit: String(PAGE_SIZE)", source)
 
+    def test_work_item_action_bar_has_a_bounded_shared_client_module(self) -> None:
+        source = STATIC / "work_item_action_bar_ui.js"
+        self.assertLessEqual(source.stat().st_size, 3_000)
+        self.assertIn("api_client.js", source.read_text())
+        self.assertNotIn("fetch(", source.read_text())
+
     def test_frontend_performance_telemetry_is_bounded_and_content_free(self) -> None:
         source_path = STATIC / "frontend_perf.js"
         source = source_path.read_text(encoding="utf-8")

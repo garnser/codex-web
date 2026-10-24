@@ -744,3 +744,30 @@ test('an older server refusing one-record fetch never triggers bulk resync', asy
   await expect(page.locator('.work-items-status')).toContainText('Scoped source fetch is unavailable');
   expect(bulk).toBe(0);
 });
+
+test('pending handoff routing inspection is explicit GET only and never grants delivery', async ({ page }) => {
+  const posts = [];
+  const inspections = [];
+  const detail = operatorPayload({ handoff: { status: 'pending', requested_at: 123.5, from_agent: 'james', to_agent: 'quinn' } });
+  await mockOperatorApis(page, posts, detail);
+  await page.route('**/api/work-items/**/operator/handoff-eligibility?*', async route => {
+    inspections.push({ method: route.request().method(), url: new URL(route.request().url()) });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      inspection_only: true, eligible: false, status: 'ineligible',
+      blocked_reason: 'owner_recipient_native_custody_unverified', native_outcome: 'not_inferred',
+    }) });
+  });
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await expect(page.locator('.work-handoff-inspect')).toBeVisible();
+  expect(inspections).toEqual([]);
+  await page.locator('.work-handoff-inspect').click();
+  await expect(page.locator('.work-handoff-inspection')).toContainText('owner_recipient_native_custody_unverified');
+  await expect(page.locator('.work-handoff-inspection')).toContainText('no input dispatched or admission granted');
+  expect(inspections).toHaveLength(1);
+  expect(inspections[0].method).toBe('GET');
+  expect(inspections[0].url.searchParams.get('expected_requested_at')).toBe('123.5');
+  expect(inspections[0].url.searchParams.get('expected_recipient')).toBe('quinn');
+  expect(inspections[0].url.searchParams.get('project_id')).toBe('project-a');
+  expect(posts).toEqual([]);
+});

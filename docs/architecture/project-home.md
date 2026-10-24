@@ -528,7 +528,13 @@ This disposition is an idempotent, governed REPORT Artifact using distinct sourc
 `home-upgrade-dormant-preservation`, metadata schema `1.0`, exact plan/release/source/
 target and current preservation identifiers. It is **not** checkpoint `1.4`, does
 not grant native input, and cannot coexist with a real planned checkpoint for the
-same plan. Idempotent rereads freshly revalidate dormancy; changed selection,
+same plan. Current metadata observations run before the atomic Artifact catalog guard and
+outside Artifact/Governance locks. Canonical Session/ActionIntent readers may
+initialize or migrate their own readiness records; no input or historical outcome
+is changed. A checkpoint still refuses before Artifact/Governance registration,
+export or upsert. This deliberately changes refusal priority: a current custody
+observation can refuse before checkpoint ambiguity is inspected.
+Idempotent rereads freshly revalidate dormancy; changed selection,
 Session, Goal, queue or process evidence fails closed. Existing Artifact/report
 inspectors expose the explicit UNKNOWN/no-continuation report name, source, plan
 reference, digest and scope; detailed retained references remain in the canonical

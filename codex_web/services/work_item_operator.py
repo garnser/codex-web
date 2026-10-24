@@ -97,6 +97,10 @@ class WorkItemOperatorService:
             "owner_dispatch_projection",
             None,
         )
+        self.project_handoff_eligibility = getattr(
+            continuity, "handoff_eligibility_projection", None,
+        )
+        self.handoff_inspection_ready = getattr(continuity, 'require_handoff_inspection_ready', None)
         self.schedule_owner_dispatch = getattr(
             continuity,
             "schedule_actionable_owner_dispatch",
@@ -111,6 +115,32 @@ class WorkItemOperatorService:
                 "_schedule_actionable_owner_dispatch",
                 None,
             )
+
+    def require_handoff_inspection_ready(self):
+        from codex_web.owner_routing import OwnerRoutingError
+        try:
+            if not callable(self.handoff_inspection_ready):
+                raise OwnerRoutingError('owner_routing_inspection_unavailable')
+            self.handoff_inspection_ready()
+        except Exception:
+            raise HTTPException(status_code=503,
+                detail={'code': 'owner_routing_inspection_not_initialized'}) from None
+
+    def handoff_eligibility(self, ref: str, *, expected_requested_at: float,
+        expected_recipient: str, organization_id: str, workspace_id: str,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Explicit scope-fenced read; never call detail/history or dispatch."""
+        self.require_handoff_inspection_ready()
+        state = self.state_machine._work_item_state(ref)
+        if ((state.organization_id, state.workspace_id) != (organization_id, workspace_id)
+                or (project_id is not None and state.project_id != project_id)):
+            raise HTTPException(status_code=404, detail="Work item not found")
+        if not callable(self.project_handoff_eligibility):
+            return {'inspection_only': True, 'eligible': False, 'status': 'unavailable',
+                'blocked_reason': 'owner_routing_inspection_unavailable', 'native_outcome': 'not_inferred'}
+        return self.project_handoff_eligibility(state,
+            expected_requested_at=expected_requested_at, expected_recipient=expected_recipient)
 
     def owner_dispatch_projection(
         self,

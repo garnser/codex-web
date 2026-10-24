@@ -114,6 +114,27 @@ class PostgresPointEnvelopeTests(PointEnvelopeContract,unittest.TestCase):
                                 actual=getattr(self.backend,method)('point-envelope','records',selector,**scope)
                                 self.assertEqual(actual['records'],json.loads(raw)['records'] if selected else [])
 
+    def test_first_per_id_groups_by_original_point_identity_text(self):
+        for raw_identity in ('1', '1e0', '{"z": 1, "a": 2}', '[1,  2]'):
+            with self.subTest(raw_identity=raw_identity):
+                # Numeric and string IDs (or object/array and string IDs) can
+                # match the SAME original JSON-text POINT predicate.
+                rows = ('{"id":' + raw_identity +
+                    ',"organization_id":"local","workspace_id":"default","value":"first"},' +
+                    json.dumps({'id': raw_identity, 'organization_id': 'local',
+                        'workspace_id': 'default', 'value': 'later'}))
+                self.put_text('{"schema_version":"1.1","records":[' + rows + ']}')
+                scope = {'organization_id': 'local', 'workspace_id': 'default',
+                         'collection_names': ('records', 'requests', 'events')}
+                point = self.backend.document_array_item_envelope('point-envelope', 'records', raw_identity, **scope)
+                first = self.backend.document_array_items_envelope('point-envelope', 'records',
+                    (raw_identity,), first_per_id=True, **scope)
+                all_matches = self.backend.document_array_items_envelope('point-envelope', 'records',
+                    (raw_identity,), **scope)
+                self.assertEqual(first, point)
+                self.assertEqual(len(first['records']), 1)
+                self.assertEqual(len(all_matches['records']), 2)
+
     def test_real_server_casts_whole_envelope_only_twice(self):
         self.backend.put('point-envelope',{'schema_version':'1.1','records':[
             {'id':'selected','organization_id':'local','workspace_id':'default','value':'first'},

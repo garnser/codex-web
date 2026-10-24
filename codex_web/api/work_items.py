@@ -379,6 +379,24 @@ def build_work_items_router(
                         ref, actor=request.state.identity_actor)
         return payload
 
+    @router.get("/api/work-items/{ref:path}/operator/handoff-eligibility")
+    async def inspect_handoff_eligibility(ref: str, request: Request,
+        expected_requested_at: float, expected_recipient: str,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        # Explicit on-demand action: ordinary point/operator/Executive reads do
+        # not add candidate discovery or preparation work.
+        def require_inspection_scope():
+            operator.require_handoff_inspection_ready()
+            require_item_scope(ref, request)
+        await asyncio.to_thread(require_inspection_scope)
+        scope = request.state.tenant_scope
+        return await asyncio.to_thread(operator.handoff_eligibility, ref,
+            expected_requested_at=expected_requested_at,
+            expected_recipient=expected_recipient,
+            organization_id=scope.organization_id, workspace_id=scope.workspace_id,
+            project_id=project_id)
+
     @router.post("/api/work-items/{ref:path}/retry")
     async def retry_work_item(
         ref: str,

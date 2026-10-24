@@ -34,6 +34,15 @@ Before content is returned for reasoning context, retrieval calls the canonical 
 - records that explicitly deny model context
 - classifications above the caller/query context ceiling.
 
+UX-brief source ancestry opts into `DataGovernanceService.get_record(...,
+context_only=True)`: every node is a fresh complete scoped record from the
+existing context-envelope reader, followed by the same scoped first-record
+lookup and final context filter. This avoids decoding the whole Governance
+catalog once per ancestor. Ordinary record lookup keeps its full decoder;
+legacy/custom backend fallback, schema checks, stored duplicate order, missing
+or foreign-record refusal, ancestry bounds and current denials remain owned by
+the existing services. This does not cache authority or omit ancestry checks.
+
 Governance redaction/deletion invokes the memory domain handler. The handler removes durable content, semantic-index material, tags/references and relationships for the target and for memory versions derived through that governance provenance. This prevents a derived summary from silently surviving source deletion.
 
 Legal holds and retention scheduling remain owned by Data Governance. Memory only supplies the domain payload-action adapter.
