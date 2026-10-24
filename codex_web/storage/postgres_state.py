@@ -605,12 +605,17 @@ class PostgresStateStore:
                     else lower
                 )
                 projection = "payload"
+                source = "codex_state_documents"
                 parameters: tuple[Any, ...] = ()
                 if fields is not None:
-                    projection = """(CASE WHEN json_typeof(payload::json) = 'object' THEN
+                    # Keep the validated JSON datum local to this row. OFFSET
+                    # prevents pull-up from duplicating the TEXT conversion in
+                    # the shape guard and the selected-field enumeration.
+                    source += " CROSS JOIN LATERAL (SELECT payload::json AS document OFFSET 0) AS parsed"
+                    projection = """(CASE WHEN json_typeof(parsed.document) = 'object' THEN
                         (SELECT COALESCE(json_object_agg(field.key, field.value), '{}'::json)
-                         FROM json_each(payload::json) AS field
-                         WHERE field.key = ANY(%s)) ELSE payload::json END)::text"""
+                         FROM json_each(parsed.document) AS field
+                         WHERE field.key = ANY(%s)) ELSE parsed.document END)::text"""
                     parameters = (list(fields),)
                 # A strict-JSON conversion refusal must not abort a caller's
                 # canonical update transaction before the legacy TEXT fallback.
@@ -618,7 +623,7 @@ class PostgresStateStore:
                     cursor.execute(
                         f"""
                         SELECT namespace, {projection}
-                        FROM codex_state_documents
+                        FROM {source}
                         WHERE namespace COLLATE "C" >= %s
                           AND namespace COLLATE "C" < %s
                           AND namespace COLLATE "C" > %s
