@@ -26,7 +26,7 @@ class _MissingNativePredecessor(OwnerRoutingError):
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
-                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None):
+                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None):
         self.routing = routing
         self.get_state = get_state
         self.projects = projects
@@ -45,6 +45,11 @@ class OwnerRoutingService:
         self.execution_profiles = execution_profiles
         self.sessions = sessions
         self.recipient_preparer = None
+        self.inspection_ready = inspection_ready
+
+    def require_readonly_inspection_ready(self):
+        if self.inspection_ready is None or self.inspection_ready() is not True:
+            raise OwnerRoutingError('owner_routing_inspection_not_initialized')
 
     def project_native_start(self, attempt):
         """Attribute an exact late positive receipt without renewing authority.

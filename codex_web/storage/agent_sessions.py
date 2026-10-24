@@ -120,6 +120,12 @@ class AgentSessionStore:
                 records[native_key] = {"session_id": session.id}
         return records
 
+    def reads_initialized(self) -> bool:
+        """No migration or empty collection creation during inspection."""
+        return (self.store.record_collection_exists(self.records_namespace)
+            and self.store.record_get(self.records_namespace, self._meta_key)
+                == {'schema_version': '1.0'})
+
     def _ensure_records(self) -> None:
         if self._records_ready:
             return

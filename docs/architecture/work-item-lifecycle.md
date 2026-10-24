@@ -519,3 +519,25 @@ blocker compare-and-set. It does not overwrite the current handoff, retry input,
 or establish a native input outcome. Coordinator completion means the background
 invocation finished; it does not prove delivery. Delivery and acknowledgement
 continue to require their existing canonical receipts.
+
+### On-demand pending handoff routing inspection
+
+The existing Work Item inspector offers **Inspect handoff routing** for a pending
+handoff. Its scoped GET `/api/work-items/{ref}/operator/handoff-eligibility`
+requires the observed `expected_requested_at` and `expected_recipient`. It runs
+the structured dispatcher’s existing binding selection, synchronous
+`compatible_pin` and fresh `context_for_pin` checks. It does not run the async
+recipient preparer, create a bootstrap, record a blocker, enqueue input, retry,
+dispatch, or acknowledge a handoff. A changed Work snapshot returns `changed`;
+missing storage or routing composition is `unavailable`, never an eligible
+default. Inspection first checks that existing Work, worker and native-session
+record layouts are initialized; it does not trigger their lazy migrations.
+The original tenant, Project, Definition, Profile, repository and
+retained-original checks remain authoritative.
+
+This is a current routing snapshot, not admission or native START authority and
+not a reconstruction of an earlier refusal. A valid pin may still require
+ordinary worker/native admission; scope incompatibility is reported without
+creating a replacement. Existing ordinary Work/operator and Executive context
+reads do not invoke this potentially expensive inspection. The actionable-owner
+projection retains its existing `work_item_handoff_pending` semantics.
