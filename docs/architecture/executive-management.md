@@ -63,8 +63,10 @@ explicitly report omitted counts. Critical-path aggregate counts describe the
 whole graph even when its displayed references are partial. `complete=false`
 must never be interpreted as an empty or healthy remainder.
 
-The existing role context-item limit and half of the existing per-call input
-budget bound the projection. Explicit Work references and their incoming
+The existing role context-item limit and ordinary canonical retrieval capacity
+bound the projection. A numeric per-call input budget further caps graph data
+at half that budget; disabled consultation enforcement never makes retrieval
+unlimited. Explicit Work references and their incoming
 parent/dependency closure are mandatory: unavailable or oversized required
 context refuses preparation before activation persistence or model invocation.
 Remaining capacity prioritizes critical-path, failed-dependency, blocked,

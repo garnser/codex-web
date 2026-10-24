@@ -128,3 +128,16 @@ class ExecutiveGraphBudgetTests(unittest.IsolatedAsyncioTestCase):
                 budget=ExecutiveReasoningBudget(max_input_tokens=12000, max_model_calls=1)), actor=self.actor)
         self.assertEqual(self.service.list(actor=self.actor), ())
         self.assertEqual(self.gateway.requests, [])
+
+    def test_optional_input_enforcement_keeps_ordinary_graph_retrieval_bounded(self):
+        # The nullable public budget schema is owned by the separate opt-out
+        # change. Exercise this internal context boundary without loosening it.
+        payload = ExecutiveActivationCreate(subject='Project overview', request='Review product priorities.',
+            project_id='project-a', requested_role_ids=('cpo',))
+        payload = payload.model_copy(update={'budget': payload.budget.model_copy(update={'max_input_tokens':None})})
+        prepared = self.service.prepare(payload, actor=self.actor)
+        graph = prepared.context.work_graphs[0]
+        self.assertLessEqual(len(json.dumps(graph, sort_keys=True, separators=(',', ':'))), 24000)
+        self.assertLessEqual(len(graph['nodes']), 20)
+        self.assertEqual(graph['progress']['total'], 1899)
+        self.assertFalse(graph['complete'])
