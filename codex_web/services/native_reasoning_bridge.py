@@ -124,13 +124,13 @@ class CanonicalNativeReasoningBridge:
     def _preparation_failed(self, context, stage, exc):
         # This is diagnostic evidence, not permission to retry or proof that a
         # provider thread was never created. Only ThreadService owns that proof.
-        event = dict(type='native_reasoning_preparation_failed',
-            organization_id=context.organization_id, workspace_id=context.workspace_id,
-            project_id=context.project_id, execution_id=context.execution_id,
-            activation_id=context.activation_id, role_id=context.role_id,
-            native_preparation_stage=stage, native_exception_type=bootstrap_exception_type(exc),
-            native_input_admitted=False)
         try:
+            event = dict(type='native_reasoning_preparation_failed',
+                organization_id=context.organization_id, workspace_id=context.workspace_id,
+                project_id=context.project_id, execution_id=context.execution_id,
+                activation_id=context.activation_id, role_id=context.role_id,
+                native_preparation_stage=stage, native_exception_type=bootstrap_exception_type(exc),
+                native_input_admitted=False)
             event.update(bootstrap_preparation_diagnostic(exc) or {})
             self.threads.event_sink(event)
         except Exception:

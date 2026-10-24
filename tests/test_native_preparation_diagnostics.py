@@ -119,3 +119,15 @@ class NativePreparationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             await self.invoke()
         self.assertIsInstance(caught.exception.__cause__, LookupError)
         self.assertEqual(self.stopped, ['original'])
+
+    async def test_missing_diagnostic_context_cannot_replace_original_or_skip_cleanup(self):
+        def unavailable(*args, **kwargs):
+            raise LookupError('original session failure')
+        self.bridge(sessions=NS(get=unavailable))
+        self.context = NS(organization_id='org', workspace_id='workspace', project_id='project',
+            execution_id='executive:activation:cpo', validate_current=lambda: None, process_owner=self.owner)
+        with self.assertRaisesRegex(ModelProviderAdapterError, '^Native reasoning preparation refused$') as caught:
+            await self.invoke()
+        self.assertIsInstance(caught.exception.__cause__, LookupError)
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.stopped, ['original'])
