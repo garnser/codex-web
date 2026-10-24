@@ -1,5 +1,6 @@
 """A bounded idempotency snapshot retains canonical point-selection semantics."""
 import os
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -92,6 +93,19 @@ class ArtifactSnapshotContract:
         self.backend.update('snapshot-sentinel', update, default={})
         self.assertEqual(self.backend.get('snapshot-sentinel'), {'checked': True})
 
+    def test_two_field_full_fallback_does_not_hide_unrelated_invalid_artifact(self):
+        # Conversion fallback may return a complete legacy catalog with exactly
+        # the same keys as a projected envelope. Its full decoder must still run.
+        first = self.artifact()
+        full = {'schema_version': '1.3', 'artifacts': [first.model_dump(mode='json'),
+            {'id': 'unrelated-malformed', 'metadata': {'nul': 'before\0after'}}]}
+        with patch.object(self.backend, 'document_array_item_envelope', return_value=full):
+            with self.assertRaises(ValueError):
+                self.service.find_idempotent_artifact(actor=self.actor,
+                    source=self.requests[0][0], idempotency_key='plan')
+        with patch.object(self.backend, 'document_array_items_envelope', return_value=full):
+            with self.assertRaises(ValueError): self.find()
+
     def test_backend_without_batch_keeps_full_canonical_decoder(self):
         first = self.artifact()
         self.put([first.model_dump(mode='json')])
@@ -116,6 +130,29 @@ class PostgresArtifactSnapshotTests(ArtifactSnapshotContract, unittest.TestCase)
     def setUp(self):
         pg_fixtures.PostgresAutonomyAppendTests.setUp(self)
         self.configure()
+
+    def test_actual_two_field_conversion_fallback_keeps_full_validation_and_transaction(self):
+        for case, value in (('nan', float('nan')), ('nul', 'before\0after'),
+                            ('surrogate', 'before\ud800after'), ('overflow', 'overflow-number')):
+            for duplicate in (False, True):
+                with self.subTest(case=case, duplicate=duplicate):
+                    first = self.artifact(metadata={'legacy': value}).model_dump(mode='json')
+                    raw = json.dumps({'schema_version': '1.3', 'artifacts': [first,
+                        {'id': self.ids[0] if duplicate else 'unrelated-malformed'}]})
+                    if case == 'overflow': raw = raw.replace('"overflow-number"', '1e1000000')
+                    self.backend.put('artifact_evidence', {})
+                    with self.backend._connection() as connection:
+                        connection.execute('UPDATE codex_state_documents SET payload=%s WHERE namespace=%s',
+                            (raw, 'artifact_evidence'))
+                    self.backend.put('snapshot-sentinel', {'checked': False})
+                    def update(current):
+                        with self.assertRaises(ValueError):
+                            self.service.find_idempotent_artifact(actor=self.actor,
+                                source=self.requests[0][0], idempotency_key='plan')
+                        with self.assertRaises(ValueError): self.find()
+                        return {'checked': True}
+                    self.backend.update('snapshot-sentinel', update, default={})
+                    self.assertEqual(self.backend.get('snapshot-sentinel'), {'checked': True})
 
 
 class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):

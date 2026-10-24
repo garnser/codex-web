@@ -820,13 +820,15 @@ class SQLiteStateStore:
 
     def document_array_items_envelope(self, namespace: str, array_name: str, item_ids: tuple[str, ...], *,
                                      organization_id: str, workspace_id: str,
-                                     collection_names: tuple[str, ...]) -> Any | None:
+                                     collection_names: tuple[str, ...], first_per_id: bool = False) -> Any | None:
         """Read scoped complete records plus its document schema envelope.
 
         This is an optional read optimization, never a schema/authority decision.
         Nonstandard legacy JSON and incompatible envelope shapes retain the full
         document path so the canonical domain decoder can refuse them normally.
         """
+        if type(first_per_id) is not bool:
+            raise ValueError("first_per_id must be a boolean")
         names = record_projection_fields(collection_names)
         ids = tuple(dict.fromkeys(item_ids))
         ids_json = json.dumps(ids)
@@ -835,16 +837,24 @@ class SQLiteStateStore:
         allowed = ("schema_version", *names)
         unexpected = ",".join("?" for _ in allowed)
         arrays = " OR ".join("COALESCE(json_type(payload, ?), 'array') != 'array'" for _ in names)
+        # Partition only the scoped selected rows. Default callers still receive
+        # every duplicate; first_per_id mirrors POINT's first stored match.
+        columns = ("item.value, row_number() OVER (PARTITION BY json_extract(item.value, '$.id') "
+                   "ORDER BY CAST(item.key AS INTEGER)) AS occurrence, "
+                   "CAST(item.key AS INTEGER) AS ordinal") if first_per_id else "item.value"
+        selection = f"""SELECT {columns} FROM json_each(payload, ?) AS item
+                     WHERE item.type = 'object' AND json_extract(item.value, '$.id') IN (SELECT value FROM json_each(?))
+                       AND json_extract(item.value, '$.organization_id') = ?
+                       AND json_extract(item.value, '$.workspace_id') = ? ORDER BY CAST(item.key AS INTEGER)"""
+        if first_per_id:
+            selection = f"SELECT value FROM ({selection}) WHERE occurrence = 1 ORDER BY ordinal"
         query = f"""SELECT CASE WHEN json_valid(payload) = 0 THEN payload
             WHEN json_type(payload) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM json_each(payload) AS field WHERE field.key NOT IN ({unexpected})) THEN payload
             WHEN {arrays} THEN payload
             ELSE json_object('schema_version', COALESCE(json_extract(payload, '$.schema_version'), '0.0'),
                 ?, json(COALESCE((SELECT json_group_array(json(selected.value)) FROM
-                    (SELECT item.value FROM json_each(payload, ?) AS item
-                     WHERE item.type = 'object' AND json_extract(item.value, '$.id') IN (SELECT value FROM json_each(?))
-                       AND json_extract(item.value, '$.organization_id') = ?
-                       AND json_extract(item.value, '$.workspace_id') = ? ORDER BY CAST(item.key AS INTEGER)) AS selected), '[]')))
+                    ({selection}) AS selected), '[]')))
             END FROM state_documents WHERE namespace = ?"""
         parameters = (*allowed, *(f"$.{name}" for name in names), array_name,
                       f"$.{array_name}", ids_json, organization_id, workspace_id, namespace)
