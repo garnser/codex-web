@@ -141,6 +141,44 @@ class SQLiteHomeIntentQueryTests(HomeIntentQueryContract,unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated PostgreSQL test DSN required')
 class PostgresHomeIntentQueryTests(HomeIntentQueryContract,unittest.TestCase):
+    def test_recovery_query_disables_jit_and_restores_actual_owning_transaction(self):
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        self.write([self.intent('held-jit', status='uncertain')])
+        observed = []
+        with self.backend._read_connection() as connection:
+            connection.execute("SET LOCAL jit='on'")
+            original_cursor = connection.cursor
+
+            class ObservedCursor:
+                def __init__(self):
+                    self.cursor = original_cursor()
+                def __enter__(self):
+                    self.cursor.__enter__()
+                    return self
+                def __exit__(self, *args):
+                    return self.cursor.__exit__(*args)
+                def __getattr__(self, name):
+                    return getattr(self.cursor, name)
+                def execute(self, statement, parameters=None):
+                    if statement.startswith('SELECT i.namespace, i.payload FROM'):
+                        self.cursor.execute('SHOW jit')
+                        observed.append(self.cursor.fetchone()[0])
+                    return self.cursor.execute(statement, parameters)
+
+            class ObservedConnection:
+                def cursor(self):
+                    return ObservedCursor()
+                def transaction(self):
+                    return connection.transaction()
+
+            with patch.object(self.backend, '_read_connection',
+                              return_value=nullcontext(ObservedConnection())):
+                rows = self.backend.home_intent_recovery_rows(self.namespace, self.query(True))
+            self.assertEqual([row['id'] for row in rows], ['held-jit'])
+            self.assertEqual(observed, ['off'])
+            self.assertEqual(connection.execute('SHOW jit').fetchone()[0], 'on')
+
     def setUp(self):
         import psycopg
         from psycopg import sql
