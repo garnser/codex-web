@@ -464,6 +464,18 @@ replicated fencing serialize preparation. Creation is not delivery: only a
 subsequent original native START qualifies the handoff. Existing source sessions,
 bindings, replacement graphs, queues and unknown outcomes remain unchanged.
 
+A positive original native session whose historical assignment is missing remains
+unverified history. It cannot authorize original resume or new context creation.
+When the original source is terminal and unleased, its tenant-scoped canonical
+replacement may instead supply current custody: the replacement must have an
+exact native-session/assignment/execution/workspace/worker match, the same creator
+and pinned Profile, and the requested repository scope. Existing current worker,
+lease, fence, policy and unique-recipient checks still apply. Ambiguous or foreign
+original custody, unresolved original Work outcomes, missing or cyclic replacement
+lineage and multiple current candidates still refuse. The final native guard
+rechecks the lineage and custody; no original binding, session, assignment, nonce,
+history or authority is rewritten and no replacement is created by this lookup.
+
 A controller refusal after canonical preparation but before worker startup is
 recorded atomically with cancellation as an existing `FailureRecord`. The owner
 must still hold an unclaimed PENDING fence0 with no lease, worker or start time.
