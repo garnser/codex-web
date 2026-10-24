@@ -117,6 +117,82 @@ class AgentRuntimeTelemetryTests(unittest.TestCase):
         resolve.assert_not_called()
         self.assertEqual(self.usage.list(), [])
 
+    def test_item_completion_counts_tools_without_completing_native_turn(self) -> None:
+        def observe(kind, payload):
+            return self.service.observe_event(
+                "anthropic", "claude-code", AgentRuntimeEvent(
+                    event_type=kind, provider_native_session_id="native-session-1",
+                    provider_native_turn_id="turn-item-then-terminal", payload=payload,
+                ),
+            )
+
+        observe("turn/started", {})
+        self.clock[0] += 1
+        item = {"params": {"item": {"id": "tool-1", "type": "commandExecution",
+                                    "command": "python --version"}},
+                "usage": {"input_tokens": 17, "output_tokens": 9}}
+        record = observe("item/completed", item)
+        self.assertEqual(record.terminal_outcome, RuntimeTerminalOutcome.UNKNOWN)
+        self.assertIsNone(record.completed_at)
+        self.assertIsNone(record.runtime_duration_seconds)
+        self.assertIsNone(record.model_call_count)
+        self.assertEqual((record.tool_call_count, record.shell_command_count), (1, 1))
+        self.assertEqual((record.input_tokens, record.output_tokens), (17, 9))
+        self.assertEqual(record.evidence_ids, ())
+        self.assertEqual(record.assignment_id, "assignment-a")
+        self.assertEqual(record.work_item_ref, "group/app#42")
+        duplicate = observe("item/completed", item)
+        self.assertEqual(duplicate.tool_call_count, 1)
+        self.clock[0] += 1
+        terminal = observe("turn/completed", {"usage": {"input_tokens": 17, "output_tokens": 9}})
+        self.assertEqual(terminal.terminal_outcome, RuntimeTerminalOutcome.SUCCEEDED)
+        self.assertEqual(terminal.completed_at, self.clock[0])
+        self.assertEqual(terminal.model_call_count, 1)
+        self.assertEqual(terminal.tool_call_count, 1)
+        self.assertEqual(len(terminal.evidence_ids), 1)
+
+    def test_only_exact_turn_and_sdk_result_events_are_terminal(self) -> None:
+        cases = [
+            ("turn/completed", {}, RuntimeTerminalOutcome.SUCCEEDED),
+            ("turn.completed", {}, RuntimeTerminalOutcome.SUCCEEDED),
+            ("turn/failed", {}, RuntimeTerminalOutcome.FAILED),
+            ("turn/interrupted", {}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("turn/cancelled", {}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("turn/canceled", {}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("turn/completed", {"params": {"turn": {"status": "failed", "error": {"code": "failed"}}}}, RuntimeTerminalOutcome.FAILED),
+            ("turn/completed", {"turn": {"status": "interrupted"}}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("turn/completed", {"params": {"turn": {"status": "interrupted", "error": {"message": "cancelled"}}}}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("turn/completed", {"params": {"turn": {"status": "cancelled"}, "error": {"message": "cancelled"}}}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("turn/completed", {"turn": {"status": "canceled", "error": {"message": "cancelled"}}}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("result/success", {"subtype": "success"}, RuntimeTerminalOutcome.SUCCEEDED),
+            ("result", {"subtype": "success"}, RuntimeTerminalOutcome.SUCCEEDED),
+            ("result/error_during_execution", {}, RuntimeTerminalOutcome.FAILED),
+            ("result/error_max_turns", {}, RuntimeTerminalOutcome.FAILED),
+            ("result/error_max_budget_usd", {}, RuntimeTerminalOutcome.FAILED),
+            ("result/error_max_structured_output_retries", {}, RuntimeTerminalOutcome.FAILED),
+            ("result/success", {"is_error": True}, RuntimeTerminalOutcome.FAILED),
+            ("result/cancelled", {}, RuntimeTerminalOutcome.INTERRUPTED),
+            ("item/completed", {}, RuntimeTerminalOutcome.UNKNOWN),
+            ("item/failed", {"subtype": "failed"}, RuntimeTerminalOutcome.UNKNOWN),
+            ("tool/error", {"subtype": "error"}, RuntimeTerminalOutcome.UNKNOWN),
+            ("item/interrupted", {"subtype": "interrupted"}, RuntimeTerminalOutcome.UNKNOWN),
+            ("context/compaction/completed", {}, RuntimeTerminalOutcome.UNKNOWN),
+            ("assistant", {"subtype": "success"}, RuntimeTerminalOutcome.UNKNOWN),
+            ("turn/not_completed", {}, RuntimeTerminalOutcome.UNKNOWN),
+            ("result/not_success", {}, RuntimeTerminalOutcome.UNKNOWN),
+        ]
+        for index, (kind, payload, expected) in enumerate(cases):
+            with self.subTest(kind=kind, payload=payload):
+                record = self.service.observe_event(
+                    "anthropic", "claude-code", AgentRuntimeEvent(
+                        event_type=kind, provider_native_session_id="native-session-1",
+                        provider_native_turn_id=f"taxonomy-{index}", payload=payload,
+                    ),
+                )
+                self.assertEqual(record.terminal_outcome, expected)
+                self.assertEqual(record.completed_at is None, expected == RuntimeTerminalOutcome.UNKNOWN)
+                self.assertEqual(bool(record.evidence_ids), expected != RuntimeTerminalOutcome.UNKNOWN)
+
     def test_claude_terminal_usage_is_partial_attributed_and_emits_compact_evidence(self) -> None:
         record = self.service.observe_event(
             "anthropic",

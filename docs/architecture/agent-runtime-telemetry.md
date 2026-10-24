@@ -33,6 +33,19 @@ Current normalization includes:
 
 Provider events are fingerprinted before aggregation so duplicate/replayed events do not double-count usage or evidence.
 
+Whole-turn outcome classification uses exact normalized `turn/completed`,
+`turn/failed`/`turn/error` and `turn/interrupted`/`turn/cancelled`/`turn/canceled`
+events, including the equivalent dotted adapter spelling. Completed-turn payloads
+retain their explicit failed/interrupted status. SDK `result` events use their
+supported success, failure and cancellation subtypes (including bounded SDK
+execution/turn/budget/structured-output errors). A subtype on another event
+family cannot make a turn terminal. Item/tool completion, errors and context
+compaction still contribute their existing counters/usage, but do not set
+`completed_at`, infer a terminal call count or emit terminal Evidence. Usage
+telemetry is observational and never clears canonical active-turn or queue
+custody. This correction does not rewrite earlier usage records or prove the
+event responsible for a historical timestamp. See #1779.
+
 Canonical sessions are stored as keyed records with a transactional secondary
 index over provider, runtime, and provider-native session identity. Telemetry
 resolves only the matching index entries and canonical records; its cost does

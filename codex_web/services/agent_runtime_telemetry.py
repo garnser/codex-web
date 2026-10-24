@@ -455,26 +455,39 @@ class AgentRuntimeTelemetryService:
 
     @staticmethod
     def _terminal_outcome(event_type: str, payload: dict[str, Any]) -> RuntimeTerminalOutcome:
-        value = event_type.casefold()
-        subtype = str(payload.get("subtype") or "").casefold()
-        if any(term in value for term in ("failed", "error")) or subtype in {
-            "error",
-            "failure",
-            "failed",
-        }:
+        # Item/tool lifecycle and SDK message subtypes are not turn outcomes.
+        # Normalize only the two separators emitted by existing runtime adapters.
+        value = event_type.casefold().replace(".", "/")
+        if value in {"turn/failed", "turn/error"}:
             return RuntimeTerminalOutcome.FAILED
-        if any(term in value for term in ("interrupt", "cancel")) or subtype in {
-            "interrupted",
-            "cancelled",
-            "canceled",
-        }:
+        if value in {"turn/interrupted", "turn/cancelled", "turn/canceled"}:
             return RuntimeTerminalOutcome.INTERRUPTED
-        if any(term in value for term in ("completed", "success")) or subtype in {
-            "success",
-            "succeeded",
-            "completed",
-        }:
+        if value == "turn/completed":
+            params = payload.get("params")
+            details = params if isinstance(params, dict) else payload
+            turn = details.get("turn")
+            turn = turn if isinstance(turn, dict) else {}
+            status = str(turn.get("status") or "").casefold()
+            if status in {"failed", "error"}:
+                return RuntimeTerminalOutcome.FAILED
+            if status in {"interrupted", "cancelled", "canceled"}:
+                return RuntimeTerminalOutcome.INTERRUPTED
+            if turn.get("error") or details.get("error"):
+                return RuntimeTerminalOutcome.FAILED
             return RuntimeTerminalOutcome.SUCCEEDED
+        if value == "result" or value.startswith("result/"):
+            subtype = (value.partition("/")[2] if "/" in value
+                       else str(payload.get("subtype") or "").casefold())
+            if payload.get("is_error") is True or subtype in {
+                "error", "failure", "failed", "error_during_execution",
+                "error_max_turns", "error_max_budget_usd",
+                "error_max_structured_output_retries",
+            }:
+                return RuntimeTerminalOutcome.FAILED
+            if subtype in {"interrupted", "cancelled", "canceled"}:
+                return RuntimeTerminalOutcome.INTERRUPTED
+            if subtype in {"success", "succeeded", "completed"}:
+                return RuntimeTerminalOutcome.SUCCEEDED
         return RuntimeTerminalOutcome.UNKNOWN
 
     @staticmethod
