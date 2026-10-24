@@ -494,6 +494,16 @@ same pending nonce through admitted canonical routing after readiness changes;
 its cooldown, current-lane busy checks and original expiry remain effective.
 Neither a handled routing refusal nor context creation proves native delivery.
 
+If a current recipient admission callback raises a typed routing denial, the
+recipient owner restores that exact exception from the controller's genuine
+pre-provider thread refusal, preserving canonical blocker/event handling
+(#1802). Exception-object identity must match the callback of that invocation;
+a matching string, class or adapter-supplied wrapper is not evidence. Other
+Python errors, existing HTTP refusals and post-provider uncertainty retain their
+original handling. This neither weakens the current-intent/authority fence nor
+retries an input, extends a nonce or asserts delivery/ACK. The existing operator
+blocker and event surfaces display the existing canonical reason codes.
+
 A controller refusal after canonical preparation but before worker startup is
 recorded atomically with cancellation as an existing `FailureRecord`. The owner
 must still hold an unclaimed PENDING fence0 with no lease, worker or start time.
