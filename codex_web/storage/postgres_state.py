@@ -120,6 +120,10 @@ class PostgresStateStore:
         if self._pool is not None and not self._shared_pool:
             atexit.register(self._pool.close)
 
+    def can_fork_context_reads(self) -> bool:
+        """Independent reads may fork only outside a thread-owned transaction."""
+        return getattr(self._callback_reads, "connection", None) is None
+
     def _connect(self):
         return self._connect_factory(self.dsn)
 

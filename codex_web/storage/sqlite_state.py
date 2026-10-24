@@ -30,6 +30,10 @@ class SQLiteStateStore:
 
     SCHEMA_VERSION = 1
 
+    def can_fork_context_reads(self) -> bool:
+        """SQLite reads own independent connections, including across threads."""
+        return True
+
     def __init__(self, path: Path, *, initialize: bool = True) -> None:
         self.path = path
         self._existing_only = not initialize

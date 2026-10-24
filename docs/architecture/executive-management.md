@@ -220,3 +220,9 @@ before native input admission do not establish that no provider thread exists.
 Diagnostic failure cannot replace the original refusal or its cleanup. Failures
 after native input admission retain their existing unknown-outcome semantics.
 These events confer no retry, replay, START, completion or accounting authority.
+
+### Overlapping independent context retrieval
+
+When both WorkGraph and Organizational Memory are visible, context preparation may overlap their existing governed operations. The graph snapshot and its bounded Executive projection run in one additional worker; Memory retrieval and its canonical retrieval audit remain on the calling thread. Both complete before preparation returns, retaining graph-first error precedence. A completed authorized Memory retrieval can therefore retain its truthful retrieval-attempt audit even when the sibling graph operation fails; no activation or model invocation is created by that failure.
+
+Each Executive service admits at most two additional context workers, without a waiting queue. Saturated requests use the original sequential path. The worker uses a copied context, including tenant tracing and the same cooperative storage deadline, and its private executor is joined and shut down on every exit. It does not depend on the default executor already occupied by the parent. Unsupported/custom storage compositions and canonical PostgreSQL owning callbacks retain sequential execution; an owning transaction's connection is never transferred across threads. The original five-second API window, visibility, full current validation, retrieval limits, audit preservation, and persist-only-after-success rule remain unchanged. Overlap does not establish a production deadline pass; that still requires genuine post-deployment qualification.
