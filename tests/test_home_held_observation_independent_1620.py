@@ -56,6 +56,24 @@ class HeldObservationIndependentTests(fixture.UnownedHomeUpgradeTests):
         self.assertIsNone(self.planned._dormant_artifact(self.plan.id,self.actor))
         self.assertEqual(self.intents.get(intent.id,self.actor).status,'uncertain');self.assertEqual(self.effects,0)
 
+    async def test_canonical_change_after_artifact_create_forces_final_original_scan(self):
+        intent=self.create();self.intents.cancel(intent.id,'Private initial terminal action',actor=self.actor)
+        self.lose();rows=self.f.sqlite.home_intent_recovery_rows;create=self.artifacts.create_artifact;created=[]
+        def atomic(*a,**kw):
+            artifact=create(*a,**kw);created.append(artifact.id)
+            def mutate(state):
+                state.intents=[x.model_copy(update={'status':type(x.status)('uncertain')}) if x.id==intent.id else x for x in state.intents]
+                return state
+            self.intents.store.update(mutate,intent_ids=(intent.id,))
+            return artifact
+        with patch.object(self.f.sqlite,'home_intent_recovery_rows',wraps=rows) as reader,patch.object(self.artifacts,'create_artifact',side_effect=atomic):
+            with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            self.assertEqual(reader.call_count,2)
+        self.assertEqual(len(created),1);self.assertEqual(self.effects,0)
+        current=self.upgrades.get(self.plan.id,actor=self.operator)
+        self.assertFalse(current.maintenance_mode);self.assertEqual(current.admission_epoch,0)
+        self.assertEqual(self.planned._dormant_artifact(self.plan.id,self.actor).id,created[0])
+
     async def test_changed_live_process_guard_is_fresh_even_when_actions_unchanged(self):
         self.lose();rows=self.f.sqlite.home_intent_recovery_rows;calls=[]
         def query(*a,**kw):
