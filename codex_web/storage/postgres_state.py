@@ -523,10 +523,19 @@ class PostgresStateStore:
             with connection.transaction(), connection.cursor() as cursor:
                 cursor.execute('SHOW statement_timeout')
                 previous_timeout = cursor.fetchone()[0]
+                cursor.execute('SHOW jit')
+                previous_jit = cursor.fetchone()[0]
+                # The correlated original-receipt predicate can have a high
+                # estimated cost even for a small scoped recovery inventory.
+                # LLVM compilation must not consume this bounded read's shared
+                # operation budget. Keep this setting inside the savepoint;
+                # errors roll it back and successful reads restore the caller.
+                cursor.execute("SELECT set_config('jit', 'off', true)")
                 self._operation_deadline(connection)
                 try:
                     cursor.execute(statement, parameters)
                     rows = cursor.fetchall()
+                    cursor.execute("SELECT set_config('jit', %s, true)", (previous_jit,))
                     cursor.execute("SELECT set_config('statement_timeout', %s, true)", (previous_timeout,))
                 except Exception as error:
                     if getattr(error, 'sqlstate', None) in {'22P02','22003','22P05'}:

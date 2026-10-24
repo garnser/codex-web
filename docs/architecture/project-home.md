@@ -731,3 +731,6 @@ retry. Positive retained queue creation consumes the observation; duplicate Resu
 cannot create another recovery input. Original UNKNOWN actions and missing actual
 usage remain held by their existing owners. Existing Resume controls and recovery
 metadata continue to provide the operator surface; no new UI action is introduced.
+
+
+The PostgreSQL original-row Home recovery query runs with JIT compilation disabled only inside its existing read savepoint. Correlated receipt predicates can produce a large estimated plan cost even for a small original intent inventory; LLVM optimization must not consume the shared five-second preservation budget. The caller's JIT setting is restored on success or by savepoint rollback on refusal. The original SQL, tenant/execution/command scope, ambiguous and malformed-row handling, receipt validation, 256-row limit, and complete typed validation remain unchanged. This adds no index, persisted state, global database setting, recovery authority, or UI control.
