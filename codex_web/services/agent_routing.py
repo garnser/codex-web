@@ -239,10 +239,8 @@ class AgentRoutingService:
                 )
             max_output = model_request.max_output_tokens
             if profile.budgets.max_output_tokens is not None:
-                max_output = min(
-                    max_output,
-                    profile.budgets.max_output_tokens,
-                )
+                max_output = (min(max_output, profile.budgets.max_output_tokens)
+                              if max_output is not None else profile.budgets.max_output_tokens)
             max_cost = model_request.max_cost_usd
             if profile.budgets.max_cost_usd is not None:
                 max_cost = (

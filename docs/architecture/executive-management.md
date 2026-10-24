@@ -177,7 +177,12 @@ context capacity, declared output capacity, policy/mapping constraints, authorit
 provider admission, and usage attribution. Output null resolves to the smaller
 of declared model output capacity and remaining context capacity. Native
 entitlement requires exact null/finite caller-marker agreement before routing;
-the selected route then binds finite actual model capacity for the native writer.
+the native adapter then binds separate finite declared model capacities for the
+writer. Null application markers remain null: an output reservation estimate is
+not an observed-input ceiling. Final and streaming native usage checks retain
+finite caller limits, declared output capacity and the joint input-plus-output
+context capacity. These declarations require their own configuration provenance;
+they are not automatically attested physical provider limits.
 No fallback, tool loop, or additional call is authorized by this option. Retrieval
 limits remain finite independently of invocation ceilings.
 
@@ -193,3 +198,12 @@ Release/Upgrade compatibility evidence: all readers of `executive_activations`
 must support 1.1 before new writes. The physical StateStore schema number is
 unchanged; it is not a substitute for this domain compatibility check. The
 existing migration registry owns decoding, with no new deployment controller.
+
+Native reasoning Profile defaults are independent configuration. A null activation
+cannot waive an existing Profile or policy constraint. The canonical Profile
+schema already permits null input/output/cost defaults; removing such defaults
+requires an authorized new Profile revision and matching exact native binding
+configuration. Runtime-only native selection has no ModelInvocationRequest and
+therefore does not consume the Profile's model-request budget defaults; normal
+AgentRouting model requests still apply them. A null request under a finite
+Profile ceiling adopts that ceiling, rather than raising a type error. See #1790.

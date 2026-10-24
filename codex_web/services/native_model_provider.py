@@ -72,6 +72,10 @@ class NativeModelInvocationContext:
     process_owner: NativeProcessOwnership | None = field(default=None, repr=False, compare=False)
     concrete_model: str | None = None
     system_prompt: str | None = field(default=None, repr=False, compare=False)
+    # Bound from the selected canonical ModelDefinition at the adapter edge.
+    # These are declared model capacities, not application-budget replacements.
+    model_context_window_tokens: int | None = None
+    model_output_capacity_tokens: int | None = None
 
     def accepts(self, request: ModelInvocationRequest, actor: AuthenticationActor) -> bool:
         return ((actor.organization_id, actor.workspace_id, actor.identity_id) ==
@@ -84,6 +88,23 @@ class NativeModelInvocationContext:
                 and 0 < request.timeout_seconds <= self.max_duration_seconds
                 and self._matches_ceiling(request.max_input_tokens, self.max_input_tokens)
                 and self._matches_ceiling(request.max_output_tokens, self.max_output_tokens))
+
+    def observed_tokens_allowed(self, input_tokens: int | None, output_tokens: int | None) -> bool:
+        # Partial events are not completion evidence; the result owner separately
+        # requires both exact counters. Null application ceilings need a finite
+        # selected-model context declaration, never an invented infinity value.
+        if ((self.max_input_tokens is None or self.max_output_tokens is None)
+                and (type(self.model_context_window_tokens) is not int
+                     or self.model_context_window_tokens <= 0)):
+            return False
+        for value, limit in ((input_tokens, self.max_input_tokens),
+                             (output_tokens, self.max_output_tokens),
+                             (output_tokens, self.model_output_capacity_tokens)):
+            if value is not None and limit is not None and value > limit:
+                return False
+        return (input_tokens is None or output_tokens is None
+                or self.model_context_window_tokens is None
+                or input_tokens + output_tokens <= self.model_context_window_tokens)
 
     @staticmethod
     def _matches_ceiling(requested: int | None, authorized: int | None) -> bool:
@@ -134,6 +155,10 @@ class NativeCodexModelProviderAdapter:
         if credential is not None or not self.entitlement_route(provider, model, request,
                                                                 actor=actor, context=context):
             raise ModelProviderAdapterError('Native reasoning entitlement/context not qualified')
+        # Keep the exact authorized application markers. Routing's output
+        # reservation estimate is not an observed-input ceiling.
+        context = replace(context, model_context_window_tokens=model.context_window_tokens,
+                          model_output_capacity_tokens=model.max_output_tokens)
         from codex_web.services.post_turn_readiness import PostTurnReadinessService
         owner = NativeProcessOwnership(deadline_at=time.monotonic() + request.timeout_seconds)
         original_guard = context.validate_current

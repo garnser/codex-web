@@ -163,8 +163,7 @@ class CanonicalNativeReasoningBridge:
                 or usage.input_tokens is None or usage.output_tokens is None
                 or usage.tool_call_count or usage.shell_command_count or usage.file_edit_count
                 or usage.git_operation_count or usage.subagent_count
-                or usage.input_tokens > context.max_input_tokens
-                or usage.output_tokens > context.max_output_tokens):
+                or not context.observed_tokens_allowed(usage.input_tokens, usage.output_tokens)):
             raise ValueError('Native inference terminal measured usage unavailable or outside budget')
         return ModelProviderResult(text=text,
             usage=ModelProviderUsage(input_tokens=usage.input_tokens,
@@ -238,8 +237,7 @@ class CanonicalNativeReasoningBridge:
             elif method == 'thread/tokenUsage/updated':
                 from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
                 measured = AgentRuntimeTelemetryService._usage_fields(message)
-                if ((measured['input_tokens'] or 0) > context.max_input_tokens
-                        or (measured['output_tokens'] or 0) > context.max_output_tokens):
+                if not context.observed_tokens_allowed(measured['input_tokens'], measured['output_tokens']):
                     loop.call_soon_threadsafe(finish, None, ModelProviderOutcomeUnknownError(
                         'Native observed token budget exceeded'))
             elif method == 'turn/completed':
