@@ -83,7 +83,7 @@ def brief_context_allowed(memory, item, actor, max_classification):
                 continue
             if len(visited) >= 1000:
                 return False
-            governed = memory.governance.get_record(identity, actor)
+            governed = memory.governance.get_record(identity, actor, context_only=True)
             visited.add(identity)
             pending.extend(governed.source_record_ids)
         result = memory.governance.filter_context(ContextFilterRequest(record_ids=tuple(visited),
