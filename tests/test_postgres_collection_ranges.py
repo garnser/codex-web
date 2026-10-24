@@ -401,12 +401,30 @@ class CollectionRangeContract:
             connection.commit()
         # The malformed third row is outside even this page's lookahead. A
         # row-local projection must not evaluate it and force the raw fallback.
-        with patch.object(self.backend, 'record_page', side_effect=AssertionError('unselected row parsed')):
-            page, cursor = self.backend.record_page_projected(namespace,
-                fields=('selected', 'null', 'missing'), limit=1)
-        self.assertEqual(page, {'a': {'selected': 1.0, 'null': None}})
-        self.assertIs(type(page['a']['selected']), float)
-        self.assertEqual(cursor, 'a')
+        def first_page():
+            with patch.object(self.backend, 'record_page', side_effect=AssertionError('unselected row parsed')):
+                page, cursor = self.backend.record_page_projected(namespace,
+                    fields=('selected', 'null', 'missing'), limit=1)
+            self.assertEqual(page, {'a': {'selected': 1.0, 'null': None}})
+            self.assertIs(type(page['a']['selected']), float)
+            self.assertEqual(cursor, 'a')
+        first_page()
+        if postgres:
+            def sorted_update(rows):
+                connection = self.backend._callback_reads.connection
+                settings = ('enable_indexscan', 'enable_indexonlyscan', 'enable_bitmapscan')
+                previous = {name: connection.execute('SHOW ' + name).fetchone()[0] for name in settings}
+                try:
+                    for name in settings:
+                        connection.execute('SELECT set_config(%s,%s,true)', (name, 'off'))
+                    # A sequential scan and sort must bound the raw page before
+                    # the lateral parse. The malformed third row is not read.
+                    first_page()
+                finally:
+                    for name, value in previous.items():
+                        connection.execute('SELECT set_config(%s,%s,true)', (name, value))
+                return {'projection-sentinel': {'counter': rows['projection-sentinel']['counter'] + 1}}
+            self.backend.record_mutate_many({namespace: ('a',), 'projection-sentinel': ('counter',)}, sorted_update)
 
         def update(rows):
             # Here the invalid lookahead triggers the original conversion
@@ -418,7 +436,7 @@ class CollectionRangeContract:
             self.assertEqual(cursor, 'b')
             return {'projection-sentinel': {'counter': rows['projection-sentinel']['counter'] + 1}}
         self.backend.record_mutate_many({namespace: ('b',), 'projection-sentinel': ('counter',)}, update)
-        self.assertEqual(self.backend.record_get('projection-sentinel', 'counter'), 1)
+        self.assertEqual(self.backend.record_get('projection-sentinel', 'counter'), 2 if postgres else 1)
         with self.assertRaises(ValueError):
             self.backend.record_page_projected(namespace, fields=('selected',), after='b', limit=1)
 

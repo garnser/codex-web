@@ -604,34 +604,38 @@ class PostgresStateStore:
                     if after is not None
                     else lower
                 )
-                projection = "payload"
-                source = "codex_state_documents"
-                parameters: tuple[Any, ...] = ()
+                statement = """
+                    SELECT namespace, payload
+                    FROM codex_state_documents
+                    WHERE namespace COLLATE "C" >= %s
+                      AND namespace COLLATE "C" < %s
+                      AND namespace COLLATE "C" > %s
+                    ORDER BY namespace COLLATE "C"
+                    LIMIT %s
+                    """
+                parameters: tuple[Any, ...] = (lower, upper, after_storage, page_size + 1)
                 if fields is not None:
                     # Keep the validated JSON datum local to this row. OFFSET
                     # prevents pull-up from duplicating the TEXT conversion in
                     # the shape guard and the selected-field enumeration.
-                    source += " CROSS JOIN LATERAL (SELECT payload::json AS document OFFSET 0) AS parsed"
                     projection = """(CASE WHEN json_typeof(parsed.document) = 'object' THEN
                         (SELECT COALESCE(json_object_agg(field.key, field.value), '{}'::json)
                          FROM json_each(parsed.document) AS field
                          WHERE field.key = ANY(%s)) ELSE parsed.document END)::text"""
-                    parameters = (list(fields),)
+                    # Select the bounded raw page before parsing any payload.
+                    # A sort plan must not evaluate malformed later records.
+                    statement = f"""
+                        SELECT namespace, {projection}
+                        FROM ({statement}) AS selected_page
+                        CROSS JOIN LATERAL
+                            (SELECT payload::json AS document OFFSET 0) AS parsed
+                        ORDER BY namespace COLLATE "C"
+                        """
+                    parameters = (list(fields), *parameters)
                 # A strict-JSON conversion refusal must not abort a caller's
                 # canonical update transaction before the legacy TEXT fallback.
                 with connection.transaction() if fields is not None else nullcontext():
-                    cursor.execute(
-                        f"""
-                        SELECT namespace, {projection}
-                        FROM {source}
-                        WHERE namespace COLLATE "C" >= %s
-                          AND namespace COLLATE "C" < %s
-                          AND namespace COLLATE "C" > %s
-                        ORDER BY namespace COLLATE "C"
-                        LIMIT %s
-                        """,
-                        (*parameters, lower, upper, after_storage, page_size + 1),
-                    )
+                    cursor.execute(statement, parameters)
                     rows = cursor.fetchall()
 
         page: dict[str, Any] = {}
