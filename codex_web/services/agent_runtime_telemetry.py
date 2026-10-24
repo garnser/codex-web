@@ -468,10 +468,12 @@ class AgentRuntimeTelemetryService:
             turn = details.get("turn")
             turn = turn if isinstance(turn, dict) else {}
             status = str(turn.get("status") or "").casefold()
-            if status in {"failed", "error"} or turn.get("error") or details.get("error"):
+            if status in {"failed", "error"}:
                 return RuntimeTerminalOutcome.FAILED
             if status in {"interrupted", "cancelled", "canceled"}:
                 return RuntimeTerminalOutcome.INTERRUPTED
+            if turn.get("error") or details.get("error"):
+                return RuntimeTerminalOutcome.FAILED
             return RuntimeTerminalOutcome.SUCCEEDED
         if value == "result" or value.startswith("result/"):
             subtype = (value.partition("/")[2] if "/" in value
