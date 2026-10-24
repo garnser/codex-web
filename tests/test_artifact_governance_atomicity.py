@@ -1,6 +1,7 @@
 """Actual domain/governance writes share failure, cancellation and idempotency."""
 import concurrent.futures
 import os
+import hashlib
 import threading
 import unittest
 from unittest.mock import patch
@@ -30,6 +31,44 @@ class ArtifactGovernanceAtomicityTests(unittest.TestCase):
         return self.service.create_evidence(EvidenceCreate(evidence_type=EvidenceType.TEST_RESULT,
             result=EvidenceResult.INFO, source='atomic-fixture', summary='Atomic fixture'),
             actor=self.actor, **kwargs)
+
+    def test_private_catalog_guard_reuses_before_governance_decode_without_row_changes(self):
+        payload = ArtifactCreate(artifact_type=ArtifactType.REPORT, name='Prior', source='atomic-fixture')
+        first = self.service.create_artifact(payload, actor=self.actor, idempotency_key='guard')
+        self.backend.put('data_governance', {'schema_version':'99.0','records':[]})
+        before = hashlib.sha256(b''.join(self.backend.iter_storage_snapshot())).hexdigest()
+        def guard(state):
+            return self.service.get_artifact(first.id, actor=self.actor, state=state)
+        with patch.object(self.fixture.governance.store, '_decode', side_effect=AssertionError('no Gov decode')), \
+                patch('codex_web.artifact_evidence.ArtifactEvidenceState.model_dump', side_effect=AssertionError('no export')):
+            result = self.service.create_artifact(payload, actor=self.actor, idempotency_key='guard', _catalog_guard=guard)
+        self.assertEqual(result.id, first.id)
+        self.assertEqual(hashlib.sha256(b''.join(self.backend.iter_storage_snapshot())).hexdigest(), before)
+
+    def test_private_catalog_guard_refusal_precedes_governance_and_exports(self):
+        before = hashlib.sha256(b''.join(self.backend.iter_storage_snapshot())).hexdigest()
+        def guard(state):
+            raise ArtifactEvidenceConflictError('current checkpoint conflict')
+        with patch.object(self.fixture.governance.store, '_decode', side_effect=AssertionError('no Gov decode')), \
+                patch('codex_web.artifact_evidence.ArtifactEvidenceState.model_dump', side_effect=AssertionError('no export')):
+            with self.assertRaisesRegex(ArtifactEvidenceConflictError, 'current checkpoint conflict'):
+                self.service.create_artifact(ArtifactCreate(artifact_type=ArtifactType.REPORT, name='Refused'),
+                    actor=self.actor, _catalog_guard=guard)
+        self.assertEqual(hashlib.sha256(b''.join(self.backend.iter_storage_snapshot())).hexdigest(), before)
+
+    def test_private_guard_wraps_only_full_artifact_domain_decode_before_writer(self):
+        from codex_web.services.artifact_evidence import _ArtifactDecodeBeforeCreation
+        self.backend.put('artifact_evidence', {'schema_version':'1.3','artifacts':[{'id':'bad-unrelated'}]})
+        before = hashlib.sha256(b''.join(self.backend.iter_storage_snapshot())).hexdigest()
+        guard = unittest.mock.Mock()
+        with patch.object(self.fixture.governance.store, '_decode', side_effect=AssertionError('no Gov decode')):
+            with self.assertRaises(_ArtifactDecodeBeforeCreation) as caught:
+                self.service.create_artifact(ArtifactCreate(artifact_type=ArtifactType.REPORT, name='Refused'),
+                    actor=self.actor, _catalog_guard=guard)
+        self.assertIsInstance(caught.exception.original, ValueError)
+        self.assertIs(caught.exception.__cause__, caught.exception.original)
+        guard.assert_not_called()
+        self.assertEqual(hashlib.sha256(b''.join(self.backend.iter_storage_snapshot())).hexdigest(), before)
 
     def independent_reader(self):
         from codex_web.storage.sqlite_state import SQLiteStateStore
