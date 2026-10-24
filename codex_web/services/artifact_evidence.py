@@ -580,7 +580,9 @@ class ArtifactEvidenceService:
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
-        state = self.store.load()
+        # Ordinary creation validates the full current catalog in its atomic write.
+        # Only supersession also needs the existing producer/lifecycle precheck.
+        state = self.store.load() if payload.supersedes_artifact_id else None
         if len(source_artifact_ids) + len(source_evidence_ids) > 64:
             raise ArtifactEvidenceConflictError("derived Artifact source limit exceeded")
         superseded = None

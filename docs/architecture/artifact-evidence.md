@@ -26,6 +26,9 @@ Evidence creation resolves the existing object before registering new metadata.
 Internal composed writers include the prepared creation's complete transaction
 domains and apply it under their existing guards; an incomplete legacy callback
 fails before registration. Different governance/domain backends are refused.
+Artifact creation without supersession reads and validates the complete current
+catalog in that transaction, without a redundant full-catalog pre-read.
+Supersession retains its producer/lifecycle prevalidation and atomic recheck.
 No persisted contract version or external content action changes.
 
 Existing governed deletion can reconcile an already absent local object with an
