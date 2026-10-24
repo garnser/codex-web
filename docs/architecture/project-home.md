@@ -734,3 +734,22 @@ metadata continue to provide the operator surface; no new UI action is introduce
 
 
 The PostgreSQL original-row Home recovery query runs with JIT compilation disabled only inside its existing read savepoint. Correlated receipt predicates can produce a large estimated plan cost even for a small original intent inventory; LLVM optimization must not consume the shared five-second preservation budget. The caller's JIT setting is restored on success or by savepoint rollback on refusal. The original SQL, tenant/execution/command scope, ambiguous and malformed-row handling, receipt validation, 256-row limit, and complete typed validation remain unchanged. This adds no index, persisted state, global database setting, recovery authority, or UI control.
+
+Dormant preservation still makes three fresh snapshots within that same shared
+five-second budget. Within one preservation call, its initial complete original
+action-ledger observation may be reused only when the existing canonical ledger
+revision is positive, finite, unchanged across the complete read, and still
+unchanged at the next snapshot. The observation includes original receipt
+validation, rather than only candidate selection. Missing or changed revisions
+run the original query again; an unrelated ledger write does not by itself refuse
+the upgrade. Storage errors still propagate. Canonical intent and receipt writes
+both advance this revision. Direct database writes outside the StateStore
+revision contract are not covered by this observation.
+
+Selection, authority, assignment, process observations, session, Goals, queue and
+each retained intent's current metadata are rechecked at all three points.
+UNKNOWN remains UNKNOWN. The observation cannot cross an execution/actor scope,
+repository change, preservation call, retry, or completed-plan resume. It creates
+no persistent cache, index, schema, new input authority, or larger budget. A
+successful component query or cost-sensitivity fixture remains insufficient for
+live acceptance of the whole selected-Home hook.
