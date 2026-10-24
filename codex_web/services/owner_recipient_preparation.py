@@ -13,6 +13,7 @@ from codex_web.owner_routing import OwnerRoutingError, normalized_owner
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
 from codex_web.services.owner_routing import _MissingNativePredecessor, _CancelledRecipientContextRequired
 from codex_web.thread_bootstrap import RecipientBootstrapOrigin
+from codex_web.services.threads import ThreadBootstrapPrestartRefusal, bootstrap_preparation_diagnostic
 
 
 class OwnerRecipientPreparationService:
@@ -275,14 +276,33 @@ class OwnerRecipientPreparationService:
                             execution_id='thread-bootstrap-' + physical) is not None:
                         raise OwnerRoutingError('owner_recipient_bootstrap_recovery_pending')
                 if bound is None:
-                    await self.threads.create(project_id=state.project_id,
-                        sandbox=proof['assignment']['sandbox'],
-                        approval_policy=proof['assignment']['approval_policy'],
-                        agent_profile_id=profile.profile_id, agent_profile_revision=profile.revision,
-                        execution_profile_id=profile.execution_profile_id,
-                        actor=actor, repository_resource_id=writable[0] if len(writable) == 1 else None,
-                        writable_repository_resource_ids=writable, read_only_repository_resource_ids=(),
-                        bootstrap_token=physical, admission_guard=guard, recipient_origin=origin)
+                    admission_refusal = None
+                    def admission_guard():
+                        nonlocal admission_refusal
+                        try:
+                            guard()
+                        except OwnerRoutingError as exc:
+                            admission_refusal = exc
+                            raise
+                    try:
+                        await self.threads.create(project_id=state.project_id,
+                            sandbox=proof['assignment']['sandbox'],
+                            approval_policy=proof['assignment']['approval_policy'],
+                            agent_profile_id=profile.profile_id, agent_profile_revision=profile.revision,
+                            execution_profile_id=profile.execution_profile_id,
+                            actor=actor, repository_resource_id=writable[0] if len(writable) == 1 else None,
+                            writable_repository_resource_ids=writable, read_only_repository_resource_ids=(),
+                            bootstrap_token=physical, admission_guard=admission_guard, recipient_origin=origin)
+                    except ThreadBootstrapPrestartRefusal as exc:
+                        # Restore only this invocation's actual admission denial.
+                        # The generic thread owner strips pre-start authority
+                        # after provider startup; adapter lookalikes and unrelated
+                        # failures cannot become a canonical routing refusal.
+                        if (admission_refusal is not None
+                                and exc.__cause__ is admission_refusal
+                                and bootstrap_preparation_diagnostic(exc) is not None):
+                            raise admission_refusal
+                        raise
             # Require the canonical binding, exact assignment and normal LIVE
             # recipient/final native guard. A returned JSON thread ID is not proof.
             bound = await asyncio.to_thread(self.routing.bootstraps.get_by_bootstrap,
