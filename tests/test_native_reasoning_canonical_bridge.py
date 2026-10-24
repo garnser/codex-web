@@ -30,6 +30,20 @@ from tests.test_codex_runtime import _Host as CodexHost
 
 class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_thread_turn_original_start_and_usage_complete_once(self):
+        await self._run_private_case()
+
+    async def test_null_gateway_budget_keeps_actual_joint_context_capacity(self):
+        await self._run_private_case(token_optout=True)
+
+    async def test_null_gateway_budget_refuses_actual_joint_context_overflow(self):
+        await self._run_private_case(token_optout=True, input_usage=11900, expected_refusal=True)
+
+    async def test_null_gateway_budget_retains_declared_model_output_capacity(self):
+        await self._run_private_case(token_optout=True, input_usage=1000, output_usage=2049,
+                                     expected_refusal=True)
+
+    async def _run_private_case(self, *, token_optout=False, input_usage=11000,
+                                output_usage=256, expected_refusal=False):
         f=canonical_fixtures.HomeCanonicalSendTests()
         self.addAsyncCleanup(self.cleanup,f)
         await f.asyncSetUp()
@@ -128,12 +142,30 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
         provider=ModelProviderRecord(id='native',display_name='Native',adapter_type=adapter.adapter_type,
             runtime_provider='codex',credential_required=False,access_source='chatgpt_subscription',usage_semantics='entitlement',**fields)
         model=ModelDefinitionRecord(id='model',provider_id='native',concrete_model='model',**fields)
+        input_ceiling = None if token_optout else 1000
+        output_ceiling = None if token_optout else 1000
         context=NativeModelInvocationContext(organization_id=f.actor.organization_id,workspace_id=f.actor.workspace_id,
             actor_id=f.actor.identity_id,project_id='data',activation_id='one',role_id='cto',execution_id='executive:one:cto',
-            max_input_tokens=1000,max_output_tokens=1000,validate_current=lambda:None)
+            max_input_tokens=input_ceiling,max_output_tokens=output_ceiling,validate_current=lambda:None)
         request=ModelInvocationRequest(model_class='strategic',messages=(ModelMessage(role='user',content='Assess once'),),
-            max_input_tokens=1000,max_output_tokens=1000,allow_fallback=False,purpose='executive-role:cto',execution_id='executive:one:cto')
-        invocation=asyncio.create_task(adapter.invoke_scoped(provider,model,request,actor=f.actor,context=context,credential=None))
+            max_input_tokens=input_ceiling,max_output_tokens=output_ceiling,allow_fallback=False,purpose='executive-role:cto',execution_id='executive:one:cto')
+        if token_optout:
+            from codex_web.model_gateway import ModelProviderUpsert, ModelDefinitionUpsert, PromptTemplateUpsert
+            from codex_web.services.model_gateway import ModelGatewayService
+            from codex_web.storage.model_gateway import ModelGatewayStore
+            gateway = ModelGatewayService(ModelGatewayStore(f.f.sqlite))
+            gateway.register_adapter(adapter)
+            gateway.upsert_provider(ModelProviderUpsert(id='native',display_name='Native',
+                adapter_type=adapter.adapter_type,runtime_provider='codex',credential_required=False,
+                access_source='chatgpt_subscription',usage_semantics='entitlement'),actor=f.actor)
+            gateway.upsert_model(ModelDefinitionUpsert(id='model',provider_id='native',concrete_model='model',
+                model_classes=('strategic',),capabilities=('text','reasoning'),
+                context_window_tokens=12000,max_output_tokens=2048),actor=f.actor)
+            gateway.upsert_template(PromptTemplateUpsert(template_id='generic.system',version='1.0',
+                content='{{ instructions }}'),actor=f.actor)
+            invocation=asyncio.create_task(gateway.invoke(request,actor=f.actor,native_context=context))
+        else:
+            invocation=asyncio.create_task(adapter.invoke_scoped(provider,model,request,actor=f.actor,context=context,credential=None))
         async def wait_queue():
             while (f.execution._active_turn('native-reasoning-thread') is None
                        or f.execution._active_turn('native-reasoning-thread').turn_id != 'actual-one-turn'):
@@ -155,16 +187,31 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
             agent_session_id=session.id,assignment_id=active.assignment_id,execution_id=active.execution_id,
             execution_workspace_id=active.execution_workspace_id,provider_id='openai',runtime_id='codex-reasoning',
             runtime_type='codex-app-server',provider_native_session_id=active.thread_id,provider_native_turn_id=active.turn_id,
-            model_call_count=1,input_tokens=17,output_tokens=9,runtime_duration_seconds=.1,
+            model_call_count=1,input_tokens=input_usage if token_optout else 17,
+            output_tokens=output_usage if token_optout else 9,runtime_duration_seconds=.1,
             terminal_outcome='succeeded',telemetry_completeness='exact')
         usage.upsert(measured);bridge.observe_usage(measured)
         for method,params in [('item/completed',{'threadId':active.thread_id,'item':{'type':'agentMessage','phase':'final_answer','text':'{"answer":"ok"}'}}),
                               ('turn/completed',{'threadId':active.thread_id,'turn':{'id':active.turn_id,'status':'completed'}})]:
             await hub.publish({'type':'codex.event','message':{'method':method,'params':params}})
+        if expected_refusal:
+            from codex_web.services.model_gateway import ModelProviderUnavailableError
+            with self.assertRaises(ModelProviderUnavailableError):
+                await asyncio.wait_for(invocation,5)
+            self.assertEqual(sum(json.loads(line)['method']=='turn/start'
+                                 for line in wire.getvalue().splitlines()),1)
+            self.assertEqual(f.execution.queued_preflight.store.get(active.queued_admission_attempt_id).status,'started')
+            self.assertNotEqual(f.f.workers.store.assignment(active.assignment_id).status,'succeeded')
+            return
         result=await asyncio.wait_for(invocation,5)
         self.assertEqual(result.text,'{"answer":"ok"}')
-        self.assertEqual((result.usage.input_tokens,result.usage.output_tokens),(17,9))
-        self.assertIsNone(result.usage.cost)
+        if token_optout:
+            self.assertEqual((result.invocation.attempts[0].input_tokens,
+                              result.invocation.attempts[0].output_tokens),(11000,256))
+            self.assertIsNone(result.invocation.attempts[0].actual_cost_usd)
+        else:
+            self.assertEqual((result.usage.input_tokens,result.usage.output_tokens),(17,9))
+            self.assertIsNone(result.usage.cost)
         self.assertEqual(len(stopped),1)
         self.assertEqual(f.f.workers.store.assignment(active.assignment_id).status,'succeeded')
         writes=[json.loads(line) for line in wire.getvalue().splitlines()]

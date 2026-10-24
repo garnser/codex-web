@@ -26,7 +26,13 @@ class CodeHostCapability(StrEnum):
 
 
 class CodeHostError(RuntimeError):
-    pass
+    def __init__(self, message: str = "", *, provider_http_status: int | None = None,
+                 transport_failure: bool = False) -> None:
+        super().__init__(message)
+        # Facts from a canonical read adapter, not proof of resource absence,
+        # permission, or authority to retry an operation.
+        self.provider_http_status = provider_http_status
+        self.transport_failure = transport_failure
 
 
 class CodeHostUnsupportedCapabilityError(CodeHostError):

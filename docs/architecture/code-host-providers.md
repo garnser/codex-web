@@ -96,6 +96,23 @@ The broker catalog advertises the enum and default. Unsupported filters receive
 an audited HTTP400 `invalid_pull_request_state` before credential/provider use;
 genuine provider failures retain their separate error and redaction handling.
 
+Known code-host read failures retain safe adapter facts on the existing
+`CodeHostError`: an explicit numeric HTTP status or a transport-failure marker.
+GitLab and GitHub adapters preserve existing transient-error subclass behavior.
+Exception-message text alone is not a typed HTTP witness. Unknown adapter or
+implementation failures retain their original internal-error behavior.
+
+After assignment scope, authority and procedure admission, ordinary repository
+fact reads translate these classified failures to HTTP409 with
+`repository_read_provider_error` (safe provider status) or
+`repository_read_transport_error`. The existing broker audit records the same
+safe reason and correlation. No raw provider error, path or credential is
+returned. Action-write execution and uncertainty handling are unaffected.
+A provider404 can conceal an inaccessible repository: it establishes neither
+remote absence nor permission, and does not authorize retry, publication or
+`expected_remote_absent`. Existing audit inspection renders this safe reason;
+no new UI eligibility or domain object is introduced.
+
 The internal `GitHubClient.read_json_bounded` transport supports fixed-provider
 REST reads and engine-owned GraphQL queries with a maximum 512 KiB JSON body and
 64 container levels. It requests identity encoding, rejects unrequested compressed

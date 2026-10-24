@@ -2112,19 +2112,23 @@ class ModelGatewayService:
                 break
             started = time.time()
 
-            # Resolve application opt-outs only AFTER routing has validated the
-            # exact caller markers and selected a declared provider capacity.
+            # Priced transports receive a finite selected-route output limit.
+            # Native transports retain exact authorized opt-out markers; their
+            # adapter binds separate declared model capacities for usage checks.
             attempt_request = rendered_request.model_copy(update={
                 "max_output_tokens": candidate.max_output_tokens,
             })
             attempt_context = native_context
             if isinstance(adapter, NativeCodexModelProviderAdapter) and native_context is not None:
-                native_input = (effective_request.max_input_tokens
-                                if effective_request.max_input_tokens is not None else
-                                model.context_window_tokens - candidate.max_output_tokens)
-                attempt_request = attempt_request.model_copy(update={"max_input_tokens": native_input})
-                attempt_context = replace(native_context, max_input_tokens=native_input,
-                                          max_output_tokens=candidate.max_output_tokens)
+                native_output = (candidate.max_output_tokens
+                                 if effective_request.max_output_tokens is not None else None)
+                attempt_request = attempt_request.model_copy(update={
+                    "max_input_tokens": effective_request.max_input_tokens,
+                    "max_output_tokens": native_output,
+                })
+                attempt_context = replace(native_context,
+                    max_input_tokens=effective_request.max_input_tokens,
+                    max_output_tokens=native_output)
 
             async def call(credential: str | None):
                 try:

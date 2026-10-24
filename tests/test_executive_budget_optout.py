@@ -74,11 +74,12 @@ class NativeBudgetOptOutTests(unittest.IsolatedAsyncioTestCase):
         captured = []
         async def invoke(provider, model, effective, *, actor, context):
             self.assertTrue(context.accepts(effective, actor))
-            self.assertEqual(effective.max_output_tokens, model.max_output_tokens)
-            self.assertEqual(effective.max_input_tokens,
-                             model.context_window_tokens - effective.max_output_tokens)
-            self.assertEqual(context.max_input_tokens, effective.max_input_tokens)
-            self.assertEqual(context.max_output_tokens, effective.max_output_tokens)
+            self.assertIsNone(effective.max_output_tokens)
+            self.assertIsNone(effective.max_input_tokens)
+            self.assertIsNone(context.max_input_tokens)
+            self.assertIsNone(context.max_output_tokens)
+            self.assertEqual(context.model_context_window_tokens, model.context_window_tokens)
+            self.assertEqual(context.model_output_capacity_tokens, model.max_output_tokens)
             captured.append(effective)
             return await original(provider, model, effective, actor=actor, context=context)
         adapter.bridge.invoke = invoke
