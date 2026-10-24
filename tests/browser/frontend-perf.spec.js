@@ -292,3 +292,27 @@ test("bounded mixed requests stay within burst budgets", async ({ page }) => {
   expect(result.total).toBe(2);
   expect(result.repeated).toEqual([]);
 });
+
+
+test("Home preservation failure keeps UNKNOWN and exposes closed diagnostics without a retry", async ({ page }) => {
+  let calls = 0;
+  await page.route("**/api/upgrades/private-plan/service-drain", async (route) => {
+    calls += 1;
+    await route.fulfill({ status: 500, json: { detail: {
+      code: "home_upgrade_preservation_incomplete", phase: "final_snapshot",
+      exception_type: "TimeoutError", preservation_outcome: "unknown", retryable: false,
+      message: "PRIVATE_SECRET raw upstream prose must not be rendered",
+    } } });
+  });
+  await openFixture(page);
+  const observed = await page.evaluate(async () => {
+    try { await window.frontendPerfFixture.request("/api/upgrades/private-plan/service-drain", { method: "POST", body: {} }); }
+    catch (error) { return { message: error.message, status: error.status, detail: error.detail }; }
+  });
+  expect(observed.status).toBe(500);
+  expect(observed.message).toContain("final_snapshot, TimeoutError");
+  expect(observed.message).not.toContain("PRIVATE_SECRET");
+  expect(observed.detail.preservation_outcome).toBe("unknown");
+  expect(observed.detail.retryable).toBe(false);
+  expect(calls).toBe(1);
+});

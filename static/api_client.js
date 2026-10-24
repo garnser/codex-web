@@ -56,9 +56,16 @@ export async function request(path, options = {}) {
       )
         ? payload.detail
         : payload;
-      const message = typeof detail === 'string'
-        ? detail
-        : (
+      const homeIncomplete = detail?.code === 'home_upgrade_preservation_incomplete'
+        && ['plan_validation', 'initial_snapshot', 'before_artifact_snapshot',
+          'artifact_write', 'artifact_fallback_lookup', 'final_snapshot'].includes(detail.phase)
+        && ['TimeoutError', 'QueryCanceled'].includes(detail.exception_type)
+        && detail.preservation_outcome === 'unknown' && detail.retryable === false;
+      const message = homeIncomplete
+        ? `Home preservation incomplete (${detail.phase}, ${detail.exception_type}). Inspect the original Upgrade and Artifact evidence before another attempt.`
+        : typeof detail === 'string'
+          ? detail
+          : (
           detail?.code
           || response.statusText
           || `HTTP ${response.status}`
