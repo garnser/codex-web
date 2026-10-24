@@ -3,6 +3,7 @@ from __future__ import annotations
 from codex_web.services.work_item_timing import WorkItemTimingPolicy
 
 import asyncio
+import logging
 import time
 from dataclasses import asdict
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.identity import TenantScope
+from codex_web.observability import operation_stage
 from codex_web.models import TaskSourceIdentity, WorkItemEvent, WorkItemState
 from codex_web.services.task_source_work_items import SourceRecordMaterializationConflict
 from codex_web.services.task_source_runtime import TaskSourceResolutionError
@@ -407,29 +409,38 @@ class WorkItemOperatorService:
         }
 
     def detail(self, ref: str) -> dict[str, Any]:
-        state = self.state_machine._work_item_state(ref)
-        history = self.lifecycle.history(ref, limit=200)
+        with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "state_lookup"):
+            state = self.state_machine._work_item_state(ref)
+        with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "history",
+            organization_id=state.organization_id, workspace_id=state.workspace_id):
+            history = self.lifecycle.history(ref, limit=200)
         source: TaskSource | None = None
         try:
-            source = self._source_for_state(state, required=False)
+            with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "source_resolution",
+                organization_id=state.organization_id, workspace_id=state.workspace_id):
+                source = self._source_for_state(state, required=False)
         except Exception:
             source = None
-        project = self._project(state.project_id)
-        return {
-            "item": self.state_machine._work_item_state_public(state),
-            "owner_dispatch": self.owner_dispatch_projection(state),
-            "external": self._source_summary(state),
-            "execution_contract": self._execution_contract(state),
-            "execution_policy": {
-                "sandbox": getattr(project, "sandbox", None),
-                "approval_policy": getattr(project, "approval_policy", None),
-                "source": "project-default" if project is not None else None,
-            },
-            "history": history,
-            "handoff_deadline": WorkItemTimingPolicy.handoff_deadline_projection(state),
-            "diagnostics": self._diagnostics(state, history),
-            "actions": self._actions(state, source),
-        }
+        with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "project",
+            organization_id=state.organization_id, workspace_id=state.workspace_id):
+            project = self._project(state.project_id)
+        with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "projection",
+            organization_id=state.organization_id, workspace_id=state.workspace_id):
+            return {
+                "item": self.state_machine._work_item_state_public(state),
+                "owner_dispatch": self.owner_dispatch_projection(state),
+                "external": self._source_summary(state),
+                "execution_contract": self._execution_contract(state),
+                "execution_policy": {
+                    "sandbox": getattr(project, "sandbox", None),
+                    "approval_policy": getattr(project, "approval_policy", None),
+                    "source": "project-default" if project is not None else None,
+                },
+                "history": history,
+                "handoff_deadline": WorkItemTimingPolicy.handoff_deadline_projection(state),
+                "diagnostics": self._diagnostics(state, history),
+                "actions": self._actions(state, source),
+            }
 
     async def source_detail(self, ref: str) -> dict[str, Any]:
         """Read authoritative issue content without exposing provider credentials."""
