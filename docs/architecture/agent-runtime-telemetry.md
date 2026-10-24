@@ -204,3 +204,19 @@ missing counter, preserving newer measurements and the original fingerprint set;
 it does not replay the observation, rewrite past custody, or emit another input.
 There is no automatic historical scan/backfill. Existing Goal accounting continues
 to hold incomplete usage, and telemetry never supplies input authority.
+
+### Bootstrap preparation diagnostics
+
+Before provider thread startup, a non-HTTP preparation failure retains a closed
+preparation-stage code and an allowlisted exception category in the existing
+`bootstrap_prestart_failed` refusal and `thread_bootstrap_prestart_failed` event
+(#1795). Only validated project/Profile and bootstrap correlation identifiers are
+included. Exception messages, arbitrary class names and tracebacks are excluded;
+HTTP refusal payloads retain their existing shape. Diagnostic event failures do
+not replace the original refusal.
+
+`provider_start_called: false` describes only the provider thread-creation edge.
+It does not assert that no workspace, assignment or worker was created, nor grant
+retry, cancellation, rollback or known-outcome authority. Provider-started errors
+cannot acquire this controller-owned projection. Existing deadlines, admission
+checks, reservations, fencing and cleanup remain authoritative.

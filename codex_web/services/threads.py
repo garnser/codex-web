@@ -77,6 +77,48 @@ class ThreadBootstrapPrestartRefusal(HTTPException):
     """Controller-owned proof that provider thread creation was never called."""
 
 
+_BOOTSTRAP_PREPARATION_STAGES = frozenset({
+    'request_validation', 'profile_resolution', 'runtime_routing',
+    'admission_before_reservation', 'bootstrap_reservation',
+    'admission_before_worker_start', 'worker_start',
+    'resource_context_validation', 'session_workspace_validation',
+    'runtime_request_preparation', 'admission_before_provider_start',
+})
+_BOOTSTRAP_EXCEPTION_TYPES = frozenset({
+    'TimeoutError', 'ValueError', 'TypeError', 'LookupError',
+    'OSError', 'RuntimeError', 'AssertionError', 'Exception',
+    'AttributeError', 'NameError', 'KeyError', 'IndexError',
+    'PermissionError', 'FileNotFoundError', 'NotImplementedError',
+})
+
+
+def bootstrap_preparation_diagnostic(exc):
+    """Closed diagnostics only; never provider text or retry authority."""
+    if type(exc) is not ThreadBootstrapPrestartRefusal:
+        return None
+    detail = exc.detail
+    if (not isinstance(detail, dict)
+            or detail.get('code') != 'bootstrap_prestart_failed'
+            or not isinstance(detail.get('bootstrap_preparation_stage'), str)
+            or not isinstance(detail.get('bootstrap_exception_type'), str)
+            or detail.get('bootstrap_preparation_stage') not in _BOOTSTRAP_PREPARATION_STAGES
+            or detail.get('bootstrap_exception_type') not in _BOOTSTRAP_EXCEPTION_TYPES
+            or detail.get('provider_start_called') is not False):
+        return None
+    return {key: detail[key] for key in (
+        'bootstrap_preparation_stage', 'bootstrap_exception_type', 'provider_start_called')}
+
+
+def bootstrap_exception_type(exc):
+    # Class names and exception messages can contain untrusted provider data.
+    for kind in (TimeoutError, AttributeError, NameError, KeyError, IndexError,
+                 PermissionError, FileNotFoundError, NotImplementedError,
+                 ValueError, TypeError, LookupError, OSError, RuntimeError, AssertionError):
+        if isinstance(exc, kind):
+            return kind.__name__
+    return 'Exception'
+
+
 class ThreadService:
     """Thread/query operations that do not own turn queue orchestration yet."""
 
@@ -965,11 +1007,18 @@ class ThreadService:
 
     async def create(self, *args, **kwargs) -> dict[str, Any]:
         provider_start_called = False
+        preparation_stage = 'request_validation'
+        def preparing(stage):
+            nonlocal preparation_stage
+            if stage not in _BOOTSTRAP_PREPARATION_STAGES:
+                raise ValueError('Invalid bootstrap preparation stage')
+            preparation_stage = stage
         def before_provider_start():
             nonlocal provider_start_called
             provider_start_called = True
         try:
-            return await self._create(*args, **kwargs, before_provider_start=before_provider_start)
+            return await self._create(*args, **kwargs, before_provider_start=before_provider_start,
+                                      preparation_stage=preparing)
         except Exception as exc:
             if provider_start_called:
                 if isinstance(exc, ThreadBootstrapPrestartRefusal):
@@ -979,9 +1028,26 @@ class ThreadService:
                 raise
             if isinstance(exc, HTTPException):
                 raise ThreadBootstrapPrestartRefusal(status_code=exc.status_code, detail=exc.detail) from exc
+            diagnostic = {'bootstrap_preparation_stage': preparation_stage,
+                          'bootstrap_exception_type': bootstrap_exception_type(exc),
+                          'provider_start_called': False}
+            event = {'type': 'thread_bootstrap_prestart_failed', **diagnostic}
+            for key in ('project_id', 'agent_profile_id'):
+                value = kwargs.get(key)
+                if (isinstance(value, str) and len(value) <= 128
+                        and all(c.isascii() and (c.isalnum() or c in '._:-') for c in value)):
+                    event[key] = value
+            token = kwargs.get('bootstrap_token')
+            if (isinstance(token, str) and len(token) == 32
+                    and all(c in '0123456789abcdef' for c in token)):
+                event['bootstrap_id'] = 'bootstrap-' + token
+                event['execution_id'] = 'thread-bootstrap-' + token
+            with contextlib.suppress(Exception):
+                self.event_sink(event)
             raise ThreadBootstrapPrestartRefusal(status_code=503, detail={
                 'code':'bootstrap_prestart_failed',
-                'message':'Bootstrap preparation failed before provider thread startup.'}) from exc
+                'message':'Bootstrap preparation failed before provider thread startup.',
+                **diagnostic}) from exc
 
     async def _create(
         self,
@@ -1005,7 +1071,11 @@ class ThreadService:
         admission_guard: Callable[[], None] | None = None,
         assignment_admission=None,
         recipient_origin=None,
+        preparation_stage: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        def stage(value):
+            if preparation_stage is not None:
+                preparation_stage(value)
         # Internal recovery correlation; the public create request cannot set it.
         if bootstrap_token is not None:
             try:
@@ -1020,6 +1090,7 @@ class ThreadService:
             control_actor,
         ) = self._require_bootstrap_routing()
         project = self._projects().get(project_id)
+        stage('profile_resolution')
         profile = None
         if agent_profile_id is not None:
             if actor is None or self.agent_profiles is None:
@@ -1104,6 +1175,7 @@ class ThreadService:
             desired = _runtime_for_model(model)
             if desired is not None:
                 provider_id, runtime_id = desired
+        stage('runtime_routing')
         runtime_binding, agent_profile_binding = await self._select_runtime_route(
             project_id=project.id,
             sandbox=effective_sandbox,
@@ -1132,10 +1204,12 @@ class ThreadService:
         execution_id = f"thread-bootstrap-{token}"
 
         if admission_guard is not None:
+            stage('admission_before_reservation')
             await PostTurnReadinessService._run_owned(
                 lambda: asyncio.to_thread(admission_guard), seconds=5.,
                 name='thread-admission-current-guard')
         try:
+            stage('bootstrap_reservation')
             binding = await asyncio.to_thread(
                 binding_service.prepare_bootstrap,
                 bootstrap_id=bootstrap_id,
@@ -1165,6 +1239,7 @@ class ThreadService:
             ) from exc
         if admission_guard is not None:
             try:
+                stage('admission_before_worker_start')
                 await PostTurnReadinessService._run_owned(
                     lambda: asyncio.to_thread(admission_guard), seconds=5.,
                     name='thread-admission-current-guard')
@@ -1184,11 +1259,14 @@ class ThreadService:
                         origin=recipient_origin,
                         error_http_status=(exc.status_code if isinstance(exc, HTTPException) else None)))
                 raise
+        stage('worker_start')
         session = await session_manager.start(binding.assignment_id)
         if resource_context is not None:
+            stage('resource_context_validation')
             binding_service.validate_resource_context(resource_context,project,agent_profile_binding)
             await session._supervise("resource_context_authority",session._validate_current_authority,
                 seconds=session._lease_budget())
+        stage('session_workspace_validation')
         status = session.status()
         workspace_path = session.workspace_path
         if workspace_path is None or status.fence is None:
@@ -1210,6 +1288,7 @@ class ThreadService:
                 ),
             )
 
+        stage('runtime_request_preparation')
         workspace_cwd = str(workspace_path)
         params = self._projects().params(
             project,
@@ -1261,6 +1340,7 @@ class ThreadService:
         )
         try:
             if admission_guard is not None:
+                stage('admission_before_provider_start')
                 await PostTurnReadinessService._run_owned(
                     lambda: asyncio.to_thread(admission_guard), seconds=5.,
                     name='thread-admission-current-guard')
