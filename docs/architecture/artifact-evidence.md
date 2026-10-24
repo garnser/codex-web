@@ -285,3 +285,20 @@ predicates. It selects the first scoped member by stored ordinality and returns
 its original JSON value. This preserves duplicate order,
 numeric types and legacy decoder/savepoint fallback while avoiding repeated
 whole-catalog parsing. It changes no authority, schema, timeout or UI contract.
+
+### Home preservation idempotency reads
+
+Dormant Home preservation resolves checkpoint and preservation source/key IDs
+from one actor- and tenant-scoped Artifact snapshot. The existing batch envelope
+read selects only those computed IDs; the Artifact owner selects the first stored
+scoped duplicate before applying the same versioned decoder and `get_artifact`
+scope checks as point reads. Nonstandard envelopes and older backends retain
+canonical full-state validation. No lifecycle filtering turns inactive artifacts
+into absence: Home still validates existing preservation metadata, lifecycle and
+digest, and refuses checkpoint ambiguity.
+
+This read optimization leaves the second Home snapshot, atomic full Artifact and
+Governance catalog validation/creation, and post-creation snapshot unchanged. It
+adds no persisted index, cache, schema, authority or timeout allowance. Existing
+Artifact inspection and typed Home refusal surfaces remain sufficient; no new UI
+object or control is introduced.

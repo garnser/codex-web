@@ -73,6 +73,39 @@ class ArtifactEvidenceStore:
             organization_id=organization_id, workspace_id=workspace_id,
             collection_names=('artifacts','evidence','verifications')))
 
+    def artifact_states(self, artifact_ids: tuple[str, ...], *, organization_id: str,
+                        workspace_id: str) -> dict[str, ArtifactEvidenceState]:
+        """One snapshot, with the same first scoped member as each point read.
+
+        Batch envelopes retain duplicate matches. Select each first raw member
+        before domain decoding, so a later duplicate does not change POINT's
+        LIMIT 1 behavior. Nonstandard/full fallback envelopes retain full decode.
+        """
+        ids = tuple(dict.fromkeys(artifact_ids))
+        if not ids:
+            return {}
+        reader = getattr(self.store, 'document_array_items_envelope', None)
+        if not callable(reader):
+            state = self.load()
+            return dict.fromkeys(ids, state)
+        payload = reader(self.namespace, 'artifacts', ids,
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=('artifacts', 'evidence', 'verifications'))
+        if (not isinstance(payload, dict)
+                or set(payload) != {'schema_version', 'artifacts'}
+                or not isinstance(payload['artifacts'], list)):
+            state = self._decode(payload)
+            return dict.fromkeys(ids, state)
+        first = {}
+        for item in payload['artifacts']:
+            if (isinstance(item, dict) and isinstance(item.get('id'), str)
+                    and item['id'] in ids and item['id'] not in first
+                    and item.get('organization_id') == organization_id
+                    and item.get('workspace_id') == workspace_id):
+                first[item['id']] = item
+        return {key: self._decode({'schema_version': payload['schema_version'],
+            'artifacts': [first[key]] if key in first else []}) for key in ids}
+
     def evidence_state(self, evidence_id: str, *, organization_id: str, workspace_id: str) -> ArtifactEvidenceState:
         """Validate the canonical envelope and complete selected Evidence.
 

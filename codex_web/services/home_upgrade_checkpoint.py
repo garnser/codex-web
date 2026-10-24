@@ -231,8 +231,10 @@ class HomeUpgradeCheckpointService:
             source, target = self.source_revision(), release.build.source_revision
             if not source or not target or release.version != plan.target_app_version:
                 self.refused('home_upgrade_source_unavailable')
-            if self.artifacts.find_idempotent_artifact(actor=requester,
-                    source='home-upgrade-checkpoint', idempotency_key=plan_id) is not None:
+            checkpoint, prior = self.artifacts.find_idempotent_artifacts(actor=requester, requests=(
+                ('home-upgrade-checkpoint', plan_id),
+                ('home-upgrade-dormant-preservation', plan_id)))
+            if checkpoint is not None:
                 self.refused('home_upgrade_preservation_ambiguous')
             process = {}
             snapshot = self._dormant_snapshot(binding, requester, process_evidence=process)
@@ -244,7 +246,6 @@ class HomeUpgradeCheckpointService:
                 preservation.update(schema_version='1.1', stopped_process_observed=None,
                     pending_executor_work_observed=None, process_ownership=process)
             raw = encoded(preservation)
-            prior = self._dormant_artifact(plan_id, requester)
             if prior is not None:
                 if (prior.lifecycle != 'active' or prior.source != 'home-upgrade-dormant-preservation'
                         or prior.external_id != plan.id or prior.project_id != 'home'

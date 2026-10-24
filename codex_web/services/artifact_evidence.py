@@ -710,6 +710,21 @@ class ArtifactEvidenceService:
         except ArtifactNotFoundError:
             return None
 
+    def find_idempotent_artifacts(self, *, actor: AuthenticationActor,
+                                  requests: tuple[tuple[str, str], ...]) -> tuple[Artifact | None, ...]:
+        """Resolve actor-scoped source/key identities from one canonical read."""
+        ids = tuple(self._idempotent_evidence_id(actor, source, key).replace(
+            'evidence-', 'artifact-', 1) for source, key in requests)
+        states = self.store.artifact_states(ids, organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id)
+        found = []
+        for key in ids:
+            try:
+                found.append(self.get_artifact(key, actor=actor, state=states[key]))
+            except ArtifactNotFoundError:
+                found.append(None)
+        return tuple(found)
+
     def find_idempotent_evidence(self, *, actor: AuthenticationActor, source: str,
                                 idempotency_key: str) -> Evidence | None:
         try:
