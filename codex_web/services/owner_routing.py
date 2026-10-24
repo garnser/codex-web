@@ -23,6 +23,13 @@ class _MissingNativePredecessor(OwnerRoutingError):
         super().__init__('owner_recipient_native_custody_unverified')
 
 
+class _CancelledRecipientContextRequired(OwnerRoutingError):
+    """Fresh pending intent has a verified cancelled source, never a resume."""
+
+    def __init__(self):
+        super().__init__('owner_recipient_cancelled_context_required')
+
+
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
@@ -315,6 +322,96 @@ class OwnerRoutingService:
         except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
 
+    def cancelled_recipient_source(self, state, binding, owner, requested, *, lookup_actor=None):
+        """Positively identify source custody for ONE new pending-handoff context.
+
+        This never makes a cancelled assignment LIVE or resolves missing old
+        custody. A missing historical predecessor requires its existing exact
+        canonical replacement, whose own native/assignment association is known.
+        """
+        from codex_web.agent_runtime import AgentSessionStatus
+        from codex_web.services.work_item_timing import WorkItemTimingPolicy
+        handoff = state.handoff
+        deadline = WorkItemTimingPolicy.handoff_deadline_projection(state)
+        routing = self.snapshot(state)
+        if (handoff is None or handoff.status != 'pending' or handoff.acknowledged_at is not None
+                or handoff.delivery is None or handoff.delivery.status != 'awaiting_dispatch'
+                or routing is None or routing.owner(normalized_owner(handoff.to_agent)) != owner
+                or deadline is None or deadline['deadline_at'] is None
+                or not handoff.requested_at <= time.time() < deadline['deadline_at']):
+            raise OwnerRoutingError('owner_recipient_preparation_changed')
+        actor = (lookup_actor or self.control_actor)()
+        try:
+            original = self.bootstraps.get_by_thread(binding.thread_id, actor)
+            old = self.assignments(original.assignment_id)
+            previous = self.sessions.native_custody(binding.thread_id) if self.sessions is not None else None
+            expected = (state.organization_id, state.workspace_id, state.project_id)
+            if (old is None or previous is None or old.agent_profile is None
+                    or (old.organization_id, old.workspace_id, old.project_id) != expected
+                    or (previous.organization_id, previous.workspace_id, previous.project_id) != expected
+                    or (original.organization_id, original.workspace_id, original.created_by)
+                        != (state.organization_id, state.workspace_id, old.created_by)
+                    or original.execution_id != old.execution_id
+                    or original.execution_workspace_id != old.execution_workspace_id
+                    or str(old.status) != 'cancelled' or old.lease is not None):
+                raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+            target = self.replacement_resolver(binding.thread_id, project_id=state.project_id,
+                organization_id=state.organization_id, workspace_id=state.workspace_id) or binding.thread_id
+            bootstrap = self.bootstraps.get_by_thread(target, actor)
+            assignment = self.assignments(bootstrap.assignment_id)
+            session = self.sessions.native_custody(target)
+            if (assignment is None or session is None or assignment.agent_profile != old.agent_profile
+                    or (assignment.organization_id, assignment.workspace_id, assignment.project_id,
+                        assignment.created_by) != (*expected, old.created_by)
+                    or (bootstrap.organization_id, bootstrap.workspace_id, bootstrap.created_by)
+                        != (state.organization_id, state.workspace_id, old.created_by)
+                    or str(assignment.status) != 'cancelled' or assignment.lease is not None
+                    or type(assignment.fence) is not int or assignment.fence < 1
+                    or assignment.execution_id != bootstrap.execution_id
+                    or assignment.execution_workspace_id != bootstrap.execution_workspace_id
+                    or (session.organization_id, session.workspace_id, session.project_id) != expected
+                    or session.status != AgentSessionStatus.READY
+                    or session.failure is not None
+                    or session.assignment_id != assignment.id or session.execution_id != assignment.execution_id
+                    or session.execution_workspace_id != assignment.execution_workspace_id
+                    or not assignment.assigned_worker_id or session.worker_id != assignment.assigned_worker_id
+                    or (session.provider_id, session.runtime_id) != (previous.provider_id, previous.runtime_id)
+                    or set(session.resource_ids) != set(assignment.resource_ids)
+                    or assignment.repository_scope is None
+                    or set(assignment.repository_scope.writable_repository_ids) != set(requested)
+                    or assignment.repository_scope.read_only_repository_ids
+                    or set(assignment.resource_ids) != set(requested)
+                    or assignment.sandbox != binding.sandbox or assignment.approval_policy != binding.approval_policy):
+                raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+            # Retain the ordinary original-native checks. Only the existing
+            # typed missing-predecessor case may use separate replacement custody.
+            try:
+                self.native_scope_compatible(state, original, old)
+            except _MissingNativePredecessor:
+                if target == binding.thread_id:
+                    raise
+            self.executor(state, binding, owner, recipient_thread_id=target, lookup_actor=lookup_actor)
+            witness = {'original_thread_id': binding.thread_id, 'source_thread_id': target,
+                'original_bootstrap_id': original.id, 'original_assignment': old.model_dump(mode='json'),
+                'original_native': previous.model_dump(mode='json'),
+                'source_bootstrap_id': bootstrap.id, 'source_native': session.model_dump(mode='json')}
+            return bootstrap, assignment, session, witness
+        except OwnerRoutingError:
+            raise
+        except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
+
+    def _prepared_cancelled_recipient(self, state, binding, configured_owner, requested, *, lookup_actor=None, originals_checked=False):
+        # The immutable existing bootstrap key is the provider-attempt boundary.
+        # Do not substitute an arbitrary same-scope LIVE lane for this intent.
+        if self.recipient_preparer is None:
+            raise _CancelledRecipientContextRequired()
+        bound = self.recipient_preparer.prepared_binding(state, binding, configured_owner,
+            tuple(requested), lookup_actor=lookup_actor, originals_checked=originals_checked)
+        if bound is None:
+            raise _CancelledRecipientContextRequired()
+        return bound.thread_id
+
     def _live_recipient(self, state, binding, bootstrap, owner, *, lookup_actor=None):
         from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
         assignment = self.assignments(bootstrap.assignment_id)
@@ -351,7 +448,8 @@ class OwnerRoutingService:
             return await asyncio.to_thread(self.compatible_pin, state, binding, configured_owner,
                 writable_repository_ids=writable_repository_ids)
         except OwnerRoutingError as exc:
-            if str(exc) != 'owner_recipient_native_scope_incompatible' or self.recipient_preparer is None:
+            if (not isinstance(exc, _CancelledRecipientContextRequired)
+                    and str(exc) != 'owner_recipient_native_scope_incompatible') or self.recipient_preparer is None:
                 raise
         return await self.recipient_preparer.prepare(state, binding, configured_owner,
             writable_repository_ids=writable_repository_ids)
@@ -390,8 +488,15 @@ class OwnerRoutingService:
             native_compatible = self.native_scope_compatible(state, source, source_assignment)
         except _MissingNativePredecessor:
             self.require_resolved_originals(state)
-            required_replacement = self._verified_missing_predecessor_replacement(
-                state, binding, owner, source_assignment, requested, lookup_actor=lookup_actor)
+            try:
+                required_replacement = self._verified_missing_predecessor_replacement(
+                    state, binding, owner, source_assignment, requested, lookup_actor=lookup_actor)
+            except OwnerRoutingError as exc:
+                if str(exc) != 'owner_recipient_custody_unavailable':
+                    raise
+                self.cancelled_recipient_source(state, binding, owner, requested, lookup_actor=lookup_actor)
+                required_replacement = self._prepared_cancelled_recipient(
+                    state, binding, configured_owner, requested, lookup_actor=lookup_actor)
             native_compatible = True
         source_scope = getattr(source_assignment, 'repository_scope', None)
         if (source_scope is not None and set(source_scope.writable_repository_ids) == requested
@@ -407,7 +512,19 @@ class OwnerRoutingService:
             except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
                 raise OwnerRoutingError('owner_executor_replacement_unverified') from exc
             if not replacement or replacement == binding.thread_id:
-                return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
+                if str(source_assignment.status) == 'cancelled' and self.sessions is not None:
+                    self.cancelled_recipient_source(state, binding, owner, requested, lookup_actor=lookup_actor)
+                    required_replacement = self._prepared_cancelled_recipient(
+                        state, binding, configured_owner, requested, lookup_actor=lookup_actor)
+                else:
+                    return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
+            elif self.sessions is not None:
+                replacement_bootstrap = self.bootstraps.get_by_thread(replacement, actor)
+                replacement_assignment = self.assignments(replacement_bootstrap.assignment_id)
+                if replacement_assignment is not None and str(replacement_assignment.status) == 'cancelled':
+                    self.cancelled_recipient_source(state, binding, owner, requested, lookup_actor=lookup_actor)
+                    required_replacement = self._prepared_cancelled_recipient(
+                        state, binding, configured_owner, requested, lookup_actor=lookup_actor)
         self.require_resolved_originals(state)
         candidates = self.bootstraps.list(actor)
         if len(candidates) > 5000:
@@ -472,15 +589,45 @@ class OwnerRoutingService:
             if original is None:
                 raise OwnerRoutingError('owner_executor_bootstrap_unverified')
             try:
-                self.native_scope_compatible(state, source, original)
+                native_compatible = self.native_scope_compatible(state, source, original)
             except _MissingNativePredecessor:
                 # The caller has already checked retained originals with its
                 # exact current admission exclusion; do not block that own START.
                 _, requested = work_item_repository_scope(state)
-                target = self._verified_missing_predecessor_replacement(
-                    state, binding, pin.binding.canonical_owner, original, requested, lookup_actor=lookup_actor)
+                try:
+                    target = self._verified_missing_predecessor_replacement(
+                        state, binding, pin.binding.canonical_owner, original, requested, lookup_actor=lookup_actor)
+                except OwnerRoutingError as exc:
+                    if (str(exc) != 'owner_recipient_custody_unavailable'
+                            or self.replacement_resolver(binding.thread_id, project_id=state.project_id,
+                                organization_id=state.organization_id, workspace_id=state.workspace_id)
+                                == pin.recipient.thread_id):
+                        raise
+                    self.cancelled_recipient_source(state, binding, pin.binding.canonical_owner,
+                        requested, lookup_actor=lookup_actor)
+                    target = self._prepared_cancelled_recipient(state, binding,
+                        pin.binding.canonical_owner, requested, lookup_actor=lookup_actor,
+                        originals_checked=True)
                 if target != pin.recipient.thread_id:
                     raise OwnerRoutingError('owner_recipient_custody_changed')
+            else:
+                source_scope = original.repository_scope
+                _, requested = work_item_repository_scope(state)
+                if (native_compatible and str(original.status) == 'cancelled'
+                        and source_scope is not None
+                        and set(source_scope.writable_repository_ids) == set(requested)
+                        and not source_scope.read_only_repository_ids
+                        and pin.recipient.thread_id != binding.thread_id
+                        and self.replacement_resolver(binding.thread_id, project_id=state.project_id,
+                            organization_id=state.organization_id, workspace_id=state.workspace_id)
+                            != pin.recipient.thread_id):
+                    self.cancelled_recipient_source(state, binding, pin.binding.canonical_owner,
+                        requested, lookup_actor=lookup_actor)
+                    target = self._prepared_cancelled_recipient(state, binding,
+                        pin.binding.canonical_owner, requested, lookup_actor=lookup_actor,
+                        originals_checked=True)
+                    if target != pin.recipient.thread_id:
+                        raise OwnerRoutingError('owner_recipient_custody_changed')
             bootstrap = self.bootstraps.get_by_thread(pin.recipient.thread_id, (lookup_actor or self.control_actor)())
             witness, profile, actor = self._live_recipient(state, binding, bootstrap, pin.binding.canonical_owner, lookup_actor=lookup_actor)
         except OwnerRoutingError:

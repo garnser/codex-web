@@ -11,6 +11,7 @@ import json
 
 from codex_web.owner_routing import OwnerRoutingError, normalized_owner
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
+from codex_web.services.owner_routing import _MissingNativePredecessor, _CancelledRecipientContextRequired
 from codex_web.thread_bootstrap import RecipientBootstrapOrigin
 
 
@@ -20,7 +21,7 @@ class OwnerRecipientPreparationService:
         self.existing_assignment = existing_assignment
         self.ownership, self.queue_lock = ownership, queue_lock
 
-    def context(self, state, binding, owner, writable, *, discover=True):
+    def context(self, state, binding, owner, writable, *, discover=True, lookup_actor=None, originals_checked=False):
         routing = self.routing
         current = routing.get_state(state.ref)
         handoff = current.handoff
@@ -28,25 +29,42 @@ class OwnerRecipientPreparationService:
                 or current.ref != state.ref or current.project_id != binding.project_id
                 or handoff != state.handoff):
             raise OwnerRoutingError('owner_recipient_preparation_changed')
-        routing.require_resolved_originals(current)
+        if not originals_checked:
+            routing.require_resolved_originals(current)
         if discover:
             try:
-                routing.compatible_pin(current, binding, owner, writable_repository_ids=writable)
+                routing.compatible_pin(current, binding, owner, writable_repository_ids=writable, lookup_actor=lookup_actor)
             except OwnerRoutingError as exc:
-                if str(exc) != 'owner_recipient_native_scope_incompatible':
+                if not isinstance(exc, _CancelledRecipientContextRequired) and str(exc) != 'owner_recipient_native_scope_incompatible':
                     raise
             else:
                 raise OwnerRoutingError('owner_recipient_preparation_not_required')
-        bootstrap = routing.bootstraps.get_by_thread(binding.thread_id, routing.control_actor())
+        bootstrap = routing.bootstraps.get_by_thread(binding.thread_id, (lookup_actor or routing.control_actor)())
         assignment = routing.assignments(bootstrap.assignment_id)
         snapshot = routing.snapshot(current)
         canonical_owner = snapshot.owner(normalized_owner(owner))
-        profile, actor = routing.executor(current, binding, canonical_owner)
+        profile, actor = routing.executor(current, binding, canonical_owner, lookup_actor=lookup_actor)
         # This exact-source check retains prior native assignment/scope/tenant
         # validation without rediscovering every unrelated candidate at each
         # provider edge. All authority below is freshly read, never cached.
-        routing.native_scope_compatible(current, bootstrap, assignment)
+        cancelled = None
+        try:
+            compatible = routing.native_scope_compatible(current, bootstrap, assignment)
+        except _MissingNativePredecessor:
+            compatible = True
+            cancelled = routing.cancelled_recipient_source(current, binding, canonical_owner, writable,
+                lookup_actor=lookup_actor)
         source = routing.sessions.native_custody(binding.thread_id)
+        if (cancelled is None and compatible and str(assignment.status) == 'cancelled'
+                and assignment.repository_scope is not None
+                and set(assignment.repository_scope.writable_repository_ids) == set(writable)
+                and not assignment.repository_scope.read_only_repository_ids):
+            cancelled = routing.cancelled_recipient_source(current, binding, canonical_owner, writable,
+                lookup_actor=lookup_actor)
+        if cancelled is not None:
+            bootstrap, assignment, source, original = cancelled
+            profile, actor = routing.executor(current, binding, canonical_owner,
+                recipient_thread_id=bootstrap.thread_id, lookup_actor=lookup_actor)
         if source is None:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
         # Full source custody and current business intent are rechecked before
@@ -73,7 +91,64 @@ class OwnerRecipientPreparationService:
             'profile': profile.model_dump(mode='json'), 'actor_id': actor.identity_id,
             'routing_definition': snapshot.definition.model_dump(mode='json'),
             'execution_definition': execution_definition}
+        if cancelled is not None:
+            proof['cancelled_source'] = original
         return proof, profile, actor
+
+    @staticmethod
+    def logical_id(state, binding, owner, writable):
+        # Same established key: a new context belongs to the genuine Work/nonce
+        # and original reply binding, never a cancelled assignment's resume.
+        logical = {'work_item_ref': state.ref, 'organization_id': state.organization_id,
+            'workspace_id': state.workspace_id, 'project_id': state.project_id,
+            'owner': owner, 'writable': sorted(writable),
+            'handoff': {key: getattr(state.handoff, key) for key in ('from_agent', 'to_agent', 'requested_at')},
+            'binding_id': binding.id}
+        return hashlib.sha256(json.dumps(logical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:32]
+
+    def prepared_binding(self, state, binding, owner, writable, *, lookup_actor=None, originals_checked=False):
+        """Read only the existing exact nonce reservation, including typed gen1.
+
+        A provider reply or another matching LIVE candidate is not provenance.
+        This performs no reservation, create, recovery or ownership mutation.
+        """
+        proof, profile, actor = self.context(state, binding, owner, writable,
+            discover=False, lookup_actor=lookup_actor, originals_checked=originals_checked)
+        if 'cancelled_source' not in proof:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        token = self.logical_id(state, binding, owner, writable)
+        def checked(bound, physical):
+            assignment = self.routing.assignments(bound.assignment_id)
+            if (bound.bootstrap_id != 'bootstrap-' + physical or assignment is None
+                    or assignment.execution_id != 'thread-bootstrap-' + physical
+                    or bound.execution_id != assignment.execution_id
+                    or bound.execution_workspace_id != assignment.execution_workspace_id
+                    or assignment.subject is None or assignment.subject.kind != 'thread_bootstrap'
+                    or assignment.subject.ref != bound.bootstrap_id
+                    or bound.thread_id in {binding.thread_id, proof['cancelled_source']['source_thread_id']}):
+                raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
+            session = self.routing.sessions.native_custody(bound.thread_id)
+            if session is not None and (
+                    session.assignment_id != assignment.id or session.execution_id != assignment.execution_id
+                    or session.execution_workspace_id != assignment.execution_workspace_id
+                    or session.worker_id != assignment.assigned_worker_id
+                    or (session.organization_id, session.workspace_id, session.project_id)
+                        != (state.organization_id, state.workspace_id, state.project_id)):
+                raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+            return bound
+        try:
+            return checked(self.routing.bootstraps.get_by_bootstrap('bootstrap-' + token, actor), token)
+        except ThreadBootstrapBindingNotFoundError:
+            pass
+        previous = self.existing_assignment(execution_id='thread-bootstrap-' + token)
+        if previous is None or not self.recoverable(previous, proof, profile, token):
+            return None
+        physical = self.digest({'logical_id': token, 'predecessor_id': previous.id,
+            'predecessor_fence': previous.fence})[:32]
+        try:
+            return checked(self.routing.bootstraps.get_by_bootstrap('bootstrap-' + physical, actor), physical)
+        except ThreadBootstrapBindingNotFoundError:
+            return None
 
     @staticmethod
     def digest(value):
@@ -139,13 +214,7 @@ class OwnerRecipientPreparationService:
                 raise
             return await asyncio.to_thread(self.routing.compatible_pin, state, binding, owner,
                 writable_repository_ids=writable)
-        logical = {key: proof[key] for key in ('work_item_ref', 'organization_id', 'workspace_id',
-            'project_id', 'owner', 'writable')}
-        logical['handoff'] = {key: proof['handoff'][key] for key in
-            ('from_agent', 'to_agent', 'requested_at')}
-        logical['binding_id'] = binding.id
-        token = hashlib.sha256(json.dumps(logical, sort_keys=True,
-            separators=(',', ':')).encode()).hexdigest()[:32]
+        token = self.logical_id(state, binding, owner, writable)
         name = 'owner-recipient-bootstrap:' + token
         recovery_predecessor = None
 
@@ -168,7 +237,7 @@ class OwnerRecipientPreparationService:
                 return await asyncio.to_thread(self.routing.compatible_pin, state, binding, owner,
                     writable_repository_ids=writable)
             except OwnerRoutingError as exc:
-                if str(exc) != 'owner_recipient_native_scope_incompatible':
+                if not isinstance(exc, _CancelledRecipientContextRequired) and str(exc) != 'owner_recipient_native_scope_incompatible':
                     raise
             await asyncio.to_thread(guard)
             physical = token

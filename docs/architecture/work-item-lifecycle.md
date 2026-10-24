@@ -476,6 +476,24 @@ lineage and multiple current candidates still refuse. The final native guard
 rechecks the lineage and custody; no original binding, session, assignment, nonce,
 history or authority is rewritten and no replacement is created by this lookup.
 
+A genuinely pending, unacknowledged, undelivered and unexpired handoff may also
+prepare fresh context for positively known cancelled recipient custody. The
+source must have an exact READY native-session/current-assignment association,
+no lease, the same creator and full Profile, exact requested repository scope
+and current policy. Missing historical custody requires its existing scoped
+canonical replacement; absence, arbitrary matching lanes and reason strings are
+not cancellation proof. Preparation reuses the same Work/nonce/binding bootstrap
+reservation and existing pre-worker recovery cap. It never resumes the cancelled
+assignment or rewrites a source binding, Session or replacement graph.
+
+Subsequent selection and the final native edge require the exact nonce-reserved
+bootstrap and fresh LIVE recipient authority. The final edge retains the
+caller's exact own-original admission exclusion rather than adding a second
+unresolved-input gate. Existing periodic SLA observations can reconsider the
+same pending nonce through admitted canonical routing after readiness changes;
+its cooldown, current-lane busy checks and original expiry remain effective.
+Neither a handled routing refusal nor context creation proves native delivery.
+
 A controller refusal after canonical preparation but before worker startup is
 recorded atomically with cancellation as an existing `FailureRecord`. The owner
 must still hold an unclaimed PENDING fence0 with no lease, worker or start time.
