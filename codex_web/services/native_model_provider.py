@@ -99,7 +99,9 @@ class NativeModelInvocationContext:
             return False
         for value, limit in ((input_tokens, self.max_input_tokens),
                              (output_tokens, self.max_output_tokens),
-                             (output_tokens, self.model_output_capacity_tokens)):
+                             (output_tokens, self.model_output_capacity_tokens),
+                             (input_tokens, self.model_context_window_tokens),
+                             (output_tokens, self.model_context_window_tokens)):
             if value is not None and limit is not None and value > limit:
                 return False
         return (input_tokens is None or output_tokens is None

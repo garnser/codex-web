@@ -61,3 +61,10 @@ class NativeTokenObservationLimits(unittest.TestCase):
         self.assertFalse(context.observed_tokens_allowed(1001,1))
         self.assertFalse(context.observed_tokens_allowed(1,501))
         self.assertFalse(self.context(model_context_window_tokens=None).observed_tokens_allowed(17,9))
+
+    def test_partial_usage_rejects_known_joint_capacity_overflow(self):
+        context = self.context(model_output_capacity_tokens=None)
+        self.assertTrue(context.observed_tokens_allowed(11000, None))
+        self.assertTrue(context.observed_tokens_allowed(None, 11000))
+        self.assertFalse(context.observed_tokens_allowed(12001, None))
+        self.assertFalse(context.observed_tokens_allowed(None, 12001))
