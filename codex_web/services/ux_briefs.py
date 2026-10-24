@@ -19,10 +19,11 @@ class UxBriefService:
         self.memory = memory
         self.artifact_evidence = artifact_evidence
 
-    def _source(self, kind, record_id, project_id, actor):
+    def _source(self, kind, record_id, project_id, actor, *, context_only=False):
         artifacts = self.artifact_evidence or self.memory.artifact_evidence
         if kind == "knowledge":
-            record = self.memory.get(record_id, actor=actor, include_inactive=True)
+            options = {'context_only': True} if context_only else {}
+            record = self.memory.get(record_id, actor=actor, include_inactive=True, **options)
         elif artifacts is not None and kind == "artifact":
             record = artifacts.get_artifact(record_id, actor=actor)
         elif artifacts is not None and kind == "evidence":

@@ -221,6 +221,11 @@ title, stage, terminal outcome, blocker findings and required timestamp fields;
 it does not transfer or deep-copy unrelated retained notes and handoff history.
 Every page is consumed and every same-scope node remains present. Edges,
 dependency readiness, failure impacts, progress and critical paths are unchanged.
+PostgreSQL projection reuses one validated JSON value per row for its shape
+check and field enumeration. This avoids repeated TEXT validation without
+adding retained histories to the Work Graph's returned headers. Conversion
+refusals retain the existing bounded raw-page fallback
+and preserve any owning canonical transaction.
 Unavailable reads or non-advancing pagination fail visibly rather than producing
 a partial graph. Ordinary Work Item reads and mutations retain full records.
 

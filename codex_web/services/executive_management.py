@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import re
@@ -143,6 +146,8 @@ class ExecutiveManagementService:
         self.data_governance = data_governance
         self.clock = clock
         self.native_invocation_authorizer = native_invocation_authorizer
+        # No admission queue: a saturated service retains sequential retrieval.
+        self._context_overlap_slots = threading.BoundedSemaphore(2)
 
     @staticmethod
     def _same_scope(
@@ -831,6 +836,35 @@ class ExecutiveManagementService:
             tuple(denials),
         )
 
+    def _read_context_pair(self, graph_read, memory_read):
+        # A child must never escape a canonical callback's thread-owned lease.
+        # Unknown/custom storage composition keeps the original serial behavior.
+        backend = getattr(self.store, "store", None)
+        graph_backend = getattr(getattr(self.work_graph, "store", None), "store", None)
+        memory_backend = getattr(getattr(self.organizational_memory, "store", None), "store", None)
+        can_fork = getattr(backend, "can_fork_context_reads", None)
+        parallel = (graph_read is not None and memory_read is not None
+                    and backend is not None and graph_backend is backend
+                    and memory_backend is backend and callable(can_fork)
+                    and can_fork() is True)
+        if not parallel or not self._context_overlap_slots.acquire(blocking=False):
+            return (graph_read() if graph_read is not None else None,
+                    memory_read() if memory_read is not None else None)
+        try:
+            # The parent already owns an executor thread. Do not submit back to
+            # that default pool: saturated parents would deadlock on their children.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="executive-context") as executor:
+                graph = executor.submit(contextvars.copy_context().run, graph_read)
+                try:
+                    memory = memory_read()
+                finally:
+                    # Preserve graph-first failure precedence and join even if
+                    # memory fails. A real retrieval may still append its audit.
+                    graph_result = graph.result()
+                return graph_result, memory
+        finally:
+            self._context_overlap_slots.release()
+
     def _context(
         self,
         payload: ExecutiveActivationCreate,
@@ -911,10 +945,11 @@ class ExecutiveManagementService:
             if ExecutiveObjectType.EVIDENCE in visible:
                 evidence.append(item.model_dump(mode="json"))
 
-        if (
-            payload.project_id
-            and ExecutiveObjectType.WORK_GRAPH in visible
-        ):
+        graph_visible = bool(payload.project_id and ExecutiveObjectType.WORK_GRAPH in visible)
+        memory_visible = (self.organizational_memory is not None
+                          and ExecutiveObjectType.MEMORY in visible)
+
+        def read_graph():
             try:
                 with operation_stage(logging.getLogger(__name__), "executive.context.stage", "work_graph",
                     organization_id=actor.organization_id, workspace_id=actor.workspace_id):
@@ -933,23 +968,20 @@ class ExecutiveManagementService:
             if payload.budget.max_input_tokens is not None:
                 graph_characters = min(graph_characters, 2 * (payload.budget.max_input_tokens // calls))
             try:
-                graphs.append(WorkGraphService.executive_context(graph,
+                return WorkGraphService.executive_context(graph,
                     required_refs=payload.work_item_refs,
                     max_nodes=min(role.max_context_items for role in graph_roles),
                     # Disabled consultation enforcement never means unlimited
                     # retrieval: retain the ordinary canonical context cap.
-                    max_characters=graph_characters))
+                    max_characters=graph_characters)
             except WorkGraphError as exc:
                 raise ExecutiveContextError('Required Executive WorkGraph context cannot fit its budget') from exc
 
-        if (
-            self.organizational_memory is not None
-            and ExecutiveObjectType.MEMORY in visible
-        ):
+        def read_memory():
             try:
                 with operation_stage(logging.getLogger(__name__), "executive.context.stage", "memory_search",
                     organization_id=actor.organization_id, workspace_id=actor.workspace_id):
-                    memory_result = self.organizational_memory.search(
+                    return self.organizational_memory.search(
                         KnowledgeQuery(
                             text=f"{payload.subject}\n{payload.request}",
                             project_ids=(payload.project_id,) if payload.project_id else (),
@@ -971,6 +1003,14 @@ class ExecutiveManagementService:
                 raise ExecutiveContextError(
                     f"canonical Organizational Memory retrieval failed: {exc}"
                 ) from exc
+
+        graph_result, memory_result = self._read_context_pair(
+            read_graph if graph_visible else None,
+            read_memory if memory_visible else None,
+        )
+        if graph_result is not None:
+            graphs.append(graph_result)
+        if memory_result is not None:
             memory_retrieval_ids.append(memory_result.retrieval_id)
             memory.extend(
                 {

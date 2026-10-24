@@ -64,6 +64,8 @@ class PostgresStateStore:
     StateStore contract.
     """
 
+    supports_document_array_scope_after_first = True
+
     SCHEMA_VERSION = 1
 
     def __init__(
@@ -117,6 +119,10 @@ class PostgresStateStore:
             raise
         if self._pool is not None and not self._shared_pool:
             atexit.register(self._pool.close)
+
+    def can_fork_context_reads(self) -> bool:
+        """Independent reads may fork only outside a thread-owned transaction."""
+        return getattr(self._callback_reads, "connection", None) is None
 
     def _connect(self):
         return self._connect_factory(self.dsn)
@@ -602,29 +608,38 @@ class PostgresStateStore:
                     if after is not None
                     else lower
                 )
-                projection = "payload"
-                parameters: tuple[Any, ...] = ()
+                statement = """
+                    SELECT namespace, payload
+                    FROM codex_state_documents
+                    WHERE namespace COLLATE "C" >= %s
+                      AND namespace COLLATE "C" < %s
+                      AND namespace COLLATE "C" > %s
+                    ORDER BY namespace COLLATE "C"
+                    LIMIT %s
+                    """
+                parameters: tuple[Any, ...] = (lower, upper, after_storage, page_size + 1)
                 if fields is not None:
-                    projection = """(CASE WHEN json_typeof(payload::json) = 'object' THEN
+                    # Keep the validated JSON datum local to this row. OFFSET
+                    # prevents pull-up from duplicating the TEXT conversion in
+                    # the shape guard and the selected-field enumeration.
+                    projection = """(CASE WHEN json_typeof(parsed.document) = 'object' THEN
                         (SELECT COALESCE(json_object_agg(field.key, field.value), '{}'::json)
-                         FROM json_each(payload::json) AS field
-                         WHERE field.key = ANY(%s)) ELSE payload::json END)::text"""
-                    parameters = (list(fields),)
+                         FROM json_each(parsed.document) AS field
+                         WHERE field.key = ANY(%s)) ELSE parsed.document END)::text"""
+                    # Select the bounded raw page before parsing any payload.
+                    # A sort plan must not evaluate malformed later records.
+                    statement = f"""
+                        SELECT namespace, {projection}
+                        FROM ({statement}) AS selected_page
+                        CROSS JOIN LATERAL
+                            (SELECT payload::json AS document OFFSET 0) AS parsed
+                        ORDER BY namespace COLLATE "C"
+                        """
+                    parameters = (list(fields), *parameters)
                 # A strict-JSON conversion refusal must not abort a caller's
                 # canonical update transaction before the legacy TEXT fallback.
                 with connection.transaction() if fields is not None else nullcontext():
-                    cursor.execute(
-                        f"""
-                        SELECT namespace, {projection}
-                        FROM codex_state_documents
-                        WHERE namespace COLLATE "C" >= %s
-                          AND namespace COLLATE "C" < %s
-                          AND namespace COLLATE "C" > %s
-                        ORDER BY namespace COLLATE "C"
-                        LIMIT %s
-                        """,
-                        (*parameters, lower, upper, after_storage, page_size + 1),
-                    )
+                    cursor.execute(statement, parameters)
                     rows = cursor.fetchall()
 
         page: dict[str, Any] = {}
@@ -996,7 +1011,8 @@ class PostgresStateStore:
 
     def document_array_items_envelope(self, namespace: str, array_name: str, item_ids: tuple[str, ...], *,
                                      organization_id: str, workspace_id: str,
-                                     collection_names: tuple[str, ...], first_per_id: bool = False) -> Any | None:
+                                     collection_names: tuple[str, ...], first_per_id: bool = False,
+                                     scope_after_first: bool = False) -> Any | None:
         """Scoped complete records/schema read; optional, without a new index.
 
         A savepoint protects an owning transaction from legacy TEXT JSON
@@ -1004,6 +1020,8 @@ class PostgresStateStore:
         """
         if type(first_per_id) is not bool:
             raise ValueError("first_per_id must be a boolean")
+        if type(scope_after_first) is not bool or (scope_after_first and not first_per_id):
+            raise ValueError("scope_after_first requires first_per_id")
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
@@ -1012,14 +1030,18 @@ class PostgresStateStore:
         # identity comparisons, numeric values, signed zero, or legacy decoding.
         first = "DISTINCT ON (value ->> 'id') " if first_per_id else ""
         first_order = " ORDER BY value ->> 'id', ordinality" if first_per_id else ""
+        selection = f"""SELECT {first}ordinality{', value' if scope_after_first else ''} FROM members
+                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
+                  {'' if scope_after_first else "AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"}{first_order}"""
+        if scope_after_first:
+            selection = f"""SELECT ordinality FROM ({selection}) AS first_match
+                WHERE value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"""
         query = f"""WITH parsed AS MATERIALIZED (
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
             members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
                 json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
                     THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
-            selected AS MATERIALIZED (SELECT {first}ordinality FROM members
-                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
-                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s{first_order})
+            selected AS MATERIALIZED ({selection})
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
             WHEN {arrays} THEN payload
