@@ -55,7 +55,7 @@ class ExternalInputProjection(BaseModel):
     text_verbosity: str | None = Field(default=None, max_length=64)
     reasoning_effort: str | None = Field(default=None, max_length=64)
     output_contract: dict[str, Any] = Field(default_factory=dict)
-    max_output_tokens: int = Field(ge=1)
+    max_output_tokens: int | None = Field(ge=1)
     max_cost_usd: float | None = Field(default=None, gt=0.0)
     preferred_provider_ids: tuple[str, ...] = ()
 

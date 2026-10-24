@@ -114,7 +114,12 @@ After compaction, prefer canonical summary + recent changes + current task over 
 
 ## 11. Token Budget Rule
 
-Every LLM-driven operation must have a token budget.
+Every LLM-driven operation must declare its token-budget behavior. Numeric
+ceilings remain the default. For explicitly authorized Executive qualification,
+an operator may persist JSON null application token/cost ceilings on a new
+activation (#1784); finite calls, provider context/output capacity, canonical
+policy, and measured usage still apply. This exception never rewrites historical
+budgets or authorizes retries, tool loops, or additional calls.
 
 ```yaml
 reasoning_budget:

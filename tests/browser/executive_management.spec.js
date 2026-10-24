@@ -226,6 +226,7 @@ async function installRoutes(page, options = {}) {
         id: 'executive-activation-new',
         subject: submitted.subject,
         request: submitted.request,
+        budget: submitted.budget || activation().budget,
         project_id: submitted.project_id,
         selections: [
           { role_id: 'cto', score: 100, reasons: ['explicitly requested'], explicit: true },
@@ -391,6 +392,28 @@ test('Executive management creates a planned activation separately from consulta
   await expect(page.locator('.exec-mgmt-detail')).toContainText('Synthesis complete');
   await expect(page.locator('.exec-mgmt-detail')).toContainText('Proceed with the bounded option.');
   expect(current.activation.status).toBe('completed');
+});
+
+test('Executive opt-out persists explicit null ceilings and displays provider capacity', async ({ page }) => {
+  const current = await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/executive_management_fixture.html');
+  await page.locator('#executive-management-button').click();
+  await page.locator('.exec-mgmt-new').click();
+  const form = page.locator('.exec-mgmt-create-form');
+  await expect(form.locator('[name="disable_application_ceilings"]')).not.toBeChecked();
+  await form.locator('[name="subject"]').fill('Qualification without application ceilings');
+  await form.locator('[name="request"]').fill('Assess this architecture question once.');
+  await form.locator('[name="requested_role_ids"]').fill('cto');
+  await form.locator('[name="disable_application_ceilings"]').check();
+  await form.locator('button[type="submit"]').click();
+  await expect(page.locator('.exec-mgmt-budget')).toContainText('Input: application ceiling disabled');
+  await expect(page.locator('.exec-mgmt-budget')).toContainText('Output: provider capacity');
+  await expect(page.locator('.exec-mgmt-budget')).toContainText('Cost: application ceiling disabled');
+  expect(current.activation.budget).toEqual({
+    max_input_tokens: null, max_output_tokens: null, max_cost_usd: null, max_model_calls: 5,
+  });
+  expect(current.activation.status).toBe('planned');
+  expect(current.activation.consultations).toEqual([]);
 });
 
 test('authority denial leaves Executive proposal advisory and uses only canonical materialization endpoint', async ({ page }) => {

@@ -13,6 +13,9 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 EXECUTIVE_ACTIVATION_MIGRATIONS = MigrationRegistry("executive-activation-state")
+# Envelope-only evolution: historical activation budgets and revisions are exact.
+EXECUTIVE_ACTIVATION_MIGRATIONS.register(
+    "1.0", "1.1", lambda payload: {**payload, "schema_version": "1.1"})
 
 
 class ExecutiveActivationNotFoundError(KeyError):

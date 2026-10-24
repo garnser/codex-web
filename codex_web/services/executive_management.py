@@ -959,7 +959,8 @@ class ExecutiveManagementService:
                                 candidate_limit=100,
                                 max_context_tokens=min(
                                     6000,
-                                    max(128, payload.budget.max_input_tokens // 4),
+                                    max(128, payload.budget.max_input_tokens // 4)
+                                    if payload.budget.max_input_tokens is not None else 6000,
                                 ),
                                 progressive=True,
                             ),
@@ -1481,15 +1482,21 @@ class ExecutiveManagementService:
             max_input_tokens=max_input, max_output_tokens=max_output,
             validate_current=validate_current)}
 
+    @classmethod
+    def _output_ceiling(cls, requested: int | None) -> int | None:
+        # Explicit None removes the application ceiling; routing still applies
+        # the selected model's declared output and actual context capacity.
+        return min(requested, cls.MAX_OUTPUT_PER_CALL) if requested is not None else None
+
     async def _consult_role(
         self,
         activation: ExecutiveActivation,
         role: ExecutiveRoleDefinition,
         *,
         actor: AuthenticationActor,
-        max_input_tokens: int,
-        max_output_tokens: int,
-        max_cost_usd: float,
+        max_input_tokens: int | None,
+        max_output_tokens: int | None,
+        max_cost_usd: float | None,
         native_origin_guard=None,
     ) -> ExecutiveConsultation:
         started = float(self.clock())
@@ -1520,10 +1527,7 @@ class ExecutiveManagementService:
                     prompt_template_id="generic.system",
                     required_capabilities=("text", "reasoning"),
                     max_input_tokens=max_input_tokens,
-                    max_output_tokens=min(
-                        max_output_tokens,
-                        self.MAX_OUTPUT_PER_CALL,
-                    ),
+                    max_output_tokens=self._output_ceiling(max_output_tokens),
                     max_cost_usd=max_cost_usd,
                     allow_fallback=False,
                     reasoning_effort="medium",
@@ -1536,7 +1540,7 @@ class ExecutiveManagementService:
                 ),
                 actor=actor,
                 **self._native_context(activation, role.id, actor, max_input_tokens,
-                                       min(max_output_tokens, self.MAX_OUTPUT_PER_CALL), native_origin_guard),
+                                       self._output_ceiling(max_output_tokens), native_origin_guard),
             )
         except ModelGatewayError as exc:
             raise ExecutiveConsultationError(
@@ -1597,10 +1601,11 @@ class ExecutiveManagementService:
             raise ExecutiveConsultationError(
                 "Executive activation model-call budget is insufficient"
             )
-        per_call_input = activation.budget.max_input_tokens // calls
-        per_call_output = activation.budget.max_output_tokens // calls
-        per_call_cost = activation.budget.max_cost_usd / calls
-        if per_call_input < 500 or per_call_output < 128:
+        per_call_input = activation.budget.max_input_tokens // calls if activation.budget.max_input_tokens is not None else None
+        per_call_output = activation.budget.max_output_tokens // calls if activation.budget.max_output_tokens is not None else None
+        per_call_cost = activation.budget.max_cost_usd / calls if activation.budget.max_cost_usd is not None else None
+        if ((per_call_input is not None and per_call_input < 500)
+                or (per_call_output is not None and per_call_output < 128)):
             raise ExecutiveConsultationError(
                 "Executive activation token budget is insufficient"
             )
@@ -1694,10 +1699,7 @@ class ExecutiveManagementService:
                         prompt_template_id="generic.system",
                         required_capabilities=("text", "reasoning"),
                         max_input_tokens=per_call_input,
-                        max_output_tokens=min(
-                            per_call_output,
-                            self.MAX_OUTPUT_PER_CALL,
-                        ),
+                        max_output_tokens=self._output_ceiling(per_call_output),
                         max_cost_usd=per_call_cost,
                         allow_fallback=False,
                         reasoning_effort="high",
@@ -1710,7 +1712,7 @@ class ExecutiveManagementService:
                     ),
                     actor=actor,
                     **self._native_context(consulting, "synthesis", actor, per_call_input,
-                                           min(per_call_output, self.MAX_OUTPUT_PER_CALL), native_origin_guard),
+                                           self._output_ceiling(per_call_output), native_origin_guard),
                 )
                 try:
                     raw = json.loads(result.text)

@@ -161,3 +161,35 @@ outcome and requires canonical inventory reconciliation rather than resending th
 request. Neither the dependency nor persistence response recommends retrying.
 These error distinctions use the existing API error surface; no new operator
 control or independent lifecycle state is introduced.
+
+
+### Explicit per-activation ceiling opt-out
+
+An authorized operator can set `budget.max_input_tokens`, `max_output_tokens`,
+and `max_cost_usd` to JSON `null` when temporarily qualifying a new consultation.
+The existing UI exposes this choice on creation and displays disabled ceilings
+on the persisted activation. Omission retains the numeric defaults. Historical
+activations and revision budgets are never rewritten. Call count remains finite;
+for a single-call qualification select one role and `max_model_calls: 1`.
+
+Null removes only the application ceiling. ModelGateway still enforces model
+context capacity, declared output capacity, policy/mapping constraints, authority,
+provider admission, and usage attribution. Output null resolves to the smaller
+of declared model output capacity and remaining context capacity. Native
+entitlement requires exact null/finite caller-marker agreement before routing;
+the selected route then binds finite actual model capacity for the native writer.
+No fallback, tool loop, or additional call is authorized by this option. Retrieval
+limits remain finite independently of invocation ceilings.
+
+Executive activation state envelope 1.1 adds nullable ceilings. Its 1.0 migration
+changes only the envelope version and preserves every activation/revision. Old
+readers refuse 1.1; rollback requires compatible readers, not dropping nulls or
+inventing numeric limits. Input pipeline projections preserve the same explicit
+null output marker until routing. This operator exception to default bounded
+application budgets does not waive provider limits or canonical policy. See #1784.
+
+Deployment must declare this domain-envelope reader change in the existing
+Release/Upgrade compatibility evidence: all readers of `executive_activations`
+must support 1.1 before new writes. The physical StateStore schema number is
+unchanged; it is not a substitute for this domain compatibility check. The
+existing migration registry owns decoding, with no new deployment controller.

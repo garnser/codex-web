@@ -6,6 +6,7 @@ import json
 import math
 import time
 import uuid
+from dataclasses import replace
 from collections.abc import Callable
 from typing import Any
 
@@ -1650,7 +1651,12 @@ class ModelGatewayService:
             ):
                 rejected.append(f"{model.id}:compliance_mismatch")
                 continue
-            output_tokens = min(request.max_output_tokens, model.max_output_tokens)
+            output_tokens = (min(request.max_output_tokens, model.max_output_tokens)
+                             if request.max_output_tokens is not None else
+                             min(model.max_output_tokens, model.context_window_tokens - input_tokens))
+            if output_tokens <= 0:
+                rejected.append(f"{model.id}:context_limit")
+                continue
             if input_tokens + output_tokens > model.context_window_tokens:
                 rejected.append(f"{model.id}:context_limit")
                 continue
@@ -2106,12 +2112,26 @@ class ModelGatewayService:
                 break
             started = time.time()
 
+            # Resolve application opt-outs only AFTER routing has validated the
+            # exact caller markers and selected a declared provider capacity.
+            attempt_request = rendered_request.model_copy(update={
+                "max_output_tokens": candidate.max_output_tokens,
+            })
+            attempt_context = native_context
+            if isinstance(adapter, NativeCodexModelProviderAdapter) and native_context is not None:
+                native_input = (effective_request.max_input_tokens
+                                if effective_request.max_input_tokens is not None else
+                                model.context_window_tokens - candidate.max_output_tokens)
+                attempt_request = attempt_request.model_copy(update={"max_input_tokens": native_input})
+                attempt_context = replace(native_context, max_input_tokens=native_input,
+                                          max_output_tokens=candidate.max_output_tokens)
+
             async def call(credential: str | None):
                 try:
-                    operation = (adapter.invoke_scoped(provider, model, rendered_request,
-                        credential=credential, actor=actor, context=native_context)
+                    operation = (adapter.invoke_scoped(provider, model, attempt_request,
+                        credential=credential, actor=actor, context=attempt_context)
                         if isinstance(adapter, NativeCodexModelProviderAdapter)
-                        else adapter.invoke(provider, model, rendered_request, credential=credential))
+                        else adapter.invoke(provider, model, attempt_request, credential=credential))
                     return await asyncio.wait_for(
                         operation,
                         timeout=effective_request.timeout_seconds,
