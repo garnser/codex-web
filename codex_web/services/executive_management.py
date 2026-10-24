@@ -929,13 +929,16 @@ class ExecutiveManagementService:
             graph_roles = [catalog.role_map[item.role_id] for item in selections
                            if ExecutiveObjectType.WORK_GRAPH in catalog.role_map[item.role_id].observable_information]
             calls = len(selections) + (1 if len(selections) > 1 else 0)
+            graph_characters = 4 * KnowledgeRetrievalBudget().max_context_tokens
+            if payload.budget.max_input_tokens is not None:
+                graph_characters = min(graph_characters, 2 * (payload.budget.max_input_tokens // calls))
             try:
                 graphs.append(WorkGraphService.executive_context(graph,
                     required_refs=payload.work_item_refs,
                     max_nodes=min(role.max_context_items for role in graph_roles),
-                    # At most half of each existing input budget is graph data;
-                    # the remainder belongs to task, role and governed context.
-                    max_characters=2 * (payload.budget.max_input_tokens // calls)))
+                    # Disabled consultation enforcement never means unlimited
+                    # retrieval: retain the ordinary canonical context cap.
+                    max_characters=graph_characters))
             except WorkGraphError as exc:
                 raise ExecutiveContextError('Required Executive WorkGraph context cannot fit its budget') from exc
 
