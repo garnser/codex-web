@@ -951,27 +951,28 @@ class PostgresStateStore:
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
-        # Share the envelope parse for selection; return the original first
-        # scoped member so JSONB cannot normalize its legacy numeric values.
+        # Share the shape parse and materialize original JSON members once.
+        # Original field comparisons preserve even legacy numeric identity text.
         query = f"""WITH parsed AS MATERIALIZED (
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
-            selected AS MATERIALIZED (SELECT member.ordinality FROM parsed,
-                jsonb_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
-                    THEN document -> %s ELSE '[]'::jsonb END) WITH ORDINALITY AS member(value, ordinality)
-                WHERE jsonb_typeof(value) = 'object' AND value ->> 'id' = %s
+            members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
+                json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
+                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
+            selected AS MATERIALIZED (SELECT ordinality FROM members
+                WHERE json_typeof(value) = 'object' AND value ->> 'id' = %s
                   AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s
-                ORDER BY member.ordinality LIMIT 1)
+                ORDER BY ordinality LIMIT 1)
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
             WHEN {arrays} THEN payload
             WHEN COALESCE(jsonb_typeof(document -> 'schema_version'), 'string') NOT IN ('string','null') THEN payload
             ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', '"0.0"'::jsonb),
                 %s::text, COALESCE((SELECT json_agg(original.value ORDER BY original.ordinality)
-                    FROM json_array_elements(payload::json -> %s) WITH ORDINALITY AS original(value, ordinality)
+                    FROM members AS original
                     WHERE original.ordinality IN (SELECT ordinality FROM selected)), '[]'::json))::text
             END FROM parsed"""
         parameters = (namespace, array_name, array_name, item_id, organization_id, workspace_id,
-                      ["schema_version", *names], *names, array_name, array_name)
+                      ["schema_version", *names], *names, array_name)
         try:
             with self._read_connection() as connection:
                 with connection.transaction():
@@ -996,15 +997,15 @@ class PostgresStateStore:
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
-        # Parse the large envelope once for shape/scope selection. Return selected
-        # original JSON values so numeric types/signed zero and legacy decoding
-        # do not acquire JSONB's normalization semantics.
+        # Share the shape parse and original JSON members without normalizing
+        # identity comparisons, numeric values, signed zero, or legacy decoding.
         query = f"""WITH parsed AS MATERIALIZED (
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
-            selected AS MATERIALIZED (SELECT member.ordinality FROM parsed,
-                jsonb_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
-                    THEN document -> %s ELSE '[]'::jsonb END) WITH ORDINALITY AS member(value, ordinality)
-                WHERE jsonb_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
+            members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
+                json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
+                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
+            selected AS MATERIALIZED (SELECT ordinality FROM members
+                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
                   AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s)
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
@@ -1012,11 +1013,11 @@ class PostgresStateStore:
             WHEN COALESCE(jsonb_typeof(document -> 'schema_version'), 'string') NOT IN ('string','null') THEN payload
             ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', '"0.0"'::jsonb),
                 %s::text, COALESCE((SELECT json_agg(original.value ORDER BY original.ordinality)
-                    FROM json_array_elements(payload::json -> %s) WITH ORDINALITY AS original(value, ordinality)
+                    FROM members AS original
                     WHERE original.ordinality IN (SELECT ordinality FROM selected)), '[]'::json))::text
             END FROM parsed"""
         parameters = (namespace, array_name, array_name, list(dict.fromkeys(item_ids)),
-                      organization_id, workspace_id, ["schema_version", *names], *names, array_name, array_name)
+                      organization_id, workspace_id, ["schema_version", *names], *names, array_name)
         try:
             with self._read_connection() as connection:
                 with connection.transaction():
