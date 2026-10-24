@@ -49,6 +49,54 @@ class ArtifactGovernanceAtomicityTests(unittest.TestCase):
                     (item.organization_id, item.workspace_id))
                 self.assertEqual(len([e for e in state[1].events if e.record_id == record.id]), 1)
 
+    def test_artifact_creation_decodes_only_atomic_catalog_without_supersession(self):
+        payload = ArtifactCreate(artifact_type=ArtifactType.REPORT,
+            name='One canonical catalog read', source='atomic-fixture')
+        with patch.object(self.service.store, 'load', wraps=self.service.store.load) as load, \
+                patch.object(self.service.store, '_decode', wraps=self.service.store._decode) as decode:
+            first = self.service.create_artifact(payload, actor=self.actor, idempotency_key='single-read')
+            repeated = self.service.create_artifact(payload, actor=self.actor, idempotency_key='single-read')
+        self.assertEqual(load.call_count, 0)
+        self.assertEqual(decode.call_count, 2)  # Full current catalog once per atomic creation.
+        self.assertEqual(first, repeated)
+        state, governance = self.snapshot()
+        self.assertEqual([item.id for item in state.artifacts], [first.id])
+        self.assertEqual([record.object_id for record in governance.records], [first.id])
+        self.assertEqual(len(governance.events), 1)
+
+    def test_supersession_keeps_prevalidation_and_current_atomic_catalog(self):
+        source = self.create('artifact')
+        with patch.object(self.service.store, 'load', wraps=self.service.store.load) as load, \
+                patch.object(self.service.store, '_decode', wraps=self.service.store._decode) as decode:
+            replacement = self.service.create_artifact(ArtifactCreate(artifact_type=ArtifactType.REPORT,
+                name='Replacement', supersedes_artifact_id=source.id), actor=self.actor)
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(decode.call_count, 2)
+        state, governance = self.snapshot()
+        original = next(item for item in state.artifacts if item.id == source.id)
+        self.assertEqual((original.lifecycle, original.superseded_by_id), ('superseded', replacement.id))
+        record = next(item for item in governance.records if item.object_id == replacement.id)
+        self.assertIn(source.governance_record_id, record.source_record_ids)
+
+    def test_unrelated_malformed_catalog_refuses_atomic_creation_without_writes(self):
+        original = {name: self.backend.get(name) for name in ('artifact_evidence', 'data_governance')}
+        for namespace, collection in (('artifact_evidence', 'evidence'), ('data_governance', 'records')):
+            with self.subTest(namespace=namespace):
+                import copy
+                malformed = copy.deepcopy(original[namespace])
+                if malformed is None:
+                    malformed = (self.service.store if namespace == 'artifact_evidence'
+                        else self.fixture.governance.store).load().model_dump(mode='json')
+                malformed[collection].append({'id': 'unrelated-malformed-record'})
+                self.backend.put(namespace, malformed)
+                before = {name: self.backend.get(name) for name in original}
+                try:
+                    with self.assertRaises(ValueError):
+                        self.create('artifact')
+                    self.assertEqual({name: self.backend.get(name) for name in original}, before)
+                finally:
+                    self.backend.put(namespace, original[namespace])
+
     def test_failed_second_actual_write_rolls_back_domain_and_governance(self):
         original = self.backend._upsert
         for kind in ('artifact', 'evidence'):
