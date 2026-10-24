@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import heapq
+import hashlib
+import json
 from collections import deque
 from collections.abc import Callable, Iterable
 
@@ -594,6 +596,89 @@ class WorkGraphService:
             critical_path=self._critical_path(items, edges),
             progress=progress,
         )
+
+    @staticmethod
+    def executive_context(snapshot: WorkGraphSnapshot, *, required_refs: tuple[str, ...],
+                          max_nodes: int, max_characters: int) -> dict:
+        """Bound reasoning context, never the canonical operator graph.
+
+        Whole-project measurements and a source digest remain exact. Explicit
+        work and its incoming dependency/parent closure are mandatory; optional
+        overview rows are selected deterministically with explicit omissions.
+        A required closure that cannot fit is a refusal, never a narrowed task.
+        """
+        if type(max_nodes) is not int or not 1 <= max_nodes <= 100 or max_characters < 1:
+            raise WorkGraphConflictError('Executive graph context budget is invalid')
+        raw = snapshot.model_dump(mode='json')
+        nodes = {node['ref']: node for node in raw['nodes']}
+        if len(nodes) != len(raw['nodes']) or any(
+                node['project_id'] != snapshot.project_id for node in raw['nodes']):
+            raise WorkGraphScopeError('Executive graph snapshot scope is inconsistent')
+        required = set(required_refs)
+        if not required <= nodes.keys():
+            raise WorkGraphScopeError('Explicit Executive work is outside the project graph')
+        incoming = {}
+        for edge in raw['edges']:
+            incoming.setdefault(edge['target_ref'], []).append(edge['source_ref'])
+        pending = list(required)
+        while pending:
+            for source in incoming.get(pending.pop(), ()):
+                if source not in nodes:
+                    raise WorkGraphConflictError('Required Executive graph dependency is unavailable')
+                if source not in required:
+                    required.add(source)
+                    pending.append(source)
+        if len(required) > max_nodes:
+            raise WorkGraphConflictError('Required Executive graph context exceeds its budget')
+        source_digest = hashlib.sha256(json.dumps(raw, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+
+        def project(refs):
+            included = set(refs)
+            edges = [edge for edge in raw['edges']
+                     if edge['source_ref'] in included and edge['target_ref'] in included]
+            impacts = [impact for impact in raw['failure_impacts']
+                       if impact['blocker_ref'] in included and impact['blocked_ref'] in included]
+            runnable = [ref for ref in raw['runnable_refs'] if ref in included]
+            critical = [ref for ref in raw['critical_path']['refs'] if ref in included]
+            omitted = dict(nodes=len(nodes)-len(refs), edges=len(raw['edges'])-len(edges),
+                runnable_refs=len(raw['runnable_refs'])-len(runnable),
+                failure_impacts=len(raw['failure_impacts'])-len(impacts),
+                critical_path_refs=len(raw['critical_path']['refs'])-len(critical))
+            return dict(schema_version='executive-work-graph-context/1.0',
+                organization_id=snapshot.organization_id, workspace_id=snapshot.workspace_id,
+                project_id=snapshot.project_id, source_snapshot_sha256=source_digest,
+                progress=raw['progress'], nodes=[nodes[ref] for ref in refs], edges=edges,
+                runnable_refs=runnable, failure_impacts=impacts,
+                critical_path={**raw['critical_path'], 'refs': critical},
+                required_refs=list(dict.fromkeys(required_refs)),
+                omitted=omitted, complete=not any(omitted.values()),
+                selection='explicit work and incoming closure; critical path; failure impacts; blocked; runnable; active; other')
+
+        def fits(value):
+            return len(json.dumps(value, sort_keys=True, separators=(',', ':'))) <= max_characters
+
+        selected = sorted(required)
+        result = project(selected)
+        if not fits(result):
+            raise WorkGraphConflictError('Required Executive graph context exceeds its budget')
+        priority = [*raw['critical_path']['refs']]
+        for impact in raw['failure_impacts']:
+            priority.extend((impact['blocker_ref'], impact['blocked_ref']))
+        priority.extend(ref for ref, node in nodes.items() if node['readiness']['status']=='blocked')
+        priority.extend(raw['runnable_refs'])
+        priority.extend(ref for ref, node in nodes.items() if node['terminal_outcome'] is None)
+        priority.extend(sorted(nodes))
+        for ref in dict.fromkeys(priority):
+            if ref not in nodes or ref in selected:
+                continue
+            if len(selected) >= max_nodes:
+                break
+            candidate = project([*selected, ref])
+            if fits(candidate):
+                selected.append(ref)
+                result = candidate
+        return result
 
     def events(
         self,

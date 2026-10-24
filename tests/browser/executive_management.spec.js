@@ -110,7 +110,9 @@ function activation(status = 'escalated') {
       work_items: [
         { ref: 'project-a:reference:7', title: 'Implement migration', current_stage: 'implementation_active' },
       ],
-      work_graphs: [],
+      work_graphs: [{ project_id: 'project-a', nodes: [{ ref: 'project-a:reference:7' }],
+        progress: { total: 1899, blocked: 17 }, complete: false,
+        omitted: { nodes: 1898, edges: 2 }, source_snapshot_sha256: 'graph-source-digest' }],
       evidence: [
         { id: 'evidence-a', summary: 'Architecture review passed.', lifecycle: 'valid' },
       ],
@@ -346,6 +348,10 @@ test('Executive management explains activation, disagreement, authority and cano
   await expect(dialog).toContainText('executive.work.materialize');
   await expect(dialog).toContainText('allowed by role local-admin grant local-admin.all');
   await expect(dialog).toContainText('External consequences still flow through approved Decision');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('1 retained of 1899 work items');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('17 blocked project-wide');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('Partial context');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('graph-source-digest');
 
   await dialog.locator('[data-canonical-kind="goal"][data-canonical-id="goal-a"]').click();
   await dialog.locator('[data-canonical-kind="decision"][data-canonical-id="decision-a"]').first().click();

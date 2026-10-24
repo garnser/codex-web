@@ -115,7 +115,7 @@ class WorkGraphProjectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WorkGraphError):
             WorkGraphService.projected_snapshot_items(Stuck(), 'project-a', self.scope)
 
-    async def test_actual_executive_route_prepares_complete_graph_with_unchanged_deadline(self):
+    async def test_actual_executive_route_prepares_bounded_graph_context_with_unchanged_deadline(self):
         fixture = executive_fixtures.ExecutiveManagementTests()
         await fixture.asyncSetUp()
         self.addAsyncCleanup(fixture.asyncTearDown)
@@ -140,6 +140,11 @@ class WorkGraphProjectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertLess(time.monotonic() - started, 5)
         saved = response.json()['item']
-        self.assertEqual(saved['context']['work_graphs'], [full.model_dump(mode='json')])
+        context = saved['context']['work_graphs'][0]
+        self.assertEqual(context['progress'], full.progress.model_dump(mode='json'))
+        self.assertFalse(context['complete'])
+        self.assertEqual(context['omitted']['nodes'], len(full.nodes)-len(context['nodes']))
+        self.assertLessEqual(len(context['nodes']), 20)
         self.assertLess(self.storage.transferred, 700_000)
+        self.assertEqual(self.full.snapshot('project-a', scope=scope), full)
         self.assertEqual(fixture.gateway.requests, [])
