@@ -422,6 +422,12 @@ function renderActivation() {
         ${renderContextGroup('Decisions', item.context?.decisions, 'decision', 'id')}
         ${renderContextGroup('Work', item.context?.work_items, 'work', 'ref')}
         ${renderContextGroup('Evidence', item.context?.evidence, 'evidence', 'id')}
+        ${list(item.context?.work_graphs).map((graph) => `<div class="exec-mgmt-graph-context">
+          <span>Project graph · ${esc(graph.project_id)}</span>
+          <small>${esc(list(graph.nodes).length)} retained of ${esc(graph.progress?.total ?? 'unknown')} work items · ${esc(graph.progress?.blocked ?? 'unknown')} blocked project-wide</small>
+          ${graph.complete === false ? `<small>Partial context · omitted ${esc(JSON.stringify(graph.omitted || {}))}. Omitted work is not inferred healthy or absent.</small>` : ''}
+          <small>Source snapshot SHA-256: ${esc(graph.source_snapshot_sha256 || 'not recorded on this historical snapshot')}</small>
+        </div>`).join('')}
       </div>
     </section>
 

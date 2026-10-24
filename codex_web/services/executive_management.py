@@ -69,7 +69,7 @@ from codex_web.services.goals import GoalService
 from codex_web.services.model_gateway import ModelGatewayError, ModelGatewayService
 from codex_web.services.organizational_memory import OrganizationalMemoryService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
-from codex_web.services.work_graph import WorkGraphService
+from codex_web.services.work_graph import WorkGraphService, WorkGraphError
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.executive_activations import (
     ExecutiveActivationConflictError,
@@ -926,7 +926,18 @@ class ExecutiveManagementService:
                 raise ExecutiveContextError(
                     f"canonical WorkGraph is unavailable: {payload.project_id}: {exc}"
                 ) from exc
-            graphs.append(graph.model_dump(mode="json"))
+            graph_roles = [catalog.role_map[item.role_id] for item in selections
+                           if ExecutiveObjectType.WORK_GRAPH in catalog.role_map[item.role_id].observable_information]
+            calls = len(selections) + (1 if len(selections) > 1 else 0)
+            try:
+                graphs.append(WorkGraphService.executive_context(graph,
+                    required_refs=payload.work_item_refs,
+                    max_nodes=min(role.max_context_items for role in graph_roles),
+                    # At most half of each existing input budget is graph data;
+                    # the remainder belongs to task, role and governed context.
+                    max_characters=2 * (payload.budget.max_input_tokens // calls)))
+            except WorkGraphError as exc:
+                raise ExecutiveContextError('Required Executive WorkGraph context cannot fit its budget') from exc
 
         if (
             self.organizational_memory is not None

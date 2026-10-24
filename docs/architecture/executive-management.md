@@ -54,6 +54,25 @@ References are resolved inside the authenticated tenant/workspace before model i
 
 This M9 layer intentionally does not make the legacy Executive chat transcript a source of company state.
 
+Project WorkGraph context is an Executive-specific bounded projection of the
+complete canonical snapshot, rather than every project node in the model prompt.
+It retains exact whole-project progress, tenant/project scope and a SHA-256 digest
+of the complete source snapshot. Selected nodes retain their complete canonical
+readiness and findings; edge, runnable, failure-impact and critical-path lists
+explicitly report omitted counts. Critical-path aggregate counts describe the
+whole graph even when its displayed references are partial. `complete=false`
+must never be interpreted as an empty or healthy remainder.
+
+The existing role context-item limit and half of the existing per-call input
+budget bound the projection. Explicit Work references and their incoming
+parent/dependency closure are mandatory: unavailable or oversized required
+context refuses preparation before activation persistence or model invocation.
+Remaining capacity prioritizes critical-path, failed-dependency, blocked,
+runnable and active work deterministically. Selected canonical rows are not
+silently text-truncated. Ordinary operator graph APIs remain complete; this adds
+no graph store, cache, model call, authority or larger token budget. Memory and
+business context retain their existing retrieval and governance owners.
+
 ## Bounded multi-role consultation
 
 A consultation performs:
