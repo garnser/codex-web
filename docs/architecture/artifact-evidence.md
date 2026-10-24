@@ -279,8 +279,9 @@ so it cannot poison a surrounding writer transaction; unrelated storage failures
 propagate. All normal writes, snapshots and restore bytes retain their existing
 canonical paths.
 
-PostgreSQL point-envelope selection materializes one binary JSON parse for the
-shape and tenant/ID predicates, selects the first scoped member by stored
-ordinality, and returns its original JSON value. This preserves duplicate order,
+PostgreSQL point-envelope selection shares one binary JSON parse for shape
+guards and materializes original JSON members once for exact tenant/ID text
+predicates. It selects the first scoped member by stored ordinality and returns
+its original JSON value. This preserves duplicate order,
 numeric types and legacy decoder/savepoint fallback while avoiding repeated
 whole-catalog parsing. It changes no authority, schema, timeout or UI contract.
