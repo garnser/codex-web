@@ -386,8 +386,10 @@ def build_work_items_router(
     ) -> dict[str, Any]:
         # Explicit on-demand action: ordinary point/operator/Executive reads do
         # not add candidate discovery or preparation work.
-        operator.require_handoff_inspection_ready()
-        require_item_scope(ref, request)
+        def require_inspection_scope():
+            operator.require_handoff_inspection_ready()
+            require_item_scope(ref, request)
+        await asyncio.to_thread(require_inspection_scope)
         scope = request.state.tenant_scope
         return await asyncio.to_thread(operator.handoff_eligibility, ref,
             expected_requested_at=expected_requested_at,

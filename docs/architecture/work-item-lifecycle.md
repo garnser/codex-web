@@ -532,6 +532,12 @@ dispatch, or acknowledge a handoff. A changed Work snapshot returns `changed`;
 missing storage or routing composition is `unavailable`, never an eligible
 default. Inspection first checks that existing Work, worker and native-session
 record layouts are initialized; it does not trigger their lazy migrations.
+Lookup identity uses the existing active, unambiguous local human and current
+memberships with the original local-trusted lookup assurance; it cannot bootstrap
+or restore a missing, disabled or revoked identity. The trusted read-only getter
+is passed through the existing pin/context checks, never supplied by a request
+or cached across checks. Readiness, scope lookup and routing execute off the
+request event loop.
 The original tenant, Project, Definition, Profile, repository and
 retained-original checks remain authoritative.
 

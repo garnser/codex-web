@@ -4032,6 +4032,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
 from codex_web.services.owner_routing import OwnerRoutingService
 execution_preflight_store.prepare_work_item_index()
 owner_routing_service = OwnerRoutingService(
+    inspection_actor=identity_service.existing_local_trusted_actor,
     inspection_ready=lambda: (
         runtime_state.work_item_states.store.record_collection_exists(runtime_state.work_item_states.namespace)
         and execution_worker_service.store.reads_initialized()

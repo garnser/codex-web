@@ -26,7 +26,7 @@ class _MissingNativePredecessor(OwnerRoutingError):
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
-                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None):
+                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None, inspection_actor=None):
         self.routing = routing
         self.get_state = get_state
         self.projects = projects
@@ -46,9 +46,11 @@ class OwnerRoutingService:
         self.sessions = sessions
         self.recipient_preparer = None
         self.inspection_ready = inspection_ready
+        self.inspection_actor = inspection_actor
 
     def require_readonly_inspection_ready(self):
-        if self.inspection_ready is None or self.inspection_ready() is not True:
+        if (self.inspection_ready is None or self.inspection_ready() is not True
+                or not callable(self.inspection_actor)):
             raise OwnerRoutingError('owner_routing_inspection_not_initialized')
 
     def project_native_start(self, attempt):
@@ -197,7 +199,7 @@ class OwnerRoutingService:
         # executors; retain the selected reply binding in the original request.
         return sorted(candidates, key=lambda item: item.id)[0]
 
-    def executor(self, state, binding, owner, *, recipient_thread_id=None):
+    def executor(self, state, binding, owner, *, recipient_thread_id=None, lookup_actor=None):
         try:
             project = self.projects.get(state.project_id, scope=TenantScope(
                 organization_id=state.organization_id, workspace_id=state.workspace_id))
@@ -208,7 +210,7 @@ class OwnerRoutingService:
                 or binding.project_id != project.id
                 or normalized_owner(self.binding_prefix(binding)) != owner):
             raise OwnerRoutingError('owner_routing_scope_mismatch')
-        lookup_actor = self.control_actor()
+        lookup_actor = (lookup_actor or self.control_actor)()
         if (lookup_actor.organization_id, lookup_actor.workspace_id) != (
                 state.organization_id, state.workspace_id):
             raise OwnerRoutingError('owner_executor_actor_scope_mismatch')
@@ -285,7 +287,7 @@ class OwnerRoutingService:
         return (set(previous.resource_ids) == set(assignment.resource_ids)
                 and previous.repository_scope == assignment.repository_scope)
 
-    def _verified_missing_predecessor_replacement(self, state, binding, owner, source, requested):
+    def _verified_missing_predecessor_replacement(self, state, binding, owner, source, requested, *, lookup_actor=None):
         """Separate current custody never repairs or resumes missing old custody."""
         if str(source.status) not in {'succeeded', 'failed', 'cancelled', 'lost'} or source.lease is not None:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
@@ -294,8 +296,8 @@ class OwnerRoutingService:
                 organization_id=state.organization_id, workspace_id=state.workspace_id)
             if not target or target == binding.thread_id:
                 raise OwnerRoutingError('owner_recipient_native_custody_unverified')
-            bootstrap = self.bootstraps.get_by_thread(target, self.control_actor())
-            witness, _, _ = self._live_recipient(state, binding, bootstrap, owner)
+            bootstrap = self.bootstraps.get_by_thread(target, (lookup_actor or self.control_actor)())
+            witness, _, _ = self._live_recipient(state, binding, bootstrap, owner, lookup_actor=lookup_actor)
             current = self.assignments(witness.assignment_id)
             session = self.sessions.native_custody(target)
             if (current is None or current.created_by != source.created_by
@@ -313,7 +315,7 @@ class OwnerRoutingService:
         except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
 
-    def _live_recipient(self, state, binding, bootstrap, owner):
+    def _live_recipient(self, state, binding, bootstrap, owner, *, lookup_actor=None):
         from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
         assignment = self.assignments(bootstrap.assignment_id)
         now = time.time()
@@ -336,7 +338,7 @@ class OwnerRoutingService:
             raise OwnerRoutingError('owner_recipient_worker_unavailable')
         if not self.native_scope_compatible(state, bootstrap, assignment):
             raise OwnerRoutingError('owner_recipient_native_scope_incompatible')
-        profile, actor = self.executor(state, binding, owner, recipient_thread_id=bootstrap.thread_id)
+        profile, actor = self.executor(state, binding, owner, recipient_thread_id=bootstrap.thread_id, lookup_actor=lookup_actor)
         return OwnerRoutingRecipient(thread_id=bootstrap.thread_id, bootstrap_id=bootstrap.id,
             assignment_id=assignment.id, execution_id=assignment.execution_id,
             worker_id=assignment.assigned_worker_id, fence=assignment.fence,
@@ -354,11 +356,11 @@ class OwnerRoutingService:
         return await self.recipient_preparer.prepare(state, binding, configured_owner,
             writable_repository_ids=writable_repository_ids)
 
-    def compatible_pin(self, state, binding, configured_owner, *, writable_repository_ids):
+    def compatible_pin(self, state, binding, configured_owner, *, writable_repository_ids, lookup_actor=None):
         """Choose a unique current canonical executor without moving its source binding."""
         requested = set(writable_repository_ids or ())
         if not requested:
-            return self.pin(state, binding, configured_owner)
+            return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
         owner = normalized_owner(configured_owner)
         routing = self.snapshot(state)
         if routing is None:
@@ -366,7 +368,7 @@ class OwnerRoutingService:
         owner = routing.owner(owner)
         if owner not in routing.known_owners:
             raise OwnerRoutingError('owner_routing_owner_unavailable')
-        actor = self.control_actor()
+        actor = (lookup_actor or self.control_actor)()
         if binding.is_master:
             raise OwnerRoutingError('owner_executor_binding_changed')
         try:
@@ -378,18 +380,18 @@ class OwnerRoutingService:
                 != (state.organization_id, state.workspace_id, state.project_id)):
             raise OwnerRoutingError('owner_executor_bootstrap_unverified')
         if self.execution_profiles is not None:
-            profile, _ = self.executor(state, binding, owner)
+            profile, _ = self.executor(state, binding, owner, lookup_actor=lookup_actor)
             execution_profile, _ = self.execution_profiles.resolve(profile.execution_profile_id,
                 organization_id=state.organization_id, workspace_id=state.workspace_id, project_id=state.project_id)
             if execution_profile.repository_access == 'none':
-                return self.pin(state, binding, configured_owner)
+                return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
         required_replacement = None
         try:
             native_compatible = self.native_scope_compatible(state, source, source_assignment)
         except _MissingNativePredecessor:
             self.require_resolved_originals(state)
             required_replacement = self._verified_missing_predecessor_replacement(
-                state, binding, owner, source_assignment, requested)
+                state, binding, owner, source_assignment, requested, lookup_actor=lookup_actor)
             native_compatible = True
         source_scope = getattr(source_assignment, 'repository_scope', None)
         if (source_scope is not None and set(source_scope.writable_repository_ids) == requested
@@ -405,7 +407,7 @@ class OwnerRoutingService:
             except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
                 raise OwnerRoutingError('owner_executor_replacement_unverified') from exc
             if not replacement or replacement == binding.thread_id:
-                return self.pin(state, binding, configured_owner)
+                return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
         self.require_resolved_originals(state)
         candidates = self.bootstraps.list(actor)
         if len(candidates) > 5000:
@@ -421,7 +423,7 @@ class OwnerRoutingService:
                     or set(scope.writable_repository_ids) != requested):
                 continue
             try:
-                witness, _, _ = self._live_recipient(state, binding, bootstrap, owner)
+                witness, _, _ = self._live_recipient(state, binding, bootstrap, owner, lookup_actor=lookup_actor)
             except OwnerRoutingError:
                 continue
             matches.append(witness)
@@ -459,13 +461,13 @@ class OwnerRoutingService:
             handoff_requested_at=handoff.requested_at if handoff and handoff.status == 'pending' else None,
             bot_binding_id=binding.id, original_thread_id=binding.thread_id)
 
-    def recipient_context(self, pin, state, binding):
+    def recipient_context(self, pin, state, binding, *, lookup_actor=None):
         if binding.is_master or binding.id != pin.bot_binding_id or binding.thread_id != pin.original_thread_id:
             raise OwnerRoutingError('owner_executor_binding_changed')
         if self._work_item_owner_checksum(state) != pin.recipient.work_item_owner_checksum:
             raise OwnerRoutingError('owner_routing_work_item_changed')
         try:
-            source = self.bootstraps.get_by_thread(binding.thread_id, self.control_actor())
+            source = self.bootstraps.get_by_thread(binding.thread_id, (lookup_actor or self.control_actor)())
             original = self.assignments(source.assignment_id)
             if original is None:
                 raise OwnerRoutingError('owner_executor_bootstrap_unverified')
@@ -476,11 +478,11 @@ class OwnerRoutingService:
                 # exact current admission exclusion; do not block that own START.
                 _, requested = work_item_repository_scope(state)
                 target = self._verified_missing_predecessor_replacement(
-                    state, binding, pin.binding.canonical_owner, original, requested)
+                    state, binding, pin.binding.canonical_owner, original, requested, lookup_actor=lookup_actor)
                 if target != pin.recipient.thread_id:
                     raise OwnerRoutingError('owner_recipient_custody_changed')
-            bootstrap = self.bootstraps.get_by_thread(pin.recipient.thread_id, self.control_actor())
-            witness, profile, actor = self._live_recipient(state, binding, bootstrap, pin.binding.canonical_owner)
+            bootstrap = self.bootstraps.get_by_thread(pin.recipient.thread_id, (lookup_actor or self.control_actor)())
+            witness, profile, actor = self._live_recipient(state, binding, bootstrap, pin.binding.canonical_owner, lookup_actor=lookup_actor)
         except OwnerRoutingError:
             raise
         except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
@@ -508,13 +510,13 @@ class OwnerRoutingService:
         self.recipient_context(pin, state, binding)
         return self.assignments(pin.recipient.assignment_id).repository_scope
 
-    def pin(self, state, binding, configured_owner):
+    def pin(self, state, binding, configured_owner, *, lookup_actor=None):
         routing = self.snapshot(state)
         intent = routing.binding(configured_owner) if routing is not None else None
         if intent is None:
             return None
         self.require_resolved_originals(state)
-        self.executor(state, binding, intent.canonical_owner)
+        self.executor(state, binding, intent.canonical_owner, lookup_actor=lookup_actor)
         handoff = state.handoff
         pending = handoff is not None and handoff.status == 'pending'
         if pending and (handoff.owner_routing != intent
@@ -528,14 +530,14 @@ class OwnerRoutingService:
             handoff_requested_at=handoff.requested_at if pending else None,
             bot_binding_id=binding.id, original_thread_id=binding.thread_id)
 
-    def context_for_pin(self, pin, binding):
+    def context_for_pin(self, pin, binding, *, lookup_actor=None):
         state = self.get_state(pin.work_item_ref)
         self.validate_intent(pin, state)
         self.require_resolved_originals(state)
         if pin.recipient is not None:
-            return self.recipient_context(pin, state, binding)
+            return self.recipient_context(pin, state, binding, lookup_actor=lookup_actor)
         self.validate_thread(pin, state, binding)
-        return self.executor(state, binding, pin.binding.canonical_owner)
+        return self.executor(state, binding, pin.binding.canonical_owner, lookup_actor=lookup_actor)
 
     def validate_thread(self, pin, state, binding):
         if binding.thread_id == pin.original_thread_id:

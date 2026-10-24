@@ -430,6 +430,13 @@ class IdentityService:
             service_scopes=tuple(sorted(set(service_scopes))),
         )
 
+    def existing_local_trusted_actor(self) -> AuthenticationActor:
+        """Inspect existing local authority without bootstrapping or repairing it."""
+        actor = self.actor_for_identity(DEFAULT_HUMAN_IDENTITY_ID, scope=TenantScope())
+        if actor.principal_kind != PrincipalKind.HUMAN:
+            raise AuthenticationError("local human identity is unavailable")
+        return actor.model_copy(update={'assurance': AuthenticationAssurance.LOCAL_TRUSTED})
+
     def local_trusted_actor(self) -> AuthenticationActor:
         state = self.bootstrap_local()
         return self._actor(
