@@ -508,3 +508,14 @@ This changes no UI-owned eligibility or control. Existing Work Item handoff,
 worker/bootstrap and preflight inspectors expose the canonical recipient or
 blocker; current denial reasons remain authoritative. No new UI action is
 required.
+
+### Background handoff routing refusals
+
+A handled owner-routing refusal from structured handoff dispatch emits the existing
+`work_item_handoff_dispatch_failed` runtime event, including the attempted
+handoff's original timestamp, recipient, source, and bounded reason code. This
+remains observable when a concurrent Work Item update prevents the canonical
+blocker compare-and-set. It does not overwrite the current handoff, retry input,
+or establish a native input outcome. Coordinator completion means the background
+invocation finished; it does not prove delivery. Delivery and acknowledgement
+continue to require their existing canonical receipts.
