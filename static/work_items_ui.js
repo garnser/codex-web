@@ -1,3 +1,4 @@
+import { workItemActionBarHtml, installWorkItemActionBar } from './work_item_action_bar_ui.js';
 import { createWorkItemSourceActions } from './work_item_source_actions.js';
 import { requestedReference, rememberReference, projectPath } from './reference_navigation.js';
 import { installWorkItemCommands } from "./object_commands.js";
@@ -371,11 +372,7 @@ function renderDetail(payload) {
   detail.innerHTML = `
     <section class="work-item-title">
       <div><small>${esc(item.ref)}</small><h3>${esc(item.title || item.ref)}</h3></div>
-      <div class="work-item-action-bar">
-        <button type="button" class="ghost-button work-item-retry" ${actions.retry?.allowed ? '' : 'disabled'}>Retry</button>
-        <button type="button" class="ghost-button work-item-reconcile" ${actions.reconcile?.allowed ? '' : 'disabled'}>Reconcile</button>
-        ${item.handoff?.status === 'pending' ? '<button type="button" class="ghost-button work-handoff-inspect">Inspect handoff routing</button>' : ''}
-      </div>
+      ${workItemActionBarHtml(item, actions)}
     </section>
     ${workItemSummaryHtml({ item, diagnostics, esc })}
     <div class="work-handoff-inspection" role="status" aria-live="polite"></div>
@@ -526,24 +523,7 @@ function renderDetail(payload) {
           <small>${esc(event.reason || '')} ${esc(fmtTime(event.created_at))}</small>
         </div>`).join('') : '<small>No work-item events recorded.</small>'}</div>
     </section>`;
-  detail.querySelector('.work-item-retry')?.addEventListener('click', () => runItemAction('retry'));
-  detail.querySelector('.work-item-reconcile')?.addEventListener('click', () => runItemAction('reconcile'));
-  detail.querySelector('.work-handoff-inspect')?.addEventListener('click', async event => {
-    const isCurrent = captureScope();
-    const output = detail.querySelector('.work-handoff-inspection');
-    event.target.disabled = true;
-    output.textContent = 'Inspecting current handoff routing…';
-    try {
-      const query = new URLSearchParams({ expected_requested_at: String(item.handoff.requested_at), expected_recipient: item.handoff.to_agent });
-      const result = await request(scopedPath(`/api/work-items/${pathRef(item.ref)}/operator/handoff-eligibility?${query}`));
-      if (!isCurrent()) return;
-      output.textContent = `Routing inspection: ${result.status}${result.blocked_reason ? ` · ${result.blocked_reason}` : ''}${result.current_thread_id ? ` · recipient ${result.current_thread_id}` : ''}. Inspection only; no input dispatched or admission granted.`;
-    } catch (error) {
-      if (isCurrent()) output.textContent = error.message || 'Handoff routing inspection unavailable';
-    } finally {
-      if (isCurrent()) event.target.disabled = false;
-    }
-  });
+  installWorkItemActionBar(detail, item, { runItemAction, captureScope, scopedPath, pathRef });
   detail.querySelector('.work-projection-retry')?.addEventListener('click', async event => {
     const isCurrent = captureScope();
     event.target.disabled = true;
