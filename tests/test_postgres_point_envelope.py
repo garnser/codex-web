@@ -93,24 +93,26 @@ class PostgresPointEnvelopeTests(PointEnvelopeContract,unittest.TestCase):
     def setUp(self):
         fixtures.PostgresAutonomyAppendTests.setUp(self)
 
-    def test_numeric_identity_text_matches_original_json_for_point_and_batch(self):
-        # JSONB turns 1e0 into 1: use the old JSON text for identity predicates,
-        # even when a malformed identity will later be refused by its owner.
+    def test_legacy_identity_text_matches_original_json_for_point_and_batch(self):
+        # These generic envelope predicates retain JSON's exact text even when
+        # a malformed identity will subsequently be refused by its typed owner.
+        cases=(('1e0','1'),('{"z": 1, "a": 2}','{"a": 2, "z": 1}'),('[1,  2]','[1, 2]'))
         for field in ('id', 'organization_id', 'workspace_id'):
-            with self.subTest(field=field):
-                row={'id':'selected','organization_id':'local','workspace_id':'default','value':'retained'}
-                row[field]='numeric-identity'
-                raw=json.dumps({'schema_version':'1.1','records':[row],'requests':[],'events':[]}).replace('"numeric-identity"','1e0')
-                self.put_text(raw)
-                for text,selected in (('1e0',True),('1',False)):
-                    scope={'organization_id':'local','workspace_id':'default','collection_names':('records','requests','events')}
-                    item='selected'
-                    if field=='id':item=text
-                    else:scope[field]=text
-                    for method,selector in (('document_array_item_envelope',item),('document_array_items_envelope',(item,))):
-                        with self.subTest(text=text,method=method):
-                            actual=getattr(self.backend,method)('point-envelope','records',selector,**scope)
-                            self.assertEqual(actual['records'],json.loads(raw)['records'] if selected else [])
+            for raw_identity,normalized in cases:
+                with self.subTest(field=field,raw_identity=raw_identity):
+                    row={'id':'selected','organization_id':'local','workspace_id':'default','value':'retained'}
+                    row[field]='legacy-identity'
+                    raw=json.dumps({'schema_version':'1.1','records':[row],'requests':[],'events':[]}).replace('"legacy-identity"',raw_identity)
+                    self.put_text(raw)
+                    for text,selected in ((raw_identity,True),(normalized,False)):
+                        scope={'organization_id':'local','workspace_id':'default','collection_names':('records','requests','events')}
+                        item='selected'
+                        if field=='id':item=text
+                        else:scope[field]=text
+                        for method,selector in (('document_array_item_envelope',item),('document_array_items_envelope',(item,))):
+                            with self.subTest(text=text,method=method):
+                                actual=getattr(self.backend,method)('point-envelope','records',selector,**scope)
+                                self.assertEqual(actual['records'],json.loads(raw)['records'] if selected else [])
 
     def test_real_server_casts_whole_envelope_only_twice(self):
         self.backend.put('point-envelope',{'schema_version':'1.1','records':[
