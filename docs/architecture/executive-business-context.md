@@ -243,4 +243,8 @@ legacy backends and incompatible document shapes retain the full decoder path.
 Request order, duplicate IDs, missing/foreign refusals, lifecycle, classification,
 credential exclusions, deny-model-context flags, and reviewed Home output checks
 remain unchanged. Mutations and audit operations retain their full-state owner.
+PostgreSQL materializes one binary envelope parse for shape and scope predicates,
+then returns the original selected JSON records in stored order. This avoids
+reparsing unrelated history for each predicate while preserving numeric values,
+signed zero, duplicate-key decoding and the existing legacy JSON fallback.
 This changes no context budget, timeout, cache, API response, or operator controls.
