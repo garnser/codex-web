@@ -3030,6 +3030,7 @@ class AssignmentBoundControlPlaneBroker:
             429: "Too Many Requests",
             500: "Internal Server Error",
             502: "Bad Gateway",
+            504: "Gateway Timeout",
         }.get(status, "Error")
         correlation = (
             f"X-Correlation-ID: {correlation_id}\r\n"
@@ -3086,6 +3087,7 @@ class AssignmentBoundControlPlaneBroker:
         status = 500
         denial_reason = None
         denial_code = "control_plane_broker_denied"
+        outcome_unknown = False
         history_readiness = None
         procedure_discovery = None
         correlation_id = uuid.uuid4().hex
@@ -3231,7 +3233,18 @@ class AssignmentBoundControlPlaneBroker:
                     status = 405
                 else:
                     status = 403
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError):
+        except asyncio.TimeoutError:
+            if operation is None:
+                status = 400
+                denial_reason = "incomplete or timed-out control-plane request"
+            else:
+                # An operation is resolved only after the complete body was
+                # received. A downstream timeout cannot prove no mutation ran.
+                status = 504
+                denial_code = "control_plane_operation_timeout"
+                denial_reason = "control-plane operation timed out; outcome is unknown; reconcile without retry"
+                outcome_unknown = True
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
             status = 400
             denial_reason = "incomplete or timed-out control-plane request"
         except Exception as exc:
@@ -3269,6 +3282,7 @@ class AssignmentBoundControlPlaneBroker:
                             {
                                 "error": {
                                     "code": denial_code,
+                                    **({"outcome": "unknown", "retryable": False} if outcome_unknown else {}),
                                     **({"procedure_discovery": procedure_discovery} if procedure_discovery is not None else {}),
                                     **({"history_readiness": history_readiness} if history_readiness else {}),
                                     "message": denial_reason[:500],

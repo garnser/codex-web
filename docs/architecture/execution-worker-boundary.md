@@ -438,6 +438,15 @@ authority denial, and an ambiguous mutation must reconcile its existing
 ActionIntent before retrying. Client deadlines never extend server-side
 assignment leases, operation deadlines or authorization.
 
+The broker distinguishes request-read failures from resolved-operation timeouts.
+Incomplete headers/body retain HTTP400. Once a complete request has resolved an
+operation, `TimeoutError` returns HTTP504 `control_plane_operation_timeout`, an
+explicit unknown outcome and `retryable: false`; it does not prove that a
+mutation had no effect. Existing correlation and assignment/fence audit remain
+authoritative, and the current operation must be reconciled before any retry.
+The existing error/audit surfaces render this canonical classification; no new
+operator action or automatic retry is introduced.
+
 Initial reachability is limited to scoped Work Item operations:
 
 - list/read;
