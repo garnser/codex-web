@@ -11,6 +11,8 @@ from codex_web.identity import PrincipalKind
 from codex_web.services.assignment_reasoning_broker import AssignmentReasoningBroker, OPERATIONS, resolve
 from codex_web.services.control_plane_broker import ControlPlaneBrokerService
 from codex_web.services.executive_management import ExecutiveConsultationError
+from codex_web.services.work_graph import WorkGraphService
+from codex_web.storage.work_graph import WorkGraphStore
 import tests.test_executive_management as executive_fixture
 
 
@@ -19,8 +21,8 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
         # Existing canonical Executive/SQLite fixture contains no application import.
         self.fixture = executive_fixture.ExecutiveManagementTests()
         await self.fixture.asyncSetUp()
-        self.fixture.service.work_graph = NS(snapshot=lambda project_id, **kwargs:
-            NS(model_dump=lambda **kwargs: {"project_id":project_id,"nodes":[]}))
+        self.fixture.service.work_graph = WorkGraphService(
+            WorkGraphStore(self.fixture.store.store), lambda: {})
         self.actor = self.fixture.actor
         self.assignment = NS(id="assignment-one", fence=1, execution_id="exec-one",
             assigned_worker_id="worker-one", organization_id="local", workspace_id="default",
