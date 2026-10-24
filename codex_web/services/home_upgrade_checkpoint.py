@@ -267,7 +267,13 @@ class HomeUpgradeCheckpointService:
                         found.append(self.artifacts.get_artifact(key, actor=requester, state=current))
                     except ArtifactNotFoundError:
                         found.append(None)
-                return prior_or_refuse(*found)
+                prior = prior_or_refuse(*found)
+                # Ordinary creation's generic idempotency lookup is unscoped.
+                # A corrupt foreign-only collision must never become reuse;
+                # a valid scoped prior still wins even if a foreign row is first.
+                if prior is None and any(item.id == key for item in current.artifacts):
+                    self.refused('home_upgrade_dormant_preservation_changed')
+                return prior
 
             if self._dormant_snapshot(binding, requester) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')

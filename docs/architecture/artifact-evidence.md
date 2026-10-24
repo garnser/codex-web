@@ -294,7 +294,10 @@ Artifact creation's existing cross-domain transaction. Full Artifact validation
 runs first. The private guard checks the first stored actor-scoped checkpoint,
 then dormant preservation, before Governance domain decoding, registration, model
 export or upsert. A valid prior returns an empty delta without requiring the
-ordinary creation payload-hash metadata. New creation retains complete typed
+ordinary creation payload-hash metadata. If no scoped prior exists, a foreign-only
+collision on the computed preservation ID refuses before ordinary unscoped
+idempotency can return that row. A valid scoped prior still wins over an earlier
+foreign row. New creation retains complete typed
 Artifact/Governance validation, current authorization and atomic rollback.
 
 Snapshot observations and canonical readiness initialization remain outside these
