@@ -136,7 +136,8 @@ class PostgresArtifactSnapshotTests(ArtifactSnapshotContract, unittest.TestCase)
                             ('surrogate', 'before\ud800after'), ('overflow', 'overflow-number')):
             for duplicate in (False, True):
                 with self.subTest(case=case, duplicate=duplicate):
-                    first = self.artifact(metadata={'legacy': value}).model_dump(mode='json')
+                    first = self.artifact().model_dump(mode='json')
+                    first['metadata'] = {'legacy': value}  # Raw legacy JSON, outside typed serialization.
                     raw = json.dumps({'schema_version': '1.3', 'artifacts': [first,
                         {'id': self.ids[0] if duplicate else 'unrelated-malformed'}]})
                     if case == 'overflow': raw = raw.replace('"overflow-number"', '1e1000000')
