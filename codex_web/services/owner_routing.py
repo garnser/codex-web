@@ -16,6 +16,13 @@ from codex_web.identity import TenantScope
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 
 
+class _MissingNativePredecessor(OwnerRoutingError):
+    """Positive scoped native session, but its historical assignment is absent."""
+
+    def __init__(self):
+        super().__init__('owner_recipient_native_custody_unverified')
+
+
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
@@ -260,8 +267,11 @@ class OwnerRoutingService:
         if (session.organization_id, session.workspace_id, session.project_id) != expected:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
         previous = self.assignments(session.assignment_id) if session.assignment_id else None
-        if (previous is None or
-                (previous.organization_id, previous.workspace_id, previous.project_id, previous.created_by)
+        if previous is None:
+            if session.assignment_id:
+                raise _MissingNativePredecessor()
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        if ((previous.organization_id, previous.workspace_id, previous.project_id, previous.created_by)
                 != (*expected, assignment.created_by)):
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
         if (previous.id != assignment.id and str(previous.status) not in
@@ -269,6 +279,34 @@ class OwnerRoutingService:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
         return (set(previous.resource_ids) == set(assignment.resource_ids)
                 and previous.repository_scope == assignment.repository_scope)
+
+    def _verified_missing_predecessor_replacement(self, state, binding, owner, source, requested):
+        """Separate current custody never repairs or resumes missing old custody."""
+        if str(source.status) not in {'succeeded', 'failed', 'cancelled', 'lost'} or source.lease is not None:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        try:
+            target = self.replacement_resolver(binding.thread_id, project_id=state.project_id,
+                organization_id=state.organization_id, workspace_id=state.workspace_id)
+            if not target or target == binding.thread_id:
+                raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+            bootstrap = self.bootstraps.get_by_thread(target, self.control_actor())
+            witness, _, _ = self._live_recipient(state, binding, bootstrap, owner)
+            current = self.assignments(witness.assignment_id)
+            session = self.sessions.native_custody(target)
+            if (current is None or current.created_by != source.created_by
+                    or current.agent_profile != source.agent_profile
+                    or current.repository_scope is None
+                    or set(current.repository_scope.writable_repository_ids) != set(requested)
+                    or session is None or session.assignment_id != current.id
+                    or session.execution_id != current.execution_id
+                    or session.execution_workspace_id != current.execution_workspace_id
+                    or session.worker_id != current.assigned_worker_id):
+                raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+            return target
+        except OwnerRoutingError:
+            raise
+        except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified') from exc
 
     def _live_recipient(self, state, binding, bootstrap, owner):
         from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
@@ -340,11 +378,18 @@ class OwnerRoutingService:
                 organization_id=state.organization_id, workspace_id=state.workspace_id, project_id=state.project_id)
             if execution_profile.repository_access == 'none':
                 return self.pin(state, binding, configured_owner)
-        native_compatible = self.native_scope_compatible(state, source, source_assignment)
+        required_replacement = None
+        try:
+            native_compatible = self.native_scope_compatible(state, source, source_assignment)
+        except _MissingNativePredecessor:
+            self.require_resolved_originals(state)
+            required_replacement = self._verified_missing_predecessor_replacement(
+                state, binding, owner, source_assignment, requested)
+            native_compatible = True
         source_scope = getattr(source_assignment, 'repository_scope', None)
         if (source_scope is not None and set(source_scope.writable_repository_ids) == requested
                 and not source_scope.read_only_repository_ids
-                and native_compatible):
+                and native_compatible and required_replacement is None):
             # Equal historical scope is not a current executor when canonical
             # recovery already linked this source to another conversation.
             # Unreplaced first admission/recovery keeps its existing bootstrap.
@@ -375,6 +420,10 @@ class OwnerRoutingService:
             except OwnerRoutingError:
                 continue
             matches.append(witness)
+        if required_replacement is not None and (len(matches) != 1
+                or matches[0].thread_id != required_replacement):
+            raise OwnerRoutingError('owner_recipient_ambiguous' if len(matches) > 1
+                else 'owner_recipient_native_custody_unverified')
         if len(matches) != 1:
             request_incompatible = not native_compatible
             if (not matches and native_compatible and source_scope is not None
@@ -411,6 +460,20 @@ class OwnerRoutingService:
         if self._work_item_owner_checksum(state) != pin.recipient.work_item_owner_checksum:
             raise OwnerRoutingError('owner_routing_work_item_changed')
         try:
+            source = self.bootstraps.get_by_thread(binding.thread_id, self.control_actor())
+            original = self.assignments(source.assignment_id)
+            if original is None:
+                raise OwnerRoutingError('owner_executor_bootstrap_unverified')
+            try:
+                self.native_scope_compatible(state, source, original)
+            except _MissingNativePredecessor:
+                # The caller has already checked retained originals with its
+                # exact current admission exclusion; do not block that own START.
+                _, requested = work_item_repository_scope(state)
+                target = self._verified_missing_predecessor_replacement(
+                    state, binding, pin.binding.canonical_owner, original, requested)
+                if target != pin.recipient.thread_id:
+                    raise OwnerRoutingError('owner_recipient_custody_changed')
             bootstrap = self.bootstraps.get_by_thread(pin.recipient.thread_id, self.control_actor())
             witness, profile, actor = self._live_recipient(state, binding, bootstrap, pin.binding.canonical_owner)
         except OwnerRoutingError:
