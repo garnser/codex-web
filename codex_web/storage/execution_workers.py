@@ -205,6 +205,14 @@ class ExecutionWorkerStore:
         EXECUTION_WORKER_CONTRACT.require(payload.get("schema_version", ""))
         return ExecutionWorkerState.model_validate(payload)
 
+    def reads_initialized(self) -> bool:
+        """Inspect readiness without invoking the legacy migration owner."""
+        namespaces = (self.worker_namespace, self.assignment_namespace,
+            self.event_namespace, self.enrollment_namespace)
+        ready = self.store.record_collections_exist(namespaces)
+        return (set(ready) == set(namespaces) and all(value is True for value in ready.values())
+            and self.store.get(self.namespace) is None)
+
     def _ensure_records(self) -> None:
         namespaces = (
             self.worker_namespace,

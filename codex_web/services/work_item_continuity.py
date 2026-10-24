@@ -70,6 +70,12 @@ class DeferredWorkItemContinuityService:
     def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
         return self._require().owner_dispatch_projection(state)
 
+    def handoff_eligibility_projection(self, state: WorkItemState, **expected) -> dict[str, Any]:
+        return self._require().handoff_eligibility_projection(state, **expected)
+
+    def require_handoff_inspection_ready(self):
+        return self._require().require_handoff_inspection_ready()
+
     def schedule_structured_handoff_dispatch(
         self,
         state: WorkItemState,
@@ -426,6 +432,87 @@ class WorkItemContinuityService:
                 "repository_resource_id":repository_resource_id,
                 "writable_repository_resource_ids":list(writable_repository_resource_ids)})
         return recorded
+
+    def require_handoff_inspection_ready(self):
+        if self.owner_routing is None:
+            raise OwnerRoutingError('owner_routing_inspection_unavailable')
+        self.owner_routing.require_readonly_inspection_ready()
+
+    def handoff_eligibility_projection(self, state: WorkItemState, *,
+        expected_requested_at: float, expected_recipient: str,
+    ) -> dict[str, Any]:
+        """Explicit current inspection, never preparation or input admission."""
+        handoff = state.handoff
+        observed = state.model_dump(mode='json')
+        result = {'inspection_only': True, 'eligible': False,
+            'dispatch_authorized': False, 'admission_checked': False,
+            'native_outcome': 'not_inferred', 'ref': state.ref,
+            'observed_work_updated_at': state.updated_at,
+            'handoff_requested_at': handoff.requested_at if handoff else None,
+            'recipient': handoff.to_agent if handoff else None,
+            'current_thread_id': None}
+        def verdict(status, reason=None):
+            return {**result, 'status': status, 'blocked_reason': reason}
+        if handoff is None or handoff.status != 'pending':
+            return verdict('no_pending_handoff', 'work_item_handoff_not_pending')
+        if (handoff.requested_at != expected_requested_at
+                or handoff.to_agent != expected_recipient):
+            return verdict('changed', 'work_item_handoff_changed')
+        if handoff.acknowledged_at is not None or (
+                handoff.delivery is not None and handoff.delivery.status == 'delivered'):
+            return verdict('already_delivered', 'work_item_handoff_delivery_already_recorded')
+        if state.closed_at or state.current_stage == 'closed':
+            return verdict('ineligible', 'work_item_closed')
+        if self.owner_routing is None:
+            return verdict('unavailable', 'owner_routing_unavailable')
+        try:
+            self.require_handoff_inspection_ready()
+            recipient = self._routed_owner(state, handoff.to_agent)
+            if not recipient:
+                return verdict('ineligible', 'owner_routing_recipient_unavailable')
+            intent = self._alias_intent(state, handoff.to_agent)
+            binding = (self.owner_routing.existing_binding(state, recipient,
+                preferred_conversation_id=self.coordination_channel) if intent is not None else
+                self.binding_for_agent(recipient, state.project_id,
+                    preferred_conversation_id=self.coordination_channel))
+            if binding is None:
+                return verdict('ineligible', 'work_item_owner_binding_unavailable')
+            _, writable = self._dispatch_repository_scope(state)
+            # Deliberately synchronous: the async preparer can create a worker.
+            # These are the same selection and fresh pin checks used by dispatch.
+            pin = self.owner_routing.compatible_pin(state, binding,
+                handoff.to_agent, writable_repository_ids=writable)
+            if pin is None:
+                return verdict('unavailable', 'owner_routing_pin_unavailable')
+            profile, _ = self.owner_routing.context_for_pin(pin, binding)
+            latest = self.get_state(state.ref)
+            if latest.model_dump(mode='json') != observed:
+                return verdict('changed', 'work_item_handoff_changed')
+            witness = pin.recipient
+            result.update(current_thread_id=witness.thread_id if witness else binding.thread_id,
+                definition=pin.binding.definition.model_dump(mode='json'),
+                configured_owner=pin.binding.configured_owner,
+                canonical_owner=pin.binding.canonical_owner,
+                requested_writable_repository_ids=list(writable),
+                agent_profile_id=profile.profile_id, agent_profile_revision=profile.revision,
+                configured_execution_profile_id=profile.execution_profile_id,
+                bot_binding_id=binding.id,
+                assignment_id=witness.assignment_id if witness else None,
+                fence=witness.fence if witness else None)
+            return {**verdict('eligible'), 'eligible': True}
+        except OwnerRoutingError as exc:
+            if str(exc) in {'owner_routing_inspection_not_initialized', 'owner_routing_inspection_unavailable'}:
+                return verdict('unavailable', str(exc))
+            try:
+                if self.get_state(state.ref).model_dump(mode='json') != observed:
+                    return verdict('changed', 'work_item_handoff_changed')
+            except Exception:
+                return verdict('unavailable', 'owner_routing_inspection_unavailable')
+            code = str(exc)
+            code = code if re.fullmatch(r'(?:owner_|work_item_)[a-z0-9_]{1,112}', code) else 'owner_routing_refused'
+            return verdict('ineligible', code)
+        except Exception:
+            return verdict('unavailable', 'owner_routing_inspection_unavailable')
 
     def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
         """Expose only a currently eligible exact owner/thread pair."""
