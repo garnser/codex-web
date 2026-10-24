@@ -54,6 +54,27 @@ References are resolved inside the authenticated tenant/workspace before model i
 
 This M9 layer intentionally does not make the legacy Executive chat transcript a source of company state.
 
+Project WorkGraph context is an Executive-specific bounded projection of the
+complete canonical snapshot, rather than every project node in the model prompt.
+It retains exact whole-project progress, tenant/project scope and a SHA-256 digest
+of the complete source snapshot. Selected nodes retain their complete canonical
+readiness and findings; edge, runnable, failure-impact and critical-path lists
+explicitly report omitted counts. Critical-path aggregate counts describe the
+whole graph even when its displayed references are partial. `complete=false`
+must never be interpreted as an empty or healthy remainder.
+
+The existing role context-item limit and ordinary canonical retrieval capacity
+bound the projection. A numeric per-call input budget further caps graph data
+at half that budget; disabled consultation enforcement never makes retrieval
+unlimited. Explicit Work references and their incoming
+parent/dependency closure are mandatory: unavailable or oversized required
+context refuses preparation before activation persistence or model invocation.
+Remaining capacity prioritizes critical-path, failed-dependency, blocked,
+runnable and active work deterministically. Selected canonical rows are not
+silently text-truncated. Ordinary operator graph APIs remain complete; this adds
+no graph store, cache, model call, authority or larger token budget. Memory and
+business context retain their existing retrieval and governance owners.
+
 ## Bounded multi-role consultation
 
 A consultation performs:
@@ -140,3 +161,35 @@ outcome and requires canonical inventory reconciliation rather than resending th
 request. Neither the dependency nor persistence response recommends retrying.
 These error distinctions use the existing API error surface; no new operator
 control or independent lifecycle state is introduced.
+
+
+### Explicit per-activation ceiling opt-out
+
+An authorized operator can set `budget.max_input_tokens`, `max_output_tokens`,
+and `max_cost_usd` to JSON `null` when temporarily qualifying a new consultation.
+The existing UI exposes this choice on creation and displays disabled ceilings
+on the persisted activation. Omission retains the numeric defaults. Historical
+activations and revision budgets are never rewritten. Call count remains finite;
+for a single-call qualification select one role and `max_model_calls: 1`.
+
+Null removes only the application ceiling. ModelGateway still enforces model
+context capacity, declared output capacity, policy/mapping constraints, authority,
+provider admission, and usage attribution. Output null resolves to the smaller
+of declared model output capacity and remaining context capacity. Native
+entitlement requires exact null/finite caller-marker agreement before routing;
+the selected route then binds finite actual model capacity for the native writer.
+No fallback, tool loop, or additional call is authorized by this option. Retrieval
+limits remain finite independently of invocation ceilings.
+
+Executive activation state envelope 1.1 adds nullable ceilings. Its 1.0 migration
+changes only the envelope version and preserves every activation/revision. Old
+readers refuse 1.1; rollback requires compatible readers, not dropping nulls or
+inventing numeric limits. Input pipeline projections preserve the same explicit
+null output marker until routing. This operator exception to default bounded
+application budgets does not waive provider limits or canonical policy. See #1784.
+
+Deployment must declare this domain-envelope reader change in the existing
+Release/Upgrade compatibility evidence: all readers of `executive_activations`
+must support 1.1 before new writes. The physical StateStore schema number is
+unchanged; it is not a substitute for this domain compatibility check. The
+existing migration registry owns decoding, with no new deployment controller.

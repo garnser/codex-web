@@ -422,6 +422,12 @@ function renderActivation() {
         ${renderContextGroup('Decisions', item.context?.decisions, 'decision', 'id')}
         ${renderContextGroup('Work', item.context?.work_items, 'work', 'ref')}
         ${renderContextGroup('Evidence', item.context?.evidence, 'evidence', 'id')}
+        ${list(item.context?.work_graphs).map((graph) => `<div class="exec-mgmt-graph-context">
+          <span>Project graph · ${esc(graph.project_id)}</span>
+          <small>${esc(list(graph.nodes).length)} retained of ${esc(graph.progress?.total ?? 'unknown')} work items · ${esc(graph.progress?.blocked ?? 'unknown')} blocked project-wide</small>
+          ${graph.complete === false ? `<small>Partial context · omitted ${esc(JSON.stringify(graph.omitted || {}))}. Omitted work is not inferred healthy or absent.</small>` : ''}
+          <small>Source snapshot SHA-256: ${esc(graph.source_snapshot_sha256 || 'not recorded on this historical snapshot')}</small>
+        </div>`).join('')}
       </div>
     </section>
 
@@ -429,9 +435,9 @@ function renderActivation() {
       <h4>Bounded consultation</h4>
       <div class="exec-mgmt-budget">
         <span>Calls ≤ ${esc(item.budget?.max_model_calls)}</span>
-        <span>Input ≤ ${esc(item.budget?.max_input_tokens)}</span>
-        <span>Output ≤ ${esc(item.budget?.max_output_tokens)}</span>
-        <span>Cost ≤ $${esc(item.budget?.max_cost_usd)}</span>
+        <span>Input: ${item.budget?.max_input_tokens === null ? 'application ceiling disabled' : `≤ ${esc(item.budget?.max_input_tokens)}`}</span>
+        <span>Output: ${item.budget?.max_output_tokens === null ? 'provider capacity' : `≤ ${esc(item.budget?.max_output_tokens)}`}</span>
+        <span>Cost: ${item.budget?.max_cost_usd === null ? 'application ceiling disabled' : `≤ $${esc(item.budget?.max_cost_usd)}`}</span>
       </div>
       <div class="exec-mgmt-consultations">
         ${list(item.consultations).map(renderConsultation).join('') || '<p class="exec-mgmt-muted">No consultation has run yet.</p>'}
@@ -632,6 +638,8 @@ function renderCreateForm() {
         <label>Decision IDs<input name="decision_ids" placeholder="optional comma-separated"></label>
         <label>Work refs<input name="work_item_refs" placeholder="optional comma-separated"></label>
         <label>Evidence IDs<input name="evidence_ids" placeholder="optional comma-separated"></label>
+        <label class="wide"><input type="checkbox" name="disable_application_ceilings">Disable application token and cost ceilings for this new activation</label>
+        <p class="exec-mgmt-muted wide">Provider context/output capacity and policy limits still apply. Model calls remain finite; usage is recorded.</p>
         <div class="wide exec-mgmt-actions">
           <button type="submit" class="primary-button">Create activation</button>
           <button type="button" class="ghost-button exec-mgmt-cancel-create">Cancel</button>
@@ -665,6 +673,9 @@ async function createActivation(event) {
     decision_ids: csv(form, 'decision_ids'),
     work_item_refs: csv(form, 'work_item_refs'),
     evidence_ids: csv(form, 'evidence_ids'),
+    ...(data.get('disable_application_ceilings') ? { budget: {
+      max_input_tokens: null, max_output_tokens: null, max_cost_usd: null, max_model_calls: 5,
+    } } : {}),
   };
   form.dataset.saving = 'true';
   setStatus('Creating canonical Executive activation…');

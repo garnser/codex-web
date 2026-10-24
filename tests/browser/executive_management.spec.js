@@ -110,7 +110,9 @@ function activation(status = 'escalated') {
       work_items: [
         { ref: 'project-a:reference:7', title: 'Implement migration', current_stage: 'implementation_active' },
       ],
-      work_graphs: [],
+      work_graphs: [{ project_id: 'project-a', nodes: [{ ref: 'project-a:reference:7' }],
+        progress: { total: 1899, blocked: 17 }, complete: false,
+        omitted: { nodes: 1898, edges: 2 }, source_snapshot_sha256: 'graph-source-digest' }],
       evidence: [
         { id: 'evidence-a', summary: 'Architecture review passed.', lifecycle: 'valid' },
       ],
@@ -224,6 +226,7 @@ async function installRoutes(page, options = {}) {
         id: 'executive-activation-new',
         subject: submitted.subject,
         request: submitted.request,
+        budget: submitted.budget || activation().budget,
         project_id: submitted.project_id,
         selections: [
           { role_id: 'cto', score: 100, reasons: ['explicitly requested'], explicit: true },
@@ -346,6 +349,10 @@ test('Executive management explains activation, disagreement, authority and cano
   await expect(dialog).toContainText('executive.work.materialize');
   await expect(dialog).toContainText('allowed by role local-admin grant local-admin.all');
   await expect(dialog).toContainText('External consequences still flow through approved Decision');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('1 retained of 1899 work items');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('17 blocked project-wide');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('Partial context');
+  await expect(dialog.locator('.exec-mgmt-graph-context')).toContainText('graph-source-digest');
 
   await dialog.locator('[data-canonical-kind="goal"][data-canonical-id="goal-a"]').click();
   await dialog.locator('[data-canonical-kind="decision"][data-canonical-id="decision-a"]').first().click();
@@ -385,6 +392,28 @@ test('Executive management creates a planned activation separately from consulta
   await expect(page.locator('.exec-mgmt-detail')).toContainText('Synthesis complete');
   await expect(page.locator('.exec-mgmt-detail')).toContainText('Proceed with the bounded option.');
   expect(current.activation.status).toBe('completed');
+});
+
+test('Executive opt-out persists explicit null ceilings and displays provider capacity', async ({ page }) => {
+  const current = await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/executive_management_fixture.html');
+  await page.locator('#executive-management-button').click();
+  await page.locator('.exec-mgmt-new').click();
+  const form = page.locator('.exec-mgmt-create-form');
+  await expect(form.locator('[name="disable_application_ceilings"]')).not.toBeChecked();
+  await form.locator('[name="subject"]').fill('Qualification without application ceilings');
+  await form.locator('[name="request"]').fill('Assess this architecture question once.');
+  await form.locator('[name="requested_role_ids"]').fill('cto');
+  await form.locator('[name="disable_application_ceilings"]').check();
+  await form.locator('button[type="submit"]').click();
+  await expect(page.locator('.exec-mgmt-budget')).toContainText('Input: application ceiling disabled');
+  await expect(page.locator('.exec-mgmt-budget')).toContainText('Output: provider capacity');
+  await expect(page.locator('.exec-mgmt-budget')).toContainText('Cost: application ceiling disabled');
+  expect(current.activation.budget).toEqual({
+    max_input_tokens: null, max_output_tokens: null, max_cost_usd: null, max_model_calls: 5,
+  });
+  expect(current.activation.status).toBe('planned');
+  expect(current.activation.consultations).toEqual([]);
 });
 
 test('authority denial leaves Executive proposal advisory and uses only canonical materialization endpoint', async ({ page }) => {

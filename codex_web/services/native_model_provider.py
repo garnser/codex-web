@@ -63,8 +63,8 @@ class NativeModelInvocationContext:
     activation_id: str
     role_id: str
     execution_id: str
-    max_input_tokens: int
-    max_output_tokens: int
+    max_input_tokens: int | None
+    max_output_tokens: int | None
     validate_current: Callable[[], None] = field(repr=False, compare=False)
     requester: AuthenticationActor | None = field(default=None, repr=False, compare=False)
     input_message_sha256: str | None = None
@@ -82,9 +82,15 @@ class NativeModelInvocationContext:
                                         else 'executive-role:' + self.role_id)
                 and request.allow_fallback is False
                 and 0 < request.timeout_seconds <= self.max_duration_seconds
-                and request.max_input_tokens is not None
-                and 0 < request.max_input_tokens <= self.max_input_tokens
-                and 0 < request.max_output_tokens <= self.max_output_tokens)
+                and self._matches_ceiling(request.max_input_tokens, self.max_input_tokens)
+                and self._matches_ceiling(request.max_output_tokens, self.max_output_tokens))
+
+    @staticmethod
+    def _matches_ceiling(requested: int | None, authorized: int | None) -> bool:
+        # None is an exact opt-out marker, never a wildcard for a finite value.
+        if requested is None or authorized is None:
+            return requested is None and authorized is None
+        return 0 < requested <= authorized
 
 
 _current_native_model_invocation = contextvars.ContextVar('canonical_native_model_invocation', default=None)

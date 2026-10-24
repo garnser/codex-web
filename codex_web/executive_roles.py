@@ -18,8 +18,8 @@ EXECUTIVE_ROLE_CATALOG_SCHEMA_VERSION = "1.0"
 
 EXECUTIVE_ACTIVATION_CONTRACT = ContractSpec(
     "executive-activation-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
 )
 
 MAX_EXECUTIVE_ROLES_PER_ACTIVATION = 5
@@ -214,10 +214,10 @@ def validate_executive_role_catalog(payload: dict[str, Any]) -> dict[str, Any]:
 class ExecutiveReasoningBudget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_input_tokens: int = Field(default=40000, ge=1000, le=500000)
-    max_output_tokens: int = Field(default=12000, ge=256, le=100000)
+    max_input_tokens: int | None = Field(default=40000, ge=1000, le=500000)
+    max_output_tokens: int | None = Field(default=12000, ge=256, le=100000)
     max_model_calls: int = Field(default=5, ge=1, le=20)
-    max_cost_usd: float = Field(default=5.0, gt=0.0, le=1000.0)
+    max_cost_usd: float | None = Field(default=5.0, gt=0.0, le=1000.0)
 
 
 class ExecutiveActivationCreate(BaseModel):
