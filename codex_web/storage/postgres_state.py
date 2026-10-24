@@ -965,7 +965,7 @@ class PostgresStateStore:
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
             WHEN {arrays} THEN payload
             WHEN COALESCE(jsonb_typeof(document -> 'schema_version'), 'string') NOT IN ('string','null') THEN payload
-            ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', ''"0.0"'::jsonb),
+            ELSE json_build_object('schema_version', COALESCE(document -> 'schema_version', '"0.0"'::jsonb),
                 %s::text, COALESCE((SELECT json_agg(original.value ORDER BY original.ordinality)
                     FROM json_array_elements(payload::json -> %s) WITH ORDINALITY AS original(value, ordinality)
                     WHERE original.ordinality IN (SELECT ordinality FROM selected)), '[]'::json))::text
