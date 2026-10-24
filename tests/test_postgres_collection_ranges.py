@@ -402,7 +402,13 @@ class CollectionRangeContract:
         # The malformed third row is outside even this page's lookahead. A
         # row-local projection must not evaluate it and force the raw fallback.
         def first_page():
-            with patch.object(self.backend, 'record_page', side_effect=AssertionError('unselected row parsed')):
+            if postgres or sqlite3.sqlite_version_info >= (3, 38, 0):
+                with patch.object(self.backend, 'record_page', side_effect=AssertionError('unselected row parsed')):
+                    page, cursor = self.backend.record_page_projected(namespace,
+                        fields=('selected', 'null', 'missing'), limit=1)
+            else:
+                # Older SQLite deliberately uses the bounded raw-page reader;
+                # it must preserve these values without requiring JSON arrows.
                 page, cursor = self.backend.record_page_projected(namespace,
                     fields=('selected', 'null', 'missing'), limit=1)
             self.assertEqual(page, {'a': {'selected': 1.0, 'null': None}})
