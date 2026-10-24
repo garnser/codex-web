@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.observability import correlated, operation_stage
 from codex_web.models import TaskSourceConfiguration, WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
@@ -365,11 +367,16 @@ def build_work_items_router(
 
     @router.get("/api/work-items/{ref:path}/operator")
     async def get_work_item_operator_detail(ref: str, request: Request) -> dict[str, Any]:
-        require_item_scope(ref, request)
-        payload = await asyncio.to_thread(operator.detail, ref)
-        if agent_teams is not None:
-            payload["history"]["teamDelegations"] = agent_teams.work_item_history(
-                ref, actor=request.state.identity_actor)
+        scope = request.state.tenant_scope
+        with correlated(tenant_id=scope.organization_id, workspace_id=scope.workspace_id):
+            with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "scope_lookup"):
+                require_item_scope(ref, request)
+            with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "detail_wait"):
+                payload = await asyncio.to_thread(operator.detail, ref)
+            if agent_teams is not None:
+                with operation_stage(logging.getLogger(__name__), "work_item.operator.stage", "team_history"):
+                    payload["history"]["teamDelegations"] = agent_teams.work_item_history(
+                        ref, actor=request.state.identity_actor)
         return payload
 
     @router.post("/api/work-items/{ref:path}/retry")

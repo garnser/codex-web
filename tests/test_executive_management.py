@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.testclient import TestClient
 
 from codex_web.api.executive_management import build_executive_management_router
@@ -319,6 +323,98 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
         finally:
             client.close()
             self.service.prepare = original_prepare
+
+    def _create_endpoint(self, *, timeout=0.01):
+        router = build_executive_management_router(self.service, context_timeout_seconds=timeout)
+        request = Request({"type": "http"})
+        request.state.identity_actor = self.actor
+        endpoint = next(route.endpoint for route in router.routes
+                        if route.path == "/api/executive/activations" and "POST" in route.methods)
+        return endpoint, request
+
+    async def test_executor_queue_expiry_never_invokes_prepare_or_persist(self):
+        loop = asyncio.get_running_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(executor)
+        occupied = threading.Event()
+        release = threading.Event()
+
+        def occupy():
+            occupied.set()
+            release.wait(2)
+
+        owner = loop.run_in_executor(None, occupy)
+        for _ in range(100):
+            if occupied.is_set():
+                break
+            await asyncio.sleep(0.001)
+        self.assertTrue(occupied.is_set())
+        endpoint, request = self._create_endpoint()
+        try:
+            with patch.object(self.service, "prepare") as prepare:
+                with self.assertRaises(HTTPException) as refused:
+                    await endpoint(ExecutiveActivationCreate(subject="queue", request="private request"), request)
+                self.assertEqual(refused.exception.detail["code"], "executive_context_timeout")
+                release.set()
+                await owner
+                await asyncio.sleep(0.01)
+                prepare.assert_not_called()
+                self.assertEqual(self.service.list(actor=self.actor), ())
+        finally:
+            release.set()
+            await owner
+            executor.shutdown(wait=True)
+
+    async def test_inner_prepare_timeout_is_not_request_deadline(self):
+        endpoint, request = self._create_endpoint(timeout=1)
+        with patch.object(self.service, "prepare", side_effect=TimeoutError("private dependency detail")):
+            with self.assertRaises(HTTPException) as refused:
+                await endpoint(ExecutiveActivationCreate(subject="dependency", request="private request"), request)
+        self.assertEqual(refused.exception.detail["code"], "executive_context_dependency_timeout")
+        self.assertFalse(refused.exception.detail["retryable"])
+        self.assertNotIn("private", str(refused.exception.detail))
+        self.assertEqual(self.service.list(actor=self.actor), ())
+
+    async def test_persist_timeout_after_create_reports_unknown_persisted_outcome(self):
+        endpoint, request = self._create_endpoint(timeout=1)
+
+        def persist_then_timeout(activation, *, actor):
+            self.store.create(activation)
+            raise TimeoutError("private storage detail")
+
+        with patch.object(self.service, "persist_prepared", side_effect=persist_then_timeout):
+            with self.assertRaises(HTTPException) as refused:
+                await endpoint(ExecutiveActivationCreate(subject="persist", request="private request", requested_role_ids=("cto",)), request)
+        self.assertEqual(refused.exception.detail["code"], "executive_activation_persistence_timeout")
+        self.assertEqual(refused.exception.detail["outcome"], "unknown")
+        self.assertFalse(refused.exception.detail["retryable"])
+        self.assertNotIn("no activation", refused.exception.detail["message"])
+        self.assertNotIn("private", str(refused.exception.detail))
+        self.assertEqual(len(self.service.list(actor=self.actor)), 1)
+
+    async def test_context_stage_events_exclude_payload_and_exception_content(self):
+        with patch("codex_web.observability.log_event") as observe:
+            self.service.prepare(ExecutiveActivationCreate(
+                subject="private-subject-marker", request="private-request-marker",
+                requested_role_ids=("cto",)), actor=self.actor)
+        self.assertGreaterEqual(observe.call_count, 3)
+        for call in observe.call_args_list:
+            fields = call.kwargs
+            self.assertEqual(set(fields), {"stage", "outcome", "duration_seconds", "tenant_id", "workspace_id"})
+            self.assertIn(fields["stage"], {"catalog", "business_scope", "context", "work_graph", "memory_search"})
+            self.assertGreaterEqual(fields["duration_seconds"], 0)
+            self.assertEqual(fields["tenant_id"], self.actor.organization_id)
+            self.assertNotIn("private-", str(fields))
+
+    async def test_stage_telemetry_never_masks_original_refusal(self):
+        from codex_web.observability import operation_stage
+        import logging
+        original = RuntimeError("private refusal detail")
+        with patch("codex_web.observability.log_event", side_effect=asyncio.CancelledError):
+            with self.assertRaises(RuntimeError) as refused:
+                with operation_stage(logging.getLogger(__name__), "executive.context.stage", "context"):
+                    raise original
+        self.assertIs(refused.exception, original)
 
     async def test_deterministic_selection_invokes_only_relevant_roles_and_preserves_disagreement(self):
         activation = self.service.create(

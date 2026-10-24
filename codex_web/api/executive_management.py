@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.observability import log_event, operation_stage
 from codex_web.executive_roles import (
     ExecutiveActivationCreate,
     ExecutiveActivationStatus,
@@ -158,18 +161,42 @@ def build_executive_management_router(
         payload: ExecutiveActivationCreate,
         request: Request,
     ) -> dict[str, Any]:
-        actor = consultant(request)
+        scope = getattr(request.state, "tenant_scope", None)
+        with operation_stage(logging.getLogger(__name__), "executive.context.stage", "actor",
+            organization_id=getattr(scope, "organization_id", None),
+            workspace_id=getattr(scope, "workspace_id", None)):
+            actor = consultant(request)
+        submitted = time.monotonic()
+
+        def prepare_in_worker():
+            # Actual execution start distinguishes executor wait from context work.
+            try:
+                log_event(logging.getLogger(__name__), logging.INFO,
+                    "executive.context.worker_started", "Executive context worker started",
+                    queue_wait_seconds=max(0.0, time.monotonic() - submitted),
+                    tenant_id=actor.organization_id, workspace_id=actor.workspace_id)
+            except BaseException:
+                pass
+            with operation_stage(logging.getLogger(__name__), "executive.context.stage", "prepare_worker",
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+                return service.prepare(payload, actor=actor)
+
+        task = asyncio.create_task(asyncio.to_thread(prepare_in_worker))
         try:
-            prepared = await asyncio.wait_for(
-                asyncio.to_thread(
-                    service.prepare,
-                    payload,
-                    actor=actor,
-                ),
-                timeout=max(0.001, float(context_timeout_seconds)),
-            )
-            item = service.persist_prepared(prepared, actor=actor)
+            with operation_stage(logging.getLogger(__name__), "executive.context.stage", "prepare_wait",
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+                prepared = await asyncio.wait_for(
+                    task, timeout=max(0.001, float(context_timeout_seconds)),
+                )
         except TimeoutError as exc:
+            # wait_for cancels its task on expiry; an inner TimeoutError completes
+            # the task exceptionally instead. Neither path invokes persistence.
+            if not task.cancelled():
+                raise HTTPException(status_code=503, detail={
+                    "code": "executive_context_dependency_timeout",
+                    "message": "Executive context preparation raised a dependency timeout",
+                    "retryable": False,
+                }) from exc
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -181,6 +208,21 @@ def build_executive_management_router(
                     "retryable": True,
                 },
             ) from exc
+        except Exception as exc:
+            raise error(exc) from exc
+        try:
+            with operation_stage(logging.getLogger(__name__), "executive.context.stage", "persist",
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+                item = service.persist_prepared(prepared, actor=actor)
+        except TimeoutError as exc:
+            # Persistence may have committed before its timeout. Never claim an
+            # absent activation or recommend resending this request.
+            raise HTTPException(status_code=503, detail={
+                "code": "executive_activation_persistence_timeout",
+                "message": "Activation persistence outcome requires reconciliation",
+                "retryable": False,
+                "outcome": "unknown",
+            }) from exc
         except Exception as exc:
             raise error(exc) from exc
         return {"item": item.model_dump(mode="json")}

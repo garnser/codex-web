@@ -123,3 +123,20 @@ Navigation from Executive activity reuses existing canonical views:
 The workspace can dispatch navigation to these views, but it does not copy their records into browser-owned state as a new source of truth. External consequences shown from a materialized Work proposal remain visibly chained through approved Decision → ActionIntent → ActionProvider rather than being presented as an “Executive action.”
 
 The legacy Executive advisor drawer remains available during migration for conversational compatibility. The Organization workspace is the canonical management/explainability surface; a chat transcript remains non-authoritative.
+
+### Context preparation timing and timeout outcomes
+
+Activation preparation retains its existing bounded request window. Existing
+correlated internal telemetry records executor queue wait and closed preparation
+stages (catalog, business scope, canonical context, WorkGraph, and Memory), plus
+persistence duration. It contains no request/context content, exception text or
+stack. Late preparation may finish and log its duration after the request expires;
+that completion does not invoke activation persistence.
+
+`executive_context_timeout` identifies expiry of the preparation wait.
+`executive_context_dependency_timeout` identifies a timeout raised by preparation
+itself. `executive_activation_persistence_timeout` reports an unknown persistence
+outcome and requires canonical inventory reconciliation rather than resending the
+request. Neither the dependency nor persistence response recommends retrying.
+These error distinctions use the existing API error surface; no new operator
+control or independent lifecycle state is introduced.

@@ -431,6 +431,30 @@ def log_event(
     )
 
 
+
+@contextmanager
+def operation_stage(logger, event, stage, *, organization_id=None, workspace_id=None):
+    """Closed caller-owned stage timing; no context, exception text or stack."""
+    started = time.monotonic()
+    outcome = "completed"
+    try:
+        yield
+    except BaseException:
+        outcome = "refused"
+        raise
+    finally:
+        # Telemetry must never change the operation's result or refusal.
+        try:
+            log_event(
+                logger, logging.INFO, event, "Canonical operation stage finished",
+                stage=stage, outcome=outcome,
+                duration_seconds=max(0.0, time.monotonic() - started),
+                **({"tenant_id": organization_id} if organization_id else {}),
+                **({"workspace_id": workspace_id} if workspace_id else {}),
+            )
+        except BaseException:
+            pass
+
 def _metric_key(name: str, labels: Mapping[str, str] | None = None) -> str:
     normalized_name = str(name or "").strip()
     if not normalized_name:

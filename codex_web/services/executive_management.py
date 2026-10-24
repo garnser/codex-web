@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any
+
+from codex_web.observability import operation_stage
 
 from codex_web.authority import (
     AuthorityAutonomyRisk,
@@ -913,10 +916,12 @@ class ExecutiveManagementService:
             and ExecutiveObjectType.WORK_GRAPH in visible
         ):
             try:
-                graph = self.work_graph.snapshot(
-                    payload.project_id,
-                    scope=actor.tenant,
-                )
+                with operation_stage(logging.getLogger(__name__), "executive.context.stage", "work_graph",
+                    organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+                    graph = self.work_graph.snapshot(
+                        payload.project_id,
+                        scope=actor.tenant,
+                    )
             except Exception as exc:
                 raise ExecutiveContextError(
                     f"canonical WorkGraph is unavailable: {payload.project_id}: {exc}"
@@ -928,23 +933,25 @@ class ExecutiveManagementService:
             and ExecutiveObjectType.MEMORY in visible
         ):
             try:
-                memory_result = self.organizational_memory.search(
-                    KnowledgeQuery(
-                        text=f"{payload.subject}\n{payload.request}",
-                        project_ids=(payload.project_id,) if payload.project_id else (),
-                        include_company_scope=bool(payload.project_id),
-                        budget=KnowledgeRetrievalBudget(
-                            top_k=8,
-                            candidate_limit=100,
-                            max_context_tokens=min(
-                                6000,
-                                max(128, payload.budget.max_input_tokens // 4),
+                with operation_stage(logging.getLogger(__name__), "executive.context.stage", "memory_search",
+                    organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+                    memory_result = self.organizational_memory.search(
+                        KnowledgeQuery(
+                            text=f"{payload.subject}\n{payload.request}",
+                            project_ids=(payload.project_id,) if payload.project_id else (),
+                            include_company_scope=bool(payload.project_id),
+                            budget=KnowledgeRetrievalBudget(
+                                top_k=8,
+                                candidate_limit=100,
+                                max_context_tokens=min(
+                                    6000,
+                                    max(128, payload.budget.max_input_tokens // 4),
+                                ),
+                                progressive=True,
                             ),
-                            progressive=True,
                         ),
-                    ),
-                    actor=actor,
-                )
+                        actor=actor,
+                    )
             except Exception as exc:
                 raise ExecutiveContextError(
                     f"canonical Organizational Memory retrieval failed: {exc}"
@@ -1017,14 +1024,18 @@ class ExecutiveManagementService:
         actor: AuthenticationActor,
     ) -> ExecutiveActivation:
         """Resolve bounded canonical context without creating durable state."""
-        catalog, reference = self._catalog(
-            actor=actor,
-            project_id=payload.project_id,
-        )
-        business_domains, business_kpi_ids = self._derive_business_scope(
-            payload,
-            actor=actor,
-        )
+        with operation_stage(logging.getLogger(__name__), "executive.context.stage", "catalog",
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+            catalog, reference = self._catalog(
+                actor=actor,
+                project_id=payload.project_id,
+            )
+        with operation_stage(logging.getLogger(__name__), "executive.context.stage", "business_scope",
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+            business_domains, business_kpi_ids = self._derive_business_scope(
+                payload,
+                actor=actor,
+            )
         effective_payload = payload.model_copy(
             update={
                 "business_domains": business_domains,
@@ -1036,12 +1047,14 @@ class ExecutiveManagementService:
             catalog=catalog,
             business_domains=business_domains,
         )
-        context = self._context(
-            effective_payload,
-            selections,
-            catalog,
-            actor=actor,
-        )
+        with operation_stage(logging.getLogger(__name__), "executive.context.stage", "context",
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id):
+            context = self._context(
+                effective_payload,
+                selections,
+                catalog,
+                actor=actor,
+            )
         required_calls = len(selections) + (1 if len(selections) > 1 else 0)
         if payload.budget.max_model_calls < required_calls:
             raise ExecutiveSelectionError(
