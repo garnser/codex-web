@@ -950,6 +950,67 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             started_at=now,
         )
 
+    async def test_postparse_mutation_timeout_is_unknown_server_outcome(self):
+        async def applied_then_timeout(ref, payload):
+            self.work_items.handoffs.append((ref, payload))
+            raise TimeoutError("private downstream timeout details")
+
+        path = "/api/work-items/" + quote(self.ref, safe="") + "/handoff"
+        with patch.object(self.work_items, "handoff", side_effect=applied_then_timeout) as apply:
+            status, headers, response = await self._request("POST", path,
+                payload={"from_agent": "Orchestrator", "to_agent": "development",
+                         "reason": "current independent assessment"},
+                headers={"X-Correlation-ID": "corr-operation-timeout"})
+            self.assertEqual(status, 504, response)
+            self.assertEqual(response["error"]["code"], "control_plane_operation_timeout")
+            self.assertEqual(response["error"]["outcome"], "unknown")
+            self.assertIs(response["error"]["retryable"], False)
+            self.assertEqual(headers["x-correlation-id"], "corr-operation-timeout")
+            self.assertEqual(apply.await_count, 1)
+            self.assertEqual(len(self.work_items.handoffs), 1)
+            self.assertNotIn("private downstream", json.dumps(response))
+        audit = self.service.audit.load().events[-1]
+        self.assertEqual(audit.response_status, 504)
+        self.assertEqual(audit.decision, ControlPlaneBrokerDecision.ERROR)
+        self.assertEqual(audit.operation_id, "work_item.handoff")
+        self.assertEqual(audit.actor_identity_id, self.worker_actor.identity_id)
+        self.assertEqual(audit.correlation_id, "corr-operation-timeout")
+        self.assertEqual((audit.assignment_id, audit.fence), (self.assignment.id, 1))
+        self.assertNotIn("private downstream", audit.denial_reason)
+        # Current foreign-target authority still refuses before the mutating owner.
+        with patch.object(self.work_items, "handoff", side_effect=applied_then_timeout) as apply:
+            denied, _, _ = await self._request("POST",
+                "/api/work-items/" + quote(self.other_ref, safe="") + "/handoff",
+                payload={"from_agent": "Orchestrator", "to_agent": "development",
+                         "reason": "must remain denied"})
+            self.assertEqual(denied, 403)
+            apply.assert_not_awaited()
+
+    async def test_incomplete_header_and_body_remain_request_400(self):
+        requests = (
+            b"POST /api/work-items HTTP/1.1\r\nHost: fixture",
+            b"POST /api/work-items HTTP/1.1\r\nHost: fixture\r\nContent-Length: 8\r\n\r\n{}",
+        )
+        for raw in requests:
+            with self.subTest(raw=raw), patch.object(self.service, "dispatch", new=AsyncMock()) as dispatch:
+                reader, writer = await asyncio.open_unix_connection(str(self.broker.socket_path))
+                writer.write(raw)
+                await writer.drain()
+                writer.write_eof()
+                response = await asyncio.wait_for(reader.read(), 2)
+                writer.close()
+                await writer.wait_closed()
+                head, body = response.split(b"\r\n\r\n", 1)
+                self.assertIn(b" 400 ", head)
+                error = json.loads(body)["error"]
+                self.assertEqual(error["code"], "control_plane_broker_denied")
+                self.assertEqual(error["message"], "incomplete or timed-out control-plane request")
+                self.assertNotIn("outcome", error)
+                dispatch.assert_not_awaited()
+                audit = self.service.audit.load().events[-1]
+                self.assertEqual(audit.response_status, 400)
+                self.assertIsNone(audit.operation_id)
+
     async def _request(
         self,
         method: str,
