@@ -753,3 +753,14 @@ repository change, preservation call, retry, or completed-plan resume. It create
 no persistent cache, index, schema, new input authority, or larger budget. A
 successful component query or cost-sensitivity fixture remains insufficient for
 live acceptance of the whole selected-Home hook.
+
+
+A storage timeout or PostgreSQL query cancellation inside dormant Upgrade
+preservation retains HTTP 500 and reports only a fixed message, a closed Home
+phase, and `TimeoutError` or `QueryCanceled`. The existing API/UI marks
+`preservation_outcome=unknown` and `retryable=false`: a final observation can fail
+after the real Artifact commit, so this does not prove no write or grant another
+attempt. Other programming errors and existing authority refusals retain their
+original behavior. The five-second shared budget, joined API owner, canonical
+authority, and source/target/Artifact guards remain unchanged; raw exception
+messages, SQL, parameters and tracebacks are not diagnostic response fields.

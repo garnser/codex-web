@@ -7,6 +7,10 @@ import hashlib
 import json
 import math
 import time
+try:
+    from psycopg.errors import QueryCanceled as _HomeQueryCanceled
+except ImportError:  # SQLite-only installations have no PostgreSQL exception type.
+    _HomeQueryCanceled = ()
 from pydantic import BaseModel, ConfigDict, Field
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.artifact_evidence import ArtifactCreate, ArtifactDigest, EvidenceCreate
@@ -267,6 +271,30 @@ class HomeUpgradeCheckpointService:
             source='home-upgrade-dormant-preservation', idempotency_key=plan_id)
 
     def _preserve_dormant(self, plan_id, binding, requester, operator_actor):
+        # This boundary reports incomplete preservation, never absence of effects.
+        # A final observation can fail after the real Artifact writer committed.
+        phase = 'plan_validation'
+        def observing(value):
+            nonlocal phase
+            phase = value
+        try:
+            return self._preserve_dormant_observed(plan_id, binding, requester,
+                operator_actor, observing=observing)
+        except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                category = 'TimeoutError'
+            elif isinstance(exc, _HomeQueryCanceled):
+                category = 'QueryCanceled'
+            else:
+                raise
+            from codex_web.runtime.execution import ExecutionPrestartRefusal
+            raise ExecutionPrestartRefusal(status_code=500, detail={
+                'code':'home_upgrade_preservation_incomplete',
+                'message':'Home preservation did not complete. Inspect the original Upgrade and Artifact evidence before another attempt.',
+                'phase':phase, 'exception_type':category,
+                'preservation_outcome':'unknown', 'retryable':False}) from exc
+
+    def _preserve_dormant_observed(self, plan_id, binding, requester, operator_actor, *, observing):
         from codex_web.storage.home_intent_query import recovery_query_budget
         with recovery_query_budget():
             plan = self.upgrades.get(plan_id, actor=operator_actor)
@@ -283,6 +311,7 @@ class HomeUpgradeCheckpointService:
             # neither observation grants input or changes retained outcomes.
             process = {}
             held_observer = self._operation_held_observer()
+            observing('initial_snapshot')
             snapshot = self._dormant_snapshot(binding, requester, process_evidence=process,
                 held_observer=held_observer)
             preservation = {'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
@@ -323,8 +352,10 @@ class HomeUpgradeCheckpointService:
                     self.refused('home_upgrade_dormant_preservation_changed')
                 return prior
 
+            observing('before_artifact_snapshot')
             if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')
+            observing('artifact_write')
             try:
                 artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
                     execution_id=snapshot['assignment']['execution_id'],
@@ -339,12 +370,14 @@ class HomeUpgradeCheckpointService:
                 # Only the explicitly typed pre-write Artifact domain decoder
                 # can enter this compatibility path. Guard/updater/DB/export
                 # errors never use a second read or become successful reuse.
+                observing('artifact_fallback_lookup')
                 checkpoint, prior = self.artifacts.find_idempotent_artifacts(actor=requester, requests=(
                     ('home-upgrade-checkpoint', plan_id),
                     ('home-upgrade-dormant-preservation', plan_id)))
                 artifact = prior_or_refuse(checkpoint, prior)
                 if artifact is None:
                     raise refusal.original
+            observing('final_snapshot')
             if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')
             return artifact
