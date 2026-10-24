@@ -5,6 +5,7 @@ is introduced. The supervisor must hold its ordinary canonical Upgrade authority
 """
 import hashlib
 import json
+import math
 import time
 from pydantic import BaseModel, ConfigDict, Field
 from codex_web.agent_profiles import AgentProfileExecutionBinding
@@ -128,7 +129,51 @@ class HomeUpgradeCheckpointService:
             return None
         return binding,requester
 
-    def _dormant_snapshot(self, binding, requester, *, require_process=True, process_evidence=None):
+    def _operation_held_observer(self):
+        """Reuse one full original-ledger read only while its canonical revision holds.
+
+        This observation lives for one preservation operation, never a retry or
+        resume. Missing/changed revisions use the original full query. Every
+        other snapshot observation, including retained intent metadata, stays
+        fresh. Revision tracking belongs to the existing canonical StateStore
+        writers; direct database changes outside that contract are not covered.
+        """
+        repository = self.recovery.intents.store
+        state, namespace = repository.store, repository.records_namespace
+        reader = getattr(state, 'namespace_revision', None)
+        observed = None
+
+        def revision():
+            value = reader(namespace) if callable(reader) else None
+            if type(value) not in (int, float):
+                return None
+            try:
+                return value if math.isfinite(value) and value > 0 else None
+            except OverflowError:
+                return None
+
+        def held(execution_ids, *, actor):
+            nonlocal observed
+            if (self.recovery.intents.store is not repository or repository.store is not state
+                    or repository.records_namespace != namespace):
+                observed = None
+                return self.recovery._held(execution_ids, actor=actor)
+            scope = (tuple(sorted(execution_ids)), actor.organization_id,
+                     actor.workspace_id, actor.identity_id)
+            before = revision()
+            if before is not None and observed is not None and observed[:2] == (scope, before):
+                return observed[2]
+            observed = None
+            result = self.recovery._held(execution_ids, actor=actor)
+            after = revision()
+            if before is not None and before == after:
+                observed = (scope, after, result)
+            return result
+
+        return held
+
+    def _dormant_snapshot(self, binding, requester, *, require_process=True, process_evidence=None,
+                          held_observer=None):
         """Supervisor metadata only; never a Host grant or native completion."""
         from codex_web.storage.state_store import check_operation_budget
         bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
@@ -194,7 +239,8 @@ class HomeUpgradeCheckpointService:
                 (assignment.organization_id, assignment.workspace_id, 'home', assignment.id,
                  assignment.execution_id, assignment.execution_workspace_id, assignment.assigned_worker_id)):
             self.refused('home_upgrade_dormant_session_changed')
-        held = self.recovery._held({assignment.execution_id}, actor=requester)
+        held = (self.recovery._held if held_observer is None else held_observer)(
+            {assignment.execution_id}, actor=requester)
         retained = []
         for intent_id, outcome in held:
             intent = self.recovery.intents.get(intent_id, requester)
@@ -236,7 +282,9 @@ class HomeUpgradeCheckpointService:
             # canonical owners may initialize their own readiness/migration rows;
             # neither observation grants input or changes retained outcomes.
             process = {}
-            snapshot = self._dormant_snapshot(binding, requester, process_evidence=process)
+            held_observer = self._operation_held_observer()
+            snapshot = self._dormant_snapshot(binding, requester, process_evidence=process,
+                held_observer=held_observer)
             preservation = {'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
                 'release_id':plan.release_id, 'source_revision':source, 'target_revision':target,
                 'target_version':plan.target_app_version, 'snapshot':snapshot,
@@ -275,7 +323,7 @@ class HomeUpgradeCheckpointService:
                     self.refused('home_upgrade_dormant_preservation_changed')
                 return prior
 
-            if self._dormant_snapshot(binding, requester) != snapshot:
+            if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')
             try:
                 artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
@@ -297,7 +345,7 @@ class HomeUpgradeCheckpointService:
                 artifact = prior_or_refuse(checkpoint, prior)
                 if artifact is None:
                     raise refusal.original
-            if self._dormant_snapshot(binding, requester) != snapshot:
+            if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
                 self.refused('home_upgrade_dormant_preservation_changed')
             return artifact
 
