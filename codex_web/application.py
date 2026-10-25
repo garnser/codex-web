@@ -1430,7 +1430,7 @@ _local_codex_session_refresh_lock = asyncio.Lock()
 
 
 async def _refresh_local_codex_session() -> None:
-    # Read account metadata only on a readiness request with missing/expired
+    # Read account metadata only on a readiness/native preparation request with missing/expired
     # evidence. Coalesce concurrent readers; never sample a model or poll idle.
     async with _local_codex_session_refresh_lock:
         if not _local_codex_session_available():
@@ -3750,7 +3750,8 @@ app.state.native_reasoning_components = compose_native_reasoning(
     preflight=execution_preflight_service, execution=turn_execution_service, hub=event_hub,
     executives=executive_management_service, gateway=model_gateway_service,
     registry=agent_runtime_registry, telemetry=agent_runtime_telemetry_service,
-    session_managers=assignment_session_managers)
+    session_managers=assignment_session_managers,
+    authentication_preparation=_refresh_local_codex_session)
 from codex_web.services.project_coordination import ProjectCoordinationService, ProjectCoordinationActionProvider
 project_coordination_service = ProjectCoordinationService(control_plane_broker_service,
     threads=thread_service, turns=turn_service, scope=thread_scope_service,

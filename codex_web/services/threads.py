@@ -92,11 +92,27 @@ _BOOTSTRAP_EXCEPTION_TYPES = frozenset({
 })
 
 
+_BOOTSTRAP_HTTP_REFUSAL_CODES = frozenset({
+    'agent_profile_unavailable', 'agent_profile_access_denied',
+    'agent_profile_sandbox_conflict', 'agent_profile_execution_profile_conflict',
+    'agent_profile_routing_unavailable', 'execution_preflight_blocked',
+})
+_BOOTSTRAP_BLOCKER_CODES = frozenset({
+    'authentication_mode_invalid', 'authentication_mode_denied',
+    'authentication_mode_unsupported', 'local_session_unavailable',
+    'authentication_unavailable', 'authentication_expired', 'authentication_revoked',
+    'execution_profile_incompatible', 'sandbox_profile_unsupported',
+    'control_plane_scope_missing', 'worker_capability_missing',
+    'quota_or_capacity_blocked', 'project_readiness_blocked',
+    'repository_target_missing', 'workspace_provisioning_blocked', 'lease_conflict',
+})
+
+
 def bootstrap_preparation_diagnostic(exc):
     """Closed diagnostics only; never provider text or retry authority."""
     if type(exc) is not ThreadBootstrapPrestartRefusal:
         return None
-    detail = exc.detail
+    detail = getattr(exc, '_controller_preparation_diagnostic', exc.detail)
     if (not isinstance(detail, dict)
             or detail.get('code') != 'bootstrap_prestart_failed'
             or not isinstance(detail.get('bootstrap_preparation_stage'), str)
@@ -105,8 +121,19 @@ def bootstrap_preparation_diagnostic(exc):
             or detail.get('bootstrap_exception_type') not in _BOOTSTRAP_EXCEPTION_TYPES
             or detail.get('provider_start_called') is not False):
         return None
-    return {key: detail[key] for key in (
+    result = {key: detail[key] for key in (
         'bootstrap_preparation_stage', 'bootstrap_exception_type', 'provider_start_called')}
+    status = detail.get('bootstrap_http_status')
+    if type(status) is int and status in {400, 403, 404, 409, 422, 429, 500, 502, 503, 504}:
+        result['bootstrap_http_status'] = status
+    for key, allowed in (
+        ('bootstrap_refusal_code', _BOOTSTRAP_HTTP_REFUSAL_CODES),
+        ('bootstrap_blocker_code', _BOOTSTRAP_BLOCKER_CODES),
+    ):
+        value = detail.get(key)
+        if isinstance(value, str) and value in allowed:
+            result[key] = value
+    return result
 
 
 def bootstrap_exception_type(exc):
@@ -1026,11 +1053,26 @@ class ThreadService:
                     # after the provider boundary, even with the same type.
                     raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
                 raise
-            if isinstance(exc, HTTPException):
-                raise ThreadBootstrapPrestartRefusal(status_code=exc.status_code, detail=exc.detail) from exc
             diagnostic = {'bootstrap_preparation_stage': preparation_stage,
                           'bootstrap_exception_type': bootstrap_exception_type(exc),
                           'provider_start_called': False}
+            if isinstance(exc, HTTPException):
+                diagnostic['bootstrap_http_status'] = exc.status_code
+                if isinstance(exc.detail, dict):
+                    code = exc.detail.get('code')
+                    if isinstance(code, str) and code in _BOOTSTRAP_HTTP_REFUSAL_CODES:
+                        diagnostic['bootstrap_refusal_code'] = code
+                    blockers = exc.detail.get('blockers')
+                    if isinstance(blockers, list) and len(blockers) == 1 and isinstance(blockers[0], dict):
+                        code = blockers[0].get('code')
+                        if isinstance(code, str) and code in _BOOTSTRAP_BLOCKER_CODES:
+                            diagnostic['bootstrap_blocker_code'] = code
+                # Preserve the original public status/detail/cause. This private
+                # controller attribute is metadata, never retry or process proof
+                # from a provider-supplied exception after its start boundary.
+                refusal = ThreadBootstrapPrestartRefusal(status_code=exc.status_code, detail=exc.detail)
+                refusal._controller_preparation_diagnostic = {'code': 'bootstrap_prestart_failed', **diagnostic}
+                raise refusal from exc
             event = {'type': 'thread_bootstrap_prestart_failed', **diagnostic}
             for key in ('project_id', 'agent_profile_id'):
                 value = kwargs.get(key)

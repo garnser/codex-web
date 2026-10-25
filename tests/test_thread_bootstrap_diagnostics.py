@@ -40,7 +40,7 @@ class ThreadBootstrapDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         f.workspaces.backend.provision_git=failed_allocator
         with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
             await f.thread_service.create(project_id=f.project.id,repository_resource_id=f.repository.id)
-        self.assertIsNone(bootstrap_preparation_diagnostic(caught.exception))
+        self.assertEqual(bootstrap_preparation_diagnostic(caught.exception)['bootstrap_refusal_code'], 'execution_preflight_blocked')
         self.assertEqual(caught.exception.status_code,503)
         self.assertEqual(caught.exception.detail['code'],'execution_preflight_blocked')
         self.assertEqual(f.started_assignments,[])
@@ -68,13 +68,38 @@ class ThreadBootstrapDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(host.events,[])
             self.assertEqual(manager.completed[0][1]['succeeded'],False)
 
-    async def test_http_refusal_shape_is_unchanged_and_has_no_generic_diagnostic(self):
+    async def test_http_refusal_shape_and_cause_preserved_with_closed_diagnostic(self):
         _,_,_,_,service=fixtures.ThreadBootstrapCreateTests()._service()
         detail={'code':'current_authority_denied','message':'existing canonical refusal'}
-        def guard():raise HTTPException(status_code=403,detail=detail)
+        original=HTTPException(status_code=403,detail=detail)
+        def guard():raise original
         with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:await service.create(project_id='p1',admission_guard=guard)
         self.assertEqual(caught.exception.status_code,403);self.assertEqual(caught.exception.detail,detail)
-        self.assertIsNone(bootstrap_preparation_diagnostic(caught.exception))
+        self.assertIs(caught.exception.detail,detail)
+        self.assertIs(caught.exception.__cause__,original)
+        self.assertEqual(bootstrap_preparation_diagnostic(caught.exception), {
+            'bootstrap_preparation_stage':'admission_before_reservation',
+            'bootstrap_exception_type':'Exception','provider_start_called':False,'bootstrap_http_status':403})
+
+    async def test_preflight_blocker_is_closed_and_private_details_never_projected(self):
+        for code,expected in [('local_session_unavailable','local_session_unavailable'),
+                              ('private tenant credential',None),([],None)]:
+            _,planner,manager,_,service=fixtures.ThreadBootstrapCreateTests()._service()
+            detail={'code':'execution_preflight_blocked','message':'private material',
+                    'blockers':[{'code':code,'message':'private credential'}]}
+            original=HTTPException(status_code=503,detail=detail)
+            def fail(**kwargs):raise original
+            planner.prepare_bootstrap=fail
+            with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
+                await service.create(project_id='p1')
+            self.assertIs(caught.exception.detail,detail)
+            self.assertIs(caught.exception.__cause__,original)
+            diagnostic=bootstrap_preparation_diagnostic(caught.exception)
+            self.assertEqual(diagnostic.get('bootstrap_blocker_code'),expected)
+            self.assertEqual(diagnostic['bootstrap_refusal_code'],'execution_preflight_blocked')
+            self.assertEqual(diagnostic['bootstrap_http_status'],503)
+            self.assertNotIn('private',json.dumps(diagnostic))
+            self.assertEqual(manager.started,[])
 
     def test_diagnostic_projection_refuses_untrusted_shapes_and_extra_fields(self):
         valid={'code':'bootstrap_prestart_failed','bootstrap_preparation_stage':'bootstrap_reservation',

@@ -41,12 +41,13 @@ class NativeReasoningConfigurationTests(unittest.TestCase):
             worker_id='worker',catalog_path='/reviewed/public-model.json',catalog_sha256='a'*64).items():
             self.publish(name,value)
 
-    def compose(self):
+    def compose(self, authentication_preparation=None):
         return compose_native_reasoning(configuration=self.config,identity=self.identity,
             agent_profiles=NS(),execution_profiles=NS(),local_worker=NS(worker=NS(id='worker')),
             host=NS(),codex_home='/reference-only',executable='/reviewed/codex',threads=NS(),turns=NS(),
             sessions=NS(),usage=NS(),preflight=NS(),execution=NS(),hub=NS(),executives=NS(),gateway=NS(),
-            registry=NS(),telemetry=NS(),session_managers={})
+            registry=NS(),telemetry=NS(),session_managers={},
+            authentication_preparation=authentication_preparation)
 
     def test_disabled_default_does_not_build_or_register_native_runtime(self):
         with patch('codex_web.services.native_reasoning_runtime.build_native_reasoning_components') as build:
@@ -55,6 +56,14 @@ class NativeReasoningConfigurationTests(unittest.TestCase):
         self.assertIsNone(resolve_native_reasoning_settings(self.config))
         for name in FIELDS:
             self.assertFalse(self.config.specs.get(PREFIX+name).grants_authority)
+
+    def test_enabled_composition_forwards_existing_authentication_owner(self):
+        self.configured()
+        refresh=Mock()
+        with patch('codex_web.services.native_reasoning_runtime.build_native_reasoning_components',return_value=NS()) as build, \
+             patch('codex_web.services.native_reasoning_runtime.register_native_reasoning_components'):
+            self.compose(authentication_preparation=refresh)
+        self.assertIs(build.call_args.kwargs['authentication_preparation'],refresh)
 
     def test_partial_configuration_never_admits(self):
         self.publish('enabled',True)
