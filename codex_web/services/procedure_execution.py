@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import time
+import uuid
 from dataclasses import replace
 
 from codex_web.action_intents import ActionIntentClaimRequest, ActionIntentCreate, ActionIntentRetryPolicy, ActionIntentStatus, ActionIntentRollbackRequest, ActionDecisionSnapshot
@@ -60,6 +61,45 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_actor_changed")
         return item
 
+    @staticmethod
+    def run_id(checkpoint):
+        # Deterministic read identity only: legacy action/proof keys stay unchanged.
+        return checkpoint.id or "legacy"
+
+    def select_run(self, assignment, run_id=None):
+        current = assignment.procedure_checkpoint
+        if run_id is None or current is not None and self.run_id(current) == run_id:
+            return assignment
+        selected = next((p for p in assignment.procedure_history if self.run_id(p) == run_id), None)
+        if selected is None:
+            raise ProcedureExecutionError("procedure_run_unavailable")
+        return assignment.model_copy(update={"procedure_checkpoint": selected}, deep=True)
+
+    def inspect(self, assignment_id, actor, *, run_id=None):
+        assignment = self.get(assignment_id, actor)
+        selected = self.select_run(assignment, run_id)
+        if selected.procedure_checkpoint and selected.procedure_checkpoint.actor_identity_id != actor.identity_id:
+            raise ProcedureExecutionError("procedure_actor_changed")
+        return self.view(selected, current=assignment.procedure_checkpoint)
+
+    def view(self, assignment, *, current=None):
+        checkpoint = assignment.procedure_checkpoint
+        current = current or checkpoint
+        return {"assignment_id": assignment.id, "execution_id": assignment.execution_id,
+            "current_run_id": self.run_id(current) if current else None,
+            "procedure_checkpoint": checkpoint.model_dump(mode="json") if checkpoint else None,
+            "procedure_runs": [{"id": self.run_id(p), "status": p.status,
+                "definition": p.definition.model_dump(mode="json"), "started_at": p.started_at}
+                for p in (*assignment.procedure_history, current) if p is not None]}
+
+    def _step_origin(self, assignment, step_id, *, intent=False):
+        pin = assignment.procedure_checkpoint
+        if pin.id:
+            return f"procedure:{assignment.id}:{pin.id}:{step_id}"
+        if intent:
+            return f"procedure:{assignment.id}:{pin.definition.checksum}:{step_id}"
+        return f"procedure:{assignment.id}:{step_id}"
+
     def _actor(self, assignment):
         return self.identity.actor_for_identity(assignment.procedure_checkpoint.actor_identity_id,
             scope=TenantScope(organization_id=assignment.organization_id, workspace_id=assignment.workspace_id))
@@ -103,7 +143,9 @@ class ProcedureExecutionService:
         def apply(state):
             current = state.assignments[0]
             actual = current.procedure_checkpoint.revision if current.procedure_checkpoint else 0
-            if current.fence != assignment.fence or actual != expected:
+            expected_id = self.run_id(assignment.procedure_checkpoint) if assignment.procedure_checkpoint else None
+            actual_id = self.run_id(current.procedure_checkpoint) if current.procedure_checkpoint else None
+            if current.fence != assignment.fence or actual != expected or actual_id != expected_id:
                 raise ProcedureExecutionError("procedure_checkpoint_conflict")
             checkpoint.revision = expected + 1
             current.procedure_checkpoint = checkpoint
@@ -135,6 +177,8 @@ class ProcedureExecutionService:
         data, _ = self._content(pin.input_snapshot_id, actor, assignment, pin.input_snapshot_checksum)
         values = bounded_data(json.loads(data))
         self._values(procedure.inputs, values, actor, assignment)
+        if pin.canonical_input_checksum is not None and checksum(values) != pin.canonical_input_checksum:
+            raise ProcedureExecutionError("procedure_input_identity_changed")
         return values
 
     def _values(self, contracts, values, actor, assignment):
@@ -239,7 +283,7 @@ class ProcedureExecutionService:
             execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
             work_item_ref=assignment.work_item_ref, resource_ids=assignment.resource_ids,
             artifact_type="report", name="Bounded procedure step output", provider="procedure-interpreter",
-            source=f"procedure:{assignment.id}:{step.id}", digest=sha256_digest(raw),
+            source=self._step_origin(assignment, step.id), digest=sha256_digest(raw),
             metadata={"step_id":step.id, "attempt":state.attempts,
                 "procedure_record_id":assignment.procedure_checkpoint.definition.record_id,
                 "procedure_checksum":assignment.procedure_checkpoint.definition.checksum}), actor=actor,
@@ -270,7 +314,7 @@ class ProcedureExecutionService:
             credential = secrets[0]
         if credential:
             self._secret(credential, actor, assignment)
-        key = f"procedure:{assignment.id}:{assignment.procedure_checkpoint.definition.checksum}:{step.id}"
+        key = self._step_origin(assignment, step.id, intent=True)
         request = ActionRequest(action_id=step.action.action_id, organization_id=actor.organization_id,
             workspace_id=actor.workspace_id, project_id=assignment.project_id, resource_ids=targets,
             parameters={k:v for k,v in values.items() if k not in {c.name for c in step.inputs if c.type == 'secret_reference'}},
@@ -294,25 +338,42 @@ class ProcedureExecutionService:
         actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
         assignment = self.get(assignment_id, actor)
         self._live(assignment)
-        if assignment.procedure_checkpoint:
-            p = assignment.procedure_checkpoint
-            if p.definition != definition or p.input_snapshot_id != input_snapshot_id:
-                raise ProcedureExecutionError("procedure_active_pin_conflict")
+        previous = assignment.procedure_checkpoint
+        if previous and previous.definition == definition and previous.input_snapshot_id == input_snapshot_id:
             return assignment
+        if previous and previous.status != "completed":
+            raise ProcedureExecutionError("procedure_active_pin_conflict")
+        if len(assignment.procedure_history) >= 63:
+            raise ProcedureExecutionError("procedure_run_history_capacity")
         if assignment.created_by != actor.identity_id:
             raise ProcedureExecutionError("procedure_assignment_actor_mismatch")
         self.skills.validate_required_procedure(definition, actor=actor, project_id=assignment.project_id)
         procedure = SkillDefinition.model_validate(self.skills.definitions.get_record(definition.record_id).payload).operational_procedure
         data, digest = self._content(input_snapshot_id, actor, assignment)
         values = bounded_data(json.loads(data)); self._values(procedure.inputs, values, actor, assignment)
+        canonical_digest = checksum(values)
+        # Artifact aliases/JSON formatting are not materially changed inputs.
+        for prior in (*assignment.procedure_history, previous):
+            if prior is None or prior.definition != definition:
+                continue
+            prior_digest = prior.canonical_input_checksum
+            if prior_digest is None:
+                prior_data, _ = self._content(prior.input_snapshot_id, actor, assignment, prior.input_snapshot_checksum)
+                prior_digest = checksum(bounded_data(json.loads(prior_data)))
+            if prior_digest == canonical_digest:
+                if prior is previous:
+                    return assignment
+                raise ProcedureExecutionError("procedure_input_already_completed")
         facts = self._facts(assignment, actor)
-        checkpoint = ProcedureCheckpoint(definition=definition, actor_identity_id=actor.identity_id,
+        checkpoint = ProcedureCheckpoint(schema_version="1.1", id="procedure-run-" + uuid.uuid4().hex,
+            canonical_input_checksum=canonical_digest, definition=definition, actor_identity_id=actor.identity_id,
             input_snapshot_id=input_snapshot_id, input_snapshot_checksum=digest,
             resource_context_checksum=checksum(facts), started_at=self.clock(),
             deadline_at=self.clock() + procedure.max_duration_seconds,
             steps={s.id: ProcedureStepCheckpoint() for s in procedure.steps})
         # Resolve actual canonical facts/capabilities and prove initial applicability.
-        assignment.procedure_checkpoint = checkpoint
+        original = assignment
+        assignment = assignment.model_copy(deep=True, update={"procedure_checkpoint": checkpoint})
         context = OperationContext(actor=actor, project_id=assignment.project_id,
             resource_ids=assignment.resource_ids, operation=procedure.operation_triggers[0],
             policy_source="canonical:live-assignment-procedure-preparation", policy_allows=True,
@@ -328,9 +389,48 @@ class ProcedureExecutionService:
         if not admission.admitted or definition not in admission.selected:
             raise ProcedureAdmissionError(admission, code="procedure_start_not_admitted")
         # Initial authority is checked per-step before dispatch, never inferred from match.
-        assignment.procedure_checkpoint = None
         self.workers.record_procedure_discovery(assignment.id, admission, expected_fence=assignment.fence, actor=actor)
-        return self._save(assignment, checkpoint)
+        if previous is None:
+            return self._save(original, checkpoint)
+        return self._rollover(original, checkpoint)
+
+    def _rollover(self, assignment, checkpoint):
+        """Archive exactly one completed run under assignment + intent writer locks.
+
+        No worker lifecycle, native process, counters or assignment clocks change.
+        Provider admission takes these same canonical locks; a racing old writer
+        cannot become authorized against the new current run.
+        """
+        previous = assignment.procedure_checkpoint
+        def apply(state):
+            current = state.assignments[0]
+            if (current.fence != assignment.fence or current.procedure_checkpoint != previous
+                    or current.procedure_history != assignment.procedure_history):
+                raise ProcedureExecutionError("procedure_checkpoint_conflict")
+            self._live(current)
+            if previous.status != "completed" or len(current.procedure_history) >= 63:
+                raise ProcedureExecutionError("procedure_run_not_settled")
+            for step_id, step in previous.steps.items():
+                if step.status not in {"pending", "succeeded", "skipped"}:
+                    raise ProcedureExecutionError("procedure_run_not_settled")
+                if step.action_intent_id:
+                    intent = self.intents.get(step.action_intent_id, self.control_actor)
+                    receipt = self.intents.store.recovery_last_receipt(intent)
+                    if (intent.status != "succeeded" or intent.lease is not None
+                            or (intent.organization_id, intent.workspace_id, intent.project_id,
+                                intent.execution_id, intent.requested_by) !=
+                               (current.organization_id, current.workspace_id, current.project_id,
+                                current.execution_id, previous.actor_identity_id)
+                            or intent.idempotency_key != self._step_origin(current, step_id, intent=True)
+                            or receipt is None or receipt.outcome != "completed"
+                            or receipt.result is None or receipt.result.status != "succeeded"):
+                        raise ProcedureExecutionError("procedure_run_not_settled")
+            current.procedure_history = (*current.procedure_history, previous.model_copy(deep=True))
+            current.procedure_checkpoint = checkpoint
+            current.updated_at = self.clock()
+            return state
+        return self.workers.store.transition_assignment(assignment.assigned_worker_id, assignment.id, apply,
+            guard_rows={self.intents.store.records_namespace: ()}).assignments[0]
 
     def validate_native_preparation_owner(self, assignment):
         self._live(assignment)
@@ -387,8 +487,8 @@ class ProcedureExecutionService:
     def _approval_target(self, assignment, step):
         checkpoint = assignment.procedure_checkpoint
         return ApprovalTarget(operation="procedure.step", object_type="execution_assignment", object_id=assignment.id,
-            target_version=f"{checkpoint.definition.record_id}:{step.id}",
-            target_digest=checksum({"pin":checkpoint.definition.model_dump(mode='json'),
+            target_version=f"{checkpoint.definition.record_id}:{checkpoint.id}:{step.id}" if checkpoint.id else f"{checkpoint.definition.record_id}:{step.id}",
+            target_digest=checksum({**({"run_id": checkpoint.id} if checkpoint.id else {}), "pin":checkpoint.definition.model_dump(mode='json'),
                 "input":checkpoint.input_snapshot_checksum, "resources":checkpoint.resource_context_checksum}), resource_ids=assignment.resource_ids)
 
     def _approved_roles(self, assignment, step, actor):
@@ -427,7 +527,7 @@ class ProcedureExecutionService:
             if intent is None or self.intents._idempotency_request_identity(intent.request) != self.intents._idempotency_request_identity(request):
                 return ()
         else:
-            expected_key = f"procedure:{assignment.id}:{checkpoint.definition.checksum}:{step.id}"
+            expected_key = self._step_origin(assignment, step.id, intent=True)
             if request.idempotency_key != expected_key or request.action_id != step.action.action_id:
                 return ()
         return self._approved_roles(assignment, step, actor)
@@ -467,7 +567,7 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_approval_rejected_expired_or_revoked")
         self.approvals._validate_approval_quorum_live(approval, now=self.clock())
         await self.approvals.consume(state.approval_id, ApprovalConsumeRequest(target=target,
-            idempotency_key=target.fingerprint(), resulting_operation_reference=f"procedure:{assignment.id}:{step.id}"), actor=self.control_actor)
+            idempotency_key=target.fingerprint(), resulting_operation_reference=self._step_origin(assignment, step.id)), actor=self.control_actor)
         return True
 
     def _protected(self, assignment, step, actor, procedure, inputs):
@@ -518,7 +618,7 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_evidence_predates_step")
             if step.worker:
                 worker = self.workers.store.worker(assignment.assigned_worker_id)
-                if (evidence.source != f"procedure:{assignment.id}:{step.id}" or worker is None
+                if (evidence.source != self._step_origin(assignment, step.id) or worker is None
                     or evidence.producer_identity_id != worker.service_identity_id):
                     raise ProcedureExecutionError("procedure_worker_evidence_provenance_mismatch")
             elif step.action:
@@ -539,8 +639,8 @@ class ProcedureExecutionService:
         item = await self.attention.upsert(AttentionItemCreate(organization_id=assignment.organization_id,
             workspace_id=assignment.workspace_id, project_id=assignment.project_id, type="procedure_recovery",
             source=AttentionSource(object_type="execution_assignment", object_id=assignment.id),
-            dedupe_key=f"procedure:{assignment.id}", reason=f"{code}. Inspect the pinned checkpoint and ActionIntent; reconcile unknown effects before advancing. Do not replay configuration or restart actions.",
-            owner_identity_id=owner, deep_link=f"/api/execution-workers/assignments/{assignment.id}",
+            dedupe_key=f"procedure:{assignment.id}:{self.run_id(checkpoint)}", reason=f"{code}. Inspect the pinned checkpoint and ActionIntent; reconcile unknown effects before advancing. Do not replay configuration or restart actions.",
+            owner_identity_id=owner, deep_link=f"/api/execution-workers/assignments/{assignment.id}/procedure?run_id={self.run_id(checkpoint)}",
             evidence_ids=tuple(dict.fromkeys(eid for state in checkpoint.steps.values() for eid in state.evidence.values())),
             diagnostic_refs=tuple(s.action_intent_id for s in checkpoint.steps.values() if s.action_intent_id)), actor_id=checkpoint.actor_identity_id)
         checkpoint.attention_id = item.id
@@ -592,7 +692,7 @@ class ProcedureExecutionService:
                 != (intent.provider_type, intent.provider_instance, intent.action_id,
                     intent.idempotency_key, intent.correlation_id)
             or request.idempotency_key != intent.idempotency_key
-            or intent.idempotency_key != f"procedure:{assignment.id}:{assignment.procedure_checkpoint.definition.checksum}:{step.id}"
+            or intent.idempotency_key != self._step_origin(assignment, step.id, intent=True)
             or not all(math.isfinite(v) for v in (result.started_at, result.completed_at, receipt.received_at))
             or result.completed_at < result.started_at):
             raise ProcedureExecutionError("procedure_provider_result_origin_mismatch")
@@ -781,8 +881,16 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_action_request_changed")
         return True
 
-    async def advance(self, assignment_id, *, actor):
-        assignment = await self._advance(assignment_id, actor=actor)
+    def _require_current_run(self, assignment, run_id):
+        pin = assignment.procedure_checkpoint
+        if pin is None:
+            raise ProcedureExecutionError("procedure_checkpoint_missing")
+        if ((run_id is not None and run_id != self.run_id(pin))
+                or (assignment.procedure_history and run_id is None)):
+            raise ProcedureExecutionError("procedure_run_not_current")
+
+    async def advance(self, assignment_id, *, actor, run_id=None):
+        assignment = await self._advance(assignment_id, actor=actor, run_id=run_id)
         if self.outcome_drafts is not None and assignment.procedure_checkpoint.status in {
             "completed", "recovered", "recovery_required"
         }:
@@ -792,8 +900,9 @@ class ProcedureExecutionService:
             await self.outcome_drafts.on_completion(assignment, actor)
         return assignment
 
-    async def _advance(self, assignment_id, *, actor):
+    async def _advance(self, assignment_id, *, actor, run_id=None):
         assignment = self.get(assignment_id, actor)
+        self._require_current_run(assignment, run_id)
         self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if assignment.procedure_checkpoint is None:
             raise ProcedureExecutionError("procedure_checkpoint_missing")
@@ -998,7 +1107,7 @@ class ProcedureExecutionService:
             max_input_tokens=judgment.max_input_tokens, max_output_tokens=judgment.max_output_tokens,
             max_cost_usd=judgment.max_cost_usd, allow_fallback=False, timeout_seconds=min(step.timeout_seconds,600),
             execution_id=assignment.execution_id, work_item_ref=assignment.work_item_ref,
-            purpose=f"procedure:{assignment.procedure_checkpoint.definition.record_id}:{step.id}:role:{judgment.role}"), actor=actor)
+            purpose=f"procedure:{assignment.procedure_checkpoint.id or assignment.procedure_checkpoint.definition.record_id}:{step.id}:role:{judgment.role}"), actor=actor)
         state.invocation_ids += (response.invocation.id,)
         attempts = response.invocation.attempts
         if (len(attempts) > 1 or sum(a.input_tokens or 0 for a in attempts) > judgment.max_input_tokens
@@ -1029,12 +1138,13 @@ class ProcedureExecutionService:
             result['evidence'][required.name] = evidence.id
         return result
 
-    async def deviate(self, assignment_id, *, step_id, reason, evidence_ids, actor):
+    async def deviate(self, assignment_id, *, step_id, reason, evidence_ids, actor, run_id=None):
         try:
             actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
         except Exception as exc:
             raise ProcedureExecutionError("procedure_deviation_actor_unavailable") from exc
         assignment = self.get(assignment_id, actor)
+        self._require_current_run(assignment, run_id)
         procedure = self._procedure(assignment, actor); checkpoint = assignment.procedure_checkpoint
         self._live(assignment)
         self._targets(procedure, assignment, actor)

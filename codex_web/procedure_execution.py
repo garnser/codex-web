@@ -1,6 +1,6 @@
 """Versioned checkpoint facet of a canonical ExecutionAssignment (no new job engine)."""
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from codex_web.definitions import DefinitionReference
 from codex_web.authority import AuthorityDecision
 
@@ -9,6 +9,11 @@ class ProcedureStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     definition: DefinitionReference
     input_snapshot_id: str = Field(min_length=1, max_length=200)
+
+class ProcedureAdvance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str | None = Field(default=None, min_length=1, max_length=100)
+
 
 class ProcedureStepCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -41,7 +46,9 @@ class ProcedureDeviation(BaseModel):
 
 class ProcedureCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
+    id: str | None = Field(default=None, pattern=r"^procedure-run-[a-f0-9]{32}$")
+    canonical_input_checksum: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     revision: int = Field(default=1, ge=1)
     definition: DefinitionReference
     actor_identity_id: str
@@ -57,3 +64,19 @@ class ProcedureCheckpoint(BaseModel):
     attention_id: str | None = None
     failure_code: str | None = None
     recovery_step_id: str | None = None
+
+    @model_validator(mode="after")
+    def run_identity(self):
+        if (self.schema_version == "1.1") != (self.id is not None and self.canonical_input_checksum is not None):
+            raise ValueError("procedure run identity requires schema 1.1")
+        if self.schema_version == "1.0" and (self.id is not None or self.canonical_input_checksum is not None):
+            raise ValueError("legacy checkpoints cannot acquire a new origin identity")
+        return self
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy(self, handler):
+        data = handler(self)
+        if self.schema_version == "1.0":
+            data.pop("id", None)
+            data.pop("canonical_input_checksum", None)
+        return data

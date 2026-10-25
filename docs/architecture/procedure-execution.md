@@ -12,8 +12,30 @@ policy and all unsupported-path refusals remain in force.
 
 ## Pinned content and checkpoint
 
-Worker state 1.11 adds `procedure_checkpoint` (nested contract 1.0). Its compare
-and swap revision serializes step dispatch inside the assignment store. It retains
+Worker state 1.13 retains a current `procedure_checkpoint` and up to 63 completed
+runs in `procedure_history`. New nested checkpoints use contract 1.1 with an
+immutable `procedure-run-*` ID and canonical typed-input checksum. Legacy 1.0
+checkpoints retain their exact serialized fields and original action/output/
+approval identities; their read-only run identifier is `legacy`. The explicit
+1.12→1.13 domain migration initializes empty history without rewriting legacy
+proofs. Older assignment readers reject the new facet rather than ignoring its
+current-run custody. Physical stores and their schemas do not change.
+
+A completed run may be archived atomically only after all its started effects
+have trustworthy successful original receipts and no live claim. Current worker,
+requester, lease, scope and published Definition admission remain required. A
+new admitted input selects a new current run within the SAME assignment, native
+process, resource lease, limits, counters and assignment deadline. No artificial
+assignment renewal or terminal worker outcome is created. The new run has its
+own Definition-bounded procedure deadline, still constrained by the original
+assignment lifetime. Capacity exhaustion refuses; history is never evicted.
+A copied input Artifact or changed JSON formatting cannot replay the same typed
+values for the same exact Definition, including a retained run.
+
+Run ID plus checkpoint revision serializes step writes. New Intent idempotency,
+output/Evidence origins, approval targets and outcome/Memory delivery identity
+include that run ID; legacy origin keys remain unchanged. An archived checkpoint
+is read-only. These facets retain
 the exact Definition record/revision/checksum, governed immutable input Artifact
 ID/content checksum, material Resource-context checksum, deadline, current and
 completed steps, bounded output Artifact IDs/checksums and name-to-reference indexes, Evidence references, current authority
@@ -32,7 +54,13 @@ only assigned, currently usable SecretReferences cross the credential boundary.
 
 `POST /api/execution-workers/assignments/{id}/procedure/start` binds an admitted
 Definition and input Artifact to a live assignment. `/advance` processes at most
-one step per request/event. `/procedure` reads the checkpoint; `/deviate` records
+one step per request/event. After rollover, `/advance` and `/deviate` require
+`run_id` equal to the current run; a stale caller cannot operate its successor.
+`/procedure?run_id=...` reads an exact current or retained run, with
+`current_run_id` and a bounded `procedure_runs` index. The existing assignment
+inspector exposes a retained-run selector/deep link and ActionIntent lookup
+includes retained runs. Outcome inspection/conversion also accepts `run_id` and
+resolves original source Knowledge to that run. `/procedure` reads the current checkpoint; `/deviate` records
 a current policy-authorized diagnostic deviation with reason and Evidence.
 There is no autonomous polling or private timer. Persisted `not_before` values
 and canonical ActionIntent backoff survive restart; subsequent explicit events

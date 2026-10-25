@@ -496,7 +496,7 @@ print(json.dumps({'risk_assessment':{'score':0,'severity':'LOW','recommendation'
                 ContractSpec(name, old, (old,)).require(current.current)
         old_workers = {'schema_version':'1.11','workers':[], 'assignments':[], 'events':[]}
         old_spaces = {'schema_version':'1.7','workspaces':[], 'leases':[], 'events':[]}
-        self.assertEqual(self.workers.store._decode(old_workers).schema_version, '1.12')
+        self.assertEqual(self.workers.store._decode(old_workers).schema_version, '1.13')
         self.assertEqual(self.workspaces.store._decode(old_spaces).schema_version, '1.8')
         self.assertEqual(old_workers['schema_version'], '1.11')
         self.assertEqual(old_spaces['schema_version'], '1.7')

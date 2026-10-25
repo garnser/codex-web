@@ -6,10 +6,11 @@ from codex_web.api.identity import request_actor
 from codex_web.services.procedure_execution import ProcedureExecutionError
 from codex_web.services.procedure_discovery import ProcedureAdmissionError
 
-from codex_web.procedure_execution import ProcedureStart
+from codex_web.procedure_execution import ProcedureStart, ProcedureAdvance
 
 class ProcedureDeviationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    run_id: str | None = Field(default=None, max_length=100)
     step_id: str = Field(min_length=1, max_length=160)
     reason: str = Field(min_length=1, max_length=2000)
     evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=16)
@@ -18,15 +19,14 @@ class ProcedureDeviationRequest(BaseModel):
 def build_procedure_execution_router(service):
     router = APIRouter(tags=["execution-workers"])
     def view(item):
-        return {"assignment_id":item.id, "execution_id":item.execution_id,
-            "procedure_checkpoint":item.procedure_checkpoint.model_dump(mode="json") if item.procedure_checkpoint else None}
+        return service.view(item)
     def error(exc):
         return HTTPException(status_code=409, detail={"code":exc.code})
 
     @router.get("/api/execution-workers/assignments/{assignment_id}/procedure")
-    async def inspect(assignment_id: str, request: Request):
+    async def inspect(assignment_id: str, request: Request, run_id: str | None = None):
         try:
-            return view(await asyncio.to_thread(service.get, assignment_id, request_actor(request)))
+            return await asyncio.to_thread(service.inspect, assignment_id, request_actor(request), run_id=run_id)
         except ProcedureExecutionError as exc:
             raise error(exc) from exc
 
@@ -39,9 +39,9 @@ def build_procedure_execution_router(service):
             raise error(exc) from exc
 
     @router.post("/api/execution-workers/assignments/{assignment_id}/procedure/advance")
-    async def advance(assignment_id: str, request: Request):
+    async def advance(assignment_id: str, request: Request, payload: ProcedureAdvance = ProcedureAdvance()):
         try:
-            return view(await service.advance(assignment_id, actor=request_actor(request)))
+            return view(await service.advance(assignment_id, actor=request_actor(request), run_id=payload.run_id))
         except ProcedureExecutionError as exc:
             raise error(exc) from exc
 
