@@ -166,7 +166,7 @@ class OrganizationalMemoryTests(unittest.TestCase):
         self.store.store.put(self.store.namespace, state)
         restored = self.store.get(source.id)
         self.assertEqual(restored.provenance.origin, KnowledgeOrigin.UNKNOWN)
-        self.assertEqual(self.store.load().schema_version, "1.2")
+        self.assertEqual(self.store.load().schema_version, "1.3")
 
     def test_mixed_summary_retains_exact_source_origins_in_retrieval(self):
         observed = self._research("observed", "human_observed")

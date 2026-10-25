@@ -18,8 +18,8 @@ from codex_web.data_governance import (
 
 ORGANIZATIONAL_MEMORY_CONTRACT = ContractSpec(
     "organizational-memory-state",
-    "1.2",
-    ("1.0", "1.1", "1.2"),
+    "1.3",
+    ("1.0", "1.1", "1.2", "1.3"),
 )
 
 MAX_MEMORY_RELATIONSHIPS = 100
@@ -28,6 +28,9 @@ MAX_MEMORY_TAGS = 50
 MAX_MEMORY_QUERY_TOP_K = 50
 MAX_MEMORY_QUERY_CANDIDATES = 500
 MAX_MEMORY_CONTEXT_TOKENS = 32000
+
+
+GoverningResourceIds = Annotated[tuple[Annotated[str, Field(min_length=1, max_length=500)], ...], Field(min_length=1, max_length=100)]
 
 
 class KnowledgeObjectType(StrEnum):
@@ -189,6 +192,7 @@ class KnowledgeCreate(BaseModel):
     content: str = Field(min_length=1, max_length=200000)
     project_id: str | None = Field(default=None, max_length=500)
     tags: tuple[str, ...] = ()
+    resource_ids: GoverningResourceIds | None = None
     canonical_refs: tuple[KnowledgeCanonicalRef, ...] = ()
     relationships: tuple[KnowledgeRelationshipCreate, ...] = ()
     provenance: KnowledgeProvenance
@@ -247,6 +251,7 @@ class KnowledgeRevise(BaseModel):
     summary: str | None = Field(default=None, min_length=1, max_length=8000)
     content: str | None = Field(default=None, min_length=1, max_length=200000)
     tags: tuple[str, ...] | None = None
+    resource_ids: GoverningResourceIds | None = None
     canonical_refs: tuple[KnowledgeCanonicalRef, ...] | None = None
     relationships: tuple[KnowledgeRelationshipCreate, ...] | None = None
     provenance: KnowledgeProvenance
@@ -331,6 +336,7 @@ class KnowledgeRecord(BaseModel):
     summary: str
     content: str
     tags: tuple[str, ...] = ()
+    resource_ids: GoverningResourceIds | None = None
     canonical_refs: tuple[KnowledgeCanonicalRef, ...] = ()
     provenance: KnowledgeProvenance
     classification: DataClassification
@@ -438,6 +444,7 @@ class KnowledgeQuery(BaseModel):
     object_types: tuple[KnowledgeObjectType, ...] = ()
     project_ids: tuple[str, ...] = ()
     include_company_scope: bool = False
+    resource_ids: GoverningResourceIds | None = None
     logical_keys: tuple[str, ...] = ()
     knowledge_ids: tuple[str, ...] = Field(default=(), max_length=50)
     tags: tuple[str, ...] = ()
@@ -483,6 +490,7 @@ class KnowledgeRetrievalItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     knowledge_id: str
+    content_sha256: str | None = None
     logical_key: str
     version: int
     object_type: KnowledgeObjectType
@@ -491,6 +499,7 @@ class KnowledgeRetrievalItem(BaseModel):
     summary: str
     context_excerpt: str
     tags: tuple[str, ...] = ()
+    resource_ids: GoverningResourceIds | None = None
     canonical_refs: tuple[KnowledgeCanonicalRef, ...] = ()
     provenance: KnowledgeProvenance
     classification: DataClassification

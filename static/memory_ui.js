@@ -243,6 +243,7 @@ function renderKnowledgeDetail() {
       <div><span>Type / version</span><strong>${esc(item.object_type)} · v${esc(item.version)}</strong></div>
       <div><span>Scope</span><strong>${esc(item.project_id || 'company')}</strong></div>
       <div><span>Classification</span><strong>${esc(item.classification)}</strong></div>
+      <div><span>Governing Resources</span><strong>${esc(item.resource_ids == null ? "UNKNOWN (legacy or unproven)" : item.resource_ids.join(", "))}</strong></div>
       <div><span>Governance record</span><strong>${esc(item.governance_record_id)}</strong></div>
       <div><span>Source</span><strong>${esc(provenance.source_kind)} · ${esc(provenance.source_ref)}</strong></div>
       <div><span>Source revision</span><strong>${esc(provenance.source_revision || '—')}</strong></div>

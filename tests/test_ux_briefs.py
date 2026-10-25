@@ -377,7 +377,7 @@ class UxBriefMemoryServiceTests(unittest.TestCase):
         before=payload["records"]
         self.store.store.put(self.store.namespace,payload)
         state=self.store.load()
-        self.assertEqual(state.schema_version,"1.2")
+        self.assertEqual(state.schema_version,"1.3")
         self.assertEqual([item.model_dump(mode="json") for item in state.records],before)
         self.assertEqual(self.store.get(source.id).content_sha256,source.content_sha256)
         with self.assertRaises(ContractCompatibilityError):

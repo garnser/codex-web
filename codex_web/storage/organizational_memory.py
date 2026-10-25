@@ -34,6 +34,17 @@ def _typed_briefs_v12(payload: dict[str, Any]) -> dict[str, Any]:
 ORGANIZATIONAL_MEMORY_MIGRATIONS.register("1.1", "1.2", _typed_briefs_v12)
 
 
+def _resource_envelope_v13(payload: dict[str, Any]) -> dict[str, Any]:
+    # Historical records have no exhaustive Resource proof; never infer one.
+    result = {**payload, "schema_version": "1.3"}
+    if isinstance(payload.get("records"), list):
+        result["records"] = [{**row, "resource_ids": None} if isinstance(row, dict) else row
+                             for row in payload["records"]]
+    return result
+
+
+ORGANIZATIONAL_MEMORY_MIGRATIONS.register("1.2", "1.3", _resource_envelope_v13)
+
 class KnowledgeNotFoundError(KeyError):
     pass
 

@@ -194,8 +194,8 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
         original=self.fixture.service.prepare
         for row in ({"id":"not-requested","organization_id":"local","workspace_id":"default","project_id":"project-a"},
                 {"id":"not-requested","organization_id":"other","workspace_id":"default","project_id":"project-a"}):
-            def expanded(request, *, actor):
-                item=original(request,actor=actor)
+            def expanded(request, *, actor, **kwargs):
+                item=original(request,actor=actor, **kwargs)
                 item.context=item.context.model_copy(update={"evidence":(row,)})
                 return item
             self.fixture.service.prepare=expanded

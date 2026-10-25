@@ -138,8 +138,17 @@ class AssignmentReasoningBroker:
         # These canonical projections lack a verifiable Resource envelope. Do
         # not silently broaden an assignment into company-wide Executive context.
         context = item.context
-        if context.memory or context.business_entities or context.business_facts or context.business_kpis:
+        if context.business_entities or context.business_facts or context.business_kpis:
             deny("automatic Executive context has no assignment resource proof")
+        memory = self.executives.organizational_memory
+        for row in context.memory:
+            if memory is None or not callable(getattr(memory, "validate_assignment_snapshot", None)):
+                deny("automatic Executive Memory has no canonical Resource proof")
+            try:
+                record = memory.validate_assignment_snapshot(row, actor=actor)
+            except (KeyError, ValueError, RuntimeError):
+                deny("automatic Executive Memory Resource proof is unavailable or changed")
+            self.scoped(record, assignment, actor, operation)
         for field, requested, id_key in (
                 ("work_items", item.work_item_refs, "ref"),
                 ("decisions", item.decision_ids, "id"),
@@ -167,6 +176,23 @@ class AssignmentReasoningBroker:
                     self.scoped(self.broker._state_for_target(assignment, ref), assignment, actor, operation)
             for node in graph.get("nodes", ()):
                 self.scoped(self.broker._state_for_target(assignment, node["ref"]), assignment, actor, operation)
+
+    def memory_resources(self, assignment, actor, operation):
+        """Current canonical assignment envelope, never Memory/request labels."""
+        resources = tuple(assignment.resource_ids)
+        if assignment.execution_profile_id == "orchestration-admin":
+            profile, reference = self.broker.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+            if reference != assignment.execution_profile_definition:
+                deny("current execution Definition changed")
+            resources = tuple(profile.administrative_repository_ids)
+            for resource in resources:
+                self.broker.execution_profiles.authorize_administrative_target(assignment,
+                    operation_id=operation.id, repository_id=resource, actor=actor,
+                    authority=self.broker.authority)
+                self.broker._authorize(assignment, operation, actor=actor, resource_ids=(resource,))
+        return resources
 
     def existing(self, assignment, actor):
         return tuple(item for item in self.executives.list(actor=actor)
@@ -229,7 +255,8 @@ class AssignmentReasoningBroker:
                         deny("one activation per assignment; origin already has different context")
                     self.prepared_context(matches[0], current, actor, operation)
                     return matches[0], True
-                prepared = self.executives.prepare(request, actor=actor)
+                prepared = self.executives.prepare(request, actor=actor,
+                    memory_resource_ids=self.memory_resources(current, actor, operation))
                 # Reuse canonical ID uniqueness for concurrent/lost-response
                 # create protection; no second idempotency record or store.
                 origin = f"{current.organization_id}/{current.workspace_id}/{self.origin(current)}"

@@ -872,6 +872,7 @@ class ExecutiveManagementService:
         catalog: ExecutiveRoleCatalogDefinition,
         *,
         actor: AuthenticationActor,
+        memory_resource_ids: tuple[str, ...] | None = None,
     ) -> ExecutiveCanonicalContext:
         visible = self._visible_types(selections, catalog)
         goals: list[dict[str, Any]] = []
@@ -978,6 +979,8 @@ class ExecutiveManagementService:
                 raise ExecutiveContextError('Required Executive WorkGraph context cannot fit its budget') from exc
 
         def read_memory():
+            if memory_resource_ids == ():
+                raise ExecutiveContextError("Executive Memory requires an explicit canonical Resource envelope")
             try:
                 with operation_stage(logging.getLogger(__name__), "executive.context.stage", "memory_search",
                     organization_id=actor.organization_id, workspace_id=actor.workspace_id):
@@ -986,6 +989,7 @@ class ExecutiveManagementService:
                             text=f"{payload.subject}\n{payload.request}",
                             project_ids=(payload.project_id,) if payload.project_id else (),
                             include_company_scope=bool(payload.project_id),
+                            resource_ids=memory_resource_ids,
                             budget=KnowledgeRetrievalBudget(
                                 top_k=8,
                                 candidate_limit=100,
@@ -1011,11 +1015,16 @@ class ExecutiveManagementService:
         if graph_result is not None:
             graphs.append(graph_result)
         if memory_result is not None:
+            if (memory_resource_ids is not None and not memory_result.items
+                    and memory_result.denied):
+                raise ExecutiveContextError("Required Memory context has no authorized governed assignment projection; inspect canonical retrieval audit")
             memory_retrieval_ids.append(memory_result.retrieval_id)
             memory.extend(
                 {
                     "citation": f"[memory:{item.knowledge_id}@v{item.version}]",
                     "knowledge_id": item.knowledge_id,
+                    "content_sha256": getattr(item, "content_sha256", None),
+                    "resource_ids": list(item.resource_ids) if getattr(item, "resource_ids", None) is not None else None,
                     "governance_record_id": getattr(item, "governance_record_id", None),
                     "logical_key": item.logical_key,
                     "version": item.version,
@@ -1077,6 +1086,7 @@ class ExecutiveManagementService:
         payload: ExecutiveActivationCreate,
         *,
         actor: AuthenticationActor,
+        memory_resource_ids: tuple[str, ...] | None = None,
     ) -> ExecutiveActivation:
         """Resolve bounded canonical context without creating durable state."""
         with operation_stage(logging.getLogger(__name__), "executive.context.stage", "catalog",
@@ -1109,6 +1119,7 @@ class ExecutiveManagementService:
                 selections,
                 catalog,
                 actor=actor,
+                memory_resource_ids=memory_resource_ids,
             )
         required_calls = len(selections) + (1 if len(selections) > 1 else 0)
         if payload.budget.max_model_calls < required_calls:
