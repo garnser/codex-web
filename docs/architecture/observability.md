@@ -45,6 +45,26 @@ use the same bounded log query surface; no new control or state projection is
 introduced. The five-second preservation budget and all fresh authority,
 selection, process and action observations remain unchanged.
 
+### Executive WorkGraph read component timings
+
+Only the existing Executive WorkGraph read enables `work_graph.read.stage`
+through `operation_stage()`. Its request-local scope follows the joined graph
+reader and resets on return or refusal. Fixed stages separate the snapshot,
+item headers, graph edges, repository initialization, PostgreSQL connection
+acquisition, collection check, page execute/fetch and Python page decode.
+Repeated page events expose call counts without page IDs, cursors, namespaces,
+SQL, record content or exception text. Other Graph and storage callers do not
+activate these timings.
+
+These are inclusive wall durations, including scheduling and driver work;
+execute/fetch time is not database CPU or an EXPLAIN measurement. The original
+connection context manager receives the same exception and retains its exit and
+suppression behavior. Queries, ordering, complete pagination, legacy conversion
+fallback, savepoints, deadlines, authorization and retrieval audits do not
+change. Timing observations neither establish an Executive deadline fix nor
+permit a retry or context omission. Existing bounded log inspection displays
+these events; no new operator controls or domain state are introduced.
+
 ### Bounded structured-log query buffer
 
 The built-in runtime keeps a bounded in-memory structured-log projection for operator drill-down. It is intentionally narrower than stdout/stderr logging:

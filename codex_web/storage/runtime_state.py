@@ -10,6 +10,7 @@ from typing import Any, Callable, Generic, TypeVar
 from pydantic import BaseModel
 
 from codex_web.models import ActiveThreadTurn, ThreadRunSettings, WorkItemState
+from codex_web.work_graph_telemetry import graph_read_stage
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.state_store import (
     OperationTimingMetrics, StateStore, record_projection_fields, project_record_fields,
@@ -172,9 +173,11 @@ class ModelMapRepository(Generic[T]):
         if not callable(reader):
             raw, cursor = self.raw_page(key_prefix=key_prefix, after=after, limit=limit)
             return {key: project_record_fields(value, fields) for key, value in raw.items()}, cursor
-        self._ensure_records()
-        raw, cursor = reader(self.namespace, fields=fields,
-            key_prefix=key_prefix, after=after, limit=limit)
+        with graph_read_stage('repository.collection.ensure'):
+            self._ensure_records()
+        with graph_read_stage('repository.projected_page'):
+            raw, cursor = reader(self.namespace, fields=fields,
+                key_prefix=key_prefix, after=after, limit=limit)
         return {key: value for key, value in raw.items() if self._included(key)}, cursor
 
     def page(
