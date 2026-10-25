@@ -39,6 +39,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
     CodeHostActionContract,
@@ -57,7 +59,7 @@ BranchPublisher = Callable[[Path, str, str, str, str, str | None], Awaitable[Non
 
 
 class GitLabActionProvider:
-    """Governed GitLab mutations using the shared code-host action contract."""
+    """Governed GitLab actions and read observations under the shared contract."""
 
     contract_version = ACTION_PROVIDER_CONTRACT.current
     provider_type = GITLAB_ACTION_PROVIDER_TYPE
@@ -91,7 +93,7 @@ class GitLabActionProvider:
             raise ValueError("GitLab Web base must match provider_instance")
         self.branch_publisher = branch_publisher
         from codex_web.services.procedure_provider_results import CodeHostProcedureResultAdapter
-        self.procedure_result_adapters = (CodeHostProcedureResultAdapter(),)
+        self.procedure_result_adapters = (CodeHostProcedureResultAdapter(provider_instance=self.provider_instance),)
         self.contract = CodeHostActionContract(
             resources,
             workspaces,
@@ -260,6 +262,11 @@ class GitLabActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         project = self.contract.locator(request)
+        if request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            if not binding.credential_ref or request.credential_ref != binding.credential_ref:
+                raise ValueError('Readiness observation requires its configured provider credential reference')
+            return {"operation":"pull-request-readiness-observation", "repository":project,
+                **self.contract.pull_request_observe_readiness(request)}
         if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
             return {"operation":"pull-request-merge-observation","repository":project,
                 **self.contract.pull_request_verify_merge(request)}
@@ -686,6 +693,22 @@ class GitLabActionProvider:
                 "provider_mutation_performed": mutated,
                 "metadata_sha256": hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
             summary = "Exact open GitLab merge request is ready for review; no approval or merge was performed."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            from codex_web.services.code_host_readiness_observation import VERSION, observation_outputs, borrowed_credential_metadata
+            parameters = self.contract.pull_request_observe_readiness(request)
+            async def checkpoint():
+                await readiness_checkpoint(request, binding.id)
+            fact = await self._read_readiness_fact(binding, self.contract.resource(request),
+                project, parameters, credential, checkpoint)
+            output.update({**parameters, 'observation_version': VERSION,
+                'merge_requirements': fact.model_dump(mode='json'), 'provider_instance': self.provider_instance,
+                **borrowed_credential_metadata()})
+            observation_outputs(output, binding_id=binding.id, resource_id=request.resource_ids[0],
+                provider_instance=self.provider_instance, parameters=parameters, observed_at=time.time())
+            evidence_type = CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE
+            external_id = str(parameters['pull_request_number'])
+            url = None
+            summary = 'Read-only exact-head readiness observation; pending and blockers are not QA approval or merge permission.'
         elif request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
             parameters = self.contract.pull_request_verify_merge(request)
             item = await self.client.merge_request(self.api_base,project,
@@ -791,6 +814,19 @@ class GitLabActionProvider:
             ),
         )
 
+    async def _read_readiness_fact(self, binding, resource, project, parameters, credential, checkpoint):
+        from types import SimpleNamespace
+        from codex_web.services.gitlab_merge_requirements import GitLabMergeRequirementsReader
+        # Adapter of the EXISTING ActionProvider binding, not a new stored binding
+        # or grant. API base belongs to this registered provider, never the caller.
+        reader_binding = SimpleNamespace(id=binding.id, provider_instance=binding.provider_instance,
+            base_url=self.api_base)
+        fact = await GitLabMergeRequirementsReader(self.client, reader_binding, resource,
+            project, credential, checkpoint=checkpoint).read(str(parameters['pull_request_number']))
+        if fact.head_revision != parameters['expected_head_sha'] or fact.changed:
+            raise ActionRequirementError('Readiness observation exact head changed')
+        return fact
+
     @staticmethod
     def _observed_merge(item, parameters):
         return (type(item.get("iid")) is int and item["iid"] == parameters["pull_request_number"]
@@ -810,7 +846,31 @@ class GitLabActionProvider:
             raise ValueError("GitLab result binding does not match verification binding")
         project = self.contract.locator_for_result(result, binding)
         verified = False
-        if result.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+        if result.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            from types import SimpleNamespace
+            from codex_web.services.code_host_readiness_observation import observation_outputs, borrowed_credential_metadata
+            parameters = self.contract.pull_request_observe_readiness(SimpleNamespace(parameters={
+                key:result.output.get(key) for key in ('pull_request_number','expected_head_sha')}))
+            if result.status != 'succeeded' or result.external_id != str(parameters['pull_request_number']):
+                return ActionVerification(verified=False, findings=('Original readiness observation result is invalid',))
+            resource = self.contract.resource_for_result(result, binding)
+            observation_outputs(result.output, binding_id=binding.id, resource_id=resource.id,
+                provider_instance=self.provider_instance, parameters=parameters, observed_at=result.completed_at)
+            if any(result.output.get(key) != value for key,value in borrowed_credential_metadata().items()):
+                raise ActionRequirementError('Readiness observation original credential version changed')
+            async def checkpoint():
+                await readiness_verification_checkpoint(binding.id)
+            fresh = await self._read_readiness_fact(binding, resource, project, parameters, credential, checkpoint)
+            # Independent current read verifies the original observation, including
+            # pending gates; neither its success nor its receipt is QA acceptance.
+            original = dict(result.output['merge_requirements'])
+            def stable(fact):
+                value = dict(fact)
+                value.pop('observed_at', None); value.pop('expires_at', None)
+                value['sources'] = [{k:v for k,v in row.items() if k != 'observed_at'} for row in value['sources']]
+                return value
+            verified = stable(original) == stable(fresh.model_dump(mode='json'))
+        elif result.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
             from types import SimpleNamespace
             parameters = self.contract.pull_request_verify_merge(SimpleNamespace(parameters={
                 key:result.output.get(key) for key in ("pull_request_number","head_sha","merge_commit_sha")}))

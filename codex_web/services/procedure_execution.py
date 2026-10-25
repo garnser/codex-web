@@ -19,7 +19,9 @@ from codex_web.authority import AuthorityEvaluationRequest
 from codex_web.identity import TenantScope
 from codex_web.procedure_execution import ProcedureCheckpoint, ProcedureStepCheckpoint, ProcedureDeviation
 from codex_web.services.action_providers import ActionRequirementError
-from codex_web.services.code_host_action_contract import CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID
+from codex_web.services.code_host_action_contract import (
+    CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
+)
 from codex_web.services.execution_workers import AssignmentNotFoundError, WorkerConflictError
 from codex_web.services.procedure_discovery import OperationContext, ProcedureAdmissionError, checksum
 from codex_web.skills import SkillDefinition, _contains_secret_material
@@ -599,6 +601,16 @@ class ProcedureExecutionService:
         except ValueError as exc:
             raise ProcedureExecutionError("procedure_provider_result_projection_invalid") from exc
         self._values(step.outputs, outputs, actor, assignment)
+        observation_metadata = {}
+        if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            expiry = outputs.get("expires_at")
+            if (type(expiry) not in (int, float) or not math.isfinite(expiry)
+                or not result.completed_at < expiry <= result.completed_at + 30):
+                raise ProcedureExecutionError("procedure_provider_observation_expiry_invalid")
+            observation_metadata = {
+                "verification_method": "code-host-readiness-observation.v1",
+                "observation_expires_at": expiry,
+            }
         proofs = {}
         for requirement in step.expected_evidence:
             if (requirement.name, requirement.kind) == ("receipt", "provider_receipt"):
@@ -623,7 +635,7 @@ class ProcedureExecutionService:
                 metadata={"intent_id": intent.id, "receipt_id": receipt.id, "attempt": intent.attempt,
                     "provider_result_id": result.execution_id, "action_id": intent.action_id,
                     "provider_instance": intent.provider_instance, "provider_contract_version": adapter.contract_version,
-                    "verification_id": verification_id})
+                    "verification_id": verification_id, **observation_metadata})
             evidence = self.evidence.create_evidence(payload, actor=actor,
                 idempotency_key=f"procedure-result:{receipt.id}:{requirement.name}")
             self._evidence(evidence.id, actor, assignment)
@@ -756,7 +768,7 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_rollback_origin_not_current")
             return True
         if (phase != "execute" and not (phase == "verify"
-                and intent.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID)) or step.recovery:
+                and intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID})) or step.recovery:
             raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
         state = checkpoint.steps[step.id]
         if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":

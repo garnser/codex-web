@@ -344,3 +344,50 @@ The existing broker/operator projection exposes these source availabilities and
 blockers; no separate UI object is added. Provider semantics follow GitLab's
 [MR API](https://docs.gitlab.com/api/merge_requests/) and
 [approval API](https://docs.gitlab.com/api/merge_request_approvals/).
+
+
+### Premerge readiness observation action
+
+The GitLab provider registers `code-host.pull-request.observe-readiness` as a
+read-only, binding-credential-required, one-attempt action. Its only parameters are a
+bounded positive MR IID and an exact expected head revision. Registration does
+not grant a Profile or assignment any new operation or repository authority.
+The existing merge-requirements reader owns fixed, bounded GETs against the
+canonical repository locator; caller URLs, queries, executables, producer claims
+and independent-review overrides are not accepted.
+
+The result protocol `1.0` retains the complete typed merge-requirements fact and
+uses the shared exact-head disposition projector. Its flat procedure outputs
+include observation success, review/CI/policy dispositions, original blockers,
+state/draft/merge gates and observation expiry. Complete policy or three passing
+dispositions alone cannot establish readiness when actual blockers or merge
+gates disagree. A successfully observed pending or blocked MR is not QA
+acceptance, READY, merge permission or a merged-MR proof.
+
+Existing ActionIntent/procedure admission rechecks the current requester,
+assignment, canonical repository, provider binding, Definition and credential
+around network awaits. The canonical async SecretBroker exposes only a copied,
+request-local snapshot of the reference it selected for that borrow. This action
+pins its lifecycle and complete metadata, including rotation/ACL changes; the
+scope resets after success, exception or cancellation. This is metadata-version
+attribution, not cryptographic attestation of backend material versions. No
+credential values or reference metadata enter model context; the result retains
+only a metadata fingerprint and rotation counter.
+
+The registered code-host procedure adapter projects the original successful
+receipt and its separate current verification through existing Evidence owners.
+Verification performs a new bounded read and checks unchanged semantic facts,
+exact head/scope and the original credential metadata version. Original receipt
+and verification Evidence describe the observation, not passing review/CI/policy
+Evidence. A one-step published diagnostic procedure can retain these proofs and
+honest pending dispositions without satisfying a later merge procedure's three
+passing input requirements. Existing action catalog, assignment checkpoint,
+receipt/verification, output-Artifact and Evidence inspectors expose this path;
+there is no new control, grant, store or execution engine.
+
+These receipt and verification records retain their original Evidence kinds.
+Their fixed `code-host-readiness-observation.v1` metadata carries the original
+observation expiry; the ArtifactEvidence 1.4 current-use contract rejects an
+expired observation while retaining its historical bytes. A subsequent
+verification does not extend the original observation lifetime or turn the
+receipt into review, CI or policy acceptance.

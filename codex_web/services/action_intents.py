@@ -65,6 +65,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CodeHostActionContract,
@@ -593,7 +594,7 @@ class ActionIntentService:
         if not repository_ids:
             return
         read_only_observation = False
-        if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and binding_id is not None:
+        if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and binding_id is not None:
             # This is a metadata scope predicate, not credential use by the
             # requester. The ordinary provider boundary independently resolves
             # the current worker's existing credential before either GET.
@@ -606,7 +607,7 @@ class ActionIntentService:
                 and definition.capabilities.read and definition.required_authority_level == "read"
                 and definition.required_authority == ("repository.read.metadata",)
                 and definition.filesystem_access == "none" and not definition.process_access)
-        if request.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID and not read_only_observation:
+        if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and not read_only_observation:
             raise ActionIntentConflictError("merge observation provider contract is unavailable")
         if self.execution_workers is None:
             raise ActionIntentConflictError(
@@ -935,7 +936,7 @@ class ActionIntentService:
         if phase == "execute" and request_or_result != intent.request:
             raise ActionRequirementError("procedure_scope_changed: request differs from canonical intent")
         requester = await asyncio.to_thread(self._requester_actor, intent)
-        if intent.action_id == CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID:
+        if intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID}:
             await asyncio.to_thread(self._validate_execution_repository_scope,
                 intent.execution_id,intent.request,requester,binding_id=intent.binding_id)
         authority = await asyncio.to_thread(self._canonical_authority_snapshot,
@@ -1009,7 +1010,7 @@ class ActionIntentService:
         ):
             raise ActionIntentConflictError("invalid separate admission idempotency key")
         request = payload.request
-        if (request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+        if (request.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID}
                 and payload.verification_required is False):
             raise ActionIntentConflictError("Readiness requires independent provider verification")
         recovery_admission = capture_scope(self.execution_workers, request, payload.execution_id, actor, assignment_id)
@@ -2045,7 +2046,7 @@ class ActionIntentService:
         provider_ok = True
         # Readiness success is never caller-optional, including legacy or
         # previously persisted records with verification_required=False.
-        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
+        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
             try:
                 ready_context = (await self._ready_verification_context(intent, result, actor)
                                  if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)

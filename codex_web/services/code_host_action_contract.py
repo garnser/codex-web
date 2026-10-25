@@ -31,6 +31,8 @@ CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID = "code-host.pull-request.upsert"
 CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID
 CODE_HOST_BRANCH_PUBLISH_ACTION_ID = "code-host.branch.publish"
 CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID = "code-host.pull-request.merge"
+CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID = "code-host.pull-request.observe-readiness"
+CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE = "code-host-pull-request-readiness-observation"
 CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID = "code-host.pull-request.verify-merge"
 CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE = "code-host-pull-request-merge-observation"
 CODE_HOST_PULL_REQUEST_READY_ACTION_ID = "code-host.pull-request.ready"
@@ -186,6 +188,19 @@ class CodeHostActionContract:
                 expected_evidence=(CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,),
                 timeout_seconds=30.0,retry_max_attempts=1,network_access=True,
             ),) if self.provider_type == "gitlab" else ()),
+            *((ActionDefinition(
+                action_id=CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
+                title="Observe exact premerge readiness",
+                description="Read current exact-head review, checks and policy facts; pending is not approval or merge permission.",
+                capabilities=ActionCapability(read=True,prepare=True,execute=True,
+                    idempotency=True,verification=True,evidence=True),
+                risk_class=ActionRiskClass.LOW,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.read.metadata",),required_authority_level="read",
+                credential_required=True,credential_purpose=self.credential_purpose,
+                expected_evidence=(CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,),
+                timeout_seconds=30.0,retry_max_attempts=1,network_access=True,
+            ),) if self.provider_type == "gitlab" else ()),
             # Readiness is additive and implemented by the declared code-host adapters.
             # Registration never grants an execution profile this capability.
             *((ActionDefinition(
@@ -235,6 +250,7 @@ class CodeHostActionContract:
             ),
             CODE_HOST_PULL_REQUEST_READY_ACTION_ID: CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
             CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID: CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
+            CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID: CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
             CODE_HOST_JOB_RERUN_ACTION_ID: CODE_HOST_JOB_RERUN_EVIDENCE,
         }
         try:
@@ -465,6 +481,18 @@ class CodeHostActionContract:
                 raise ValueError(f"{field} requires an exact lowercase SHA-1")
             output[field] = value
         return output
+
+    @staticmethod
+    def pull_request_observe_readiness(request: ActionRequest) -> dict[str, Any]:
+        if set(request.parameters) != {"pull_request_number", "expected_head_sha"}:
+            raise ValueError("readiness observation requires only exact MR number and head")
+        number = request.parameters["pull_request_number"]
+        head = request.parameters["expected_head_sha"]
+        if type(number) is not int or not 1 <= number <= 2**31-1:
+            raise ValueError("readiness observation requires a positive bounded MR number")
+        if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is None:
+            raise ValueError("readiness observation requires an exact lowercase revision")
+        return {"pull_request_number": number, "expected_head_sha": head}
 
     @staticmethod
     def pull_request_verify_merge(request: ActionRequest) -> dict[str, Any]:
