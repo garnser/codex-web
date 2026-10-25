@@ -158,3 +158,18 @@ class UxLeafGovernanceTests(unittest.TestCase):
         with patch.object(original, 'get_record', side_effect=RuntimeError('custom source denial')) as read:
             self.assertEqual(self.query(brief).items, ())
             read.assert_called_once_with(source.governance_record_id, self.actor, context_only=True)
+
+    def test_reader_bound_to_another_service_keeps_its_denial(self):
+        from pathlib import Path
+        from codex_web.storage.data_governance import DataGovernanceStore
+        from codex_web.storage.sqlite_state import SQLiteStateStore
+        source, brief = self.prepare()
+        other = DataGovernanceService(DataGovernanceStore(
+            SQLiteStateStore(Path(self.temp.name) / 'other-governance.sqlite3')))
+        # Same canonical function, different receiver and current source state.
+        self.assertIs(other.get_record.__func__, self.governance.get_record.__func__)
+        with patch.object(other.store, 'context_state', wraps=other.store.context_state) as read:
+            with patch.object(self.governance, 'get_record', other.get_record):
+                self.assertEqual(self.query(brief).items, ())
+            read.assert_called_once_with((source.governance_record_id,),
+                organization_id=self.actor.organization_id, workspace_id=self.actor.workspace_id)

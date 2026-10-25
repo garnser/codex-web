@@ -670,9 +670,11 @@ class DataGovernanceService:
         """
         # Extensions may add rules or audit behavior to either entry point.
         # Only the original canonical methods can share this observation.
-        if getattr(self.filter_context, '__func__', None) is not _CANONICAL_CONTEXT_FILTER:
+        if (getattr(self.filter_context, '__func__', None) is not _CANONICAL_CONTEXT_FILTER
+                or getattr(self.filter_context, '__self__', None) is not self):
             return None
-        if getattr(self.get_record, '__func__', None) is not _CANONICAL_CONTEXT_RECORD_READER:
+        if (getattr(self.get_record, '__func__', None) is not _CANONICAL_CONTEXT_RECORD_READER
+                or getattr(self.get_record, '__self__', None) is not self):
             return None
         state = self.store.context_state(payload.record_ids,
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
