@@ -315,3 +315,73 @@ can refuse even prior reuse, and are never written past. Malformed typed Governa
 objects remain irrelevant to valid prior reuse because its domain decoder is not
 called. No new store, schema, cache, timeout or UI object is introduced; existing
 Artifact inspection and typed Home refusal surfaces remain sufficient.
+
+### Assignment-bound MR observations
+
+Artifact/Evidence state **1.4** adds the fixed MR observation semantics. The
+existing registry migrates 1.3 to 1.4 by changing only the envelope version; all
+prior objects and metadata remain unchanged, without legacy freshness relabels.
+A 1.3 reader refuses the 1.4 envelope. Deployment is forward-only and requires
+the existing canonical migration evidence, recovery qualification and approvals;
+no operational rollback to a reader that ignores observation freshness is promised.
+
+`verification.create` accepts the additional strict protocol
+`code-host-mr-observation.v1`, using the existing capability and canonical
+Artifact/Evidence store. Its request contains only `method`, the exact assigned
+`repository_resource_id`, positive `pull_request_number`, `expected_head_sha`
+and a stable 32-hex `request_id`. It accepts no caller result, producer,
+independence, credential, URL, criteria override or arbitrary Evidence payload.
+
+The owner reuses the existing credential-bound merge-requirement reader and
+current requester/worker/Profile/Definition/assignment/fence/workspace checks.
+The returned typed observation must match the same repository/MR/head and its
+provider freshness window. Current custody, provider binding and authority are
+rechecked inside the existing canonical transaction that appends the three
+governed Evidence records and Verification. No external mutation is performed.
+A failure rolls back both evidence metadata and governance registration.
+
+The three results distinguish independent current-head review observations,
+observed exact-head CI, and completeness of the merge-policy snapshot. Observed
+successful checks do not establish unknown required-check or protection policy.
+GitLab's lack of commit-associated approval proof remains unknown; it is never
+converted into an approval. Known unmet review/check facts fail; unavailable or
+incomplete facts warn. A complete policy snapshot does not imply that its rules
+are satisfied. Neither observation success nor the worker's execution creates
+reviewer consent, new QA approval or permission to merge.
+
+The authenticated worker is the Evidence producer; the original requester and
+current authority decision remain separately attributed. Verification
+independence is calculated by the existing service. A worker verifying its own
+observations is not an independent verifier. The original typed provider
+snapshot, its digest/read ID and exact execution Definition are retained as
+bounded governed provenance.
+
+Provider freshness is **not data retention**. `observation_expires_at` bounds
+current use of this fixed protocol; expired observations are rejected by current
+procedure/Evidence gates. Original records and their provenance remain available
+for historical reconciliation, under normal governance and retention policy.
+
+Response loss uses only `verification.read` with `method` equal to this protocol
+and the original `source`; no Work reference is substituted or request replayed.
+The source is `sha256:` plus the SHA-256 of sorted compact JSON containing
+`assignment_id`, `execution_id`, `fence`, `method`, and stable `request_id`.
+The exact typed request has a separate retained digest. Reusing the same request
+identity with different content is refused before another provider read; it
+cannot manufacture a new observation by changing the requested head.
+A unique original returns its Evidence and explicit `observation_fresh` value;
+absence is UNKNOWN, not permission to submit another request. An expired original
+is not refreshed or relabeled as a current passing assessment.
+
+The read-only readiness ActionIntent uses the distinct fixed
+`code-host-readiness-observation.v1` marker with the original observation expiry.
+Its Evidence retains the existing `provider_receipt` and `artifact_verification`
+kinds: it proves the original observation and verification, including pending
+results. Current consumers reject it after expiry without deleting that history
+or turning an observation receipt into review consent or merge permission.
+
+Existing recovery Verification methods retain their original request, ownership,
+independence and effect-proof guards. No role or capability grant is added. The
+existing operation catalog and Evidence/Verification inspectors expose the new
+method, typed request, source/producer/provenance and honest result; there is no
+new UI object or evidence engine. This source capability is not live Executive
+or operational-procedure migration qualification.

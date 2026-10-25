@@ -611,8 +611,17 @@ class ControlPlaneBrokerService:
                     "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
+                from codex_web.services.worker_mr_verifications import METHOD, MRObservationRequest
+                result["request_body"]["methods"].append(METHOD)
+                result["request_body"]["MR_observation"] = {
+                    "method": METHOD, "schema": MRObservationRequest.model_json_schema(),
+                    "effect": "Fresh exact-head provider observations with derived Evidence; never a caller-stated result or merge permission"}
             if item.id == "verification.read":
                 result["required_query_parameters"] = ["work_item_ref", "source"]
+                from codex_web.services.worker_mr_verifications import METHOD
+                result["MR_observation_query"] = {"required": ["method", "source"],
+                    "method": METHOD, "source": "sha256:<original assignment/request digest>",
+                    "effect": "Read the original historical records; expired observations are not refreshed or replayed"}
         if item.id.startswith("repository.read."):
             result["optional_query_parameters"] = ["repository_resource_id"]
         if item.id == "repository.read.pull-requests":
@@ -2126,8 +2135,13 @@ class ControlPlaneBrokerService:
             if operation.id == 'verification.create':
                 if resolved.query:
                     raise ControlPlaneBrokerRequestError('Verification write does not accept query parameters')
-                result = await asyncio.to_thread(adapter.create, assignment, worker_actor,
-                    resolved, payload, assignment_validator)
+                from codex_web.services.worker_mr_verifications import METHOD, WorkerMRVerificationAdapter
+                if payload.get('method') == METHOD:
+                    result = await WorkerMRVerificationAdapter(adapter).create(
+                        assignment, worker_actor, resolved, payload, assignment_validator)
+                else:
+                    result = await asyncio.to_thread(adapter.create, assignment, worker_actor,
+                        resolved, payload, assignment_validator)
             else:
                 if payload:
                     raise ControlPlaneBrokerRequestError('Verification read does not accept a request body')

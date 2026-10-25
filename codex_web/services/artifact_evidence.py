@@ -1346,6 +1346,9 @@ class ArtifactEvidenceService:
             matches: list[Evidence] = []
             verification_ids: set[str] = set()
             for item in valid_evidence:
+                from codex_web.mr_observation_evidence import current_observation
+                if not current_observation(item, now=current_time):
+                    continue
                 if item.evidence_type != requirement.evidence_type:
                     continue
                 if item.result not in requirement.accepted_results:

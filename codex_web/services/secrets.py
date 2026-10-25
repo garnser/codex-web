@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from contextvars import ContextVar
 import time
 from typing import Any, Awaitable, Callable, Iterable, Mapping, TypeVar
 
@@ -15,6 +16,15 @@ from codex_web.secret_backends import SecretBackend, SecretBackendError
 
 
 T = TypeVar("T")
+
+# Metadata of the reference selected by THIS async borrow, never secret material.
+# This is an observation for admission rechecks, not a permission or credential.
+_current_async_use_reference = ContextVar('secret_broker_async_use_reference', default=None)
+
+
+def current_async_use_reference() -> SecretReference | None:
+    reference = _current_async_use_reference.get()
+    return reference.model_copy(deep=True) if reference is not None else None
 
 
 class SecretBrokerError(RuntimeError):
@@ -316,7 +326,11 @@ class SecretBroker:
         backend = self._backend(reference)
         value = backend.get(reference.id)
         try:
-            result = await consumer(value)
+            token = _current_async_use_reference.set(reference.model_copy(deep=True))
+            try:
+                result = await consumer(value)
+            finally:
+                _current_async_use_reference.reset(token)
         except Exception as exc:
             await self._audit_async(
                 reference,

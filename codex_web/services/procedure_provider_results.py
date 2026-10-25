@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 
 from codex_web.services.code_host_action_contract import (
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
@@ -22,7 +24,10 @@ class CodeHostProcedureResultAdapter:
     provider_type = "gitlab"
     contract_version = "1.2"
     action_ids = (CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
-                  CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID)
+                  CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID)
+
+    def __init__(self, *, provider_instance=None):
+        self.provider_instance = provider_instance
 
     def project(self, request, result):
         """Return only the supported, typed output fields; preserve legacy output."""
@@ -35,7 +40,14 @@ class CodeHostProcedureResultAdapter:
         number = raw.get("pull_request_number")
         if type(number) is not int or number < 1 or str(number) != result.external_id:
             raise ValueError("procedure_code_host_result_number_invalid")
-        if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+        if request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            from codex_web.services.code_host_readiness_observation import observation_outputs
+            parameters = CodeHostActionContract.pull_request_observe_readiness(request)
+            outputs = observation_outputs(raw, binding_id=result.provider_binding_id,
+                resource_id=request.resource_ids[0], provider_instance=self.provider_instance,
+                parameters=parameters, observed_at=result.completed_at)
+            evidence_type = CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE
+        elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             parameters = CodeHostActionContract.pull_request_merge(request)
             fields = ("head_sha", "merge_commit_sha")
             outputs = {"pull_request_number": number}
