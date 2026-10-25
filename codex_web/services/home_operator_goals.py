@@ -1,4 +1,5 @@
 """Read the selected conversation's canonical Goal bindings; never resume them."""
+from codex_web.services.home_checkpoint_telemetry import checkpoint_component
 from codex_web.services.home_operator import HomeOperatorConflict
 from codex_web.services.identity import IdentityService
 from codex_web.services.goals import GoalNotFoundError
@@ -11,6 +12,7 @@ class HomeOperatorGoalInspection:
         self.bindings = bindings
         self.sessions = sessions
 
+    @checkpoint_component('goal_inspection')
     def inspect(self, actor, *, expected_revision):
         IdentityService.require_admin(actor)
         selected = self.operator.status(actor)

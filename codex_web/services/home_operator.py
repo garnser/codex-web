@@ -5,6 +5,7 @@ from urllib.parse import quote
 
 from codex_web.identity import AuthenticationActor
 from codex_web.models import HomeOperatorBinding, HomeOperatorUpdate
+from codex_web.services.home_checkpoint_telemetry import checkpoint_component
 from codex_web.services.identity import IdentityError, IdentityService
 from codex_web.services.agent_profiles import AgentProfileError
 
@@ -24,6 +25,7 @@ class HomeOperatorService:
         self.clock = clock
         self.agent_profiles = agent_profiles
 
+    @checkpoint_component('status')
     def status(self, actor: AuthenticationActor) -> dict:
         project = self.projects.get('home', actor.tenant)
         binding = project.home_operator

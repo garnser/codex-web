@@ -26,6 +26,25 @@ Telemetry sanitization redacts secret-bearing keys such as authorization headers
 
 Do not emit prompt bodies, task/repository content, cookies, credentials, encryption keys, secret values, or provider response bodies merely to improve diagnostics. Later data-governance rules may further restrict export/retention of otherwise safe fields.
 
+### Home checkpoint component timings
+
+The existing Home checkpoint boundary emits `home.checkpoint.stage` events
+through `operation_stage()`. A request-local scope enables fixed component names
+for current selection status, Profile resolution, Goal inspection, custody,
+Session lookup, held-action observation, each of the three preservation
+snapshots, and the Artifact writer. Scope is reset on every return or refusal;
+ordinary Home/Profile reads outside the checkpoint do not emit these events.
+
+Events contain only the inherited correlation, tenant/workspace, fixed stage,
+completed/refused outcome and elapsed seconds. They omit content, exception text,
+stacks and Artifact/receipt payloads. Durations are inclusive wall time, so nested
+stages must not be added together or presented as SQL/CPU measurements. A refused
+final snapshot can follow a committed preservation Artifact; timing telemetry
+cannot establish absence of effects or authorize a retry. Existing inspectors
+use the same bounded log query surface; no new control or state projection is
+introduced. The five-second preservation budget and all fresh authority,
+selection, process and action observations remain unchanged.
+
 ### Bounded structured-log query buffer
 
 The built-in runtime keeps a bounded in-memory structured-log projection for operator drill-down. It is intentionally narrower than stdout/stderr logging:
