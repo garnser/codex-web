@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Iterable
 
 from codex_web.identity import TenantScope
+from codex_web.work_graph_telemetry import graph_read_stage
 from codex_web.models import WorkItemState
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.work_graph import (
@@ -531,8 +532,10 @@ class WorkGraphService:
         *,
         scope: TenantScope,
     ) -> WorkGraphSnapshot:
-        items = self._project_items(project_id, scope)
-        edges = self._visible_edges(project_id=project_id, scope=scope)
+        with graph_read_stage('snapshot.items'):
+            items = self._project_items(project_id, scope)
+        with graph_read_stage('snapshot.edges'):
+            edges = self._visible_edges(project_id=project_id, scope=scope)
         nodes: list[WorkGraphNode] = []
         impacts: list[WorkDependencyImpact] = []
         runnable: list[str] = []

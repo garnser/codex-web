@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from codex_web.observability import operation_stage
+from codex_web.work_graph_telemetry import graph_read_timings, graph_read_stage
 
 from codex_web.authority import (
     AuthorityAutonomyRisk,
@@ -954,10 +955,11 @@ class ExecutiveManagementService:
             try:
                 with operation_stage(logging.getLogger(__name__), "executive.context.stage", "work_graph",
                     organization_id=actor.organization_id, workspace_id=actor.workspace_id):
-                    graph = self.work_graph.snapshot(
-                        payload.project_id,
-                        scope=actor.tenant,
-                    )
+                    with graph_read_timings(actor.tenant), graph_read_stage('snapshot'):
+                        graph = self.work_graph.snapshot(
+                            payload.project_id,
+                            scope=actor.tenant,
+                        )
             except Exception as exc:
                 raise ExecutiveContextError(
                     f"canonical WorkGraph is unavailable: {payload.project_id}: {exc}"

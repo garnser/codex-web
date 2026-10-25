@@ -9,6 +9,8 @@ import uuid
 from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Iterator
 
+from codex_web.work_graph_telemetry import graph_read_connection, graph_read_stage
+
 from codex_web.storage.state_store import (
     check_operation_budget, storage_operation_budget,
     OperationTimingMetrics,
@@ -584,12 +586,11 @@ class PostgresStateStore:
         limit: int, fields: tuple[str, ...] | None = None,
     ) -> tuple[dict[str, Any], str | None]:
         page_size = max(1, min(int(limit), 1000))
-        with self._read_connection() as connection:
+        with graph_read_connection(self._read_connection) as connection:
             with connection.cursor() as cursor:
-                if not self._record_collection_exists_in_cursor(
-                    cursor,
-                    namespace,
-                ):
+                with graph_read_stage('postgres.collection.exists'):
+                    exists = self._record_collection_exists_in_cursor(cursor, namespace)
+                if not exists:
                     if getattr(self._callback_reads, "connection", None) is not None:
                         raise RuntimeError("callback record page requires an initialized collection")
                     self._lock(cursor, namespace)
@@ -639,26 +640,29 @@ class PostgresStateStore:
                 # A strict-JSON conversion refusal must not abort a caller's
                 # canonical update transaction before the legacy TEXT fallback.
                 with connection.transaction() if fields is not None else nullcontext():
-                    cursor.execute(statement, parameters)
-                    rows = cursor.fetchall()
+                    with graph_read_stage('postgres.page.execute'):
+                        cursor.execute(statement, parameters)
+                    with graph_read_stage('postgres.page.fetch'):
+                        rows = cursor.fetchall()
 
-        page: dict[str, Any] = {}
-        for storage_namespace, payload in rows[:page_size]:
-            parsed = parse_state_record_storage_key(
-                str(storage_namespace)
+        with graph_read_stage('postgres.page.decode'):
+            page: dict[str, Any] = {}
+            for storage_namespace, payload in rows[:page_size]:
+                parsed = parse_state_record_storage_key(
+                    str(storage_namespace)
+                )
+                if parsed is None or parsed[1] is None:
+                    continue
+                page[parsed[1]] = (
+                    json.loads(payload)
+                    if isinstance(payload, str)
+                    else payload
+                )
+            next_cursor = (
+                next(reversed(page))
+                if len(rows) > page_size and page
+                else None
             )
-            if parsed is None or parsed[1] is None:
-                continue
-            page[parsed[1]] = (
-                json.loads(payload)
-                if isinstance(payload, str)
-                else payload
-            )
-        next_cursor = (
-            next(reversed(page))
-            if len(rows) > page_size and page
-            else None
-        )
         return page, next_cursor
 
     def record_apply(
