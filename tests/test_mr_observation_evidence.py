@@ -27,3 +27,6 @@ class MRObservationFreshnessTests(unittest.TestCase):
         original = SimpleNamespace(observed_at=1, metadata={"legacy": "kept"})
         self.assertTrue(current_observation(original, now=100000))
         self.assertEqual(original.metadata, {"legacy": "kept"})
+        for method in (None, [], {}):
+            unknown = SimpleNamespace(observed_at=1, metadata={"verification_method": method})
+            self.assertTrue(current_observation(unknown, now=100000))

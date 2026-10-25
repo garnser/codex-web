@@ -6,7 +6,7 @@ READINESS_METHOD = "code-host-readiness-observation.v1"
 
 
 def current_observation(evidence, *, now):
-    if evidence.metadata.get("verification_method") not in {METHOD, READINESS_METHOD}:
+    if evidence.metadata.get("verification_method") not in (METHOD, READINESS_METHOD):
         return True
     expiry = evidence.metadata.get("observation_expires_at")
     observed = evidence.observed_at
