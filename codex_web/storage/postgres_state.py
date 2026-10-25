@@ -6,6 +6,8 @@ import math
 import time
 import threading
 import uuid
+
+from codex_web.storage import postgres_document_projection
 from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Iterator
 
@@ -88,6 +90,8 @@ class PostgresStateStore:
         self._pool = connection_pool
         self._shared_pool = False
         self._closed = False
+        self._document_projection_write_owner = initialize
+        self._document_projection_namespaces: set[str] = set()
         self._callback_reads = threading.local()
         if connect is None:
             try:
@@ -230,6 +234,9 @@ class PostgresStateStore:
 
     @classmethod
     def _upsert(cls, cursor: Any, namespace: str, payload: Any) -> None:
+        serialized = cls._serialized(payload)
+        if isinstance(payload, dict) and isinstance(payload.get('records'), list):
+            postgres_document_projection.prepare(cursor, namespace, serialized)
         cursor.execute(
             """
             INSERT INTO codex_state_documents(namespace, payload, updated_at)
@@ -238,12 +245,16 @@ class PostgresStateStore:
                 payload = EXCLUDED.payload,
                 updated_at = EXCLUDED.updated_at
             """,
-            (namespace, cls._serialized(payload), time.time()),
+            (namespace, serialized, time.time()),
         )
 
     def _initialize(self) -> None:
         with self._connection() as connection:
             with connection.cursor() as cursor:
+                # Serialize derived DDL in this canonical schema; domain writers
+                # never acquire this initialization lock while holding a row.
+                cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended("
+                    "current_schema() || ':canonical-state-initialize',0))")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS codex_state_documents (
@@ -284,6 +295,48 @@ class PostgresStateStore:
                     raise RuntimeError(
                         "PostgreSQL state schema is newer than this codex-web binary"
                     )
+
+                postgres_document_projection.initialize(cursor)
+
+    def enable_document_record_projection(self, namespace: str) -> bool:
+        """Explicit initialized write owner seeds a rebuildable derived index.
+
+        Read-only/cold initialize=False stores and transaction callbacks never
+        migrate or open a separate write owner through a domain constructor.
+        """
+        if (not getattr(self, '_document_projection_write_owner', False)
+                or getattr(self._callback_reads, 'connection', None) is not None):
+            return False
+        if namespace in self._document_projection_namespaces:
+            return True
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                # Leave room for the metadata prefix, ordinal and tuple overhead.
+                # Declining this optional index never constrains document keys.
+                cursor.execute("SELECT octet_length(%s) <= current_setting('block_size')::integer / 8",
+                    (namespace,))
+                if not cursor.fetchone()[0]:
+                    return False
+                self._lock(cursor, namespace)
+                cursor.execute("""INSERT INTO codex_state_metadata(key,value,updated_at) VALUES(%s,'1',%s)
+                    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""",
+                    (postgres_document_projection.ENABLE_PREFIX + namespace, time.time()))
+                cursor.execute('SELECT payload FROM codex_state_documents WHERE namespace=%s FOR UPDATE', (namespace,))
+                row = cursor.fetchone()
+                if row is not None:
+                    postgres_document_projection.prepare(cursor, namespace, row[0])
+        self._document_projection_namespaces.add(namespace)
+        return True
+
+    def _document_projection(self, namespace, array_name, item_ids, organization_id,
+                             workspace_id, names, first_per_id=False, scope_after_first=False):
+        if array_name != 'records' or namespace not in getattr(self, '_document_projection_namespaces', ()):
+            return None
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                row = postgres_document_projection.read(cursor, namespace, item_ids,
+                    organization_id, workspace_id, names, first_per_id, scope_after_first)
+        return self._decode(row) if row is not None else None
 
     @staticmethod
     def _record_collection_exists_in_cursor(
@@ -970,7 +1023,7 @@ class PostgresStateStore:
     def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
                                      organization_id: str, workspace_id: str,
                                      collection_names: tuple[str, ...]) -> Any | None:
-        """Scoped complete record/schema read; optional, without a new index.
+        """Scoped complete record/schema read, with an optional derived index.
 
         A savepoint protects an owning transaction from legacy TEXT JSON
         conversion errors. Only those conversion errors use the full read path.
@@ -978,6 +1031,10 @@ class PostgresStateStore:
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
+        projected = self._document_projection(namespace, array_name, (item_id,), organization_id,
+            workspace_id, names, first_per_id=True)
+        if projected is not None:
+            return projected
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
         # Share the shape parse and materialize original JSON members once.
         # Original field comparisons preserve even legacy numeric identity text.
@@ -1017,7 +1074,7 @@ class PostgresStateStore:
                                      organization_id: str, workspace_id: str,
                                      collection_names: tuple[str, ...], first_per_id: bool = False,
                                      scope_after_first: bool = False) -> Any | None:
-        """Scoped complete records/schema read; optional, without a new index.
+        """Scoped complete records/schema read, with an optional derived index.
 
         A savepoint protects an owning transaction from legacy TEXT JSON
         conversion errors. Only those conversion errors use the full read path.
@@ -1029,6 +1086,10 @@ class PostgresStateStore:
         names = record_projection_fields(collection_names)
         if array_name not in names or "schema_version" in names:
             raise ValueError("selected array must belong to the canonical envelope")
+        projected = self._document_projection(namespace, array_name, item_ids, organization_id,
+            workspace_id, names, first_per_id, scope_after_first)
+        if projected is not None:
+            return projected
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
         # Share the shape parse and original JSON members without normalizing
         # identity comparisons, numeric values, signed zero, or legacy decoding.

@@ -48,6 +48,58 @@ codex-web keeps SQLite as the default local durable store and exposes the same t
 
 A distributed deployment must preserve the same canonical-state guarantees. PostgreSQL, Redis, NATS, RabbitMQ, Kafka, or any other infrastructure component is never allowed to become an alternate source of business truth merely because it participates in storage, coordination, or event delivery.
 
+### PostgreSQL selected-record projection
+
+Initialized PostgreSQL write owners can explicitly enable derived projection
+version 1 for Governance and Organizational Memory `records` arrays. The two
+rebuildable backend tables hold envelope metadata and complete original member
+TEXT by original ordinal, with an identity index. Canonical documents remain the
+only authority. Every projected lookup compares SHA-256 of the current complete
+document with its projection header in the same statement snapshot. Existing
+current actor, tenant, source, policy and domain decoding checks still run.
+Duplicate identity order, first-global-before-scope decisions and raw numeric
+values are retained. Unsupported identity types or oversized index keys, unknown/legacy envelope shapes,
+missing or stale projections use the original document reader.
+
+New writers prepare projection changes under the existing namespace lock, with
+the document row locked before derived metadata. A deferred foreign key permits
+initial document insertion in the same transaction. Unchanged raw rows are
+excluded before conflict locks; unchanged record-array SHA-256 skips row work
+when a Memory retrieval audit is appended. Removed or changed records lose their
+previous projected row versions in the same transaction. An old/direct document
+update whose new SHA-256 does not match the prepared projection deletes all
+current projected raw rows transactionally; canonical deletion cascades. This is
+ordinary PostgreSQL MVCC erasure, not a claim to overwrite historical disk bytes.
+
+Only `initialize=True` owners install the additive backend schema and explicitly
+seed projections. Initialization DDL is serialized per canonical SQL schema.
+Cold/read-only `initialize=False` compositions and constructors inside an owning
+callback never enable, rebuild or open another write transaction. Read callbacks
+reuse their existing connection and see their own canonical uncommitted changes.
+Older writers/readers can continue using the canonical documents; their changed
+writes invalidate the derived rows rather than leaving stale sensitive content.
+The main document schema and domain schema versions do not change. Backup exports
+contain authoritative documents, and derived rows can be rebuilt after restore.
+Deploy with the existing drained backup and isolated-verification procedure;
+index construction takes startup time and adds database storage. It is not a
+new domain object or operator control, and introduces no UI flow.
+
+Private PostgreSQL measurements use synthetic canonical model-shaped documents
+and genuine authority, policy, source checks and durable retrieval-audit writes.
+They qualify storage semantics and measured cost tradeoffs, not the actual live
+Executive workload, service concurrency, complete preparation deadline or model
+consultation. Those remain deployed acceptance checks under #1800 and #1733.
+
+In one bounded synthetic PostgreSQL comparison (12,539 Governance records,
+14.61 MB; 240 Memory records and 599 retrieval runs, 5.17 MB), complete Memory
+search including its real private audit write took 3.49–4.60 s with the original
+reader/writer and 1.02–1.10 s with the projection. Initial seeding took 4.13 s
+outside search. A Governance append took 2.49 s versus 2.91 s; all 12,539 existing
+projection row versions remained unchanged, and gross private WAL was about
+305 KB in both cases. These measurements include four selected results, unlike
+the observed production single-result query; they illustrate the startup,
+write-time and storage tradeoff rather than guarantee a live deadline.
+
 ## Current guarantees
 
 Turn queue and model-list mutable loads retain their concurrent-save baselines
