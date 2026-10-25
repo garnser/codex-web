@@ -220,7 +220,8 @@ class AssignmentReasoningBroker:
 
     async def dispatch(self, assignment, worker_actor, operation, target, payload, query, validator=None):
         if query and (operation.id != "procedure.read" or set(query) != {"run_id"}
-                or not isinstance(query["run_id"], str) or not 0 < len(query["run_id"]) <= 100):
+                or not isinstance(query["run_id"], list) or len(query["run_id"]) != 1
+                or not isinstance(query["run_id"][0], str) or not 0 < len(query["run_id"][0]) <= 100):
             deny("only procedure.read accepts an exact run_id query")
         if operation.id not in {"procedure.start", "procedure.advance", "executive.activation.create"} and payload:
             deny("this operation accepts no body")
@@ -235,7 +236,7 @@ class AssignmentReasoningBroker:
                 item = await self.procedures.advance(current.id, actor=actor, run_id=request.run_id)
             else:
                 return await run_settled(lambda: self.procedures.inspect(current.id, actor,
-                    run_id=query.get("run_id")))
+                    run_id=query["run_id"][0] if query else None))
             return self.procedures.view(item)
         if operation.id == "executive.activation.read":
             items = await run_settled(lambda: self.existing(current, actor))

@@ -201,9 +201,18 @@ class ProcedureRunTests(PremergeReadinessProcedureTests):
             {'definition':self.pin.model_dump(mode='json'),'input_snapshot_id':snapshot.id},{})
         self.assertNotEqual(result['current_run_id'],completed.procedure_checkpoint.id)
         read=next(x for x in OPERATIONS if x.id=='procedure.read')
-        history=await adapter.dispatch(completed,self.worker_actor,read,completed.id,{},
-            {'run_id':completed.procedure_checkpoint.id})
+        from codex_web.services.control_plane_broker import ControlPlaneBrokerService
+        resolved=ControlPlaneBrokerService._resolve_operation("GET",
+            f"/api/execution-workers/assignments/{completed.id}/procedure?run_id={completed.procedure_checkpoint.id}")
+        history=await adapter.dispatch(completed,self.worker_actor,read,completed.id,{},resolved.query)
         self.assertEqual(history['procedure_checkpoint'],completed.procedure_checkpoint.model_dump(mode='json'))
+        self.assertEqual(broker._authorize.call_count,2)
+        from fastapi import HTTPException
+        for values in ([], [completed.procedure_checkpoint.id, completed.procedure_checkpoint.id]):
+            with self.subTest(query_cardinality=len(values)):
+                with self.assertRaises(HTTPException) as refused:
+                    await adapter.dispatch(completed,self.worker_actor,read,completed.id,{}, {'run_id':values})
+                self.assertEqual(refused.exception.status_code,403)
         self.assertEqual(broker._authorize.call_count,2)
 
 

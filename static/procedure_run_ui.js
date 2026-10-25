@@ -1,6 +1,7 @@
+import { renderProcedureHistory, historyPins } from './procedure_run_history.js';
 import { request } from './api_client.js';
 import { captureProjectView } from './project_view_scope.js';
-import { referenceLink, referencePath } from './reference_navigation.js';
+import { referenceLink } from './reference_navigation.js';
 import { esc } from './definition_typed_editor_shared.js';
 import { procedureDiscoveriesHtml } from './procedure_discovery_view.js';
 import { procedureError } from './skill_procedure_ui.js';
@@ -74,17 +75,8 @@ export function installProcedureRun(host, assignment, { incidentId = '', runId =
   if (route.get('consumer_id') === assignment.id && route.get('procedure_run')) selectedRun = route.get('procedure_run');
   if (runId) selectedRun = runId;
   const historySelect = host.querySelector('[data-procedure-history]');
-  function renderHistory(runs) {
-    historySelect.innerHTML = runs.map(pin => `<option value="${esc(pin.id)}">${esc(pin.id)} · ${esc(pin.status)}${pin.id === currentRun ? ' · current' : ' · retained'}</option>`).join('');
-    historySelect.value = selectedRun;
-    const historical = selectedRun && selectedRun !== currentRun;
-    host.querySelector('[data-procedure-history-status]').textContent = historical ? 'Retained run: inspection and outcome review only. Advancing never changes this checkpoint.' : 'Current run. A changed input starts a separate admitted run only after verified completion.';
-    for (const button of host.querySelectorAll('[data-procedure-action="advance"], [data-procedure-deviation] button')) button.disabled = historical;
-    const link = host.querySelector('[data-procedure-run-link]');
-    const path = referencePath('assignment', assignment.id, {projectId});
-    link.href = `${path}&${new URLSearchParams({procedure_run:selectedRun})}`;
-  }
-  renderHistory([...(assignment.procedure_history || []), assignment.procedure_checkpoint].filter(Boolean).map(pin => ({...pin,id:pin.id || 'legacy'})));
+  const renderHistory = runs => renderProcedureHistory(host, runs, selectedRun, currentRun, assignment.id, projectId);
+  renderHistory(historyPins(assignment));
   async function perform(action, body) {
     if (busy || !current()) return;
     const visit = ++sequence, valid = () => current() && visit === sequence;
