@@ -58,6 +58,9 @@ class OrganizationalMemoryStore:
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        enable = getattr(store, 'enable_document_record_projection', None)
+        if callable(enable):
+            enable(self.namespace)
 
     def _decode(self, payload: Any) -> OrganizationalMemoryState:
         if payload is None:
