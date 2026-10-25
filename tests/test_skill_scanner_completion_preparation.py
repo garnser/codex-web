@@ -15,11 +15,11 @@ from codex_web.services.skill_security import SkillSecurityService
 from codex_web.skill_security import SkillScanRequest
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.skill_security import SkillSecurityStore
-from tests.test_skill_scanner_phase_evidence import SkillScannerPhaseEvidenceTests
+from tests import test_skill_scanner_phase_evidence as scanner_fixture
 
 
 class SkillScannerCompletionPreparationTests(unittest.TestCase):
-    setUp = SkillScannerPhaseEvidenceTests.setUp
+    setUp = scanner_fixture.SkillScannerPhaseEvidenceTests.setUp
 
     def seed_terminal_intents(self, count):
         decision = ActionDecisionSnapshot()
