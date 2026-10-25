@@ -23,8 +23,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.12",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12"),
+    "1.13",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -424,6 +424,8 @@ class ExecutionAssignment(ResourceContextModel):
     skill_assignment_sources: dict[str, str] = Field(default_factory=dict)
     procedure_discoveries: tuple[ProcedureDiscovery, ...] = ()
     procedure_checkpoint: ProcedureCheckpoint | None = None
+    # Retained terminal runs, never evicted or reused as the current writer.
+    procedure_history: tuple[ProcedureCheckpoint, ...] = Field(default=(), max_length=63)
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None
@@ -438,6 +440,16 @@ class ExecutionAssignment(ResourceContextModel):
     failure: FailureRecord | None = None
     artifact_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def procedure_runs(self) -> "ExecutionAssignment":
+        runs = (*self.procedure_history, self.procedure_checkpoint)
+        ids = [p.id or "legacy" for p in runs if p is not None]
+        if len(set(ids)) != len(ids) or any(p.status != "completed" for p in self.procedure_history):
+            raise ValueError("procedure history requires distinct completed run identities")
+        if self.procedure_history and self.procedure_checkpoint is None:
+            raise ValueError("procedure history requires a current run")
+        return self
 
     @model_validator(mode="after")
     def normalize_subject(self) -> "ExecutionAssignment":

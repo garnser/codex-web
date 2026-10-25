@@ -10,6 +10,7 @@ from codex_web.services.organizational_memory import KnowledgeAuthorizationError
 
 class OutcomeDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    run_id: str | None = Field(default=None, max_length=100)
     incident_id: str | None = Field(default=None, max_length=200)
     skill_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=160)
 
@@ -18,11 +19,11 @@ def build_procedure_outcomes_router(service):
     router = APIRouter(tags=["skills"])
 
     @router.get("/api/execution-workers/assignments/{assignment_id}/procedure/outcome")
-    async def inspect(assignment_id: str, request: Request, incident_id: str | None = None):
+    async def inspect(assignment_id: str, request: Request, incident_id: str | None = None, run_id: str | None = None):
         actor = request_actor(request)
         try:
             return await asyncio.to_thread(service.inspect, assignment_id,
-                actor=actor, incident_id=incident_id)
+                actor=actor, incident_id=incident_id, run_id=run_id)
         except ProcedureExecutionError as exc:
             raise HTTPException(409, detail={"code":exc.code}) from exc
         except KnowledgeAuthorizationError as exc:

@@ -38,7 +38,9 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
             _state_for_target=Mock(return_value=NS(organization_id="local", workspace_id="default",
                 project_id="project-a", resource_ids=("repo-a",))))
         self.procedures = NS(_live=Mock(), get=Mock(return_value=self.assignment),
-            start=Mock(return_value=self.assignment), advance=AsyncMock(return_value=self.assignment))
+            start=Mock(return_value=self.assignment), advance=AsyncMock(return_value=self.assignment),
+            inspect=Mock(return_value={"assignment_id":self.assignment.id}),
+            view=lambda item: {"assignment_id":item.id})
         self.adapter = AssignmentReasoningBroker(self.broker, procedures=self.procedures,
             executives=self.fixture.service)
 
@@ -68,9 +70,9 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
     async def test_procedure_dispatch_preserves_exact_actor_and_owner(self):
         result = await self.call("procedure.read", target=self.assignment.id)
         self.assertEqual(result["assignment_id"], self.assignment.id)
-        self.procedures.get.assert_called_once_with(self.assignment.id, self.actor)
+        self.procedures.inspect.assert_called_once_with(self.assignment.id, self.actor, run_id=None)
         await self.call("procedure.advance", target=self.assignment.id)
-        self.procedures.advance.assert_awaited_once_with(self.assignment.id, actor=self.actor)
+        self.procedures.advance.assert_awaited_once_with(self.assignment.id, actor=self.actor, run_id=None)
 
     async def test_cross_assignment_stale_fence_tenant_and_allowlist_refuse(self):
         with self.assertRaises(HTTPException):
@@ -85,7 +87,7 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.allowed.clear()
         with self.assertRaises(HTTPException):
             await self.call("procedure.read", target=self.assignment.id)
-        self.procedures.get.assert_not_called()
+        self.procedures.inspect.assert_not_called()
 
     async def test_live_owner_expiry_and_actual_authority_denial_propagate(self):
         self.procedures._live.side_effect = RuntimeError("lease expired")
@@ -95,7 +97,7 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.broker._authorize.side_effect = HTTPException(403, "denied")
         with self.assertRaises(HTTPException):
             await self.call("procedure.read", target=self.assignment.id)
-        self.procedures.get.assert_not_called()
+        self.procedures.inspect.assert_not_called()
 
     async def test_service_requester_requires_real_scope_without_impersonation(self):
         self.broker._requester_actor.return_value = self.actor.model_copy(update={

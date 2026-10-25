@@ -61,7 +61,8 @@ class ProcedureOutcomeService:
         import asyncio
         from codex_web.services.definitions import DefinitionConflictError
         try:
-            result = await asyncio.to_thread(self.convert, assignment.id, actor=actor, incident_id=incident_id)
+            result = await asyncio.to_thread(self.convert, assignment.id, actor=actor, incident_id=incident_id,
+                run_id=self.runner.run_id(assignment.procedure_checkpoint))
             if result["status"] in {"draft", "published"}:
                 return result
             reason = "procedure_outcome_requires_review"
@@ -73,7 +74,7 @@ class ProcedureOutcomeService:
             project_id=assignment.project_id, type="procedure_review",
             source=AttentionSource(object_type="execution_assignment", object_id=assignment.id),
             reason=reason, dedupe_key="procedure-outcome:" + self._identity(assignment),
-            deep_link=f"/api/execution-workers/assignments/{assignment.id}/procedure/outcome",
+            deep_link=f"/api/execution-workers/assignments/{assignment.id}/procedure/outcome?run_id={self.runner.run_id(assignment.procedure_checkpoint)}",
             diagnostic_refs=(f"execution-assignment:{assignment.id}",
                 f"definition:{assignment.procedure_checkpoint.definition.record_id}"),
             severity="warning", owner_identity_id=actor.identity_id), actor_id=actor.identity_id)
@@ -84,10 +85,11 @@ class ProcedureOutcomeService:
         return hashlib.sha256(json.dumps([
             assignment.organization_id, assignment.workspace_id, assignment.id,
             pin.definition.model_dump(mode="json"),
+            *([pin.id] if pin.id else []),
         ], sort_keys=True).encode()).hexdigest()
 
-    def _source(self, assignment_id, actor):
-        assignment = self.runner.get(assignment_id, actor)
+    def _source(self, assignment_id, actor, run_id=None):
+        assignment = self.runner.select_run(self.runner.get(assignment_id, actor), run_id)
         if assignment.procedure_checkpoint is None:
             raise ProcedureExecutionError("procedure_checkpoint_missing")
         pin = assignment.procedure_checkpoint
@@ -97,8 +99,8 @@ class ProcedureOutcomeService:
             raise ProcedureExecutionError("procedure_source_pin_changed")
         return assignment, record
 
-    def extract(self, assignment_id, *, actor, incident_id=None):
-        assignment, record = self._source(assignment_id, actor)
+    def extract(self, assignment_id, *, actor, incident_id=None, run_id=None):
+        assignment, record = self._source(assignment_id, actor, run_id)
         pin = assignment.procedure_checkpoint
         procedure = SkillDefinition.model_validate(record.payload).operational_procedure
         if procedure is None:
@@ -199,7 +201,7 @@ class ProcedureOutcomeService:
         facts = self.runner._facts(assignment, actor)
         if checksum(facts) != pin.resource_context_checksum:
             needs.append("resource_context_changed_requires_review")
-        report = {"schema_version": "1.0", "assignment_id": assignment.id,
+        report = {"schema_version": "1.0", **({"run_id": pin.id} if pin.id else {}), "assignment_id": assignment.id,
             "execution_id": assignment.execution_id, "checkpoint_revision": pin.revision,
             "prior_definition": pin.definition.model_dump(mode="json"),
             "incident_id": incident_ref, "postmortem_id":postmortem_ref,
@@ -270,8 +272,8 @@ class ProcedureOutcomeService:
             item = next(r for r in records if r.logical_key == key)
             return verified_winner(item)
 
-    def inspect(self, assignment_id, *, actor, incident_id=None):
-        _, prior, report, _, _ = self.extract(assignment_id, actor=actor, incident_id=incident_id)
+    def inspect(self, assignment_id, *, actor, incident_id=None, run_id=None):
+        assignment, prior, report, _, _ = self.extract(assignment_id, actor=actor, incident_id=incident_id, run_id=run_id)
         candidates = []
         governed = {r.object_id:r for r in self.memory.governance.store.load().records
             if r.object_type == "procedure_skill" and (r.organization_id, r.workspace_id)
@@ -281,6 +283,9 @@ class ProcedureOutcomeService:
             if (record.record_id not in governed or provenance.get("source_type") != "procedure_outcome"
                 or provenance.get("source_id") != assignment_id
                 or record.derived_from_record_id not in {None, prior.record_id}):
+                continue
+            source_knowledge = self.memory.get(provenance["source_ref"], actor=actor)
+            if source_knowledge.logical_key != "procedure-outcome/" + self._identity(assignment):
                 continue
             self.skills._assert_visible_record(record, actor)
             history = [r for r in self.skills._records(record.definition_id, actor=actor)
@@ -298,7 +303,7 @@ class ProcedureOutcomeService:
             "publication_required":not candidates or any(
                 row["latest"]["definitionLifecycle"] not in {"published", "superseded"} for row in candidates)}
 
-    def convert(self, assignment_id, *, actor, incident_id=None, skill_id=None):
+    def convert(self, assignment_id, *, actor, incident_id=None, skill_id=None, run_id=None):
         definitions = self.skills.definitions
         governance = self.memory.governance
         engines = (definitions, governance, self.memory, self.runner.evidence)
@@ -328,7 +333,7 @@ class ProcedureOutcomeService:
             # Re-extract under the cross-domain writer lock, including current
             # proof state, Memory and governance, before any visible commit.
             result.append(local._convert(assignment_id, actor=actor,
-                incident_id=incident_id, skill_id=skill_id))
+                incident_id=incident_id, skill_id=skill_id, run_id=run_id))
             return documents
         shared.update_many(defaults, apply)
         response = result[0]
@@ -338,8 +343,8 @@ class ProcedureOutcomeService:
             self.memory._retrieval_index_dirty = True
         return response
 
-    def _convert(self, assignment_id, *, actor, incident_id=None, skill_id=None):
-        assignment, prior, report, proofs, sources = self.extract(assignment_id, actor=actor, incident_id=incident_id)
+    def _convert(self, assignment_id, *, actor, incident_id=None, skill_id=None, run_id=None):
+        assignment, prior, report, proofs, sources = self.extract(assignment_id, actor=actor, incident_id=incident_id, run_id=run_id)
         self.skills._require_mutation(actor, owner_identity_id=prior.payload["owner_identity_id"])
         self.memory._require_write(actor, project_id=assignment.project_id)
         if report["review_needs"]:
@@ -408,7 +413,9 @@ class ProcedureOutcomeService:
                 raise SkillConflict("source erasure is pending")
             if self.memory._freshness(knowledge).value != "fresh":
                 raise SkillConflict("outcome source requires freshness review")
-            _, _, report, _, _ = self.extract(assignment.id, actor=source_actor)
+            source_report = json.loads(knowledge.content)
+            _, _, report, _, _ = self.extract(assignment.id, actor=source_actor,
+                run_id=source_report.get("run_id", "legacy"))
             if report["review_needs"]:
                 raise SkillConflict("outcome evidence requires review")
             if candidate is not None:
