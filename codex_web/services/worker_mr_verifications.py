@@ -1,0 +1,234 @@
+"""Fixed MR observation protocol; observations never manufacture reviewer consent.
+
+Provider policy and published procedure requirements remain data. This code owns
+the provenance, completeness and exact-head predicates of the wire protocol.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import asyncio
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
+
+from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
+from codex_web.artifact_evidence import EvidenceCreate, VerificationCreate
+from codex_web.code_host_mr_observation import dispositions
+from codex_web.mr_observation_evidence import METHOD, current_observation
+from codex_web.data_governance import ContextFilterRequest
+from codex_web.services.async_operations import run_settled
+
+
+class MRObservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    method: Literal["code-host-mr-observation.v1"]
+    repository_resource_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,200}$")
+    pull_request_number: StrictInt = Field(ge=1, le=2**31 - 1)
+    expected_head_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+
+
+class WorkerMRVerificationAdapter:
+    """Compose the existing read, verification admission and governed append owners."""
+
+    def __init__(self, adapter):
+        self.adapter = adapter
+        self.broker = adapter.broker
+
+    def request(self, payload):
+        try:
+            return MRObservationRequest.model_validate(payload)
+        except ValueError:
+            self.adapter.denied("Invalid versioned MR observation request; result and identity overrides forbidden")
+
+    def source(self, assignment, request):
+        return "sha256:" + digest({"assignment_id": assignment.id,
+            "execution_id": assignment.execution_id, "fence": assignment.fence,
+            "method": METHOD, "request_id": request.request_id})
+
+    def scope(self, assignment, request):
+        if self.broker._writable_repository_id(assignment) != request.repository_resource_id:
+            self.adapter.denied("MR observation requires the exact assigned repository")
+        workspace = self.broker.execution_workspaces.get(
+            assignment.execution_workspace_id, self.broker._requester_actor(assignment))
+        lease = self.broker.execution_workspaces.store.lease(workspace.lease_id)
+        if (workspace.status != "active" or workspace.execution_id != assignment.execution_id
+                or workspace.project_id != assignment.project_id
+                or set(assignment.resource_ids) - set(workspace.resource_ids)
+                or lease is None or lease.released_at is not None
+                or lease.expires_at <= self.broker._clock()
+                or lease.execution_id != assignment.execution_id
+                or lease.execution_workspace_id != workspace.id
+                or lease.owner_identity_id != workspace.owner_identity_id
+                or workspace.owner_identity_id != assignment.created_by
+                or lease.resource_modes.get(request.repository_resource_id) != "write"):
+            self.adapter.denied("MR observation workspace custody changed")
+        # This is an observation, not a Work claim. A nonempty canonical Work
+        # association must nevertheless retain its actual Project/Resource scope.
+        if assignment.work_item_ref:
+            state = self.broker._state_for_target(assignment, assignment.work_item_ref)
+            if not set(state.resource_ids).issubset(assignment.resource_ids):
+                self.adapter.denied("MR observation Work Resource scope changed")
+
+    def existing(self, assignment, worker, source, request_digest=None):
+        service = self.adapter.service()
+        rows = [v for v in service.list_verifications(worker, work_item_ref=assignment.work_item_ref)
+                if v.execution_id == assignment.execution_id and v.method == METHOD
+                and v.source == source and v.verifier_identity_id == worker.identity_id]
+        if len(rows) > 1:
+            self.adapter.denied("Ambiguous original MR observation; reconcile without replay")
+        if not rows:
+            return None
+        record = rows[0]
+        evidence = [service.get_evidence(i, actor=worker) for i in record.evidence_ids]
+        if (len(evidence) != 3 or record.result == "invalidated"
+                or any(e.producer_identity_id != worker.identity_id or e.lifecycle != "valid"
+                    or e.metadata.get("assignment_id") != assignment.id
+                    or e.metadata.get("assignment_fence") != assignment.fence
+                    or e.execution_id != assignment.execution_id
+                    or e.project_id != assignment.project_id
+                    or e.resource_ids != (self.broker._writable_repository_id(assignment),)
+                    or e.metadata.get("verification_method") != METHOD for e in evidence)):
+            self.adapter.denied("Original MR observation changed; no replacement proof permitted")
+        governed = tuple(e.governance_record_id for e in evidence if e.governance_record_id)
+        if request_digest is not None and any(
+                e.metadata.get("request_sha256") != request_digest for e in evidence):
+            self.adapter.denied("Original MR request identity has different content; reconcile without replay")
+        if governed and (service.governance is None or service.governance.filter_context(
+                ContextFilterRequest(record_ids=governed), actor=worker).denied_record_ids):
+            self.adapter.denied("Original MR observation is no longer available to worker context")
+        return {"item": record.model_dump(mode="json"),
+            "evidence": {e.metadata["observation_kind"]: e.model_dump(mode="json") for e in evidence},
+            "deduplicated": True, "no_merge_or_QA_authorization": True,
+            "observation_fresh": all(current_observation(e, now=self.broker._clock()) for e in evidence)}
+
+    def lookup(self, assignment, worker_actor, resolved, validator):
+        """Reconcile the SAME request digest without another provider read or write."""
+        import re
+        query = resolved.query
+        if (set(query) != {"method", "source"} or any(len(v) != 1 for v in query.values())
+                or query["method"] != [METHOD]
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", query["source"][0])):
+            self.adapter.denied("Exact MR method and original request digest required")
+        worker, _, _ = self.adapter.principals(assignment, worker_actor, resolved, validator, {})
+        result = self.existing(assignment, worker, query["source"][0])
+        self.adapter.principals(assignment, worker_actor, resolved, validator, {})
+        return {"outcome": "unique" if result is not None else "unknown",
+            "original": result, "absence_is_not_permission_to_replay": True}
+
+    async def create(self, assignment, worker_actor, resolved, payload, validator):
+        request = self.request(payload)
+        worker, requester, _ = await asyncio.to_thread(self.adapter.principals,
+            assignment, worker_actor, resolved, validator, payload)
+        await asyncio.to_thread(self.scope, assignment, request)
+        source = self.source(assignment, request)
+        request_digest = digest(request.model_dump(mode="json"))
+        original = await asyncio.to_thread(self.existing, assignment, worker, source, request_digest)
+        if original is not None:
+            return original
+
+        # Reuse the complete current requester/worker/Profile/credential/provider
+        # read boundary. A previous broker audit or caller JSON is never a fact.
+        from codex_web.services.broker_merge_requirements import read_merge_requirements
+        read = self.broker._resolve_operation("GET", "/api/repository-facts/pull-requests/"
+            + str(request.pull_request_number) + "/merge-requirements?repository_resource_id="
+            + request.repository_resource_id)
+        observation = await read_merge_requirements(self.broker, assignment, worker_actor, read, validator)
+        fact = CodeHostMergeRequirementsFact.model_validate(observation["item"])
+        if (fact.resource_id != request.repository_resource_id
+                or fact.external_id != str(request.pull_request_number)
+                or not 0 < fact.expires_at - fact.observed_at <= 30):
+            self.adapter.denied("MR observation returned a different repository or request")
+        raw = json.dumps(observation, sort_keys=True, separators=(",", ":"))
+        if len(raw.encode()) > 262144:
+            self.adapter.denied("MR observation exceeds its bounded governed record")
+        result = dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
+        # Pin the actual canonical provider binding, not just its display name.
+        binding = self.broker.action_intents.execution.registry.binding(
+            fact.binding_id.removeprefix("control-plane-read:"), worker)
+        binding_pin = binding.model_dump(mode="json")
+        service = self.adapter.service()
+        domains = self.adapter.guard_rows(assignment, assignment.work_item_ref, validator)
+        registry = self.broker.action_intents.execution.registry.store
+        if registry.store is not service.store.store:
+            self.adapter.denied("MR observation provider registry must share the canonical transaction")
+        domains[registry.namespace] = (None,)
+        returned = []
+
+        def persist(rows):
+            current_worker, current_requester, decision = self.adapter.principals(
+                assignment, worker_actor, resolved, validator, payload)
+            self.scope(assignment, request)
+            if (current_worker != worker
+                    or (current_requester.identity_id, current_requester.tenant, current_requester.principal_kind)
+                        != (requester.identity_id, requester.tenant, requester.principal_kind)
+                    or self.broker.action_intents.execution.registry.binding(binding.id, worker).model_dump(mode="json") != binding_pin):
+                self.adapter.denied("MR observation principals or provider binding changed before append")
+            dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
+            prior = self.existing(assignment, worker, source, request_digest)
+            if prior is not None:
+                returned.append(prior)
+                return {}
+            changes = {}
+
+            def compose(creation):
+                if not set(creation.domains).issubset(domains):
+                    self.adapter.denied("MR observation governance transaction is incomplete")
+                update = creation.apply(rows)
+                for namespace, values in update.items():
+                    rows[namespace].update(values)
+                    changes.setdefault(namespace, {}).update(values)
+
+            proofs = {}
+            for name, (kind, outcome) in result.items():
+                proofs[name] = service.create_evidence(EvidenceCreate(
+                    project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+                    execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
+                    resource_ids=(request.repository_resource_id,), evidence_type=kind, result=outcome,
+                    provider=fact.provider_type, source=source, external_id=str(request.pull_request_number),
+                    observed_at=fact.observed_at,
+                    summary="Canonical exact-head MR observation; not merge permission or new reviewer consent",
+                    metadata={"verification_method": METHOD, "observation_kind": name,
+                        "assignment_id": assignment.id, "assignment_fence": assignment.fence,
+                        "requester_identity_id": requester.identity_id,
+                        "head_sha": fact.head_revision, "request_sha256": request_digest,
+                        "provider_read_id": observation["scope"]["read_id"],
+                        "observation_expires_at": fact.expires_at,
+                        "provider_snapshot_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                        "provider_snapshot_json": raw}), actor=worker,
+                    idempotency_key=source + ":" + name, _commit=compose)
+
+            def verification_commit(updater):
+                state = service.store._decode(rows[service.store.namespace][None])
+                updated = updater(state)
+                values = {None: updated.model_dump(mode="json")}
+                rows[service.store.namespace].update(values)
+                changes.setdefault(service.store.namespace, {}).update(values)
+
+            outcomes = [x[1] for x in result.values()]
+            verification = service.create_verification(VerificationCreate(
+                work_item_ref=assignment.work_item_ref, execution_id=assignment.execution_id,
+                method=METHOD, evidence_ids=tuple(e.id for e in proofs.values()), source=source,
+                result="rejected" if "fail" in outcomes else "verified" if all(x == "pass" for x in outcomes) else "inconclusive",
+                findings=("Original provider observations; verifier independence is computed, not asserted.",)),
+                actor=worker, _commit=verification_commit)
+            self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
+            self.scope(assignment, request)
+            dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
+            returned.append({"item": verification.model_dump(mode="json"),
+                "evidence": {k: e.model_dump(mode="json") for k, e in proofs.items()},
+                "attribution": {"producer_identity_id": worker.identity_id,
+                    "authorizer_identity_id": requester.identity_id, "authority_decision_id": decision.id},
+                "no_merge_or_QA_authorization": True})
+            return changes
+
+        await run_settled(lambda: service.store.store.record_mutate_many(domains, persist))
+        return returned[0]

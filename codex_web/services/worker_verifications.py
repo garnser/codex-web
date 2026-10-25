@@ -431,6 +431,9 @@ class WorkerVerificationAdapter:
         worker, requester, _ = self.principals(assignment, worker_actor, resolved, validator, {})
         service = self.service()
         if resolved.operation.id == 'verification.read':
+            from codex_web.services.worker_mr_verifications import METHOD, WorkerMRVerificationAdapter
+            if resolved.query.get('method') == [METHOD]:
+                return WorkerMRVerificationAdapter(self).lookup(assignment, worker_actor, resolved, validator)
             query = resolved.query
             if set(query) - {'work_item_ref', 'source'} or any(len(v) != 1 for v in query.values()):
                 self.denied('Verification lookup accepts exact Work Item/review digest only')

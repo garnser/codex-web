@@ -166,7 +166,9 @@ class ProcedureExecutionService:
 
     def _evidence(self, evidence_id, actor, assignment):
         evidence = self.evidence.get_evidence(evidence_id, actor=actor)
+        from codex_web.mr_observation_evidence import current_observation
         if (evidence.lifecycle != "valid" or evidence.result != "pass"
+            or not current_observation(evidence, now=self.clock())
             or evidence.project_id != assignment.project_id
             or (evidence.retention_expires_at is not None and evidence.retention_expires_at <= self.clock())
             or set(evidence.resource_ids) - set(assignment.resource_ids)):
