@@ -177,6 +177,13 @@ EXECUTION_WORKER_MIGRATIONS.register(
 )
 
 
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.12", "1.13", lambda payload: {**payload, "schema_version": "1.13",
+        "assignments": [{**item, "procedure_history": item.get("procedure_history", [])}
+                        for item in payload.get("assignments", [])]},
+)
+
+
 class ExecutionWorkerStore:
     namespace = "execution_workers"
     worker_namespace = "execution_workers.workers"

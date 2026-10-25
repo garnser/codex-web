@@ -37,7 +37,10 @@ governed Memory report and its exact `procedure_skill` dependency edge become
 visible together, or all roll back. Retrieval indexing is marked dirty only
 after commit and remains rebuildable derived infrastructure.
 
-Assignment plus exact source Definition determines delivery identity; changing
+Assignment plus exact source Definition and, for checkpoint 1.1, immutable run
+ID determines delivery identity. Legacy outcome identity stays unchanged. The
+report records run ID and source validation resolves that retained checkpoint,
+so a later current run cannot rewrite the old Knowledge or Skill provenance. Changing
 an event ID cannot bypass deduplication. The existing Memory logical-key gate
 and deterministic Definition record ID reserve the result. Retries return the
 same revision and exactly one derived governance record. Content drift or a

@@ -1173,10 +1173,11 @@ class LocalExecutionWorkerRuntime:
                 resource_ids=assignment.resource_ids, artifact_ids=artifact_ids,
                 evidence_type=EvidenceType.ARTIFACT_VERIFICATION,
                 result=EvidenceResult.PASS if check_passed else EvidenceResult.FAIL,
-                provider="isolated-execution-worker", source=f"procedure:{assignment.id}:{step.id}",
+                provider="isolated-execution-worker", source=(f"procedure:{assignment.id}:{assignment.procedure_checkpoint.id}:{step.id}"
+                    if assignment.procedure_checkpoint.id else f"procedure:{assignment.id}:{step.id}"),
                 summary=f"Isolated diagnostic {'passed' if check_passed else 'failed'} {required.name}",
                 metadata={"worker_id": self.worker.id, "fence": assignment.fence,
                     "artifact_checksum": step.worker.artifact_checksum}), actor=self.worker_actor,
-                idempotency_key=f"procedure:{assignment.id}:{step.id}:{assignment.procedure_checkpoint.steps[step.id].attempts}:{required.name}")
+                idempotency_key=f"procedure:{assignment.id}:{assignment.procedure_checkpoint.id + ':' if assignment.procedure_checkpoint.id else ''}{step.id}:{assignment.procedure_checkpoint.steps[step.id].attempts}:{required.name}")
             proof[required.name] = evidence.id
         return {"outputs": observation.get("outputs", {}), "evidence": proof}

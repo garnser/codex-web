@@ -99,7 +99,7 @@ from codex_web.services.project_coordination import (
 )
 
 from codex_web.services.assignment_reasoning_broker import (
-    OPERATIONS as REASONING_OPERATIONS, resolve as resolve_reasoning_operation, ProcedureStart,
+    OPERATIONS as REASONING_OPERATIONS, resolve as resolve_reasoning_operation, ProcedureStart, ProcedureAdvance,
 )
 from codex_web.executive_roles import ExecutiveActivationCreate
 
@@ -561,13 +561,14 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
-        reasoning_model = {"procedure.start": ProcedureStart,
+        reasoning_model = {"procedure.start": ProcedureStart, "procedure.advance": ProcedureAdvance,
             "executive.activation.create": ExecutiveActivationCreate}.get(item.id)
         if reasoning_model is not None:
             result["request_body"] = reasoning_model.model_json_schema()
         if item.id.startswith(("procedure.", "executive.")):
             result["scope"] = "Exact current assignment/fence, requester, project and explicit current execution Definition"
-            result["query_parameters"] = {"allowed": False}
+            result["query_parameters"] = ({"allowed": True, "names": ["run_id"]}
+                if item.id == "procedure.read" else {"allowed": False})
             result["response_loss"] = "Read current procedure checkpoint or assignment-origin Executive activation; never blind replay"
         work_item_model = {
             "work_item.handoff": WorkItemHandoffCreate,

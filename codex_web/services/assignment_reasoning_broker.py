@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from codex_web.authority import AuthorityLevel
 from codex_web.control_plane_broker import ControlPlaneBrokerOperation
-from codex_web.procedure_execution import ProcedureStart
+from codex_web.procedure_execution import ProcedureStart, ProcedureAdvance
 from codex_web.executive_roles import ExecutiveActivationCreate
 from codex_web.identity import PrincipalKind
 from codex_web.services.async_operations import run_settled
@@ -219,9 +219,10 @@ class AssignmentReasoningBroker:
         })
 
     async def dispatch(self, assignment, worker_actor, operation, target, payload, query, validator=None):
-        if query:
-            deny("assignment reasoning operations accept no query parameters")
-        if operation.id != "procedure.start" and operation.id != "executive.activation.create" and payload:
+        if query and (operation.id != "procedure.read" or set(query) != {"run_id"}
+                or not isinstance(query["run_id"], str) or not 0 < len(query["run_id"]) <= 100):
+            deny("only procedure.read accepts an exact run_id query")
+        if operation.id not in {"procedure.start", "procedure.advance", "executive.activation.create"} and payload:
             deny("this operation accepts no body")
         current, actor = await run_settled(lambda: self.current(assignment, worker_actor, operation, target, validator))
         if operation.id.startswith("procedure."):
@@ -230,11 +231,12 @@ class AssignmentReasoningBroker:
                 item = await run_settled(lambda: self.procedures.start(current.id,
                     definition=request.definition, input_snapshot_id=request.input_snapshot_id, actor=actor))
             elif operation.id == "procedure.advance":
-                item = await self.procedures.advance(current.id, actor=actor)
+                request = ProcedureAdvance.model_validate(payload or {})
+                item = await self.procedures.advance(current.id, actor=actor, run_id=request.run_id)
             else:
-                item = await run_settled(lambda: self.procedures.get(current.id, actor))
-            return {"assignment_id": item.id, "execution_id": item.execution_id,
-                "procedure_checkpoint": item.procedure_checkpoint.model_dump(mode="json") if item.procedure_checkpoint else None}
+                return await run_settled(lambda: self.procedures.inspect(current.id, actor,
+                    run_id=query.get("run_id")))
+            return self.procedures.view(item)
         if operation.id == "executive.activation.read":
             items = await run_settled(lambda: self.existing(current, actor))
             for item in items:
