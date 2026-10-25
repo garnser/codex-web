@@ -139,7 +139,9 @@ class AutonomyService:
                     await asyncio.to_thread(routing.record_failure, work_item, exc)
                     return {"ok": False, "reason": "owner_routing_blocked", "code": str(exc),
                         "threadId": binding.thread_id}
-                if pin.recipient is not None:
+                # Non-alias work can legitimately have no routing witness.
+                # Keep its existing dispatch/recovery admission path.
+                if pin is not None and pin.recipient is not None:
                     target = pin.recipient.thread_id
                     def selected_busy():
                         return ((not allow_active and self.runtime.thread_is_active(target))
