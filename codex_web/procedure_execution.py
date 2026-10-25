@@ -12,6 +12,7 @@ class ProcedureStart(BaseModel):
 
 class ProcedureAdvance(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    current_input_snapshot_id: str | None = Field(default=None, min_length=1, max_length=200)
     run_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 

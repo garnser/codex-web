@@ -424,8 +424,12 @@ class ArtifactEvidenceService:
         backend_id: str | None = None,
         expected_sha256: str | None = None,
         encryption_key_ref: str | None = None,
+        _state: ArtifactEvidenceState | None = None,
+        _commit=None,
     ) -> Artifact:
-        state = self.store.load()
+        if _state is not None and _commit is None:
+            raise ArtifactEvidenceConflictError("atomic content state requires its canonical commit owner")
+        state = _state if _state is not None else self.store.load()
         artifact = self._artifact(state, artifact_id, actor)
         self._require_record_mutation(artifact.producer_identity_id, actor)
         if artifact.lifecycle != ArtifactLifecycle.ACTIVE:
@@ -471,7 +475,7 @@ class ArtifactEvidenceService:
                     break
             return current
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply) if _commit is None else _commit(apply)
         return next(item for item in updated.artifacts if item.id == artifact.id)
 
     def open_artifact_content(

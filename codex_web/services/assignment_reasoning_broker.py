@@ -229,11 +229,24 @@ class AssignmentReasoningBroker:
         if operation.id.startswith("procedure."):
             if operation.id == "procedure.start":
                 request = ProcedureStart.model_validate(payload)
-                item = await run_settled(lambda: self.procedures.start(current.id,
-                    definition=request.definition, input_snapshot_id=request.input_snapshot_id, actor=actor))
+                from codex_web.services.procedure_execution import ProcedureExecutionError
+                from codex_web.services.procedure_discovery import ProcedureAdmissionError
+                try:
+                    item = await run_settled(lambda: self.procedures.start(current.id,
+                        definition=request.definition, input_snapshot_id=request.input_snapshot_id, actor=actor))
+                except (ProcedureExecutionError, ProcedureAdmissionError) as exc:
+                    raise HTTPException(409, detail={"code": exc.code}) from exc
             elif operation.id == "procedure.advance":
                 request = ProcedureAdvance.model_validate(payload or {})
-                item = await self.procedures.advance(current.id, actor=actor, run_id=request.run_id)
+                from codex_web.services.procedure_execution import ProcedureExecutionError
+                try:
+                    item = await self.procedures.advance(current.id, actor=actor, run_id=request.run_id,
+                        **({"current_input_snapshot_id": request.current_input_snapshot_id}
+                            if request.current_input_snapshot_id is not None else {}))
+                except ProcedureExecutionError as exc:
+                    # Match the canonical API refusal; request admission has
+                    # not changed the checkpoint or dispatched an effect.
+                    raise HTTPException(409, detail={"code": exc.code}) from exc
             else:
                 return await run_settled(lambda: self.procedures.inspect(current.id, actor,
                     run_id=query["run_id"][0] if query else None))

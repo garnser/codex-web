@@ -13,9 +13,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
-from codex_web.artifact_evidence import EvidenceCreate, VerificationCreate
+from codex_web.artifact_evidence import EvidenceCreate, VerificationCreate, ArtifactCreate, sha256_digest
 from codex_web.code_host_mr_observation import dispositions
 from codex_web.mr_observation_evidence import METHOD, current_observation
+from codex_web.mr_continuation_input import METHOD as CONTINUATION_METHOD, INPUT_METHOD, input_values, encoded
 from codex_web.data_governance import ContextFilterRequest
 from codex_web.services.async_operations import run_settled
 
@@ -23,7 +24,7 @@ from codex_web.services.async_operations import run_settled
 class MRObservationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    method: Literal["code-host-mr-observation.v1"]
+    method: Literal["code-host-mr-observation.v1", "code-host-mr-continuation-input.v1"]
     repository_resource_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,200}$")
     pull_request_number: StrictInt = Field(ge=1, le=2**31 - 1)
     expected_head_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -52,7 +53,7 @@ class WorkerMRVerificationAdapter:
     def source(self, assignment, request):
         return "sha256:" + digest({"assignment_id": assignment.id,
             "execution_id": assignment.execution_id, "fence": assignment.fence,
-            "method": METHOD, "request_id": request.request_id})
+            "method": request.method, "request_id": request.request_id})
 
     def scope(self, assignment, request):
         if self.broker._writable_repository_id(assignment) != request.repository_resource_id:
@@ -78,10 +79,10 @@ class WorkerMRVerificationAdapter:
             if not set(state.resource_ids).issubset(assignment.resource_ids):
                 self.adapter.denied("MR observation Work Resource scope changed")
 
-    def existing(self, assignment, worker, source, request_digest=None):
+    def existing(self, assignment, worker, source, request_digest=None, method=METHOD):
         service = self.adapter.service()
         rows = [v for v in service.list_verifications(worker, work_item_ref=assignment.work_item_ref)
-                if v.execution_id == assignment.execution_id and v.method == METHOD
+                if v.execution_id == assignment.execution_id and v.method == method
                 and v.source == source and v.verifier_identity_id == worker.identity_id]
         if len(rows) > 1:
             self.adapter.denied("Ambiguous original MR observation; reconcile without replay")
@@ -96,7 +97,7 @@ class WorkerMRVerificationAdapter:
                     or e.execution_id != assignment.execution_id
                     or e.project_id != assignment.project_id
                     or e.resource_ids != (self.broker._writable_repository_id(assignment),)
-                    or e.metadata.get("verification_method") != METHOD for e in evidence)):
+                    or e.metadata.get("verification_method") != method for e in evidence)):
             self.adapter.denied("Original MR observation changed; no replacement proof permitted")
         governed = tuple(e.governance_record_id for e in evidence if e.governance_record_id)
         if request_digest is not None and any(
@@ -105,21 +106,43 @@ class WorkerMRVerificationAdapter:
         if governed and (service.governance is None or service.governance.filter_context(
                 ContextFilterRequest(record_ids=governed), actor=worker).denied_record_ids):
             self.adapter.denied("Original MR observation is no longer available to worker context")
-        return {"item": record.model_dump(mode="json"),
+        result = {"item": record.model_dump(mode="json"),
             "evidence": {e.metadata["observation_kind"]: e.model_dump(mode="json") for e in evidence},
             "deduplicated": True, "no_merge_or_QA_authorization": True,
             "observation_fresh": all(current_observation(e, now=self.broker._clock()) for e in evidence)}
+        if method == CONTINUATION_METHOD:
+            ids = {e.metadata.get('continuation_input_artifact_id') for e in evidence}
+            if len(ids) != 1 or None in ids:
+                self.adapter.denied('Original MR continuation input association changed')
+            artifact = service.get_artifact(next(iter(ids)), actor=worker)
+            if (artifact.lifecycle != 'active' or artifact.producer_identity_id != worker.identity_id
+                    or artifact.execution_id != assignment.execution_id or artifact.content is None
+                    or artifact.metadata.get('verification_id') != record.id
+                    or artifact.project_id != assignment.project_id
+                    or artifact.work_item_ref != assignment.work_item_ref
+                    or artifact.execution_workspace_id != assignment.execution_workspace_id
+                    or artifact.resource_ids != (self.broker._writable_repository_id(assignment),)
+                    or artifact.metadata.get('assignment_id') != assignment.id
+                    or artifact.metadata.get('assignment_fence') != assignment.fence
+                    or artifact.metadata.get('request_sha256') != evidence[0].metadata.get('request_sha256')
+                    or not artifact.governance_record_id or service.governance is None):
+                self.adapter.denied('Original MR continuation input is unavailable; no replacement permitted')
+            if service.governance.filter_context(ContextFilterRequest(
+                    record_ids=(artifact.governance_record_id,)), actor=worker).denied_record_ids:
+                self.adapter.denied('Original MR continuation input is unavailable to worker context')
+            result['procedure_input'] = artifact.model_dump(mode='json')
+        return result
 
     def lookup(self, assignment, worker_actor, resolved, validator):
         """Reconcile the SAME request digest without another provider read or write."""
         import re
         query = resolved.query
         if (set(query) != {"method", "source"} or any(len(v) != 1 for v in query.values())
-                or query["method"] != [METHOD]
+                or query["method"] not in ([METHOD], [CONTINUATION_METHOD])
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", query["source"][0])):
             self.adapter.denied("Exact MR method and original request digest required")
         worker, _, _ = self.adapter.principals(assignment, worker_actor, resolved, validator, {})
-        result = self.existing(assignment, worker, query["source"][0])
+        result = self.existing(assignment, worker, query["source"][0], method=query["method"][0])
         self.adapter.principals(assignment, worker_actor, resolved, validator, {})
         return {"outcome": "unique" if result is not None else "unknown",
             "original": result, "absence_is_not_permission_to_replay": True}
@@ -131,7 +154,7 @@ class WorkerMRVerificationAdapter:
         await asyncio.to_thread(self.scope, assignment, request)
         source = self.source(assignment, request)
         request_digest = digest(request.model_dump(mode="json"))
-        original = await asyncio.to_thread(self.existing, assignment, worker, source, request_digest)
+        original = await asyncio.to_thread(self.existing, assignment, worker, source, request_digest, request.method)
         if original is not None:
             return original
 
@@ -173,7 +196,7 @@ class WorkerMRVerificationAdapter:
                     or self.broker.action_intents.execution.registry.binding(binding.id, worker).model_dump(mode="json") != binding_pin):
                 self.adapter.denied("MR observation principals or provider binding changed before append")
             dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
-            prior = self.existing(assignment, worker, source, request_digest)
+            prior = self.existing(assignment, worker, source, request_digest, request.method)
             if prior is not None:
                 returned.append(prior)
                 return {}
@@ -196,7 +219,8 @@ class WorkerMRVerificationAdapter:
                     provider=fact.provider_type, source=source, external_id=str(request.pull_request_number),
                     observed_at=fact.observed_at,
                     summary="Canonical exact-head MR observation; not merge permission or new reviewer consent",
-                    metadata={"verification_method": METHOD, "observation_kind": name,
+                    metadata={"verification_method": request.method, "observation_kind": name,
+                        **({"continuation_input_artifact_id": service._idempotent_evidence_id(worker, source, source + ":input").replace("evidence-", "artifact-", 1)} if request.method == CONTINUATION_METHOD else {}),
                         "assignment_id": assignment.id, "assignment_fence": assignment.fence,
                         "requester_identity_id": requester.identity_id,
                         "head_sha": fact.head_revision, "request_sha256": request_digest,
@@ -212,18 +236,42 @@ class WorkerMRVerificationAdapter:
                 values = {None: updated.model_dump(mode="json")}
                 rows[service.store.namespace].update(values)
                 changes.setdefault(service.store.namespace, {}).update(values)
+                return updated
 
             outcomes = [x[1] for x in result.values()]
             verification = service.create_verification(VerificationCreate(
                 work_item_ref=assignment.work_item_ref, execution_id=assignment.execution_id,
-                method=METHOD, evidence_ids=tuple(e.id for e in proofs.values()), source=source,
+                method=request.method, evidence_ids=tuple(e.id for e in proofs.values()), source=source,
                 result="rejected" if "fail" in outcomes else "verified" if all(x == "pass" for x in outcomes) else "inconclusive",
                 findings=("Original provider observations; verifier independence is computed, not asserted.",)),
                 actor=worker, _commit=verification_commit)
+            continuation = None
+            if request.method == CONTINUATION_METHOD:
+                values = input_values(fact, expected_head=request.expected_head_sha)
+                content = encoded(values)
+                continuation = service.create_artifact(ArtifactCreate(
+                    project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+                    execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
+                    resource_ids=(request.repository_resource_id,), artifact_type='report',
+                    name='Governed MR continuation input', provider=fact.provider_type, source=source,
+                    external_id=str(request.pull_request_number), revision=fact.head_revision,
+                    digest=sha256_digest(content),
+                    metadata={'input_method': INPUT_METHOD, 'verification_id': verification.id,
+                        'assignment_id': assignment.id, 'assignment_fence': assignment.fence,
+                        'requester_identity_id': requester.identity_id, 'request_sha256': request_digest,
+                        'source_evidence_ids': json.dumps(sorted(e.id for e in proofs.values()), separators=(',', ':')),
+                        'provider_binding_sha256': digest(binding_pin),
+                        'observed_requirements_fingerprint': values['observed_requirements_fingerprint']}),
+                    actor=worker, source_evidence_ids=tuple(e.id for e in proofs.values()),
+                    idempotency_key=source + ':input', _commit=compose)
+                continuation = service.attach_artifact_content(continuation.id, (content,), actor=worker,
+                    media_type='application/json', _state=service.store._decode(rows[service.store.namespace][None]),
+                    _commit=verification_commit)
             self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
             self.scope(assignment, request)
             dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
             returned.append({"item": verification.model_dump(mode="json"),
+                **({"procedure_input": continuation.model_dump(mode="json")} if continuation is not None else {}),
                 "evidence": {k: e.model_dump(mode="json") for k, e in proofs.items()},
                 "attribution": {"producer_identity_id": worker.identity_id,
                     "authorizer_identity_id": requester.identity_id, "authority_decision_id": decision.id},

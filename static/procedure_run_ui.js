@@ -1,3 +1,4 @@
+import { procedureStartForm, installCurrentInputWitness } from './procedure_input_witness.js';
 import { renderProcedureHistory, historyPins } from './procedure_run_history.js';
 import { request } from './api_client.js';
 import { captureProjectView } from './project_view_scope.js';
@@ -51,12 +52,14 @@ export function installProcedureRun(host, assignment, { incidentId = '', runId =
     <label>Current and retained runs<select data-procedure-history></select></label>
     <a data-procedure-run-link>Link to this run</a><p data-procedure-history-status></p>
     <div data-procedure-checkpoint>${checkpointHtml(assignment.procedure_checkpoint, projectId)}</div>
-    <form data-procedure-start-form><label>Admitted exact revision<select name="definition">${(assignment.skill_refs || []).map((ref, i) => `<option value="${i}">${esc(ref.definition_id)} r${ref.revision} · ${esc(ref.checksum)}</option>`).join('')}</select></label><label>Governed input Artifact ID<input name="input_snapshot_id"></label><button type="submit">Start pinned playbook</button></form>
+    ${procedureStartForm(assignment.skill_refs)}
     <div>${[['inspect','Refresh checkpoint'],['advance','Advance one step / resume'],['outcome','Inspect verified outcome'],['outcome-draft','Create inactive outcome draft']].map(([id,label]) => `<button type="button" data-procedure-action="${id}">${label}</button>`).join('')}</div>
     <form data-procedure-deviation><label>Step ID<input name="step_id" required></label><label>Deviation reason<textarea name="reason" required></textarea></label><label>Evidence IDs (comma separated)<input name="evidence_ids" required></label><button type="submit">Record policy checked deviation</button></form>
     <section data-procedure-draft-fields><label>Related Incident ID (optional)<input data-procedure-incident value="${esc(incidentId)}"></label><label>New draft Skill ID (optional; otherwise use canonical source)<input data-procedure-draft-id></label></section>
     <div role="status" data-procedure-run-status></div><section data-procedure-outcome></section>`;
+  const witness = installCurrentInputWitness(host);
   const editors = {
+    advance: witness.editor,
     start: trackDirtyEditor(host.querySelector('[data-procedure-start-form]'), {label:'Playbook start inputs'}),
     deviate: trackDirtyEditor(host.querySelector('[data-procedure-deviation]'), {label:'Playbook deviation'}),
     'outcome-draft': trackDirtyEditor(host.querySelector('[data-procedure-draft-fields]'), {label:'Playbook outcome draft options'}),
@@ -66,7 +69,7 @@ export function installProcedureRun(host, assignment, { incidentId = '', runId =
     const button = document.createElement('button'); button.type = 'button';
     button.textContent = `Discard ${action} inputs`;
     button.addEventListener('click', () => confirmDiscard(editor));
-    host.querySelector(action === 'start' ? '[data-procedure-start-form]' : action === 'deviate' ? '[data-procedure-deviation]' : '[data-procedure-draft-fields]').append(button);
+    (action === 'advance' ? witness.fields : host.querySelector( action === 'start' ? '[data-procedure-start-form]' : action === 'deviate' ? '[data-procedure-deviation]' : '[data-procedure-draft-fields]')).append(button);
   }
   let busy = false, sequence = 0;
   let selectedRun = assignment.procedure_checkpoint?.id || (assignment.procedure_checkpoint ? 'legacy' : '');
@@ -88,6 +91,7 @@ export function installProcedureRun(host, assignment, { incidentId = '', runId =
     if (['advance','deviate'].includes(action)) {
       if (selectedRun !== currentRun) return;
       body = {...(body || {}), run_id:currentRun || null};
+      if (action === 'advance' && witness.value()) body.current_input_snapshot_id = witness.value();
     }
     if (!['inspect','outcome'].includes(action) && !await confirmAction({action:`Playbook ${action}`, target:`${assignment.id} · Project ${projectId} · ${assignment.resource_ids.join(', ')}`, risk:'high',
       consequence:action === 'outcome-draft' ? 'Derive an inactive Skill draft from verified evidence. Publication and assignment require separate review.' : 'Use the existing canonical execution API. Advancing can dispatch a registered action under current authority and exact approvals.',

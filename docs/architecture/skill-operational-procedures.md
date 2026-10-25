@@ -144,3 +144,46 @@ mutation enforcement. See the [operator guide](../operations/procedure-admission
 for outcomes and provenance inspection.
 
 Procedure contract 1.1 adds declared governed judgment and originating-intent provider rollback; 1.0 serialization/checksums remain unchanged. See [durable execution](procedure-execution.md) for the runtime and compatibility contracts.
+
+## Governed observation inputs and same-head continuation
+
+Nested procedure schema `1.2` adds the optional, code-owned `input_protocol`.
+The fixed `code-host-mr-procedure-input.v1` protocol requires the managed input
+Artifact returned by assignment-bound `verification.create` method
+`code-host-mr-continuation-input.v1`. A caller-authored fingerprint is not a
+provider fact. Start and every input use reconstruct the exact typed content
+from the original three governed provider Evidence records and Verification,
+checking current assignment/fence, producer, Project/Resource, provider binding,
+ancestry, authority, lifecycle and the original finite observation expiry.
+Pending, denied, incomplete or rejected provider observations remain observations;
+they do not satisfy generic passing Evidence requirements or grant merge consent.
+
+The content identity includes actual head/scope and review/check/policy business
+facts, including UNKNOWN/null states. Observation times, delivery request IDs,
+provider check run IDs, proof/Artifact IDs and URLs do not create new semantic
+input. Repeated identical facts therefore deduplicate even through a new read.
+A genuinely changed same-head observation can start the next settled procedure
+run within the existing assignment. Original receipts and budgets remain intact;
+there is no model polling loop, assignment renewal, new grant or second store.
+
+The existing schema-driven Skill editor exposes and preserves the required
+protocol. Publish the reviewed exact new Skill reference and explicitly bind the
+appropriate Profile revision only after deployment; changing prose or silently
+replacing an old pin is insufficient. Legacy `1.0`/`1.1` serialization is unchanged.
+Those readers visibly refuse `1.2`; no automatic downgrade or operational rollback
+across a published new protocol is implied.
+
+The original observation is not valid forever: current start/advance use must
+meet its original 30-second bound. An explicit advance may carry
+`current_input_snapshot_id` as a fresh canonical witness with exactly the same
+immutable content/checksum, assignment, scope and protocol. It does not replace
+the pinned original Artifact, run identity, history, steps or budgets. Changed
+content cannot witness an active run; it requires ordinary settled rollover.
+No implicit latest-proof selection or expiry extension occurs. A request-scoped
+witness is cleared even on refusal and is never reused by an unrelated task.
+
+Publishing input content uses the existing managed content-addressed backend.
+Canonical Artifact/Evidence/Verification pointers and Governance commit together
+under the existing guarded transaction, including late authority/freshness
+checks. Blob persistence itself is not a filesystem transaction; a refused
+append can leave an unreferenced blob. Never delete a shared digest as rollback.
