@@ -506,3 +506,37 @@ before capture and at the identity-locked association writer; changed identity,
 tenant, roles, teams, assurance, session/token reference or scopes refuses. A
 revoked credential cannot associate a captured manifest. The observation-time
 comparison does not grant authority or qualify a backup or deployment.
+
+
+### Cold writer source and upgrade target
+
+A cold pre-install helper can publish canonical Recovery verification Evidence
+before the original service is restored. Read-only decoding of a newer domain
+model is not evidence that its later writes remain source compatible. In
+particular, ArtifactEvidence 1.3 reads may migrate in memory under a 1.4 tool,
+while publishing restore-verification Evidence persists 1.4 and makes the 1.3
+source reader refuse. That is an installation migration boundary, not an
+ordinary verification side effect that may be ignored.
+
+`preinstall_backup_cli` therefore distinguishes `--expected-producer-revision`
+(the complete executable tool checkout) from
+`--expected-upgrade-target-revision` (the exact Release/Upgrade target).
+The separate offline verifier must use the installed source revision; the
+separate target remains subject to all existing plan, Release, authority,
+preflight, lock, PID, storage-path, memory and deadline checks. The verifier must check its source/tool pin before credential use and at each
+guarded boundary. A target-executable verifier refuses visibly. Capture keeps
+its existing default target binding and separately audited write set; this does
+not authorize target-schema Evidence publication during verification.
+The pre-stop receipt retains both revisions. An offline verifier must make this
+same distinction, pin all imports to one source-compatible checkout, and bind
+the separate target against the original capture plan rather than overwrite
+historical producer facts. It must still perform actual isolated restore
+verification and publish its genuine canonical Evidence under the source
+contract. Neither service memory limits nor helper capacity are inferred from
+this source choice; supervised finite limits and real capacity admission remain
+required.
+
+No live-state envelope downgrade, skipped verification, mixed source imports,
+legacy provenance relabeling or rollback promise follows from this distinction.
+The later target installation still requires its declared forward domain
+migration, compatibility policy Evidence and fresh recovery qualification.

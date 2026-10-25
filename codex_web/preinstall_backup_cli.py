@@ -89,6 +89,10 @@ class OfflineHostGuard:
 
     def check(self):
         options = self.options
+        if getattr(options, 'expected_upgrade_target_revision', None) is not None:
+            source_compatible_tool_target(options)
+        else:
+            upgrade_target_revision(options)
         fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_stat = os.fstat(self.lock_fd)
         path_stat = LOCAL_DEPLOY_LOCK.stat()
@@ -199,6 +203,32 @@ def memory_budget_bytes(value: str) -> int:
     return amount
 
 
+def upgrade_target_revision(options):
+    """Resolve plan target independently of the reviewed executable checkout."""
+    source = options.expected_runtime_revision
+    tool = options.expected_producer_revision
+    target = getattr(options, 'expected_upgrade_target_revision', None)
+    if target is None:
+        target = tool
+    if any(type(value) is not str or not re.fullmatch(r'[0-9a-f]{40}', value)
+            for value in (source, tool, target)):
+        raise ValueError('Exact source, executable tool and upgrade target revisions are required')
+    return target
+
+
+def source_compatible_tool_target(options):
+    """Require source code for a verifier that publishes before source restart.
+
+    Use the entire source package; do not down-convert target records. Capture
+    admission remains separately governed: a capture's audited write set is not
+    permission for a verifier to publish Evidence through target-schema code.
+    """
+    target = upgrade_target_revision(options)
+    if options.expected_producer_revision != options.expected_runtime_revision:
+        raise ValueError('Pre-install verification writers must use the installed source revision')
+    return target
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     for name in ('plan-id', 'service-instance-id', 'expected-runtime-revision', 'expected-producer-revision'):
@@ -206,6 +236,8 @@ def parser():
     for name in ('runtime-checkout', 'producer-checkout', 'sqlite-path', 'key-material-directory',
                  'backup-directory', 'journal-directory', 'qualification-lock'):
         result.add_argument('--' + name, type=Path, required=True)
+    result.add_argument('--expected-upgrade-target-revision',
+        help='Exact plan/Release target, separate from source-compatible executable producer revision')
     result.add_argument('--unit', default='codex-web.service')
     result.add_argument('--api', default='http://127.0.0.1:8765')
     result.add_argument('--expected-runtime-pid', type=int, required=True)
@@ -219,6 +251,8 @@ def parser():
 
 def main(argv=None):
     options = parser().parse_args(argv)
+    upgrade_target = (source_compatible_tool_target(options)
+        if options.expected_upgrade_target_revision is not None else upgrade_target_revision(options))
     if (not re.fullmatch(r'[A-Za-z0-9_.@-]+\.service', options.unit)
             or any(not re.fullmatch(r'[0-9a-f]{40}', value) for value in
                 (options.expected_runtime_revision, options.expected_producer_revision))
@@ -266,7 +300,7 @@ def main(argv=None):
             refresh=refresh, check_runtime=guard,
             journal=lambda kind, value: record(options.journal_directory, kind, value),
             source_revision=options.expected_runtime_revision,
-            target_revision=options.expected_producer_revision,
+            target_revision=upgrade_target,
             service_instance_id=options.service_instance_id)
         if local_api(options.api, token, 'GET', '/api/version')['gitRevision'] != options.expected_runtime_revision:
             raise RuntimeError('Installed API source changed')
@@ -277,7 +311,7 @@ def main(argv=None):
         prepared_at = time.time()
         qualify_capture(runtime.upgrades, observed['plan'], actor=runtime.authenticate(),
             source_revision=options.expected_runtime_revision,
-            target_revision=options.expected_producer_revision,
+            target_revision=upgrade_target,
             service_instance_id=options.service_instance_id, now=prepared_at)
         custody = recovery_custody(store)
         host.check()
@@ -289,6 +323,7 @@ def main(argv=None):
             'runtime_pid': options.expected_runtime_pid, 'service_invocation': host.initial['InvocationID'],
             'runtime_revision': options.expected_runtime_revision,
             'producer_revision': options.expected_producer_revision,
+            'upgrade_target_revision': upgrade_target,
             'canonical_data_directory': str(host.data_root),
             'operator_must_restore_service': True})
         stage = 'waiting_for_operator_clean_stop'
