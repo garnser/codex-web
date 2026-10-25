@@ -1599,6 +1599,14 @@ class ExecutionWorkerService:
         self._notify_assignment(result, "assignment_started")
         return result
 
+    def prepare_completion_index(self, worker_id, *, actor):
+        """Bounded preparation only; never authorize assignment completion."""
+        worker = self.store.worker(worker_id)
+        state = ExecutionWorkerState(workers=[worker] if worker else [])
+        self._require_worker_actor(self._worker(state, worker_id, actor), actor)
+        from codex_web.storage.action_intents import ActionIntentStore
+        ActionIntentStore(self.store.store).prepare_readiness_origin_index()
+
     def _prepare_readiness_retirement(self, assignment_id):
         from codex_web.storage.action_intents import ActionIntentStore, ReadinessOriginIndexProgressing
         intents = ActionIntentStore(self.store.store)

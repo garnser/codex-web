@@ -360,13 +360,11 @@ class ActionIntentStore:
                 {'id':item.id}}
         return {}
 
-    def unsettled_readiness_origin(self, assignment_id: str, *, prepare=True) -> tuple[ActionIntent, ...]:
-        """Current origin projection; rebuild once per reader process after old writers.
+    def prepare_readiness_origin_index(self) -> None:
+        """Advance the existing bounded index without admitting an origin/result."""
+        self._prepare_readiness_origin_index(prepare=True)
 
-        Pages advance durably for this process epoch. A new process deliberately
-        starts a fresh backfill, so a previous older writer cannot leave a false
-        complete index. Ordinary updates maintain aliases in the same commit.
-        """
+    def _prepare_readiness_origin_index(self, *, prepare: bool) -> None:
         if prepare:
             self._ensure_records()
         elif (not self.store.record_collection_exists(self.records_namespace)
@@ -414,6 +412,15 @@ class ActionIntentStore:
                     and progress.get('ready') is False):
                 raise ReadinessOriginIndexProgressing(progress['after'], _ORIGIN_INDEX_EPOCH)
             raise ValueError('readiness origin index preparation is unavailable')
+
+    def unsettled_readiness_origin(self, assignment_id: str, *, prepare=True) -> tuple[ActionIntent, ...]:
+        """Current origin projection; rebuild once per reader process after old writers.
+
+        Pages advance durably for this process epoch. A new process deliberately
+        starts a fresh backfill, so a previous older writer cannot leave a false
+        complete index. Ordinary updates maintain aliases in the same commit.
+        """
+        self._prepare_readiness_origin_index(prepare=prepare)
         prefix = 'ready-origin:' + quote(assignment_id,safe='') + ':'
         rows, after = self.store.record_page(self.records_namespace,key_prefix=prefix,limit=64)
         if after is not None:

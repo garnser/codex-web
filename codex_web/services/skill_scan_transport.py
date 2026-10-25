@@ -123,6 +123,28 @@ class WorkerSkillSpectorProvider:
         from codex_web.services.upgrades import UpgradeConflictError
         try:
             with self.write_admission(actor):
+                # Backfill can be slow or require another bounded preparation.
+                # Do it before reserving scratch/assignment deadlines, never
+                # after a successful command has already consumed its budget.
+                from codex_web.storage.action_intents import ReadinessOriginIndexProgressing
+                try:
+                    self.runtime.worker_service.prepare_completion_index(
+                        self.runtime.worker.id, actor=self.runtime.worker_actor)
+                except ReadinessOriginIndexProgressing as exc:
+                    raise ScannerUnavailable('scanner_completion_preparation_progressing',
+                        'Canonical completion preparation is progressing before scanner startup; '
+                        'no scanner assignment or command was created. A new authorized request '
+                        'can continue the bounded preparation.',
+                        attribution={'scanner_phase': 'completion_preparation',
+                            'scanner_assignment_created': 0,
+                            'scanner_provider_start_called': 0}) from exc
+                except ValueError as exc:
+                    raise ScannerUnavailable('scanner_completion_preparation_unavailable',
+                        'Canonical completion preparation is unavailable before scanner startup; '
+                        'no scanner assignment or command was created.',
+                        attribution={'scanner_phase': 'completion_preparation',
+                            'scanner_assignment_created': 0,
+                            'scanner_provider_start_called': 0}) from exc
                 return self._admitted_operation(actor, *args, **kwargs)
         except UpgradeConflictError as exc:
             raise ScannerUnavailable('scanner_upgrade_required', str(exc)) from exc
