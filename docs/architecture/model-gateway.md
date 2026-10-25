@@ -323,6 +323,13 @@ The deployment must explicitly compose `build_native_reasoning_components` and
 `register_native_reasoning_components`, publish and pin a scratch/read-only
 execution contract and exact AgentProfile, and supply current canonical Profile
 and requester validators. These components do not activate a provider/Profile.
+Startup registration installs the same native session manager into application
+composition and the already-constructed Thread and Turn execution owners. Those
+owners keep defensive copies of the ordinary manager map; opt-in must register
+with each active copy. An existing native key in any of these maps refuses
+registration before registry or telemetry changes. This creates no session or
+input and does not relax routing or worker authorization.
+
 The configured native worker is the existing worker, not a second execution
 plane. Its session has no operational broker and advertises no shell, filesystem,
 git, MCP or approval capabilities. The actual isolated launch, lease, Profile,

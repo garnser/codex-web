@@ -207,7 +207,12 @@ def register_native_reasoning_components(components, *, gateway, registry, telem
         session_managers, thread_service, turn_execution, executives):
     """Only called by reviewed deployment opt-in; never a public configuration API."""
     key = ('openai', 'codex-reasoning')
-    if key in session_managers:
+    # Consumers defensively copy the composition map at construction time.
+    # Opt-in registration must reach those active owners as well as the map
+    # retained by application composition, using the same canonical manager.
+    manager_maps = (session_managers, thread_service.session_managers,
+                    turn_execution.session_managers)
+    if any(key in managers for managers in manager_maps):
         raise ValueError('Native reasoning runtime already configured')
     # Existing registries remain the sole provider/runtime/usage authority.
     from codex_web.agent_runtime import AgentRuntimeAccountingMode
@@ -228,7 +233,8 @@ def register_native_reasoning_components(components, *, gateway, registry, telem
                 previous_notifier(record)
     telemetry.observation_notifier = observed
     telemetry.subscribe(components.runtime_adapter)
-    session_managers[key] = components.manager
+    for managers in manager_maps:
+        managers[key] = components.manager
     for owner in (thread_service, turn_execution):
         previous = owner.runtime_adapter_factory
         def factory(binding, session, fallback=previous):
