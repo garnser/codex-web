@@ -69,7 +69,8 @@ def resolve_native_reasoning_settings(service):
 
 def compose_native_reasoning(*,configuration,identity,agent_profiles,execution_profiles,
         local_worker,host,codex_home,executable,threads,turns,sessions,usage,preflight,
-        execution,hub,executives,gateway,registry,telemetry,session_managers):
+        execution,hub,executives,gateway,registry,telemetry,session_managers,
+        authentication_preparation=None):
     """Application startup hook. Disabled default performs no native launch."""
     install_native_reasoning_configuration(configuration)
     resolved=resolve_native_reasoning_settings(configuration)
@@ -96,7 +97,8 @@ def compose_native_reasoning(*,configuration,identity,agent_profiles,execution_p
         catalog_path=Path(settings.catalog_path),catalog_sha256=settings.catalog_sha256,
         validate_profile=lambda assignment:current_settings(),invocation_authorizer=authorize,
         agent_profiles=agent_profiles,execution_profiles=execution_profiles,threads=threads,turns=turns,
-        sessions=sessions,usage=usage,preflight=preflight,execution=execution,hub=hub,executives=executives)
+        sessions=sessions,usage=usage,preflight=preflight,execution=execution,hub=hub,executives=executives,
+        authentication_preparation=authentication_preparation)
     register_native_reasoning_components(components,gateway=gateway,registry=registry,
         telemetry=telemetry,session_managers=session_managers,thread_service=threads,
         turn_execution=execution,executives=executives)

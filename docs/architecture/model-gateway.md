@@ -394,6 +394,24 @@ network-disabled, host-mutation-disabled, read-only contract, without broker,
 Home or project coordination operations/targets. The Profile must be visible and
 invokable by the actual consultation requester. A session uses only the existing
 Codex sign-in authentication mode; API-key mode cannot silently replace it.
+Before native thread bootstrap, application composition reuses the existing
+coalesced Codex `account/read` metadata owner with `refreshToken: false` when
+account evidence is absent or stale. This is a bounded request-time preparation,
+not a model request, login, token refresh, idle poll or authentication substitute.
+The original caller guard runs before metadata access and again afterward;
+unchanged Thread/worker authentication preflight still refuses unavailable or
+revoked sign-in evidence. Timeout and cancellation join the original metadata
+owner before returning and cannot admit a late native thread.
+
+Pre-start HTTP refusals retain their original public status, detail and cause.
+The controller attaches only closed stage, exception class, HTTP status and
+allowlisted refusal/blocker codes for native preparation diagnostics. Provider
+errors after the start boundary cannot acquire this controller attribution.
+`authentication_metadata` and `post_authentication_current_guard` distinguish
+account preparation from a subsequent caller/context revalidation failure.
+Existing operator diagnostic surfaces consume these events; no new UI control
+or authority is introduced.
+
 Current tenant, Profile revision, Definition, worker, empty physical workspace
 and live resource lease are revalidated at preparation and final input. Existing
 Skill discovery receives the exact `model.reasoning` operation and attested empty
