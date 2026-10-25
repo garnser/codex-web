@@ -12,6 +12,7 @@ from codex_web.models import BotBinding, BotConnection, BotReplyTarget
 from codex_web.storage.runtime_state import ModelMapRepository
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.state_store import StateStore
+from codex_web.storage.save_snapshots import SaveSnapshots, SnapshotList
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -32,8 +33,7 @@ class ModelListRepository(Generic[T]):
         self.namespace = namespace
         self.legacy_path = legacy_path
         self.model = model
-        self._snapshots: dict[int, list[dict[str, Any]]] = {}
-        self._lock = threading.RLock()
+        self._snapshots = SaveSnapshots()
 
     def _legacy_payload(self) -> list[dict[str, Any]]:
         if not self.legacy_path.exists():
@@ -53,13 +53,12 @@ class ModelListRepository(Generic[T]):
 
     def load(self) -> list[T]:
         raw = self._raw()
-        result = [
+        result = SnapshotList([
             self.model.model_validate(item)
             for item in raw
             if isinstance(item, dict)
-        ]
-        with self._lock:
-            self._snapshots[id(result)] = copy.deepcopy(raw)
+        ])
+        self._snapshots.remember(result, copy.deepcopy(raw))
         return result
 
     @staticmethod
@@ -73,8 +72,7 @@ class ModelListRepository(Generic[T]):
 
     def save(self, values: list[T]) -> None:
         payload = [item.model_dump(mode="json") for item in values]
-        with self._lock:
-            base = self._snapshots.pop(id(values), None)
+        base = self._snapshots.take(values)
         if base is None:
             self.store.put(self.namespace, payload)
             merged = payload

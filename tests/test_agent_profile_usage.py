@@ -117,7 +117,7 @@ class AgentProfileUsageTests(unittest.TestCase):
         impact = self.client.get('/api/agent-profiles/coder/usage')
         self.assertEqual(impact.json()['blocking_count'], 2)
         self.assertNotIn('PRIVATE INPUT', impact.text)
-        self.assertEqual(self.queues._snapshots, {})
+        self.assertEqual(self.queues._snapshots._entries, {})
         self.assertEqual(self.archive().status_code, 409)
         self.assignments[0].status = 'succeeded'
         self.queues.delete('thread-a')

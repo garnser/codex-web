@@ -50,6 +50,18 @@ A distributed deployment must preserve the same canonical-state guarantees. Post
 
 ## Current guarantees
 
+Turn queue and model-list mutable loads retain their concurrent-save baselines
+only while the exact returned collection is alive. Weak references release
+discarded read-only views without evicting a live editor's baseline. Saving
+consumes that baseline once, before the existing store operation; ordinary
+collections, copied views and collections from another repository retain their
+existing save fallback. Cleanup and save both verify object identity, so reused
+object IDs cannot borrow an unrelated baseline. Repository merge, validation,
+transaction and rollback-mirror behavior are unchanged. This bounds retained
+baselines by live loaded views, not by a fixed byte quota; callers can still
+retain large live views. A demonstrated discarded-view leak does not establish
+its share of a historical service OOM.
+
 Canonical repositories consume the `StateStore` contract: transactional
 `get/put/update/update_many`, namespace discovery/deletion for migration, and
 backend health. `SQLiteStateStore` remains the default and provides:
