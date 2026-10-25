@@ -210,3 +210,11 @@ updates retain the logical `AutonomyState` contract. Append returns its persiste
 cycle rather than reconstructing a discarded full state. Before an older-code
 rollback, drain writers and export the logical `load().model_dump(mode="json")`
 representation to the namespace. Unknown internal versions fail closed.
+
+### Optional owner-routing witness
+
+A canonical non-alias owner may resolve without an owner-routing pin. The
+admitted watchdog then retains its existing ordinary dispatch or terminal-lane
+recovery path, including current custody, physical-stop and retained-input
+guards. A selected recipient keeps its exact routing witness and scope; a typed
+routing denial remains blocked and never falls through to ordinary recovery.
