@@ -655,6 +655,42 @@ class DataGovernanceService:
     ) -> ContextFilterResult:
         state = self.store.context_state(payload.record_ids,
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        return self._filter_context_state(payload, state, actor=actor)
+
+    def filter_leaf_context(
+        self,
+        payload: ContextFilterRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ContextFilterResult | None:
+        """Validate current leaf sources in one fresh canonical observation.
+
+        A source with parents needs the ordinary ancestry walk and its final
+        revalidation. Never reuse the earlier candidate-filter snapshot here.
+        """
+        # Extensions may add rules or audit behavior to either entry point.
+        # Only the original canonical methods can share this observation.
+        if (getattr(self.filter_context, '__func__', None) is not _CANONICAL_CONTEXT_FILTER
+                or getattr(self.filter_context, '__self__', None) is not self):
+            return None
+        if (getattr(self.get_record, '__func__', None) is not _CANONICAL_CONTEXT_RECORD_READER
+                or getattr(self.get_record, '__self__', None) is not self):
+            return None
+        state = self.store.context_state(payload.record_ids,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        records = [self._record_from_state(state, record_id, actor)
+                   for record_id in payload.record_ids]
+        if any(record.source_record_ids for record in records):
+            return None
+        return self._filter_context_state(payload, state, actor=actor)
+
+    def _filter_context_state(
+        self,
+        payload: ContextFilterRequest,
+        state: DataGovernanceState,
+        *,
+        actor: AuthenticationActor,
+    ) -> ContextFilterResult:
         decisions: list[ContextFilterDecision] = []
         for record_id in payload.record_ids:
             record = self._record_from_state(state, record_id, actor)
@@ -788,3 +824,8 @@ class DataGovernanceService:
             key=lambda item: (item.occurred_at, item.id),
             reverse=True,
         )
+
+
+# Capture the originals once; later class or instance overrides must fall back.
+_CANONICAL_CONTEXT_FILTER = DataGovernanceService.filter_context
+_CANONICAL_CONTEXT_RECORD_READER = DataGovernanceService.get_record

@@ -90,6 +90,17 @@ The baseline structural rules are:
 
 Future policy may further restrict routing by model/provider/residency, but mutable policy must not be able to weaken the baseline credential/secret exclusions.
 
+Typed UX Memory sources keep their later source-governance validation separate
+from the initial candidate filter. When all currently selected source records
+are leaves, that later check selects their complete current records once and
+applies the same canonical context-filter rules to that observation. It does
+not cache or reuse the earlier candidate decisions. A newly added parent causes
+the original ancestry walk and final filter to run. Services overriding the
+canonical filter or source-record reader also retain that original path, including their additional
+rules and audit behavior. Retrieval selection, source pins, and durable Memory
+retrieval audits remain unchanged; this optimization does not establish that a
+whole Executive context request will meet its deadline.
+
 ## Export authorization
 
 The governance API returns an **export manifest**, not the data itself.

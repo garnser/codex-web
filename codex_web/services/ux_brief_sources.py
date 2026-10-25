@@ -73,6 +73,16 @@ def brief_context_allowed(memory, item, actor, max_classification):
         ids = tuple(dict.fromkeys(service._source(pin.kind,pin.record_id,item.project_id,actor,context_only=True).governance_record_id for pin in _pins(item)))
         if not ids:
             return True
+        # This is the later source-validation point, after current Memory pins
+        # and authority have been checked. A fresh leaf snapshot can make the
+        # decision without reading that same Governance document a second time.
+        # Non-leaf and older/custom services retain the complete original walk.
+        leaf_filter = getattr(memory.governance, 'filter_leaf_context', None)
+        if callable(leaf_filter):
+            result = leaf_filter(ContextFilterRequest(record_ids=ids,
+                max_classification=max_classification), actor=actor)
+            if result is not None:
+                return set(ids).issubset(result.allowed_record_ids)
         # Constraints can tighten after curation. Check the current source
         # governance ancestry rather than relying only on inherited snapshots.
         pending = list(ids)
