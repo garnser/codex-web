@@ -655,6 +655,40 @@ class DataGovernanceService:
     ) -> ContextFilterResult:
         state = self.store.context_state(payload.record_ids,
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        return self._filter_context_state(payload, state, actor=actor)
+
+    _canonical_context_filter = filter_context
+
+    def filter_leaf_context(
+        self,
+        payload: ContextFilterRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ContextFilterResult | None:
+        """Validate current leaf sources in one fresh canonical observation.
+
+        A source with parents needs the ordinary ancestry walk and its final
+        revalidation. Never reuse the earlier candidate-filter snapshot here.
+        """
+        # An extension's filter override may add rules or audit behavior. Only
+        # the unmodified canonical filter can share its implementation here.
+        if getattr(self.filter_context, '__func__', None) is not DataGovernanceService._canonical_context_filter:
+            return None
+        state = self.store.context_state(payload.record_ids,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        records = [self._record_from_state(state, record_id, actor)
+                   for record_id in payload.record_ids]
+        if any(record.source_record_ids for record in records):
+            return None
+        return self._filter_context_state(payload, state, actor=actor)
+
+    def _filter_context_state(
+        self,
+        payload: ContextFilterRequest,
+        state: DataGovernanceState,
+        *,
+        actor: AuthenticationActor,
+    ) -> ContextFilterResult:
         decisions: list[ContextFilterDecision] = []
         for record_id in payload.record_ids:
             record = self._record_from_state(state, record_id, actor)
