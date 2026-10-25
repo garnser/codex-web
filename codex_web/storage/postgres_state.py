@@ -307,8 +307,6 @@ class PostgresStateStore:
         if (not getattr(self, '_document_projection_write_owner', False)
                 or getattr(self._callback_reads, 'connection', None) is not None):
             return False
-        if namespace in self._document_projection_namespaces:
-            return True
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 # Leave room for the metadata prefix, ordinal and tuple overhead.
@@ -318,9 +316,16 @@ class PostgresStateStore:
                 if not cursor.fetchone()[0]:
                     return False
                 self._lock(cursor, namespace)
+                postgres_document_projection.enable_version(cursor)
+                key = postgres_document_projection.ENABLE_PREFIX + namespace
+                cursor.execute('SELECT value FROM codex_state_metadata WHERE key=%s FOR SHARE', (key,))
+                enabled = cursor.fetchone()
+                if enabled is not None and enabled[0] != '1':
+                    raise RuntimeError('Unsupported derived document projection namespace')
+                if namespace in self._document_projection_namespaces and enabled is not None:
+                    return True
                 cursor.execute("""INSERT INTO codex_state_metadata(key,value,updated_at) VALUES(%s,'1',%s)
-                    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""",
-                    (postgres_document_projection.ENABLE_PREFIX + namespace, time.time()))
+                    ON CONFLICT(key) DO NOTHING""", (key, time.time()))
                 cursor.execute('SELECT payload FROM codex_state_documents WHERE namespace=%s FOR UPDATE', (namespace,))
                 row = cursor.fetchone()
                 if row is not None:

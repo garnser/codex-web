@@ -71,8 +71,14 @@ update whose new SHA-256 does not match the prepared projection deletes all
 current projected raw rows transactionally; canonical deletion cascades. This is
 ordinary PostgreSQL MVCC erasure, not a claim to overwrite historical disk bytes.
 
-Only `initialize=True` owners install the additive backend schema and explicitly
-seed projections. Initialization DDL is serialized per canonical SQL schema.
+Only `initialize=True` owners install the additive backend schema. Explicit
+projection opt-in seeds its version/namespace metadata and records; a bare
+initialized restore target retains exactly its original schema-version seed.
+Initialization DDL is serialized per canonical SQL schema. Explicit opt-in
+rechecks the current version marker even on an already initialized owner,
+refusing unknown imported versions rather than overwriting them. Enabled-domain
+empty targets remain nonseed targets and the existing strict restore refusal
+is unchanged.
 Cold/read-only `initialize=False` compositions and constructors inside an owning
 callback never enable, rebuild or open another write transaction. Read callbacks
 reuse their existing connection and see their own canonical uncommitted changes.

@@ -60,7 +60,9 @@ def initialize(cursor):
             previous_records json; record_count integer; index_key_budget integer; supported boolean;
         BEGIN
         IF NOT EXISTS (SELECT 1 FROM codex_state_metadata
-            WHERE key='document-record-projection-v1:' || ns AND value='1') THEN RETURN; END IF;
+            WHERE key='document-record-projection-version' AND value='1') OR
+            NOT EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-record-projection-v1:' || ns AND value='1') THEN RETURN; END IF;
         index_key_budget := current_setting('block_size')::integer / 4;
         -- Match old/direct writer lock order: document first, derived rows second.
         SELECT payload INTO previous_source FROM codex_state_documents WHERE namespace=ns FOR UPDATE;
@@ -120,9 +122,17 @@ def initialize(cursor):
             DELETE FROM codex_document_record_headers WHERE namespace=ns;
         END $$''')
 
+
+
+def enable_version(cursor):
+    """Only explicit projection opt-in changes the bare restore seed metadata."""
     cursor.execute("""INSERT INTO codex_state_metadata(key,value,updated_at)
         VALUES('document-record-projection-version','1',extract(epoch from clock_timestamp()))
         ON CONFLICT(key) DO NOTHING""")
+    cursor.execute("SELECT value FROM codex_state_metadata "
+        "WHERE key='document-record-projection-version' FOR SHARE")
+    if cursor.fetchone()[0] != str(VERSION):
+        raise RuntimeError('Unsupported derived document projection schema')
 
 
 def prepare(cursor, namespace, serialized):
@@ -154,6 +164,8 @@ def read(cursor, namespace, item_ids, organization_id, workspace_id, names,
             'records',COALESCE((SELECT json_agg(payload::json ORDER BY ordinal) FROM selected),'[]'::json))::text
         FROM codex_document_record_headers AS header,current_document
         WHERE header.namespace=%s AND header.version=1 AND header.eligible
+            AND EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-record-projection-version' AND value='1')
             AND header.source_sha256=current_document.source_sha256
             AND header.top_keys <@ %s::text[]
             AND NOT EXISTS (SELECT 1 FROM unnest(%s::text[]) AS field(name)

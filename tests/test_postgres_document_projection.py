@@ -179,8 +179,9 @@ class PostgresDocumentProjectionTests(unittest.TestCase):
             owners = [future.result(timeout=10) for future in futures]
         self.assertEqual(len(owners), 2)
         with self.backend._read_connection() as connection:
-            self.assertEqual(connection.execute("SELECT value FROM codex_state_metadata "
-                "WHERE key='document-record-projection-version'").fetchone()[0], '1')
+            self.assertEqual(connection.execute('SELECT key,value FROM codex_state_metadata').fetchall(),
+                [('schema_version', '1')])
+            self.assertIsNotNone(connection.execute("SELECT to_regclass('codex_document_record_headers')").fetchone()[0])
         for owner in owners:
             owner.close()
 
@@ -263,3 +264,60 @@ class PostgresDocumentProjectionTests(unittest.TestCase):
         self.backend.put(namespace, self.document([self.row()]))
         self.assertEqual(self.backend.document_array_items_envelope(namespace, 'records', ('selected',),
             organization_id='local', workspace_id='default', collection_names=('records', 'requests', 'events'))['records'], [self.row()])
+
+    def test_explicit_projection_metadata_roundtrips_through_exact_fresh_restore_seed(self):
+        import hashlib
+        self.backend.enable_document_record_projection('projection-test')
+        self.backend.put('projection-test', self.document([self.row(value='authoritative')]))
+        target_case = unittest.TestCase()
+        fixtures.PostgresAutonomyAppendTests.setUp(target_case)
+        self.addCleanup(target_case.doCleanups)
+        target = target_case.backend
+        with target._read_connection() as connection:
+            self.assertEqual(connection.execute('SELECT key,value FROM codex_state_metadata').fetchall(),
+                [('schema_version', '1')])
+        def digest(store):
+            value = hashlib.sha256()
+            for chunk in store.iter_storage_snapshot():
+                value.update(chunk)
+            return value.hexdigest()
+        expected = digest(self.backend)
+        target.restore_storage_snapshot(self.backend.iter_storage_snapshot())
+        self.assertEqual(digest(target), expected)
+        target.enable_document_record_projection('projection-test')
+        self.assertEqual(digest(target), expected)
+        self.assertEqual(target.document_array_item_envelope('projection-test', 'records', 'selected',
+            organization_id='local', workspace_id='default', collection_names=('records', 'requests', 'events'))['records'],
+            [self.row(value='authoritative')])
+
+    def test_unknown_or_enabled_empty_target_metadata_is_not_ignored_by_restore(self):
+        from codex_web.storage.storage_preservation import StoragePreservationRefused
+        archive = b''.join(self.backend.iter_storage_snapshot())
+        with self.backend._connection() as connection:
+            connection.execute("INSERT INTO codex_state_metadata VALUES('unrelated-metadata','keep',1)")
+        with self.assertRaisesRegex(StoragePreservationRefused, '^isolated_target_metadata_not_seed$'):
+            self.backend.restore_storage_snapshot([archive])
+        with self.backend._connection() as connection:
+            self.assertEqual(connection.execute("SELECT value FROM codex_state_metadata WHERE key='unrelated-metadata'").fetchone()[0], 'keep')
+            connection.execute("DELETE FROM codex_state_metadata WHERE key='unrelated-metadata'")
+        self.backend.enable_document_record_projection('projection-test')
+        with self.assertRaisesRegex(StoragePreservationRefused, '^isolated_target_metadata_not_seed$'):
+            self.backend.restore_storage_snapshot([archive])
+        with self.backend._read_connection() as connection:
+            self.assertEqual(connection.execute("SELECT value FROM codex_state_metadata WHERE key='document-record-projection-version'").fetchone()[0], '1')
+
+    def test_enable_rechecks_imported_future_marker_even_on_cached_owner(self):
+        self.backend.enable_document_record_projection('projection-test')
+        self.backend.put('projection-test', self.document([self.row(value='current')]))
+        with self.backend._connection() as connection:
+            connection.execute("UPDATE codex_state_metadata SET value='2' WHERE key='document-record-projection-version'")
+        with self.assertRaisesRegex(RuntimeError, '^Unsupported derived document projection schema$'):
+            self.backend.enable_document_record_projection('projection-test')
+        with self.backend._read_connection() as connection:
+            self.assertEqual(connection.execute("SELECT value FROM codex_state_metadata WHERE key='document-record-projection-version'").fetchone()[0], '2')
+        self.assertEqual(self.read()['records'], [self.row(value='current')])
+        self.backend.put('projection-test', self.document([self.row(value='updated canonical')]))
+        self.assertEqual(self.projected(), [])
+        self.assertEqual(self.read()['records'], [self.row(value='updated canonical')])
+        with self.backend._read_connection() as connection:
+            self.assertEqual(connection.execute("SELECT value FROM codex_state_metadata WHERE key='document-record-projection-version'").fetchone()[0], '2')
