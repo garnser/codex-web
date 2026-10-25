@@ -41,7 +41,9 @@ def build_procedure_execution_router(service):
     @router.post("/api/execution-workers/assignments/{assignment_id}/procedure/advance")
     async def advance(assignment_id: str, request: Request, payload: ProcedureAdvance = ProcedureAdvance()):
         try:
-            return view(await service.advance(assignment_id, actor=request_actor(request), run_id=payload.run_id))
+            return view(await service.advance(assignment_id, actor=request_actor(request), run_id=payload.run_id,
+                **({"current_input_snapshot_id": payload.current_input_snapshot_id}
+                    if payload.current_input_snapshot_id is not None else {})))
         except ProcedureExecutionError as exc:
             raise error(exc) from exc
 

@@ -10,6 +10,9 @@ import json
 import time
 import uuid
 from dataclasses import replace
+from contextvars import ContextVar
+
+_current_input_witness = ContextVar("procedure_current_input_witness", default=None)
 
 from codex_web.action_intents import ActionIntentClaimRequest, ActionIntentCreate, ActionIntentRetryPolicy, ActionIntentStatus, ActionIntentRollbackRequest, ActionDecisionSnapshot
 from codex_web.action_providers import ActionRequest
@@ -175,11 +178,36 @@ class ProcedureExecutionService:
     def _inputs(self, assignment, actor, procedure):
         pin = assignment.procedure_checkpoint
         data, _ = self._content(pin.input_snapshot_id, actor, assignment, pin.input_snapshot_checksum)
+        witness = _current_input_witness.get()
+        if witness is not None:
+            assignment_id, run_id, artifact_id = witness
+            if (procedure.input_protocol is None or assignment_id != assignment.id
+                    or run_id != self.run_id(pin)):
+                raise ProcedureExecutionError("procedure_current_input_witness_scope")
+            fresh, _ = self._content(artifact_id, actor, assignment, pin.input_snapshot_checksum)
+            # The witness authenticates current use only. Original immutable
+            # snapshot/history/run identity and typed values never change.
+            if fresh != data:
+                raise ProcedureExecutionError("procedure_current_input_witness_changed")
+            self._input_protocol(procedure, artifact_id, fresh, actor, assignment)
+        else:
+            self._input_protocol(procedure, pin.input_snapshot_id, data, actor, assignment)
         values = bounded_data(json.loads(data))
         self._values(procedure.inputs, values, actor, assignment)
         if pin.canonical_input_checksum is not None and checksum(values) != pin.canonical_input_checksum:
             raise ProcedureExecutionError("procedure_input_identity_changed")
         return values
+
+    def _input_protocol(self, procedure, artifact_id, data, actor, assignment):
+        if procedure.input_protocol is None:
+            return
+        from codex_web.services.mr_procedure_inputs import validate_mr_procedure_input
+        from codex_web.api.authorization import ApiAuthorizationError
+        from codex_web.services.identity import IdentityError
+        try:
+            validate_mr_procedure_input(self, artifact_id, data, actor, assignment)
+        except (ValueError, TypeError, KeyError, ApiAuthorizationError, IdentityError) as exc:
+            raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
 
     def _values(self, contracts, values, actor, assignment):
         if not isinstance(values, dict) or set(values) - {c.name for c in contracts}:
@@ -274,6 +302,15 @@ class ProcedureExecutionService:
         raw, _ = self._content(state.output_snapshot_id, actor, assignment, state.output_snapshot_checksum, limit=16384)
         return bounded_data(json.loads(raw))
 
+    def _input_sources(self, assignment):
+        original = assignment.procedure_checkpoint.input_snapshot_id
+        witness = _current_input_witness.get()
+        if witness is None:
+            return (original,)
+        if witness[:2] != (assignment.id, self.run_id(assignment.procedure_checkpoint)):
+            raise ProcedureExecutionError("procedure_current_input_witness_scope")
+        return tuple(dict.fromkeys((original, witness[2])))
+
     def _record_outputs(self, assignment, step, state, values, actor):
         from codex_web.artifact_evidence import ArtifactCreate, sha256_digest
         self._values(step.outputs, values, actor, assignment)
@@ -286,8 +323,10 @@ class ProcedureExecutionService:
             source=self._step_origin(assignment, step.id), digest=sha256_digest(raw),
             metadata={"step_id":step.id, "attempt":state.attempts,
                 "procedure_record_id":assignment.procedure_checkpoint.definition.record_id,
-                "procedure_checksum":assignment.procedure_checkpoint.definition.checksum}), actor=actor,
-            source_artifact_ids=(assignment.procedure_checkpoint.input_snapshot_id,), source_evidence_ids=proof_ids)
+                "procedure_checksum":assignment.procedure_checkpoint.definition.checksum,
+                **({"current_input_witness_id": self._input_sources(assignment)[-1]}
+                    if _current_input_witness.get() is not None else {})}), actor=actor,
+            source_artifact_ids=self._input_sources(assignment), source_evidence_ids=proof_ids)
         self.evidence.attach_artifact_content(artifact.id, (raw,), actor=actor, media_type="application/json")
         state.output_snapshot_id = artifact.id
         state.output_snapshot_checksum = hashlib.sha256(raw).hexdigest()
@@ -350,6 +389,7 @@ class ProcedureExecutionService:
         self.skills.validate_required_procedure(definition, actor=actor, project_id=assignment.project_id)
         procedure = SkillDefinition.model_validate(self.skills.definitions.get_record(definition.record_id).payload).operational_procedure
         data, digest = self._content(input_snapshot_id, actor, assignment)
+        self._input_protocol(procedure, input_snapshot_id, data, actor, assignment)
         values = bounded_data(json.loads(data)); self._values(procedure.inputs, values, actor, assignment)
         canonical_digest = checksum(values)
         # Artifact aliases/JSON formatting are not materially changed inputs.
@@ -780,7 +820,9 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_pinned_admission_missing")
         return original.model_copy(update={"evaluated_at": self.clock(), "operation": step.action.action_id,
             "context_checksum": checksum({"pin":checkpoint.definition.model_dump(mode='json'),
-                "request":request.model_dump(mode='json'), "input":checkpoint.input_snapshot_checksum})})
+                "request":request.model_dump(mode='json'), "input":checkpoint.input_snapshot_checksum,
+                **({"current_input_witness_id": self._input_sources(assignment)[-1]}
+                    if _current_input_witness.get() is not None else {})})})
 
     def _rollback_origin(self, assignment, step, actor, procedure):
         origin_step = next(s for s in procedure.steps if s.id == step.recovery.origin_step_id)
@@ -889,7 +931,47 @@ class ProcedureExecutionService:
                 or (assignment.procedure_history and run_id is None)):
             raise ProcedureExecutionError("procedure_run_not_current")
 
-    async def advance(self, assignment_id, *, actor, run_id=None):
+    def _admit_current_input(self, assignment_id, actor, run_id):
+        assignment = self.get(assignment_id, actor)
+        self._require_current_run(assignment, run_id)
+        pin = assignment.procedure_checkpoint
+        if pin.status in {"completed", "recovered", "recovery_required"}:
+            return  # Preserve terminal idempotent advance behavior.
+        witness = _current_input_witness.get()
+        if witness is None:
+            from codex_web.services.definitions import DefinitionNotFoundError
+            try:
+                payload = self.skills.definitions.get_record(pin.definition.record_id).payload
+            except DefinitionNotFoundError:
+                return  # Existing state machine owns legacy missing-pin handling.
+            contract = payload.get("operational_procedure")
+            if not isinstance(contract, dict) or contract.get("input_protocol") is None:
+                return
+        procedure = self._procedure(assignment, self._actor(assignment))
+        self._live(assignment)
+        # A bad/stale current-use request cannot poison a healthy checkpoint.
+        # Validate before stale-claim recovery or any state-machine side effects;
+        # the original repeated checks before actual effects remain mandatory.
+        from codex_web.services.artifact_evidence import ArtifactEvidenceError
+        from codex_web.artifact_content import ArtifactContentError
+        from codex_web.services.identity import IdentityError
+        from codex_web.api.authorization import ApiAuthorizationError
+        try:
+            self._inputs(assignment, self._actor(assignment), procedure)
+        except (ArtifactEvidenceError, ArtifactContentError, IdentityError, ApiAuthorizationError) as exc:
+            raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
+
+    async def advance(self, assignment_id, *, actor, run_id=None, current_input_snapshot_id=None):
+        token = _current_input_witness.set((assignment_id, run_id, current_input_snapshot_id)
+            if current_input_snapshot_id is not None else None)
+        try:
+            from codex_web.services.async_operations import run_settled
+            await run_settled(lambda: self._admit_current_input(assignment_id, actor, run_id))
+            return await self._advance_with_outcomes(assignment_id, actor=actor, run_id=run_id)
+        finally:
+            _current_input_witness.reset(token)
+
+    async def _advance_with_outcomes(self, assignment_id, *, actor, run_id=None):
         assignment = await self._advance(assignment_id, actor=actor, run_id=run_id)
         if self.outcome_drafts is not None and assignment.procedure_checkpoint.status in {
             "completed", "recovered", "recovery_required"
@@ -982,7 +1064,9 @@ class ProcedureExecutionService:
                         evaluated_at=self.clock(), expires_at=assignment.lease.expires_at,
                         reasons=("Exact published step, current Role authority and canonical approval quorum checked",
                             "Live assignment, worker, Resource lease, material preconditions and secret references checked",
-                            "Registered provider security policy remains enforced; protected gates recheck before effects")),
+                            "Registered provider security policy remains enforced; protected gates recheck before effects",
+                            *(("Current-use input witness Artifact: " + self._input_sources(assignment)[-1],)
+                                if _current_input_witness.get() is not None else ()))),
                     retry_policy=ActionIntentRetryPolicy(max_attempts=step.max_attempts, backoff_seconds=step.retry_backoff_seconds)), actor=actor)
                 state.action_intent_id = intent.id
                 checkpoint.status = "running"; state.status = "running"

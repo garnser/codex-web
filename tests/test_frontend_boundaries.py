@@ -394,6 +394,7 @@ class FrontendBoundaryTests(unittest.TestCase):
             "skill_procedure_ui.js": 8_000,
             "procedure_run_ui.js": 16_000,
             "procedure_run_history.js": 2_000,
+            "procedure_input_witness.js": 2_000,
         }
         for name, limit in budgets.items():
             with self.subTest(name=name):
