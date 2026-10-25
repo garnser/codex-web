@@ -165,6 +165,30 @@ class PremergeReadinessProcedureTests(unittest.IsolatedAsyncioTestCase):
         await self.advance();self.assertEqual(len(self.observed_calls),count)
         self.assertEqual(self.mr['state'],'opened')
 
+    async def test_secret_reference_original_receipt_kinds_retained_but_expired_observation_not_current(self):
+        from codex_web.services.procedure_execution import ProcedureExecutionError
+        result = await self.advance()
+        step = result.steps['observe']
+        self.assertEqual(step.status, 'succeeded', result.failure_code)
+        original = {name: self.artifacts.get_evidence(step.evidence[name], actor=self.actor)
+            for name in ('receipt', 'verification')}
+        self.assertEqual(original['receipt'].evidence_type, 'provider_receipt')
+        self.assertEqual(original['verification'].evidence_type, 'artifact_verification')
+        expiry = original['receipt'].metadata['observation_expires_at']
+        for proof in original.values():
+            self.assertEqual(proof.metadata['verification_method'], 'code-host-readiness-observation.v1')
+            self.assertEqual(proof.metadata['observation_expires_at'], expiry)
+            self.assertIsNone(proof.retention_expires_at)
+            self.runner._evidence(proof.id, self.actor, self.assignment)
+        count = len(self.observed_calls)
+        with patch.object(self.runner, 'clock', return_value=expiry):
+            for proof in original.values():
+                with self.assertRaises(ProcedureExecutionError):
+                    self.runner._evidence(proof.id, self.actor, self.assignment)
+        self.assertEqual(len(self.observed_calls), count)
+        for name, proof in original.items():
+            self.assertEqual(self.artifacts.get_evidence(proof.id, actor=self.actor), proof)
+
     async def test_secret_reference_unknown_review_is_observed_not_passed(self):
         self.approvals_status=403
         result=await self.advance();step=result.steps['observe']

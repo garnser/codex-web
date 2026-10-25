@@ -372,6 +372,13 @@ A unique original returns its Evidence and explicit `observation_fresh` value;
 absence is UNKNOWN, not permission to submit another request. An expired original
 is not refreshed or relabeled as a current passing assessment.
 
+The read-only readiness ActionIntent uses the distinct fixed
+`code-host-readiness-observation.v1` marker with the original observation expiry.
+Its Evidence retains the existing `provider_receipt` and `artifact_verification`
+kinds: it proves the original observation and verification, including pending
+results. Current consumers reject it after expiry without deleting that history
+or turning an observation receipt into review consent or merge permission.
+
 Existing recovery Verification methods retain their original request, ownership,
 independence and effect-proof guards. No role or capability grant is added. The
 existing operation catalog and Evidence/Verification inspectors expose the new
