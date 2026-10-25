@@ -47,6 +47,13 @@ class OfflineHostGuardTests(unittest.TestCase):
         with patch.object(self.guard, 'service', return_value=values or self.stopped):
             self.guard.check()
 
+    def test_explicit_verifier_target_is_guarded_by_the_actual_host_boundary(self):
+        self.options.expected_upgrade_target_revision = 'b'*40
+        self.check()  # All executable imports/source remain a; plan target is b.
+        self.options.expected_producer_revision = 'b'*40
+        with self.assertRaisesRegex(ValueError, 'installed source revision'):
+            self.check()
+
     def test_clean_same_invocation_stop_is_accepted_without_controlling_service(self):
         self.check()
         self.check({**self.stopped, 'InvocationID': 'original-invocation'})
@@ -181,3 +188,35 @@ class OperationMemoryBudgetTests(unittest.TestCase):
         for raw in ('0', '-1', 'max', 'inf', '1.5', str(2**63), True, False, None):
             with self.subTest(raw=raw), self.assertRaises(argparse.ArgumentTypeError):
                 cli.memory_budget_bytes(raw)
+
+
+class SourceCompatibleToolTests(unittest.TestCase):
+    def options(self, source='a'*40, tool='a'*40, target=None):
+        return SimpleNamespace(expected_runtime_revision=source,
+            expected_producer_revision=tool, expected_upgrade_target_revision=target)
+
+    def test_source_tool_can_qualify_distinct_plan_target_without_relabeling_code(self):
+        options = self.options(target='b'*40)
+        self.assertEqual(cli.source_compatible_tool_target(options), 'b'*40)
+        self.assertEqual(options.expected_producer_revision, 'a'*40)
+        self.assertEqual(options.expected_runtime_revision, 'a'*40)
+
+    def test_capture_default_is_not_reinterpreted_as_verification_write_permission(self):
+        options = self.options(tool='b'*40)
+        self.assertEqual(cli.upgrade_target_revision(options), 'b'*40)
+        with self.assertRaisesRegex(ValueError, 'installed source revision'):
+            cli.source_compatible_tool_target(options)
+
+    def test_target_executable_is_refused_before_source_restoration_can_be_unsafe(self):
+        with self.assertRaisesRegex(ValueError, 'installed source revision'):
+            cli.source_compatible_tool_target(self.options(tool='b'*40, target='b'*40))
+
+    def test_unset_target_keeps_old_equal_revision_binding_and_malformed_pins_refuse(self):
+        self.assertEqual(cli.source_compatible_tool_target(self.options()), 'a'*40)
+        for field in ('expected_runtime_revision', 'expected_producer_revision',
+                'expected_upgrade_target_revision'):
+            for value in ('wrong', '', True, False, 42):
+                options = self.options(target='b'*40)
+                setattr(options, field, value)
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    cli.source_compatible_tool_target(options)
