@@ -12,6 +12,7 @@ try:
 except ImportError:  # SQLite-only installations have no PostgreSQL exception type.
     _HomeQueryCanceled = ()
 from pydantic import BaseModel, ConfigDict, Field
+from codex_web.services.home_checkpoint_telemetry import checkpoint_stage, checkpoint_timings
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.artifact_evidence import ArtifactCreate, ArtifactDigest, EvidenceCreate
 from codex_web.definitions import DefinitionReference
@@ -180,12 +181,14 @@ class HomeUpgradeCheckpointService:
                           held_observer=None):
         """Supervisor metadata only; never a Host grant or native completion."""
         from codex_web.storage.state_store import check_operation_budget
-        bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
-        assignment = self.recovery._assignment(bootstrap.assignment_id)
+        with checkpoint_stage('custody'):
+            bootstrap = self.home.bootstrap_bindings.get_by_thread(binding.thread_id, requester)
+            assignment = self.recovery._assignment(bootstrap.assignment_id)
         # This existing metadata validator retains current Human/Admin/Profile,
         # tenant, authority and selected bootstrap checks. Host.guard remains
         # unchanged and still requires a live lease for every Host operation.
-        _, selected = self.home._authorize_context(assignment, requester)
+        with checkpoint_stage('custody_authorization'):
+            _, selected = self.home._authorize_context(assignment, requester)
         if selected != binding or assignment.status != 'lost' or assignment.lease is not None:
             self.refused('home_upgrade_dormant_custody_changed')
         if self.runner_observer is None or self.goal_inspection is None or self.sessions is None:
@@ -229,22 +232,25 @@ class HomeUpgradeCheckpointService:
         queues = self.recovery.execution.host._thread_queue(binding.thread_id)
         if queues:
             self.refused('home_upgrade_dormant_pending_input')
-        goals = self.goal_inspection.inspect(requester, expected_revision=binding.revision)
+        with checkpoint_stage('goals'):
+            goals = self.goal_inspection.inspect(requester, expected_revision=binding.revision)
         if goals['items'] or goals['has_more']:
             self.refused('home_upgrade_dormant_goal_present')
         runtime = assignment.runtime_binding
         if runtime is None:
             self.refused('home_upgrade_dormant_session_unavailable')
-        session = self.sessions.find_unique_by_native_id(binding.thread_id,
-            provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
+        with checkpoint_stage('session'):
+            session = self.sessions.find_unique_by_native_id(binding.thread_id,
+                provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
         if (session is None or tuple(session.resource_ids) != tuple(assignment.resource_ids)
                 or (session.organization_id, session.workspace_id, session.project_id,
                 session.assignment_id, session.execution_id, session.execution_workspace_id, session.worker_id) !=
                 (assignment.organization_id, assignment.workspace_id, 'home', assignment.id,
                  assignment.execution_id, assignment.execution_workspace_id, assignment.assigned_worker_id)):
             self.refused('home_upgrade_dormant_session_changed')
-        held = (self.recovery._held if held_observer is None else held_observer)(
-            {assignment.execution_id}, actor=requester)
+        with checkpoint_stage('held'):
+            held = (self.recovery._held if held_observer is None else held_observer)(
+                {assignment.execution_id}, actor=requester)
         retained = []
         for intent_id, outcome in held:
             intent = self.recovery.intents.get(intent_id, requester)
@@ -278,8 +284,9 @@ class HomeUpgradeCheckpointService:
             nonlocal phase
             phase = value
         try:
-            return self._preserve_dormant_observed(plan_id, binding, requester,
-                operator_actor, observing=observing)
+            with checkpoint_stage('preservation'):
+                return self._preserve_dormant_observed(plan_id, binding, requester,
+                    operator_actor, observing=observing)
         except Exception as exc:
             if isinstance(exc, TimeoutError):
                 category = 'TimeoutError'
@@ -312,8 +319,9 @@ class HomeUpgradeCheckpointService:
             process = {}
             held_observer = self._operation_held_observer()
             observing('initial_snapshot')
-            snapshot = self._dormant_snapshot(binding, requester, process_evidence=process,
-                held_observer=held_observer)
+            with checkpoint_stage('initial_snapshot'):
+                snapshot = self._dormant_snapshot(binding, requester, process_evidence=process,
+                    held_observer=held_observer)
             preservation = {'schema_version':'1.0', 'plan_id':plan.id, 'plan_created_at':plan.created_at,
                 'release_id':plan.release_id, 'source_revision':source, 'target_revision':target,
                 'target_version':plan.target_app_version, 'snapshot':snapshot,
@@ -353,19 +361,21 @@ class HomeUpgradeCheckpointService:
                 return prior
 
             observing('before_artifact_snapshot')
-            if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
-                self.refused('home_upgrade_dormant_preservation_changed')
+            with checkpoint_stage('before_artifact_snapshot'):
+                if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
+                    self.refused('home_upgrade_dormant_preservation_changed')
             observing('artifact_write')
             try:
-                artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
-                    execution_id=snapshot['assignment']['execution_id'],
-                    execution_workspace_id=snapshot['assignment']['execution_workspace_id'],
-                    artifact_type='report', name=('Unowned LOST Home preserved; process/executor UNKNOWN; no continuation'
-                        if process['state'] == 'unowned_lost' else
-                        'Dormant Home preserved; native outcome UNKNOWN; no continuation'),
-                    provider='codex-web', source='home-upgrade-dormant-preservation', external_id=plan.id,
-                    digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
-                    metadata={'dormant_preservation':raw}), actor=requester, idempotency_key=plan.id, _catalog_guard=catalog_guard)
+                with checkpoint_stage('artifact_write'):
+                    artifact = self.artifacts.create_artifact(ArtifactCreate(project_id='home',
+                        execution_id=snapshot['assignment']['execution_id'],
+                        execution_workspace_id=snapshot['assignment']['execution_workspace_id'],
+                        artifact_type='report', name=('Unowned LOST Home preserved; process/executor UNKNOWN; no continuation'
+                            if process['state'] == 'unowned_lost' else
+                            'Dormant Home preserved; native outcome UNKNOWN; no continuation'),
+                        provider='codex-web', source='home-upgrade-dormant-preservation', external_id=plan.id,
+                        digest=ArtifactDigest(value=sha(raw)), deny_model_context=True,
+                        metadata={'dormant_preservation':raw}), actor=requester, idempotency_key=plan.id, _catalog_guard=catalog_guard)
             except _ArtifactDecodeBeforeCreation as refusal:
                 # Only the explicitly typed pre-write Artifact domain decoder
                 # can enter this compatibility path. Guard/updater/DB/export
@@ -378,11 +388,17 @@ class HomeUpgradeCheckpointService:
                 if artifact is None:
                     raise refusal.original
             observing('final_snapshot')
-            if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
-                self.refused('home_upgrade_dormant_preservation_changed')
+            with checkpoint_stage('final_snapshot'):
+                if self._dormant_snapshot(binding, requester, held_observer=held_observer) != snapshot:
+                    self.refused('home_upgrade_dormant_preservation_changed')
             return artifact
 
     def checkpoint_current(self, plan_id, *, worker_runtime, operator_actor):
+        with checkpoint_timings(operator_actor), checkpoint_stage('checkpoint_current'):
+            return self._checkpoint_current_observed(plan_id, worker_runtime=worker_runtime,
+                operator_actor=operator_actor)
+
+    def _checkpoint_current_observed(self, plan_id, *, worker_runtime, operator_actor):
         """Existing supervisor boundary: typed denial, never a lease bypass."""
         from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError
         from codex_web.services.agent_profiles import AgentProfileError

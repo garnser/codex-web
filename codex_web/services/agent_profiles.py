@@ -28,6 +28,7 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.home_checkpoint_telemetry import checkpoint_component
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.agent_profiles import AgentProfileStore
 
@@ -735,6 +736,7 @@ class AgentProfileService:
             reason=payload.reason,
         )
 
+    @checkpoint_component('profile')
     def resolve_for_execution(
         self,
         profile_id: str,
