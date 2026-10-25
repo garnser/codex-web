@@ -58,7 +58,7 @@ class NativeReasoningComponents:
 def build_native_reasoning_components(*, binding, local_worker, host, codex_home: Path,
         executable: str, catalog_path: Path, catalog_sha256: str,
         validate_profile, invocation_authorizer, agent_profiles, execution_profiles, threads, turns, sessions, usage,
-        preflight, execution, hub, executives):
+        preflight, execution, hub, executives, authentication_preparation=None):
     """Build inert components; registration is explicit and never enables a Profile.
 
     validate_profile resolves the current configured canonical scratch Definition
@@ -195,7 +195,7 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
 
     bridge = CanonicalNativeReasoningBridge(binding=binding, threads=threads, turns=turns,
         sessions=sessions, usage=usage, preflight=preflight, execution=execution, hub=hub,
-        attest_session=attest)
+        attest_session=attest, authentication_preparation=authentication_preparation)
     # Setting an optional authorizer is not activation or an execution grant.
     # Root composition must register all components atomically before exposing
     # the matching canonical provider/Profile/Definition.

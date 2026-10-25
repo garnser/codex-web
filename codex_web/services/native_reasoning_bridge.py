@@ -73,7 +73,7 @@ class CanonicalNativeReasoningBridge:
     runtime_id = 'codex-reasoning'
 
     def __init__(self, *, binding, threads, turns, sessions, usage, preflight,
-                 execution, hub, attest_session):
+                 execution, hub, attest_session, authentication_preparation=None):
         self.binding = binding
         self.threads, self.turns = threads, turns
         self.sessions, self.usage, self.preflight = sessions, usage, preflight
@@ -82,6 +82,7 @@ class CanonicalNativeReasoningBridge:
         # version, restricted catalog/config, scratch contract, worker and lease.
         # A deployment assertion or model/provider metadata is insufficient.
         self.attest_session = attest_session
+        self.authentication_preparation = authentication_preparation
         self._usage_waiters = {}
 
     def observe_usage(self, record):
@@ -276,6 +277,19 @@ class CanonicalNativeReasoningBridge:
         self.hub.subscribe_filtered(observe, event_types=('codex.event',))
         preparation_stage = 'thread_bootstrap'
         try:
+            if self.authentication_preparation is not None:
+                # Scope was checked above. Reuse the canonical coalesced account
+                # metadata owner before the existing authentication preflight;
+                # never infer sign-in from transport readiness or stale evidence.
+                preparation_stage = 'authentication_metadata'
+                await PostTurnReadinessService._run_owned(
+                    self.authentication_preparation, seconds=5.,
+                    name='native-authentication-metadata')
+                preparation_stage = 'post_authentication_current_guard'
+                await self._owned(context.validate_current)
+                if cancelled.is_set():
+                    raise asyncio.CancelledError
+                preparation_stage = 'thread_bootstrap'
             # Stable bootstrap correlation is provenance, never permission to
             # retry an unknown invocation. Executive owns the single reservation.
             bootstrap = uuid.uuid5(uuid.NAMESPACE_URL, context.execution_id).hex
