@@ -279,3 +279,36 @@ changes, and retains the latest 5000 runs. Its unused return value is not decode
 again. Selection, context limits, authority, audit content and user/operator
 surfaces are unchanged. The storage optimizations do not establish that a whole
 Executive request meets its deadline; qualification measures that separately.
+
+### Governing Resource provenance and assignment Executive retrieval
+
+Memory schema `1.3` adds an explicit nonempty `resource_ids` envelope to canonical
+Knowledge create/revision/record/retrieval contracts. `null` means unknown; the
+`1.2` migration leaves historical records unknown and cannot infer proof from
+project labels, canonical references or research-origin metadata. Older readers
+refuse the new state version. There is no automatic retrospective approval.
+
+The existing Memory write owner validates the current canonical project bindings
+and Resource-scoped `memory.write` authority. Derived Knowledge, source governance
+records, and cited canonical Evidence/Artifacts retain their full Resource union;
+unknown sources cannot become proof and revisions cannot narrow the envelope.
+Current reads retain Resource-scoped `memory.read`, lifecycle, Role and governance
+checks. The Memory inspector displays the governing IDs or explicit unknown state;
+provenance is assigned through the existing typed canonical create/revise APIs.
+
+Assignment-origin Executive preparation supplies its current fenced assignment
+Resources (or the exact current published administrative repository envelope) to
+the existing Memory query. Unknown and outside-Resource candidates are denied,
+not included in model context. The existing retrieval audit records the exact
+Resource filter, selected Knowledge IDs and explicit denial reasons; Executive
+context retains its retrieval-run IDs. A mixed result retains genuinely authorized
+Memory. An otherwise required Memory retrieval with only denied candidates refuses
+preparation instead of silently succeeding with empty context. Ordinary human
+Executive retrieval remains unchanged.
+
+Each selected Executive Memory snapshot carries Knowledge/version/content digest
+and governing Resources. On create/read/consult, the assignment adapter point-checks
+the canonical record, current content, freshness/governance and current assignment
+or administrative Resource authority. Snapshot labels, citations, project names
+and model output do not grant authority. No new model call, store, permission grant
+or ingestion of historical VDO context is implied by this contract.

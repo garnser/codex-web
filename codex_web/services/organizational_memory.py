@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import hashlib
 import json
 from contextvars import ContextVar
@@ -8,6 +10,8 @@ import re
 import time
 from collections import defaultdict
 from typing import Callable, Iterable
+
+from pydantic import TypeAdapter
 
 from codex_web.authority import (
     AuthorityAutonomyRisk,
@@ -27,6 +31,7 @@ from codex_web.data_governance import (
 )
 from codex_web.identity import AuthenticationActor
 from codex_web.organizational_memory import (
+    GoverningResourceIds,
     KnowledgeCreate,
     KnowledgeDeniedCandidate,
     KnowledgeEmbedding,
@@ -228,12 +233,14 @@ class OrganizationalMemoryService:
         capability: str,
         level: AuthorityLevel,
         project_id: str | None,
+        resource_ids: tuple[str, ...] = (),
     ):
         return self.authority.evaluate(
             AuthorityEvaluationRequest(
                 capability=capability,
                 level=level,
                 project_id=project_id,
+                resource_ids=resource_ids,
                 autonomous_risk=AuthorityAutonomyRisk.LOW,
             ),
             actor=actor,
@@ -244,12 +251,14 @@ class OrganizationalMemoryService:
         actor: AuthenticationActor,
         *,
         project_id: str | None,
+        resource_ids: tuple[str, ...] = (),
     ) -> None:
         decision = self._authority_decision(
             actor,
             capability="memory.write",
             level=AuthorityLevel.EXECUTE,
             project_id=project_id,
+            resource_ids=resource_ids,
         )
         if decision.outcome != AuthorityDecisionOutcome.ALLOW:
             raise KnowledgeAuthorizationError(
@@ -273,12 +282,22 @@ class OrganizationalMemoryService:
         *,
         project_id: str | None,
         classification: DataClassification = DataClassification.INTERNAL,
+        resource_ids: tuple[str, ...] = (),
     ) -> tuple[bool, tuple[str, ...]]:
+        if resource_ids:
+            catalog = getattr(self.authority, "resources", None)
+            if catalog is None or not project_id:
+                return False, ("canonical governing Resource scope is unavailable",)
+            project = SimpleNamespace(id=project_id, organization_id=actor.organization_id,
+                                      workspace_id=actor.workspace_id)
+            if not set(resource_ids).issubset(item.id for item in catalog.project_resources(project, actor=actor)):
+                return False, ("governing Resource is no longer bound to the Memory project",)
         decision = self._authority_decision(
             actor,
             capability=self._read_capability(classification),
             level=AuthorityLevel.READ,
             project_id=project_id,
+            resource_ids=resource_ids,
         )
         return (
             decision.outcome == AuthorityDecisionOutcome.ALLOW,
@@ -749,13 +768,70 @@ class OrganizationalMemoryService:
                 return False
         return True
 
+    def _governing_resources(self, payload, actor):
+        resources = payload.resource_ids
+        sources = [self.get(link.target_knowledge_id, actor=actor, include_inactive=True)
+                   for link in payload.relationships
+                   if link.relationship_type == KnowledgeRelationshipType.DERIVED_FROM]
+        # Governed derivation is not limited to Knowledge relationship labels.
+        # Resolve exact canonical source owners; no Resource proof is inferred
+        # from a free-form reference, source kind, title or company/project label.
+        if resources is not None or any(source.resource_ids is not None for source in sources):
+            for record_id in payload.provenance.source_governance_record_ids:
+                governed = self.governance.get_record(record_id, actor, context_only=True)
+                if governed.object_type == "organizational_memory":
+                    source = self.get(governed.object_id, actor=actor, include_inactive=True)
+                elif governed.object_type in {"artifact", "evidence"} and self.artifact_evidence is not None:
+                    owner = getattr(self.artifact_evidence, "get_" + governed.object_type)
+                    source = owner(governed.object_id, actor=actor)
+                else:
+                    source = None
+                if source is None or source.governance_record_id != record_id:
+                    raise KnowledgeValidationError("governed source has no canonical Resource proof")
+                sources.append(source)
+            for evidence_id in payload.provenance.evidence_ids:
+                if self.artifact_evidence is None:
+                    raise KnowledgeValidationError("canonical source Evidence is unavailable")
+                proof = self.artifact_evidence.get_evidence(evidence_id, actor=actor)
+                sources.append(proof)
+                sources.extend(self.artifact_evidence.get_artifact(ref, actor=actor) for ref in proof.artifact_ids)
+        if sources:
+            if any(not source.resource_ids for source in sources):
+                if resources is not None:
+                    raise KnowledgeValidationError("derived Memory has unknown source Resource scope")
+                return None
+            inherited = tuple(dict.fromkeys(resource for source in sources for resource in source.resource_ids))
+            if resources is not None and not set(inherited).issubset(resources):
+                raise KnowledgeValidationError("derived Memory cannot narrow governing Resources")
+            resources = tuple(dict.fromkeys((*(resources or ()), *inherited)))
+        if resources is not None:
+            try:
+                resources = TypeAdapter(GoverningResourceIds).validate_python(resources)
+            except ValueError as error:
+                raise KnowledgeValidationError("governing Resource envelope exceeds its canonical bounds") from error
+            if not payload.project_id:
+                raise KnowledgeValidationError("Resource-bound Memory requires an explicit project")
+            catalog = getattr(self.authority, "resources", None)
+            if catalog is None:
+                raise KnowledgeAuthorizationError("canonical Resource Catalog is unavailable")
+            project = SimpleNamespace(id=payload.project_id, organization_id=actor.organization_id,
+                                      workspace_id=actor.workspace_id)
+            bound = {item.id for item in catalog.project_resources(project, actor=actor)}
+            if not set(resources).issubset(bound):
+                raise KnowledgeAuthorizationError("governing Resource is not bound to the Memory project")
+            if any((source.organization_id, source.workspace_id, source.project_id) !=
+                   (actor.organization_id, actor.workspace_id, payload.project_id) for source in sources):
+                raise KnowledgeValidationError("governing Memory sources must share the exact tenant/project")
+            self._require_write(actor, project_id=payload.project_id, resource_ids=resources)
+        return resources
+
     def create(
         self,
         payload: KnowledgeCreate,
         *,
         actor: AuthenticationActor,
     ) -> KnowledgeRecord:
-        self._require_write(actor, project_id=payload.project_id)
+        self._require_write(actor, project_id=payload.project_id, resource_ids=payload.resource_ids or ())
         payload = self._prepare_typed_content(payload, actor)
         self._validate_relationship_targets(
             payload.relationships,
@@ -764,6 +840,7 @@ class OrganizationalMemoryService:
         payload = payload.model_copy(update={"provenance": self._derived_provenance(
             payload.provenance, payload.relationships, actor=actor, project_id=payload.project_id,
         )})
+        payload = payload.model_copy(update={"resource_ids": self._governing_resources(payload, actor)})
 
         existing = [
             item
@@ -810,6 +887,7 @@ class OrganizationalMemoryService:
             content=payload.content,
             tags=payload.tags,
             canonical_refs=payload.canonical_refs,
+            resource_ids=payload.resource_ids,
             provenance=payload.provenance,
             classification=governance.classification,
             governance_record_id=governance.id,
@@ -880,8 +958,10 @@ class OrganizationalMemoryService:
 
         results: list[tuple[str, KnowledgeRecord]] = []
         for payload in batch.items:
-            self._require_write(actor, project_id=payload.project_id)
+            self._require_write(actor, project_id=payload.project_id, resource_ids=payload.resource_ids or ())
             payload = self._prepare_typed_content(payload, actor)
+            self._validate_relationship_targets(payload.relationships, actor=actor)
+            payload = payload.model_copy(update={"resource_ids": self._governing_resources(payload, actor)})
             existing = [
                 item
                 for item in self.store.list(
@@ -935,6 +1015,7 @@ class OrganizationalMemoryService:
             metadata_unchanged = (
                 current.object_type == payload.object_type
                 and current.project_id == payload.project_id
+                and current.resource_ids == payload.resource_ids
                 and current.classification == payload.classification
                 and current.retention_expires_at == payload.retention_expires_at
                 and current.retention_action == payload.retention_action
@@ -960,6 +1041,7 @@ class OrganizationalMemoryService:
                     tags=payload.tags,
                     canonical_refs=payload.canonical_refs,
                     relationships=payload.relationships,
+                    resource_ids=payload.resource_ids,
                     provenance=payload.provenance,
                     classification=payload.classification,
                     retention_expires_at=payload.retention_expires_at,
@@ -1088,7 +1170,7 @@ class OrganizationalMemoryService:
             actor=actor,
             include_inactive=True,
         )
-        self._require_write(actor, project_id=current.project_id)
+        self._require_write(actor, project_id=current.project_id, resource_ids=current.resource_ids or ())
         if current.lifecycle != KnowledgeLifecycle.CURRENT:
             raise KnowledgeConflictError(
                 "only the current knowledge version can be revised"
@@ -1132,6 +1214,7 @@ class OrganizationalMemoryService:
                 else current.content
             ),
             project_id=current.project_id,
+            resource_ids=payload.resource_ids if payload.resource_ids is not None else current.resource_ids,
             tags=payload.tags if payload.tags is not None else current.tags,
             canonical_refs=(
                 payload.canonical_refs
@@ -1188,6 +1271,10 @@ class OrganizationalMemoryService:
             previous=current,
         )
         normalized = normalized.model_copy(update={"provenance": merged_provenance})
+        resources = self._governing_resources(normalized, actor)
+        if current.resource_ids is not None and (resources is None or not set(current.resource_ids).issubset(resources)):
+            raise KnowledgeValidationError("Memory revision cannot narrow governing Resources")
+        normalized = normalized.model_copy(update={"provenance": merged_provenance, "resource_ids": resources})
 
         next_id = f"knowledge-{uuid_hash(
             current.id,
@@ -1223,6 +1310,7 @@ class OrganizationalMemoryService:
             content=normalized.content,
             tags=normalized.tags,
             canonical_refs=normalized.canonical_refs,
+            resource_ids=normalized.resource_ids,
             provenance=merged_provenance,
             classification=governance.classification,
             governance_record_id=governance.id,
@@ -1312,7 +1400,7 @@ class OrganizationalMemoryService:
             actor=actor,
             include_inactive=True,
         )
-        self._require_write(actor, project_id=current.project_id)
+        self._require_write(actor, project_id=current.project_id, resource_ids=current.resource_ids or ())
         if current.lifecycle == KnowledgeLifecycle.DELETED:
             raise KnowledgeConflictError("deleted knowledge cannot be invalidated")
 
@@ -1338,6 +1426,38 @@ class OrganizationalMemoryService:
         self._index_upsert(updated, actor=actor)
         return updated
 
+    def validate_assignment_snapshot(self, row, *, actor):
+        """Point-check canonical Memory provenance; a copied label is not proof."""
+        item = self.get(row.get("knowledge_id", ""), actor=actor, context_only=True)
+        if item.resource_ids is None:
+            raise KnowledgeAuthorizationError("Memory governing Resource scope is unknown")
+        expected = {
+            "knowledge_id": item.id, "version": item.version,
+            "content_sha256": item.content_sha256, "resource_ids": list(item.resource_ids),
+            "project_id": item.project_id, "logical_key": item.logical_key,
+            "object_type": item.object_type.value, "title": item.title, "summary": item.summary,
+            "governance_record_id": item.governance_record_id,
+            "classification": item.classification.value,
+            "provenance": item.provenance.model_dump(mode="json"),
+        }
+        if any(row.get(key) != value for key, value in expected.items()):
+            raise KnowledgeAuthorizationError("Memory snapshot provenance changed")
+        source = self.context_header(item) + f"{item.title}\n\n{item.summary}\n\n{item.content}"
+        excerpt = row.get("context_excerpt")
+        suffix = "\n[…truncated by memory retrieval budget…]"
+        canonical_excerpt = isinstance(excerpt, str) and (excerpt == source or (
+            excerpt.endswith(suffix) and bool(excerpt[:-len(suffix)])
+            and source.startswith(excerpt[:-len(suffix)]) and len(excerpt) < len(source)))
+        if not canonical_excerpt:
+            raise KnowledgeAuthorizationError("Memory snapshot content is not canonical")
+        if self.freshness(item) != KnowledgeFreshness.FRESH:
+            raise KnowledgeAuthorizationError("Memory snapshot is not current and fresh")
+        allowed = self.governance.filter_context(ContextFilterRequest(
+            record_ids=(item.governance_record_id,), max_classification=item.classification), actor=actor)
+        if item.governance_record_id not in allowed.allowed_record_ids:
+            raise KnowledgeAuthorizationError("Memory snapshot model context is denied")
+        return item
+
     def get(
         self,
         knowledge_id: str,
@@ -1355,6 +1475,7 @@ class OrganizationalMemoryService:
             actor,
             project_id=item.project_id,
             classification=item.classification,
+            resource_ids=item.resource_ids or (),
         )
         if not allowed:
             raise KnowledgeAuthorizationError(
@@ -1387,7 +1508,7 @@ class OrganizationalMemoryService:
         include_inactive: bool = False,
     ) -> tuple[KnowledgeRecord, ...]:
         rows: list[KnowledgeRecord] = []
-        authority_cache: dict[tuple[str | None, DataClassification], bool] = {}
+        authority_cache: dict[tuple[str | None, DataClassification, tuple[str, ...] | None], bool] = {}
         role_cache: dict[str | None, tuple[str, ...]] = {}
         candidates = self.store.list(
             organization_id=actor.organization_id,
@@ -1401,12 +1522,13 @@ class OrganizationalMemoryService:
                 continue
             if not include_inactive and item.lifecycle != KnowledgeLifecycle.CURRENT:
                 continue
-            authority_key = (item.project_id, item.classification)
+            authority_key = (item.project_id, item.classification, item.resource_ids)
             if authority_key not in authority_cache:
                 authority_cache[authority_key] = self._can_read(
                     actor,
                     project_id=item.project_id,
                     classification=item.classification,
+                    resource_ids=item.resource_ids or (),
                 )[0]
             if not authority_cache[authority_key]:
                 continue
@@ -1547,13 +1669,20 @@ class OrganizationalMemoryService:
         candidate_count = len(candidates)
         denied: list[KnowledgeDeniedCandidate] = []
         authority_cache: dict[
-            tuple[str | None, DataClassification],
+            tuple[str | None, DataClassification, tuple[str, ...] | None],
             tuple[bool, tuple[str, ...]],
         ] = {}
         role_cache: dict[str | None, tuple[str, ...]] = {}
         lifecycle_filtered: list[tuple[KnowledgeRecord, KnowledgeFreshness]] = []
 
         for item in candidates:
+            if query.resource_ids is not None:
+                if item.resource_ids is None:
+                    denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="resource_scope:unknown"))
+                    continue
+                if not set(item.resource_ids).issubset(query.resource_ids):
+                    denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="resource_scope:outside_requested_resources"))
+                    continue
             if not self._sources_readable(item, actor, record_map):
                 denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="authority:research_source_read_denied"))
                 continue
@@ -1575,12 +1704,13 @@ class OrganizationalMemoryService:
             } and not query.include_stale:
                 continue
 
-            authority_key = (item.project_id, item.classification)
+            authority_key = (item.project_id, item.classification, item.resource_ids)
             if authority_key not in authority_cache:
                 authority_cache[authority_key] = self._can_read(
                     actor,
                     project_id=item.project_id,
                     classification=item.classification,
+                    resource_ids=item.resource_ids or (),
                 )
             allowed, reasons = authority_cache[authority_key]
             if not allowed:
@@ -1818,10 +1948,12 @@ class OrganizationalMemoryService:
             items.append(
                 KnowledgeRetrievalItem(
                     knowledge_id=item.id,
+                    content_sha256=item.content_sha256,
                     logical_key=item.logical_key,
                     version=item.version,
                     object_type=item.object_type,
                     project_id=item.project_id,
+                    resource_ids=item.resource_ids,
                     title=item.title,
                     summary=item.summary,
                     context_excerpt=excerpt,
