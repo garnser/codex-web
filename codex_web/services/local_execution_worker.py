@@ -778,7 +778,7 @@ class LocalExecutionWorkerRuntime:
             argv = (executable, "--version")
         else:
             mounts.append((input_directory, Path("/opt/codex-skill-input")))
-            argv = (executable, "scan", "/opt/codex-skill-input/SKILL.md", "--format", "json", "--no-llm")
+            argv = (executable, "scan", "/opt/codex-skill-input", "--format", "json", "--no-llm")
         return self._execute_command(assignment_id, argv, scanner_mounts=tuple(mounts),
                                      scanner_operation=True, accepted_exit_codes=(0, 1) if input_directory else (0,))
 

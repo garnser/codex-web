@@ -225,3 +225,9 @@ signature eligibility. Bundles grant no worker network access or control-plane
 trust and never enter the application's certificate store. Standard virtualenv
 packaging entries outside the dedicated-runtime contract still require explicit
 preparation; admitting certificates does not admit an arbitrary environment.
+
+## Structured isolated scanner input
+
+The static worker scans one bounded, read-only directory with a fixed `--no-llm` command. `SKILL.md` retains the original name, description and instructions. Canonical assets are materialized at their contained paths; their original kind/path data roles remain inspected in secondary JSON; helper assets are inspected data and receive no executable permission. The complete operational procedure remains structured JSON in `codex-web-procedure.json`, linked from the primary document. Rendering JSON method IDs as primary Markdown previously invented missing file references; scanning only a single file also excluded its sibling data from inventory. Both primary and secondary files must be inspected.
+
+Before scanner assignment, the adapter refuses traversal, hidden/unsupported paths, reserved filenames, duplicates, file/directory collisions, more than 32 assets, or an aggregate bundle larger than 512,000 bytes. No input filename grants authority. The existing input-content hash remains historical flattened-content provenance; additional `skill-static-input/1.0` and a sorted path/length/content-digest manifest identify the exact scanned bundle. Normalized report/Evidence ownership, fixed scanner version, worker limits, no credentials/network/model calls, and strict completeness remain unchanged. A genuinely missing reference still blocks publication. Other provider interfaces retain their existing content string.

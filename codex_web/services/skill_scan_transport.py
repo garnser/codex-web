@@ -149,7 +149,7 @@ class WorkerSkillSpectorProvider:
         except UpgradeConflictError as exc:
             raise ScannerUnavailable('scanner_upgrade_required', str(exc)) from exc
 
-    def _admitted_operation(self, actor, root, project_id, reference, *, content=None, scan_id=None):
+    def _admitted_operation(self, actor, root, project_id, reference, *, content=None, scan_id=None, input_bundle=None):
         runtime = self.runtime
         execution_id = scan_id or f'skill-discovery-{uuid.uuid4().hex}'
         subject = ExecutionSubject(kind='skill_scan', ref=execution_id)
@@ -172,9 +172,12 @@ class WorkerSkillSpectorProvider:
                 input_directory = None
                 if content is not None:
                     input_directory = Path(directory)
-                    path = input_directory / 'SKILL.md'
-                    path.write_text(content, encoding='utf-8')
-                    path.chmod(0o600)
+                    if input_bundle is None:
+                        path = input_directory / 'SKILL.md'
+                        path.write_text(content, encoding='utf-8')
+                        path.chmod(0o600)
+                    else:
+                        input_bundle.write(input_directory)
                 completion = runtime.execute_skill_scanner(assignment.id, runtime_root=root, input_directory=input_directory)
             if (completion.assignment.status != 'succeeded' or completion.result.output_truncated
                     or len(completion.result.stdout.encode()) > 2_000_000 or len(completion.result.stderr.encode()) > 64_000):
@@ -211,8 +214,16 @@ class WorkerSkillSpectorProvider:
     def scan_revision(self, *, view, content, mode, actor):
         if mode != SkillScanMode.STATIC:
             raise ScannerUnavailable('semantic_transport_unavailable', self.metadata()['modeReadiness']['semantic']['blockers'][0]['message'])
-        if len(content.encode('utf-8')) > 512_000:
-            raise ScannerUnavailable('scanner_input_limit', 'Skill content exceeds the 512 KiB scanner input limit.')
+        from codex_web.services.skill_scan_input import BUNDLE_FORMAT, build_skill_scan_input
+        try:
+            if len(content.encode('utf-8')) > 512_000:
+                raise ScannerUnavailable('scanner_input_limit', 'Skill content exceeds the 512 KiB scanner input limit.')
+            input_bundle = build_skill_scan_input(view)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ScannerUnavailable('scanner_input_invalid',
+                'The bounded Skill scanner bundle is invalid before scanner startup.',
+                attribution={'scanner_phase': 'input_preparation',
+                    'scanner_assignment_created': 0, 'scanner_provider_start_called': 0}) from exc
         root, project, reference, settings = self._settings(actor)
         executable = root / 'bin' / 'skillspector'
         if executable.stat().st_size > 1_000_000:
@@ -221,7 +232,7 @@ class WorkerSkillSpectorProvider:
         discovered = self._operation(actor, root, project, reference)
         version = self._version(discovered.result.stdout)
         scan_id = f'skill-scan-{uuid.uuid4().hex}'
-        completion = self._operation(actor, root, project, reference, content=content, scan_id=scan_id)
+        completion = self._operation(actor, root, project, reference, content=content, scan_id=scan_id, input_bundle=input_bundle)
         if hashlib.sha256(executable.read_bytes()).hexdigest() != launcher_checksum:
             raise ScannerUnavailable('scanner_installation_changed', 'Scanner installation changed during execution. Inspect installation before explicitly retrying.')
         try:
@@ -238,7 +249,9 @@ class WorkerSkillSpectorProvider:
             execution_workspace_id=completion.assignment.execution_workspace_id,
             worker_id=completion.assignment.assigned_worker_id, fence=completion.assignment.fence,
             skill_revision=view['revision'],
-            input_sha256=hashlib.sha256(content.encode()).hexdigest(), scanner_launcher_sha256=launcher_checksum,
+            input_sha256=hashlib.sha256(content.encode()).hexdigest(),
+            scanner_input_format=BUNDLE_FORMAT, scanner_input_manifest_sha256=input_bundle.manifest_sha256,
+            scanner_launcher_sha256=launcher_checksum,
             discovery_assignment_id=discovered.assignment.id,
             runtime_configuration_record_id=settings[0].record_id, runtime_configuration_revision=settings[0].revision,
             project_configuration_record_id=settings[1].record_id, project_configuration_revision=settings[1].revision,
