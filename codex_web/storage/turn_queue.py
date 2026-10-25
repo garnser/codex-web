@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
-import threading
 from pathlib import Path
 from typing import Any
 
 from codex_web.models import QueuedTurn
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.state_store import OperationTimingMetrics, StateStore
+from codex_web.storage.save_snapshots import SaveSnapshots, SnapshotDict
 
 
 class TurnQueueRepository:
@@ -19,8 +19,7 @@ class TurnQueueRepository:
     def __init__(self, store: StateStore, legacy_path: Path) -> None:
         self.store = store
         self.legacy_path = legacy_path
-        self._snapshots: dict[int, dict[str, Any]] = {}
-        self._lock = threading.RLock()
+        self._snapshots = SaveSnapshots()
         self._mirror_metrics = OperationTimingMetrics()
 
     def _legacy_payload(self) -> dict[str, Any]:
@@ -56,13 +55,12 @@ class TurnQueueRepository:
     def load(self) -> dict[str, list[QueuedTurn]]:
         self._ensure_records()
         raw = self.store.record_items(self.namespace)
-        result = {
+        result = SnapshotDict({
             thread_id: self._validate(values)
             for thread_id, values in raw.items()
             if isinstance(thread_id, str)
-        }
-        with self._lock:
-            self._snapshots[id(result)] = copy.deepcopy(raw)
+        })
+        self._snapshots.remember(result, copy.deepcopy(raw))
         return result
 
     def list_queues(self) -> dict[str, list[QueuedTurn]]:
@@ -366,8 +364,7 @@ class TurnQueueRepository:
             for thread_id, items in sorted(values.items())
             if items
         }
-        with self._lock:
-            base = self._snapshots.pop(id(values), None)
+        base = self._snapshots.take(values)
         self._ensure_records()
         if base is None:
             current = self.store.record_items(self.namespace)
