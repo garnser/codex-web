@@ -62,6 +62,24 @@ to 2,000,000 bytes stdout and 64,000 bytes stderr; overflow is an error. Scratch
 workspaces are released after each request. No idle timer, model invocation or
 hidden scan retry is introduced.
 
+Before reserving a scanner workspace or assignment, the current worker service
+prepares the existing readiness-origin completion index under scanner Upgrade
+admission. It retains the same per-call eight-page, 128-row bounds and durable
+process-epoch cursor. A cold catalog that needs more preparation returns
+`scanner_completion_preparation_progressing` with no scanner assignment or
+command created. A distinct authorized request may resume that cursor; it does
+not replay an earlier command. Invalid preparation fails closed as
+`scanner_completion_preparation_unavailable`. Both are retained as scan errors,
+including integer-zero assignment/start observations, rather than scan PASS.
+The existing Skill security error surface displays the safe next action.
+
+Preparation grants no retirement authority. Canonical completion still checks
+the current origin index under its writer, exact worker identity, fence, lease
+and assignment deadline. Discovery/scanning command limits, assignment and
+workspace deadlines remain unchanged. A command returning zero after custody
+expires is still refused; historical lost or unknown assignments are not
+completed or retried by this preparation.
+
 Scanner failure Evidence retains the observed local execution phase separately
 from scan acceptance. `before_backend` means the worker did not enter its backend
 call; `backend_unresolved` does not establish whether a process started or exited.
