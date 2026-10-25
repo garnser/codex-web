@@ -140,3 +140,21 @@ class UxLeafGovernanceTests(unittest.TestCase):
             result = self.query(brief)
         self.assertEqual(len(result.items), 1)
         self.assertEqual(selected.call_count, 2)
+
+    def test_custom_source_record_reader_cannot_be_bypassed(self):
+        source, brief = self.prepare()
+        original = self.governance
+        reads = []
+        class Custom(DataGovernanceService):
+            def get_record(self, identity, actor, *, context_only=False):
+                reads.append(identity)
+                if identity == source.governance_record_id:
+                    raise RuntimeError('custom source denial')
+                return super().get_record(identity, actor, context_only=context_only)
+        self.service.governance = Custom(original.store)
+        self.assertEqual(self.query(brief).items, ())
+        self.assertIn(source.governance_record_id, reads)
+        self.service.governance = original
+        with patch.object(original, 'get_record', side_effect=RuntimeError('custom source denial')) as read:
+            self.assertEqual(self.query(brief).items, ())
+            read.assert_called_once_with(source.governance_record_id, self.actor, context_only=True)

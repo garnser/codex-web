@@ -657,8 +657,6 @@ class DataGovernanceService:
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         return self._filter_context_state(payload, state, actor=actor)
 
-    _canonical_context_filter = filter_context
-
     def filter_leaf_context(
         self,
         payload: ContextFilterRequest,
@@ -670,9 +668,11 @@ class DataGovernanceService:
         A source with parents needs the ordinary ancestry walk and its final
         revalidation. Never reuse the earlier candidate-filter snapshot here.
         """
-        # An extension's filter override may add rules or audit behavior. Only
-        # the unmodified canonical filter can share its implementation here.
-        if getattr(self.filter_context, '__func__', None) is not DataGovernanceService._canonical_context_filter:
+        # Extensions may add rules or audit behavior to either entry point.
+        # Only the original canonical methods can share this observation.
+        if getattr(self.filter_context, '__func__', None) is not _CANONICAL_CONTEXT_FILTER:
+            return None
+        if getattr(self.get_record, '__func__', None) is not _CANONICAL_CONTEXT_RECORD_READER:
             return None
         state = self.store.context_state(payload.record_ids,
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
@@ -822,3 +822,8 @@ class DataGovernanceService:
             key=lambda item: (item.occurred_at, item.id),
             reverse=True,
         )
+
+
+# Capture the originals once; later class or instance overrides must fall back.
+_CANONICAL_CONTEXT_FILTER = DataGovernanceService.filter_context
+_CANONICAL_CONTEXT_RECORD_READER = DataGovernanceService.get_record

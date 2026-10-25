@@ -96,7 +96,7 @@ are leaves, that later check selects their complete current records once and
 applies the same canonical context-filter rules to that observation. It does
 not cache or reuse the earlier candidate decisions. A newly added parent causes
 the original ancestry walk and final filter to run. Services overriding the
-canonical filter also retain that original path, including their additional
+canonical filter or source-record reader also retain that original path, including their additional
 rules and audit behavior. Retrieval selection, source pins, and durable Memory
 retrieval audits remain unchanged; this optimization does not establish that a
 whole Executive context request will meet its deadline.
