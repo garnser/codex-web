@@ -89,8 +89,8 @@ assert not pathlib.Path('/home/nbingester/codex-web-native-runtime/data/state.sq
 if sys.argv[1:] == ['--version']:
     print('SkillSpector v2.12.0')
     sys.exit(0)
-assert sys.argv[1:] == ['scan', '/opt/codex-skill-input/SKILL.md', '--format', 'json', '--no-llm'], sys.argv
-content = pathlib.Path(sys.argv[2]).read_text()
+assert sys.argv[1:] == ['scan', '/opt/codex-skill-input', '--format', 'json', '--no-llm'], sys.argv
+content = (pathlib.Path(sys.argv[2]) / 'SKILL.md').read_text()
 assert 'Harmless isolated scanner test' in content
 print(json.dumps({'risk_assessment':{'score':0,'severity':'LOW','recommendation':'SAFE'},'issues':[],'execution_successful':True,'analysis_completeness':{'status':'complete','is_complete':True,'execution_successful':True},'metadata':{'skillspector_version':'2.12.0','llm_requested':False,'meta_analysis_applied':False,'inference_usage':[]}}))
 ''')
