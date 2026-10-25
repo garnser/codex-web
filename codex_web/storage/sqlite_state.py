@@ -26,7 +26,13 @@ from codex_web.storage.state_store import (
 class SQLiteStateStore:
     """Small transactional document store for codex-web runtime state."""
 
+    supports_document_array_scope_after_first = True
+
     SCHEMA_VERSION = 1
+
+    def can_fork_context_reads(self) -> bool:
+        """SQLite reads own independent connections, including across threads."""
+        return True
 
     def __init__(self, path: Path, *, initialize: bool = True) -> None:
         self.path = path
@@ -820,7 +826,8 @@ class SQLiteStateStore:
 
     def document_array_items_envelope(self, namespace: str, array_name: str, item_ids: tuple[str, ...], *,
                                      organization_id: str, workspace_id: str,
-                                     collection_names: tuple[str, ...], first_per_id: bool = False) -> Any | None:
+                                     collection_names: tuple[str, ...], first_per_id: bool = False,
+                                     scope_after_first: bool = False) -> Any | None:
         """Read scoped complete records plus its document schema envelope.
 
         This is an optional read optimization, never a schema/authority decision.
@@ -829,6 +836,8 @@ class SQLiteStateStore:
         """
         if type(first_per_id) is not bool:
             raise ValueError("first_per_id must be a boolean")
+        if type(scope_after_first) is not bool or (scope_after_first and not first_per_id):
+            raise ValueError("scope_after_first requires first_per_id")
         names = record_projection_fields(collection_names)
         ids = tuple(dict.fromkeys(item_ids))
         ids_json = json.dumps(ids)
@@ -842,12 +851,15 @@ class SQLiteStateStore:
         columns = ("item.value, row_number() OVER (PARTITION BY json_extract(item.value, '$.id') "
                    "ORDER BY CAST(item.key AS INTEGER)) AS occurrence, "
                    "CAST(item.key AS INTEGER) AS ordinal") if first_per_id else "item.value"
+        scope_filter = "" if scope_after_first else """AND json_extract(item.value, '$.organization_id') = ?
+                       AND json_extract(item.value, '$.workspace_id') = ?"""
         selection = f"""SELECT {columns} FROM json_each(payload, ?) AS item
                      WHERE item.type = 'object' AND json_extract(item.value, '$.id') IN (SELECT value FROM json_each(?))
-                       AND json_extract(item.value, '$.organization_id') = ?
-                       AND json_extract(item.value, '$.workspace_id') = ? ORDER BY CAST(item.key AS INTEGER)"""
+                       {scope_filter} ORDER BY CAST(item.key AS INTEGER)"""
         if first_per_id:
-            selection = f"SELECT value FROM ({selection}) WHERE occurrence = 1 ORDER BY ordinal"
+            selected_scope = """AND json_extract(value, '$.organization_id') = ?
+                AND json_extract(value, '$.workspace_id') = ?""" if scope_after_first else ""
+            selection = f"SELECT value FROM ({selection}) WHERE occurrence = 1 {selected_scope} ORDER BY ordinal"
         query = f"""SELECT CASE WHEN json_valid(payload) = 0 THEN payload
             WHEN json_type(payload) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM json_each(payload) AS field WHERE field.key NOT IN ({unexpected})) THEN payload

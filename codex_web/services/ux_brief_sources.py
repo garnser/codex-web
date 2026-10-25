@@ -14,7 +14,7 @@ def brief_sources_readable(memory, item, actor):
     try:
         service = UxBriefService(memory)
         for pin in _pins(item):
-            service._source(pin.kind, pin.record_id, item.project_id, actor)
+            service._source(pin.kind, pin.record_id, item.project_id, actor, context_only=True)
         return True
     except (RuntimeError, ValueError, KeyError):
         return False
@@ -70,7 +70,7 @@ def brief_source_freshness(memory, item, *, records=None, seen=frozenset()):
 def brief_context_allowed(memory, item, actor, max_classification):
     try:
         service = UxBriefService(memory)
-        ids = tuple(dict.fromkeys(service._source(pin.kind,pin.record_id,item.project_id,actor).governance_record_id for pin in _pins(item)))
+        ids = tuple(dict.fromkeys(service._source(pin.kind,pin.record_id,item.project_id,actor,context_only=True).governance_record_id for pin in _pins(item)))
         if not ids:
             return True
         # Constraints can tighten after curation. Check the current source

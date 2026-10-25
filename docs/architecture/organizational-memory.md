@@ -258,3 +258,24 @@ records, preserve scoped in-memory drafts on failure and use no model calls or
 browser persistent storage. Product/user facts stay in Memory; reusable task
 instructions stay in versioned Skills. Ordinary free-text requests and CARE
 composition can use the same optional selection.
+
+Canonical retrieval source reads
+-------------------------------
+
+Typed UX source authorization reads a complete current Knowledge record through
+the existing StateStore envelope selector, rather than repeatedly transferring
+unrelated Knowledge and retrieval-audit history. The first global matching ID
+is selected before tenant filtering; a foreign first duplicate cannot expose a
+later local duplicate. Missing selections, legacy envelopes and unsupported
+backends retain the ordinary full decoder. Scope, Role, lifecycle and recursive
+source checks still run on every read. Curation and ordinary Knowledge reads
+retain their full default path. Search still validates its full initial state
+and performs a fresh index-health read; no persistent cache or timestamp-based
+change assumption is introduced.
+
+The retrieval audit append validates and updates the complete current document
+under the existing atomic writer, preserves concurrent Knowledge and audit
+changes, and retains the latest 5000 runs. Its unused return value is not decoded
+again. Selection, context limits, authority, audit content and user/operator
+surfaces are unchanged. The storage optimizations do not establish that a whole
+Executive request meets its deadline; qualification measures that separately.
