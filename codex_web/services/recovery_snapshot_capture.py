@@ -209,22 +209,33 @@ class SnapshotCapture:
             del value
 
     def audit_integrity(self, audit, namespace, *, organization_id, workspace_id):
-        self.validate_physical_rows()
         from codex_web.storage.autonomy_audit import AutonomyAuditStore
         from codex_web.autonomy_audit import AutonomyAuditState
         keys = self.record_keys(namespace)
         if keys is None or AutonomyAuditStore.meta_key not in keys:
+            self.validate_physical_rows()
             return audit.verify_snapshot(self.get(namespace), organization_id=organization_id, workspace_id=workspace_id)
         controls = tuple(key for key in keys if (key in AutonomyAuditState.model_fields and key != 'records') or key == AutonomyAuditStore.meta_key)
         # The large record catalog is excluded; control/checkpoint/schema data
         # retains an explicit bound and the original typed schema validation.
         if sum(self.sizes[self.logical[namespace]['records'][key]] for key in controls) > MAX_ROW_BYTES:
             raise SnapshotCaptureRefused('semantic_snapshot_audit_control_limit')
-        control = dict(self.record_items(namespace, controls))
         records = tuple(key for key in keys if key.startswith('record:'))
-        return audit.verify_snapshot_records(control, records,
+        # The canonical verifier reads every record, including foreign tenants,
+        # before filtering. Those reads and the control reads below already run
+        # values()'s JSON decode and BOTH string-bound checks. Prevalidate only
+        # rows not consumed there: shadowed aliases, ignored keys and markers.
+        # No payload cache or alternate audit verifier is introduced.
+        consumed = frozenset(self.logical[namespace]['records'][key]
+                             for key in (*controls, *records))
+        self.validate_physical_rows(consumed=consumed)
+        control = dict(self.record_items(namespace, controls))
+        result = audit.verify_snapshot_records(control, records,
             lambda selected: self.record_items(namespace, selected),
             organization_id=organization_id, workspace_id=workspace_id)
+        # Mark complete only after the canonical first pass consumed ALL rows.
+        self._validated_all = True
+        return result
 
     def replace(self, namespace, value):
         if namespace not in self.logical:
@@ -276,18 +287,19 @@ class SnapshotCapture:
         return (item['legacy'] is None and parsed[1] is not None
                 and item['records'].get(parsed[1]) == physical)
 
-    def validate_physical_rows(self, *, shadowed_only=False):
+    def validate_physical_rows(self, *, shadowed_only=False, consumed=()):
         # documents() decodes even rows later shadowed by a legacy singleton.
         # Preserve that refusal: ignored logical data cannot hide malformed JSON.
         if getattr(self, '_validated_all', False):
             return
         keys = tuple(key for key in self.sizes if
+            key not in consumed and
             (not shadowed_only or not self.selected_physical_row(key)) and
             (self.pg or parse_state_record_storage_key(key) is None or
              parse_state_record_storage_key(key)[1] is not None))
         for value in self.values(keys):
             del value
-        if not shadowed_only:
+        if not shadowed_only and not consumed:
             self._validated_all = True
 
     def checksum(self):
