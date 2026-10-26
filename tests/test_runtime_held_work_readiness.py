@@ -17,6 +17,7 @@ from codex_web.reconciliation_gates import (
 )
 from codex_web.services.reconciliation_gates import ReconciliationGateService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.projects import ProjectService
 from codex_web.services.runtime_diagnostics import RuntimeHealthService
 from codex_web.services.runtime_work_admission import (
     RuntimeWorkAdmission, actionable_owner_health,
@@ -34,6 +35,7 @@ class HeldWorkReadinessTests(unittest.TestCase):
         self.preflights = ExecutionPreflightStore(self.store)
         self.project = Project(id='p', name='Project', path='/private',
                                organization_id='org', workspace_id='ws')
+        self.projects = ProjectService(SimpleNamespace(load=lambda: [self.project]))
         self.control = AutonomyControl(mode='paused')
         self.enabled = True
         self.queues = {}
@@ -57,8 +59,7 @@ class HeldWorkReadinessTests(unittest.TestCase):
     def admission(self):
         return RuntimeWorkAdmission(
             control=self.control, runtime_enabled=self.enabled,
-            projects=SimpleNamespace(get=lambda key: self.project if key == 'p'
-                                     else (_ for _ in ()).throw(KeyError(key))),
+            projects=self.projects,
             gates=self.gates, preflights=self.preflights)
 
     def queued(self, source='gitlab', *, ident='q'):
@@ -250,6 +251,55 @@ class HeldWorkReadinessTests(unittest.TestCase):
         snapshot = health.refresh_sync()
         self.assert_ready(health, False)
         self.assertFalse(snapshot['ok'])
+
+    def test_missing_project_publishes_fresh_unhealthy_snapshot_and_keeps_other_observations(self):
+        for mode in ('paused', 'active'):
+            with self.subTest(mode=mode):
+                self.control = AutonomyControl(mode=mode)
+                self.owner_projects = {'quinn': ['missing', 'p']}
+                missing = self.queued(ident='missing').model_copy(update={'project_id': 'missing'})
+                original = self.queued()
+                self.queues = {'missing-thread': [missing], 'thread': [original]}
+                health, snapshot = self.refresh()
+                self.assert_ready(health, False)
+                self.assertIsNone(snapshot['healthCache']['lastRefreshErrorClass'], snapshot['healthCache'])
+                self.assertEqual(snapshot['queuedTurns'], 2)
+                self.assertEqual(snapshot['unknownQueueAdmissionThreads'], {'missing-thread': 1})
+                self.assertEqual(snapshot['missingQueueAdmissionProjects'], {'missing-thread': ['missing']})
+                self.assertEqual(snapshot['autonomy']['unknownAdmissionOwners'], ['quinn'])
+                self.assertEqual(snapshot['autonomy']['unknownActionableProjects'], [
+                    {'owner': 'quinn', 'projectId': 'missing', 'reason': 'project_not_found'}])
+                expected = 'heldQueueThreads' if mode == 'paused' else 'staleQueueThreads'
+                self.assertEqual(snapshot[expected], {'thread': 1})
+                self.assertEqual(self.queues, {'missing-thread': [missing], 'thread': [original]})
+                self.assertIsNotNone(snapshot['healthCache']['generatedAt'])
+                self.assertFalse(snapshot['healthCache']['stale'])
+                self.assertEqual(snapshot['healthCache']['refreshCount'], 1)
+                self.assertIsNone(snapshot['healthCache']['lastRefreshErrorClass'])
+                self.assertIn('owner admission coverage unavailable for: quinn', snapshot['problems'])
+
+    def test_missing_owner_project_never_looks_up_binding_or_claims_idle_work(self):
+        admission = self.admission()
+        result = actionable_owner_health({'quinn': ['missing']}, owners=('quinn',),
+            admission=admission, binding_for=self.forbidden_probe,
+            thread_active=self.forbidden_probe, queue_depth=self.forbidden_probe)
+        self.assertEqual(result['unknownAdmissionOwners'], ['quinn'])
+        self.assertEqual(result['idleActionableOwners'], [])
+        self.assertEqual(result['heldActionableProjects'], [])
+        self.assertEqual(result['unknownActionableProjects'][0]['projectId'], 'missing')
+
+    def test_unexpected_project_errors_still_fail_refresh(self):
+        for failure in (PermissionError('denied'), ValueError('invalid'),
+                        KeyError('unexpected'), RuntimeError('storage unavailable')):
+            with self.subTest(error=type(failure).__name__):
+                def unavailable(key):
+                    raise failure
+                self.projects = SimpleNamespace(get=unavailable)
+                health, snapshot = self.refresh()
+                self.assert_ready(health, False)
+                self.assertIsNone(snapshot['healthCache']['generatedAt'])
+                self.assertEqual(snapshot['healthCache']['refreshCount'], 0)
+                self.assertEqual(snapshot['healthCache']['lastRefreshErrorClass'], type(failure).__name__)
 
     def test_pause_does_not_hide_disabled_tasks_terminal_failures_or_codex_failure(self):
         self.queues = {'thread': [self.queued()]}

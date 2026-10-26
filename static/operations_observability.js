@@ -93,6 +93,8 @@
     return { leased: leased.length, expired: expired.length, pending, lost };
   }
 
+  const owners = (items) => listText((items || []).map((item) => `${item.owner}@${item.projectId}: ${item.reason}`));
+
   function renderRuntime() {
     const host = document.getElementById("operations-runtime");
     if (!host || !operations) return;
@@ -105,7 +107,8 @@
       <small>Active turns: ${escapeHtml(runtime.activeTurns)} · queued turns: ${escapeHtml(runtime.queuedTurns)} across ${escapeHtml(runtime.queueThreads)} thread(s) · pending approvals: ${escapeHtml(runtime.pendingApprovals)}</small>
       <small>Queue age: oldest ${duration(runtime.oldestQueueAgeSeconds)} · average ${duration(runtime.averageQueueAgeSeconds)}</small>
       <small>Known queue holds: ${listText(runtime.heldQueueReasons)} · unobserved queue admission: ${listText(runtime.unknownQueueAdmissionThreads)}</small>
-      <small>Known owner holds: ${listText((runtime.heldActionableProjects || []).map((item) => `${item.owner}@${item.projectId}: ${item.reason}`))} · unobserved owner admission: ${listText(runtime.unknownAdmissionOwners)}</small>
+      <small>Known owner holds: ${owners(runtime.heldActionableProjects)} · unobserved owner admission: ${listText(runtime.unknownAdmissionOwners)}</small>
+      <small>Missing queue Projects (project_not_found): ${listText(runtime.missingQueueAdmissionProjects)} · unknown owner Projects: ${owners(runtime.unknownActionableProjects)}</small>
       <small>Health problems: ${listText(runtime.healthProblems)}</small>
     </div>
     <div class="comm-entry">

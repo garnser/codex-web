@@ -2,12 +2,13 @@
 from codex_web.identity import TenantScope
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.turn_queue_policy import TurnQueuePolicy
+from codex_web.services.projects import ProjectNotFoundError
 
 
 def actionable_owner_health(projects_by_owner, *, owners, admission,
                             binding_for, thread_active, queue_depth):
     """Project the existing watchdog's expected activity without dispatching it."""
-    idle, held, unknown = [], [], set()
+    idle, held, unknown, missing = [], [], set(), []
     for owner in owners:
         available = False
         busy = False
@@ -19,6 +20,10 @@ def actionable_owner_health(projects_by_owner, *, owners, admission,
                 continue
             if observed['state'] != 'eligible':
                 unknown.add(owner)
+                if observed['code'] == 'project_not_found':
+                    missing.append({'owner': owner, 'projectId': project_id,
+                                    'reason': observed['code']})
+                    continue  # No binding lookup can establish a missing Project's activity.
             available = True
             binding = binding_for(owner, project_id)
             if binding is not None and binding.thread_id and (
@@ -27,7 +32,8 @@ def actionable_owner_health(projects_by_owner, *, owners, admission,
         if available and not busy:
             idle.append(owner)
     return {'idleActionableOwners': idle, 'heldActionableProjects': held,
-            'unknownAdmissionOwners': sorted(unknown)}
+            'unknownAdmissionOwners': sorted(unknown),
+            'unknownActionableProjects': missing}
 
 
 class RuntimeWorkAdmission:
@@ -81,13 +87,19 @@ class RuntimeWorkAdmission:
     def project(self, project_id):
         if not self._bounded():
             return self.result('unknown', 'admission_observation_limit')
-        self._project(project_id)
+        try:
+            self._project(project_id)
+        except ProjectNotFoundError:
+            return {**self.result('unknown', 'project_not_found'), 'projectId': project_id}
         return self._control_hold(project_id)
 
     def queued(self, queued):
         if not self._bounded():
             return self.result('unknown', 'admission_observation_limit')
-        project = self._project(queued.project_id)
+        try:
+            project = self._project(queued.project_id)
+        except ProjectNotFoundError:
+            return {**self.result('unknown', 'project_not_found'), 'projectId': queued.project_id}
         retained = self.preflights.get('preflight-queued-' + queued.id)
         if retained is not None:
             if not self.preflights.queued_retention_matches(retained,

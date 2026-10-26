@@ -122,6 +122,14 @@ to produce a diagnostic projection. Corruption of a field that influences the
 health decision fails the refresh visibly; the projection never repairs or
 mutates canonical state.
 
+A canonical Project reference that no longer resolves is explicit admission
+UNKNOWN (`project_not_found`), never a known hold or a default Project. That
+observation preserves readiness failure while allowing the other health probes
+to publish a fresh snapshot. Missing queue Project IDs and actionable-owner
+Project references remain visible in the existing Operations projection; no
+binding/activity lookup or canonical repair is attempted for a missing Project.
+Unexpected storage, permission and validation errors still fail the refresh.
+
 ## Runtime diagnostics ownership
 
 Process/operator diagnostics are composed from focused services rather than from the legacy runtime module:
