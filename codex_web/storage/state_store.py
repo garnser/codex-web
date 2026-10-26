@@ -32,6 +32,12 @@ def project_record_fields(value: Any, fields: tuple[str, ...]) -> Any:
     return {name: value[name] for name in fields if name in value} if isinstance(value, dict) else value
 
 
+RECOVERY_CAPTURE_STAGES = frozenset({
+    'inventory', 'shadowed_validation', 'checksum', 'captured_audit',
+    'plaintext', 'live_audit', 'encrypt', 'envelope',
+})
+
+
 class StorageOperationBudget:
     """Cooperative deadline for existing store/validation work, not a lease.
 
@@ -41,6 +47,27 @@ class StorageOperationBudget:
     def __init__(self, seconds: float):
         self.deadline = time.monotonic() + seconds
         self.cancelled = threading.Event()
+        self._capture_stage = None
+        self._capture_stage_started = None
+        self._capture_seconds = {}
+
+    def enter_recovery_capture_stage(self, stage):
+        # Code-owned enum only: no payloads, IDs or user-selected metric keys.
+        if type(stage) is not str or stage not in RECOVERY_CAPTURE_STAGES:
+            raise ValueError('unknown recovery capture stage')
+        now = time.monotonic()
+        if self._capture_stage is not None:
+            self._capture_seconds[self._capture_stage] += max(0., now - self._capture_stage_started)
+        self._capture_stage = stage
+        self._capture_stage_started = now
+        self._capture_seconds.setdefault(stage, 0.)
+
+    def recovery_capture_timings(self):
+        if self._capture_stage is None:
+            return None
+        seconds = dict(self._capture_seconds)
+        seconds[self._capture_stage] += max(0., time.monotonic() - self._capture_stage_started)
+        return {'stage': self._capture_stage, 'stage_seconds': seconds}
 
     def remaining(self):
         remaining = self.deadline - time.monotonic()
@@ -50,6 +77,12 @@ class StorageOperationBudget:
 
 
 storage_operation_budget = contextvars.ContextVar("storage_operation_budget", default=None)
+
+
+def enter_recovery_capture_stage(stage):
+    budget = storage_operation_budget.get()
+    if budget is not None:
+        budget.enter_recovery_capture_stage(stage)
 
 
 def check_operation_budget():

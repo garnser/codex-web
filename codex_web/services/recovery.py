@@ -54,7 +54,7 @@ from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.action_intents import ActionIntentStore
-from codex_web.storage.state_store import StateStore, state_documents_checksum
+from codex_web.storage.state_store import StateStore, state_documents_checksum, enter_recovery_capture_stage
 from codex_web.services.recovery_snapshot_strings import (
     SnapshotStringMetadataChanged,
     observe_snapshot_string_bound,
@@ -413,6 +413,7 @@ class RecoveryService:
                     })))
                     del recovery
                 checksum = documents.checksum()
+                enter_recovery_capture_stage('captured_audit')
                 root_hash, checkpoint_id = self._audit_anchor(actor, documents)
                 now = float(self.clock())
                 backup_material = f"{actor.organization_id}:{actor.workspace_id}:{now}:{checksum}".encode('utf-8')
@@ -438,6 +439,7 @@ class RecoveryService:
             # A legitimate later audit append is allowed; current corruption is
             # still refused before encryption, destination or registration.
             if self.audit is not None:
+                enter_recovery_capture_stage('live_audit')
                 with SnapshotCapture(self.state_store, _memory_admit,
                                      only_namespace=AutonomyAuditStore.namespace) as live:
                     current = live.audit_integrity(self.audit, AutonomyAuditStore.namespace,
@@ -452,6 +454,7 @@ class RecoveryService:
             organization_id=actor.organization_id, workspace_id=actor.workspace_id,
             object_type='recovery_backup', object_id=backup_id,
         )
+        enter_recovery_capture_stage('encrypt')
         _memory_admit("capture_encrypt", len(plaintext) * 3)
         envelope = self.crypto.encrypt(
             policy.backup_key_id,
@@ -460,6 +463,7 @@ class RecoveryService:
             actor=actor,
         )
         del plaintext
+        enter_recovery_capture_stage('envelope')
         _memory_admit("capture_envelope", len(envelope.ciphertext_b64) * 2)
         encrypted_bytes = self._canonical_bytes(
             envelope.model_dump(mode="json")

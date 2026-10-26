@@ -262,7 +262,7 @@ def main(argv=None):
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     options.journal_directory.mkdir(mode=0o700, parents=False, exist_ok=False)
-    stage, runtime, token = 'preflight', None, None
+    stage, runtime, token, budget = 'preflight', None, None, None
     memory_errors = ()
     lock_fds = []
     try:
@@ -345,6 +345,7 @@ def main(argv=None):
             storage_operation_budget.reset(budget_token)
         record(options.journal_directory, 'capture-completed', {'plan_id': plan.id,
             'backup_id': plan.pre_upgrade_backup_id, 'memory_budget_bytes': options.memory_budget_bytes,
+            'capture_timings': budget.recovery_capture_timings(),
             'restore_qualification_claimed': False,
             'deployment_qualification_claimed': False, 'operator_must_restore_service': True})
         return 0
@@ -352,6 +353,7 @@ def main(argv=None):
         record(options.journal_directory, 'stopped', {'stage': stage,
             'memory_budget_bytes': options.memory_budget_bytes,
             'exception_type': type(error).__name__, 'retry_authorized': False,
+            **({'capture_timings': budget.recovery_capture_timings()} if budget is not None else {}),
             # Only these canonical types contain bounded capacity codes and
             # numbers. Other exception strings/causes may expose credentials.
             **({'capacity_refusal': str(error)[:2048]} if type(error) in memory_errors else {}),

@@ -11,7 +11,9 @@ import hashlib
 import json
 
 from codex_web.canonical_json import canonical_json_bytes, canonical_json_chunks
-from codex_web.storage.state_store import parse_state_record_storage_key, check_operation_budget
+from codex_web.storage.state_store import (
+    parse_state_record_storage_key, check_operation_budget, enter_recovery_capture_stage,
+)
 from codex_web.services.recovery_snapshot_strings import observe_snapshot_string_bound, require_snapshot_string_bound
 
 MAX_ROWS = 1_000_000
@@ -21,6 +23,7 @@ MAX_METADATA_BYTES = 512 * 1024**2
 MAX_NAMESPACES = 4096
 BATCH_ROWS = 512
 FIXED_WORK_BYTES = 32 * 1024**2
+ENCODED_CHUNK_BYTES = 64 * 1024
 
 
 class SnapshotCaptureRefused(ValueError):
@@ -38,6 +41,9 @@ class SnapshotCapture:
         self.overrides = {}
 
     def __enter__(self):
+        # The nested audit-only transaction stays attributed to live_audit.
+        if self.only_namespace is None:
+            enter_recovery_capture_stage('inventory')
         from codex_web.storage.postgres_state import PostgresStateStore
         from codex_web.storage.sqlite_state import SQLiteStateStore
         if not isinstance(self.store, (PostgresStateStore, SQLiteStateStore)):
@@ -225,6 +231,17 @@ class SnapshotCapture:
             raise SnapshotCaptureRefused('semantic_snapshot_override_missing')
         self.overrides[namespace] = (value, observe_snapshot_string_bound(value))
 
+    def row_chunks(self, value):
+        # values() has already checked this physical row's <=32MiB raw size and
+        # observed/rechecked every string. The existing largest*18 admission
+        # covers its decoded graph plus native JSON text/bytes overlap (including
+        # ensure_ascii escaping). Do not use this for an unbounded namespace.
+        check_operation_budget()
+        encoded = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        for offset in range(0, len(encoded), ENCODED_CHUNK_BYTES):
+            check_operation_budget()
+            yield encoded[offset:offset + ENCODED_CHUNK_BYTES]
+
     def namespace_chunks(self, namespace):
         check_operation_budget()
         if namespace in self.overrides:
@@ -235,7 +252,7 @@ class SnapshotCapture:
         item = self.logical[namespace]
         if item['legacy'] is not None:
             value = next(self.values((item['legacy'],)))
-            yield from canonical_json_chunks(value)
+            yield from self.row_chunks(value)
             return
         entries = sorted(item['records'].items())
         yield b'{'
@@ -244,24 +261,43 @@ class SnapshotCapture:
                 yield b','
             yield canonical_json_bytes(key)
             yield b':'
-            yield from canonical_json_chunks(value)
+            yield from self.row_chunks(value)
             del value
         yield b'}'
 
-    def validate_physical_rows(self):
+    def selected_physical_row(self, physical):
+        parsed = parse_state_record_storage_key(physical)
+        namespace = physical if parsed is None else parsed[0]
+        if namespace in self.overrides:
+            return False
+        item = self.logical[namespace]
+        if parsed is None:
+            return item['legacy'] == physical
+        return (item['legacy'] is None and parsed[1] is not None
+                and item['records'].get(parsed[1]) == physical)
+
+    def validate_physical_rows(self, *, shadowed_only=False):
         # documents() decodes even rows later shadowed by a legacy singleton.
         # Preserve that refusal: ignored logical data cannot hide malformed JSON.
         if getattr(self, '_validated_all', False):
             return
-        keys = tuple(key for key in self.sizes if self.pg or
-            (parse_state_record_storage_key(key) is None or
+        keys = tuple(key for key in self.sizes if
+            (not shadowed_only or not self.selected_physical_row(key)) and
+            (self.pg or parse_state_record_storage_key(key) is None or
              parse_state_record_storage_key(key)[1] is not None))
         for value in self.values(keys):
             del value
-        self._validated_all = True
+        if not shadowed_only:
+            self._validated_all = True
 
     def checksum(self):
-        self.validate_physical_rows()
+        # Chosen rows are decoded and string-checked by namespace_chunks below.
+        # Only shadowed/ignored rows need a separate validation pass. Mark the
+        # full catalog validated only after the checksum consumes every row;
+        # audit-only callers still use the unconditional full validation above.
+        enter_recovery_capture_stage('shadowed_validation')
+        self.validate_physical_rows(shadowed_only=True)
+        enter_recovery_capture_stage('checksum')
         digest = hashlib.sha256()
         self.documents_json_bytes = 2 + max(0, len(self.namespaces)-1)
         for namespace in self.namespaces:
@@ -272,9 +308,11 @@ class SnapshotCapture:
                 document.update(chunk)
                 self.documents_json_bytes += len(chunk)
             digest.update(document.digest() + b'\x00')
+        self._validated_all = True
         return digest.hexdigest()
 
     def plaintext(self, metadata):
+        enter_recovery_capture_stage('plaintext')
         # The key inventory and source cursor remain bounded while the ONE
         # compatible plaintext buffer is assembled. No decoded catalog overlaps it.
         if not hasattr(self, 'documents_json_bytes'):
