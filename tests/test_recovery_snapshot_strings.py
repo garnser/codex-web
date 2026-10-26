@@ -39,15 +39,17 @@ class SnapshotStringObservationTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
         fixture.state.put('snapshot-values', {'unicode': '\U0001f642', 'nested': [None, 1, True]})
-        from codex_web.services import recovery
-        with patch.object(recovery, 'require_snapshot_string_bound', wraps=require_snapshot_string_bound) as guard, \
-                patch.object(fixture.service, '_canonical_bytes', wraps=fixture.service._canonical_bytes) as encode:
+        from codex_web.services import recovery_snapshot_capture
+        with patch.object(recovery_snapshot_capture, 'require_snapshot_string_bound',
+                          wraps=require_snapshot_string_bound) as guard, \
+                patch.object(fixture.crypto, 'encrypt', wraps=fixture.crypto.encrypt) as encrypt:
             manifest = fixture.service.create_backup(actor=fixture.actor)
-        guard.assert_called_once()
-        plaintext = encode.call_args_list[0].args[0]
-        from codex_web.canonical_json import canonical_json_bytes
-        self.assertEqual(canonical_json_bytes(plaintext),
-                         json.dumps(plaintext, sort_keys=True, separators=(',', ':')).encode())
+        self.assertGreater(guard.call_count, 0)
+        plaintext = encrypt.call_args.args[1]
+        document = json.loads(plaintext)
+        self.assertEqual(plaintext, json.dumps(document, sort_keys=True, separators=(',', ':')).encode())
+        self.assertEqual(document['documents']['snapshot-values'],
+                         {'unicode': '\U0001f642', 'nested': [None, 1, True]})
         verified = fixture.service.verify_restore(manifest.id, actor=fixture.actor)
         self.assertEqual(verified.status, RestoreVerificationStatus.PASS)
 
@@ -56,16 +58,19 @@ class SnapshotStringObservationTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
         service = fixture.service
-        original_manifest = service._snapshot_key_manifest
+        fixture.state.put('snapshot-growth', {'value': 'small'})
+        original_observe = observe_snapshot_string_bound
 
-        def add_ordinary_value(documents, actor):
-            manifest = original_manifest(documents, actor)
-            bound = observe_snapshot_string_bound(documents)
-            documents['synthetic-document'] = {'value': 'x' * (bound + 1)}
-            return manifest
+        def grow_after_observation(value):
+            bound = original_observe(value)
+            if value == {'value': 'small'}:
+                value['value'] = 'x' * (bound + 1)
+            return bound
 
+        from codex_web.services import recovery_snapshot_capture
         from codex_web.services.recovery import RecoveryConflictError
-        with patch.object(service, '_snapshot_key_manifest', add_ordinary_value), \
+        with patch.object(recovery_snapshot_capture, 'observe_snapshot_string_bound',
+                          new=grow_after_observation), \
                 patch.object(service.crypto, 'encrypt') as encrypt, \
                 patch.object(service._destination(service.policy().destination_id), 'put') as put:
             with self.assertRaisesRegex(RecoveryConflictError, '^Snapshot string metadata changed after initial observation; capture refused$'):
