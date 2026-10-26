@@ -48,6 +48,7 @@ class ExecutionPreflightService:
         self.replacement_resolver = replacement_resolver
         self.event_sink = event_sink
         self.queued_start_observer = None
+        self.queued_disposition_observer = None
 
     def observe_queued_start(self, attempt):
         """Project a committed native fact; metadata failure never permits replay."""
@@ -249,7 +250,20 @@ class ExecutionPreflightService:
                             'queued_resume_history':(*current.queued_resume_history,history)})
             disposition = 'reconciliation_required' if (current.queued_start_correlation is not None
                 or current.queued_resume_correlation is not None) else status
-            blockers = self._blockers(detail) if detail else ()
+            retained_detail = detail
+            if (preinput_refusal and disposition == 'blocked'
+                    and (detail or {}).get('code') == 'native_reasoning_preparation_unavailable'
+                    and claim_id and current.queued_admission_claim_id == claim_id
+                    and all(value is None for value in (
+                        current.queued_start_correlation, current.queued_start_evidence,
+                        current.queued_start_receipt, current.queued_resume_correlation,
+                        current.queued_resume_evidence, current.started_at))):
+                retained_detail = {**detail, 'phase':'before_turn_input',
+                    'preflight_attempt_id':current.id, 'admission_claim_id':claim_id,
+                    'threadId':current.replacement_thread_id or current.thread_id,
+                    'execution_id':current.execution_id,
+                    'snapshot_sha256':self.queued_snapshot_digest(current.queued_turn_snapshot)}
+            blockers = self._blockers(retained_detail) if retained_detail else ()
             history = current.blocker_history
             if (disposition == 'blocked' and preinput_refusal
                     and (detail or {}).get('code') in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'}
@@ -262,7 +276,11 @@ class ExecutionPreflightService:
                 'blockers':blockers, 'blocker_history':history,
                 'last_error':str((detail or {}).get('message') or '') or None,
             })
-        return self.store.update(attempt_id, update)
+        updated = self.store.update(attempt_id, update)
+        if self.queued_disposition_observer is not None:
+            with contextlib.suppress(Exception):
+                self.queued_disposition_observer(updated)
+        return updated
 
     def defer_readiness_origin_index(self, attempt_id: str, *, claim_id: str,
                                     detail: dict[str, Any], thread_id: str,
@@ -367,7 +385,28 @@ class ExecutionPreflightService:
                 return False
         return (self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
                 or self.recorded_initial_process_refusal(attempt)
-                or self.recorded_custody_refusal(attempt))
+                or self.recorded_custody_refusal(attempt)
+                or self.recorded_reasoning_refusal(attempt))
+
+    def recorded_reasoning_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
+        """Only a committed controller claim/snapshot witness proves preinput."""
+        snapshot = attempt.queued_turn_snapshot
+        if (attempt.status != 'blocked' or snapshot is None
+                or attempt.scheduling_retirement is not None
+                or not attempt.queued_admission_claim_id
+                or any(value is not None for value in (
+                    attempt.queued_start_correlation, attempt.queued_start_evidence,
+                    attempt.queued_start_receipt, attempt.queued_resume_correlation,
+                    attempt.queued_resume_evidence, attempt.started_at))):
+            return False
+        return any(row.get('code') == 'native_reasoning_preparation_unavailable'
+            and row.get('phase') == 'before_turn_input'
+            and row.get('preflight_attempt_id') == attempt.id
+            and row.get('admission_claim_id') == attempt.queued_admission_claim_id
+            and row.get('threadId') == (attempt.replacement_thread_id or attempt.thread_id)
+            and row.get('execution_id') == attempt.execution_id
+            and row.get('snapshot_sha256') == self.queued_snapshot_digest(snapshot)
+            for row in (blocker.model_dump(mode='json') for blocker in attempt.blockers))
 
     def recorded_custody_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
         # Only a controller-owned, claim/snapshot-bound pre-resume refusal.

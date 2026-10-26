@@ -22,6 +22,15 @@ from codex_web.model_providers import ModelProviderAdapterError
 from codex_web.services.codex_reasoning_policy import NativeReasoningPolicyError
 
 
+class NativeReasoningPreparationError(NativeReasoningPolicyError):
+    """Closed local preparation stage; prose never becomes diagnostic data."""
+    def __init__(self, stage):
+        if stage not in {'invocation_context', 'original_input_binding', 'session_attestation'}:
+            raise ValueError('Invalid native preparation stage')
+        self.stage = stage
+        super().__init__('Canonical native preparation refused')
+
+
 @dataclass(slots=True)
 class NativeProcessOwnership:
     """Ephemeral join handle, never permission, idempotency or result authority."""

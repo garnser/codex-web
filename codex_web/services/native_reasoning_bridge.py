@@ -19,6 +19,10 @@ from codex_web.services.queued_native_start import validate_attribution
 from codex_web.services.threads import bootstrap_exception_type, bootstrap_preparation_diagnostic
 
 
+class NativeReasoningPrestartRefused(ModelProviderAdapterError):
+    """The original canonical queue owner retained a bound preinput refusal."""
+
+
 @dataclass(frozen=True, slots=True)
 class NativeReasoningBinding:
     provider_id: str
@@ -84,6 +88,49 @@ class CanonicalNativeReasoningBridge:
         self.attest_session = attest_session
         self.authentication_preparation = authentication_preparation
         self._usage_waiters = {}
+        self._admission_waiters = {}
+
+    def observe_admission(self, attempt):
+        # This notification only wakes the owner. It is never the refusal proof;
+        # _wait_original_terminal re-reads the exact committed original below.
+        waiting = self._admission_waiters.get(attempt.execution_id)
+        if waiting is None or not self.preflight.recorded_reasoning_refusal(attempt):
+            return
+        loop, future = waiting
+        def signal():
+            if not future.done():
+                future.set_result(attempt.id)
+        loop.call_soon_threadsafe(signal)
+
+    async def _wait_original_terminal(self, terminal, refused, cancelled, *,
+                                      context, thread_id, queued_id):
+        waiter = asyncio.create_task(cancelled.wait())
+        try:
+            done, _ = await asyncio.wait((terminal, refused, waiter),
+                                        return_when=asyncio.FIRST_COMPLETED)
+            if waiter in done:
+                raise asyncio.CancelledError
+            if refused in done:
+                def read_refusal():
+                    attempt = self.preflight.store.get('preflight-queued-' + queued_id)
+                    if (attempt is None or attempt.id != refused.result()
+                            or (attempt.organization_id, attempt.workspace_id, attempt.project_id,
+                                attempt.execution_id, attempt.thread_id) !=
+                               (context.organization_id, context.workspace_id, context.project_id,
+                                context.execution_id, thread_id)
+                            or not self.preflight.recorded_reasoning_refusal(attempt)
+                            or hashlib.sha256(attempt.queued_turn_snapshot['message'].encode()).hexdigest()
+                               != context.input_message_sha256):
+                        raise ModelProviderOutcomeUnknownError(
+                            'Native original admission attribution changed')
+                    return attempt
+                await self._owned(read_refusal)
+                raise NativeReasoningPrestartRefused(
+                    'Native reasoning preparation refused; inspect original preflight')
+            return terminal.result()
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
 
     def observe_usage(self, record):
         # Notification is not permission or accounting authority: _result reads
@@ -231,6 +278,7 @@ class CanonicalNativeReasoningBridge:
         usage_ready = None
         thread_id = None
         terminal = asyncio.get_running_loop().create_future()
+        refused = asyncio.get_running_loop().create_future()
         text = NativeReasoningText(b.max_output_bytes)
         loop = asyncio.get_running_loop()
 
@@ -327,6 +375,7 @@ class CanonicalNativeReasoningBridge:
             if cancelled.is_set():
                 raise asyncio.CancelledError
             native_admitted = True  # Subsequent unknowns cannot be replayed.
+            self._admission_waiters[context.execution_id] = (loop, refused)
             started = await self.turns.start(thread_id, TurnCreate(message=message,
                 project_id=context.project_id, sandbox='read-only', approval_policy='never',
                 model=b.concrete_model, reasoning_effort=request.reasoning_effort,
@@ -335,7 +384,11 @@ class CanonicalNativeReasoningBridge:
                 actor=actor, execution_id=context.execution_id,
                 admission_guard=context.validate_current, allow_assignment_renewal=False)
             queued_id = started['queuedId']
-            turn_id = await self._wait_or_cancel(terminal, cancelled)
+            # A disposition may commit before TurnService returns its queue ID.
+            # The notification was installed first; the result remains subject
+            # to an exact canonical re-read, including absence of any START.
+            turn_id = await self._wait_original_terminal(terminal, refused, cancelled,
+                context=context, thread_id=thread_id, queued_id=queued_id)
             observed_turn = await self._wait_or_cancel(usage_ready, cancelled)
             if observed_turn != turn_id or native_runtime.reasoning_refusal:
                 raise ValueError('Native usage or restricted request attribution changed')
@@ -351,6 +404,8 @@ class CanonicalNativeReasoningBridge:
             return result
         except asyncio.CancelledError:
             raise
+        except NativeReasoningPrestartRefused:
+            raise
         except Exception as exc:
             if native_admitted:
                 raise ModelProviderOutcomeUnknownError(
@@ -363,6 +418,7 @@ class CanonicalNativeReasoningBridge:
                 terminal.exception()  # Observe any simultaneous cancellation/terminal error.
             if session is not None:
                 self._usage_waiters.pop(session.id, None)
+            self._admission_waiters.pop(context.execution_id, None)
             stop = (context.process_owner.stop if context.process_owner is not None else None)
             if stop is None and manager is not None and assignment is not None:
                 stop = lambda: manager.stop(assignment.id)

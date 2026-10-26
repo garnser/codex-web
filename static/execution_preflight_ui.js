@@ -167,6 +167,16 @@ export function createExecutionPreflightUi({
               : "";
             return `${blocker?.code || "execution_preflight_blocked"}: ${blocker?.message || "Execution could not start."}${target}${remediation}`;
           }),
+          ...blockers.filter(blocker => blocker.code === 'native_reasoning_preparation_unavailable').map(blocker => {
+            const stages = ['procedure_context', 'invocation_context', 'original_input_binding', 'session_attestation'];
+            const exceptions = ['TimeoutError', 'ValueError', 'TypeError', 'LookupError', 'OSError',
+              'RuntimeError', 'AssertionError', 'Exception', 'AttributeError', 'NameError', 'KeyError',
+              'IndexError', 'PermissionError', 'FileNotFoundError', 'NotImplementedError'];
+            const stage = stages.includes(blocker.native_preparation_stage) ? blocker.native_preparation_stage : 'unknown';
+            const exception = exceptions.includes(blocker.native_exception_type) ? blocker.native_exception_type : 'unknown';
+            return `Native preparation: ${stage} · exception ${exception}\nOriginal preflight: ${attempt.id}\n`
+              + 'Inspect this retained original; diagnostics do not authorize retry.';
+          }),
           ...blockers.filter(blocker => blocker.code === 'native_session_scope_incompatible').map(blocker =>
             `Native session ${blocker.agent_session_id} · previous assignment ${blocker.previous_assignment_id} · refused assignment ${blocker.assignment_id}\n`
             + `Previous repositories: ${(blocker.original_resource_ids || []).join(', ')}\n`
