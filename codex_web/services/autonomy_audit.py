@@ -541,6 +541,7 @@ class AutonomyAuditService:
         partition: str,
         rows: list[AutonomyAuditRecord],
         state: AutonomyAuditState,
+        *, roots=None,
     ) -> tuple[AutonomyAuditCheckpoint | None, str | None]:
         # Checkpoints are append-only. Preserve durable append order because
         # multiple checkpoints can intentionally anchor the same record sequence.
@@ -551,7 +552,7 @@ class AutonomyAuditService:
         ]
         previous_hash = GENESIS_HASH
         latest: AutonomyAuditCheckpoint | None = None
-        row_by_sequence = {item.sequence: item for item in rows}
+        row_by_sequence = roots if roots is not None else {item.sequence: item for item in rows}
         for checkpoint in checkpoints:
             if checkpoint.previous_checkpoint_hash != previous_hash:
                 return checkpoint, "audit_checkpoint_previous_hash_mismatch"
@@ -562,7 +563,8 @@ class AutonomyAuditService:
                     return checkpoint, "audit_empty_checkpoint_root_mismatch"
             else:
                 record = row_by_sequence.get(checkpoint.sequence)
-                if record is None or record.record_hash != checkpoint.root_hash:
+                actual_root = record if roots is not None else (record.record_hash if record is not None else None)
+                if actual_root != checkpoint.root_hash:
                     return checkpoint, "audit_checkpoint_root_mismatch"
             if checkpoint.signature is not None:
                 if self.signer is None:
@@ -626,41 +628,50 @@ class AutonomyAuditService:
             ),
             key=lambda item: item.sequence,
         )
-        if not rows:
-            checkpoint, checkpoint_error = self._verify_checkpoints(
-                partition,
-                [],
-                state,
-            )
-            if checkpoint_error is not None:
-                return AuditIntegrityResult(
-                    status=AuditIntegrityStatus.FAILED,
-                    partition_id=partition,
-                    records_checked=0,
-                    checkpoint_id=(
-                        checkpoint.id if checkpoint is not None else None
-                    ),
-                    reason=checkpoint_error,
-                )
-            return AuditIntegrityResult(
-                status=AuditIntegrityStatus.EMPTY,
-                partition_id=partition,
-                records_checked=0,
-                checkpoint_id=(
-                    checkpoint.id if checkpoint is not None else None
-                ),
-            )
+        return self._verify_ordered_records(rows, state, partition=partition)
 
+    def verify_snapshot_records(self, control, record_keys, read_records, *, organization_id, workspace_id):
+        """Validate the same keyed audit schema with bounded record payload retention.
+
+        The source owns one immutable snapshot. All records, including foreign
+        partitions, validate before filtering; only sequence/key metadata is sorted.
+        Hashes/checkpoints/signatures use the SAME verifier as verify_snapshot().
+        """
+        state = AutonomyAuditStore._decode(control)
+        partition = AutonomyAuditRecord.partition_for(organization_id, workspace_id)
+        selected = []
+        for key, raw in read_records(record_keys):
+            item = AutonomyAuditRecord.model_validate(raw)
+            if item.partition_id == partition:
+                selected.append((item.sequence, key))
+        selected.sort(key=lambda item: item[0])
+        ordered = (AutonomyAuditRecord.model_validate(raw)
+                   for _, raw in read_records(tuple(key for _, key in selected)))
+        return self._verify_ordered_records(ordered, state, partition=partition)
+
+    def _verify_ordered_records(self, rows, state, *, partition):
+        # Retain only checkpoint-referenced roots, never a second audit catalog.
+        needed = {item.sequence for item in state.checkpoints if item.partition_id == partition}
+        roots = {}
+        first_sequence = None
+        last = None
+        count = 0
         previous_hash = GENESIS_HASH
         expected_sequence = 1
         for item in rows:
+            if first_sequence is None:
+                first_sequence = item.sequence
+            last = item
+            count += 1
+            if item.sequence in needed:
+                roots[item.sequence] = item.record_hash
             payload_hash, record_hash = self._expected_record_hash(item)
             if item.sequence != expected_sequence:
                 return AuditIntegrityResult(
                     status=AuditIntegrityStatus.FAILED,
                     partition_id=partition,
                     records_checked=expected_sequence - 1,
-                    first_sequence=rows[0].sequence,
+                    first_sequence=first_sequence,
                     last_sequence=item.sequence,
                     root_hash=previous_hash,
                     failed_record_id=item.id,
@@ -671,7 +682,7 @@ class AutonomyAuditService:
                     status=AuditIntegrityStatus.FAILED,
                     partition_id=partition,
                     records_checked=expected_sequence - 1,
-                    first_sequence=rows[0].sequence,
+                    first_sequence=first_sequence,
                     last_sequence=item.sequence,
                     root_hash=previous_hash,
                     failed_record_id=item.id,
@@ -682,7 +693,7 @@ class AutonomyAuditService:
                     status=AuditIntegrityStatus.FAILED,
                     partition_id=partition,
                     records_checked=expected_sequence - 1,
-                    first_sequence=rows[0].sequence,
+                    first_sequence=first_sequence,
                     last_sequence=item.sequence,
                     root_hash=previous_hash,
                     failed_record_id=item.id,
@@ -693,7 +704,7 @@ class AutonomyAuditService:
                     status=AuditIntegrityStatus.FAILED,
                     partition_id=partition,
                     records_checked=expected_sequence - 1,
-                    first_sequence=rows[0].sequence,
+                    first_sequence=first_sequence,
                     last_sequence=item.sequence,
                     root_hash=previous_hash,
                     failed_record_id=item.id,
@@ -702,19 +713,29 @@ class AutonomyAuditService:
             previous_hash = item.record_hash
             expected_sequence += 1
 
+        if count == 0:
+            checkpoint, checkpoint_error = self._verify_checkpoints(partition, (), state)
+            return AuditIntegrityResult(
+                status=AuditIntegrityStatus.FAILED if checkpoint_error else AuditIntegrityStatus.EMPTY,
+                partition_id=partition, records_checked=0,
+                checkpoint_id=checkpoint.id if checkpoint is not None else None,
+                **({'reason': checkpoint_error} if checkpoint_error else {}),
+            )
+
         checkpoint, checkpoint_error = self._verify_checkpoints(
             partition,
-            rows,
+            (),
             state,
+            roots=roots,
         )
         if checkpoint_error is not None:
             return AuditIntegrityResult(
                 status=AuditIntegrityStatus.FAILED,
                 partition_id=partition,
-                records_checked=len(rows),
-                first_sequence=rows[0].sequence,
-                last_sequence=rows[-1].sequence,
-                root_hash=rows[-1].record_hash,
+                records_checked=count,
+                first_sequence=first_sequence,
+                last_sequence=last.sequence,
+                root_hash=last.record_hash,
                 checkpoint_id=checkpoint.id if checkpoint is not None else None,
                 reason=checkpoint_error,
             )
@@ -722,10 +743,10 @@ class AutonomyAuditService:
         return AuditIntegrityResult(
             status=AuditIntegrityStatus.VERIFIED,
             partition_id=partition,
-            records_checked=len(rows),
-            first_sequence=rows[0].sequence,
-            last_sequence=rows[-1].sequence,
-            root_hash=rows[-1].record_hash,
+            records_checked=count,
+            first_sequence=first_sequence,
+            last_sequence=last.sequence,
+            root_hash=last.record_hash,
             checkpoint_id=checkpoint.id if checkpoint is not None else None,
         )
 

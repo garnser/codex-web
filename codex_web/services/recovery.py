@@ -349,6 +349,17 @@ class RecoveryService:
     ) -> tuple[str | None, str | None]:
         if self.audit is None:
             return None, None
+        from codex_web.services.recovery_snapshot_capture import SnapshotCapture
+        if isinstance(documents, SnapshotCapture):
+            # Anchor only the actual captured repeatable-read state. Current
+            # live integrity is rechecked after this source lease has closed.
+            captured = documents.audit_integrity(self.audit, AutonomyAuditStore.namespace,
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+            if captured.status == AuditIntegrityStatus.FAILED:
+                raise RecoveryConflictError(f"cannot back up invalid snapshot autonomy audit: {captured.reason}")
+            if AutonomyAuditStore.namespace not in documents.logical:
+                return None, None
+            return captured.root_hash, captured.checkpoint_id
         result = self.audit.verify(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -391,61 +402,56 @@ class RecoveryService:
             raise RecoveryConflictError("configured backup key purpose changed")
         destination = self._destination(policy.destination_id)
 
-        from codex_web.services.recovery_memory import snapshot_size, RecoveryMemoryRefused
-        try:
-            rows, source_bytes = snapshot_size(self.state_store)
-        except RecoveryMemoryRefused as exc:
-            raise RecoveryMemoryConflictError(str(exc)) from exc
-        _memory_admit("capture_snapshot", source_bytes * 12 + rows * 512)
-        documents = self._snapshot_documents()
-        string_bound = observe_snapshot_string_bound(documents)
-        checksum = state_documents_checksum(documents)
+        from codex_web.services.recovery_snapshot_capture import SnapshotCapture, SnapshotCaptureRefused
         status = self.state_store.status()
-        root_hash, checkpoint_id = self._audit_anchor(actor, documents)
-        now = float(self.clock())
-        backup_material = (
-            f"{actor.organization_id}:{actor.workspace_id}:{now}:{checksum}"
-        ).encode("utf-8")
-        backup_id = (
-            f"backup-{hashlib.sha256(backup_material).hexdigest()[:32]}"
-        )
-        if _firing is not None:
-            backup_id = _firing.effect_id
-        key_manifest = self._snapshot_key_manifest(documents, actor)
-        document_count = len(documents)
-        namespaces = tuple(sorted(documents))
-        snapshot = BackupSnapshot(
-            organization_id=actor.organization_id,
-            workspace_id=actor.workspace_id,
-            state_backend=str(status.get("backend") or "unknown"),
-            state_schema_version=int(status.get("schemaVersion") or 0),
-            created_at=now,
-            documents=documents,
-            documents_checksum=checksum,
-            key_manifest=key_manifest,
-            audit_root_hash=root_hash,
-            audit_checkpoint_id=checkpoint_id,
-        )
-        context = EncryptionContext(
-            organization_id=actor.organization_id,
-            workspace_id=actor.workspace_id,
-            object_type="recovery_backup",
-            object_id=backup_id,
-        )
-        # Documents are already JSON StateStore values. Serializing the whole
-        # Pydantic model first recursively duplicates the entire catalog while
-        # the original, plaintext and encryption buffers are all still live.
-        snapshot_payload = snapshot.model_dump(mode="json", exclude={"documents"})
-        snapshot_payload["documents"] = documents
         try:
-            require_snapshot_string_bound(documents, string_bound)
+            with SnapshotCapture(self.state_store, _memory_admit) as documents:
+                if RecoveryStore.namespace in documents.logical:
+                    recovery = RecoveryStore._decode(documents.get(RecoveryStore.namespace))
+                    documents.replace(RecoveryStore.namespace, RecoveryStore._encode(recovery.model_copy(update={
+                        'backups': {}, 'verifications': {},
+                    })))
+                    del recovery
+                checksum = documents.checksum()
+                root_hash, checkpoint_id = self._audit_anchor(actor, documents)
+                now = float(self.clock())
+                backup_material = f"{actor.organization_id}:{actor.workspace_id}:{now}:{checksum}".encode('utf-8')
+                backup_id = f"backup-{hashlib.sha256(backup_material).hexdigest()[:32]}"
+                if _firing is not None:
+                    backup_id = _firing.effect_id
+                key_manifest = self._snapshot_key_manifest(
+                    {self.crypto.store.namespace: documents.get(self.crypto.store.namespace)}, actor)
+                document_count = len(documents.namespaces)
+                namespaces = documents.namespaces
+                snapshot = BackupSnapshot(
+                    organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+                    state_backend=str(status.get('backend') or 'unknown'),
+                    state_schema_version=int(status.get('schemaVersion') or 0),
+                    created_at=now, documents={}, documents_checksum=checksum,
+                    key_manifest=key_manifest, audit_root_hash=root_hash, audit_checkpoint_id=checkpoint_id,
+                )
+                plaintext = documents.plaintext(snapshot.model_dump(mode='json', exclude={'documents'}))
+                state_backend = snapshot.state_backend
+                state_schema_version = snapshot.state_schema_version
+                del snapshot
+            # Never hold two official pool leases: max_size=1 is supported.
+            # A legitimate later audit append is allowed; current corruption is
+            # still refused before encryption, destination or registration.
+            if self.audit is not None:
+                with SnapshotCapture(self.state_store, _memory_admit,
+                                     only_namespace=AutonomyAuditStore.namespace) as live:
+                    current = live.audit_integrity(self.audit, AutonomyAuditStore.namespace,
+                        organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+                if current.status == AuditIntegrityStatus.FAILED:
+                    raise RecoveryConflictError(f"cannot back up invalid autonomy audit: {current.reason}")
         except SnapshotStringMetadataChanged as exc:
-            # Do not format the affected object or attempt encryption/storage.
             raise RecoveryConflictError(str(exc)) from None
-        plaintext = self._canonical_bytes(snapshot_payload)
-        state_backend = snapshot.state_backend
-        state_schema_version = snapshot.state_schema_version
-        del snapshot_payload, snapshot, documents
+        except SnapshotCaptureRefused as exc:
+            raise RecoveryMemoryConflictError(str(exc)) from None
+        context = EncryptionContext(
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+            object_type='recovery_backup', object_id=backup_id,
+        )
         _memory_admit("capture_encrypt", len(plaintext) * 3)
         envelope = self.crypto.encrypt(
             policy.backup_key_id,

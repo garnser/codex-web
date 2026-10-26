@@ -298,3 +298,87 @@ class PostgresDocumentsStreamingTests(unittest.TestCase):
             case.test_backup_is_encrypted_and_restore_verification_publishes_evidence()
         finally:
             case.tearDown()
+
+    def test_bounded_semantic_capture_batches_audit_and_restores_with_pool_one(self):
+        from pathlib import Path
+        from tests import test_recovery as fixture
+        from codex_web.autonomy_audit import AutonomyAuditRecord
+        from codex_web.recovery import RestoreVerificationStatus
+        from codex_web.services.recovery_snapshot_capture import SnapshotCapture, BATCH_ROWS, MAX_ROW_BYTES
+        from codex_web.storage.sqlite_state import SQLiteStateStore
+
+        case = fixture.RecoveryTests('test_backup_is_encrypted_and_restore_verification_publishes_evidence')
+        with patch('tests.test_recovery.SQLiteStateStore', return_value=self.backend):
+            case.setUp()
+        try:
+            self.seed(1024, payload_size=2048)
+            state = case.audit_store.load()
+            records = list(state.records)
+            for _ in range(1024):
+                previous = records[-1]
+                records.append(AutonomyAuditRecord.build(previous.payload,
+                    sequence=previous.sequence + 1, previous_hash=previous.record_hash,
+                    created_at=case.clock()))
+            case.audit_store.update(lambda _: state.model_copy(update={'records': records}))
+            del state, records
+            expected_root = case.audit.verify(organization_id='org-a', workspace_id='ws-a').root_hash
+            stats = {'payload_queries': 0, 'max_batch_rows': 0, 'max_batch_bytes': 0}
+            original_cursor = SnapshotCapture.cursor
+
+            class MeasuredCursor:
+                def __init__(self, cursor):
+                    self.cursor, self.payload = cursor, False
+
+                def execute(self, query, *args):
+                    self.payload = query.startswith('SELECT namespace,payload FROM ')
+                    if self.payload:
+                        stats['payload_queries'] += 1
+                    return self.cursor.execute(query, *args)
+
+                def fetchmany(self, count):
+                    rows = self.cursor.fetchmany(count)
+                    if self.payload:
+                        size = sum(len(value.encode('utf-8')) for _, value in rows)
+                        stats['max_batch_rows'] = max(stats['max_batch_rows'], len(rows))
+                        stats['max_batch_bytes'] = max(stats['max_batch_bytes'], size)
+                        self_outer.assertLessEqual(len(rows), BATCH_ROWS)
+                        self_outer.assertLessEqual(size, MAX_ROW_BYTES)
+                    return rows
+
+                def __getattr__(self, name):
+                    return getattr(self.cursor, name)
+
+            self_outer = self
+
+            @contextmanager
+            def measured_cursor(capture, named=False):
+                with original_cursor(capture, named=named) as cursor:
+                    yield MeasuredCursor(cursor)
+
+            started = time.monotonic()
+            with patch.object(SnapshotCapture, 'cursor', new=measured_cursor):
+                tracemalloc.start()
+                try:
+                    manifest = case.service.create_backup(actor=case.actor)
+                    _, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+            elapsed = time.monotonic() - started
+            self.assertEqual(manifest.audit_root_hash, expected_root)
+            self.assertEqual(stats['max_batch_rows'], BATCH_ROWS)
+            self.assertLess(stats['payload_queries'], 128, 'payload reads must batch, not perform rowwise SQL')
+            verified = case.service.verify_restore(manifest.id, actor=case.actor)
+            self.assertEqual(verified.status, RestoreVerificationStatus.PASS)
+            self.assertTrue(verified.checksum_valid and verified.key_manifest_valid and verified.audit_continuity_valid)
+            target = SQLiteStateStore(Path(case.temp.name) / 'pg-batched-isolated.sqlite3')
+            restored = case.service.restore_into_isolated(manifest.id, target, actor=case.actor)
+            self.assertEqual(restored.status, RestoreVerificationStatus.PASS)
+            self.assertEqual(target.get('records'), self.backend.get('records'))
+            self.assertEqual(target.get('legacy'), {'winner': 'legacy'})
+            print(json.dumps({'semantic_capture_postgres_fixture': {
+                'keyed_rows': 1024, 'payload_bytes_per_row': 2048, 'audit_records': 1025,
+                'pool_max_size': 1, 'capture_peak_bytes': peak, 'capture_seconds': elapsed,
+                **stats,
+            }}), flush=True)
+        finally:
+            case.tearDown()
