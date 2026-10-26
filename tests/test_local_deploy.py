@@ -21,6 +21,15 @@ from scripts.local_deploy import (health, set_service_revision, verify_canonical
 
 class CandidateMaterializationTests(unittest.TestCase):
     def setUp(self):
+        # Begin with an already service-readable repository. The permission
+        # regression applies 0077 only to the actual installer Git operations.
+        previous_umask = os.umask(0o022)
+        try:
+            self._set_up_repositories()
+        finally:
+            os.umask(previous_umask)
+
+    def _set_up_repositories(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
