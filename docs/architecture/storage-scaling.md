@@ -66,6 +66,25 @@ partition filtering, selected records are ordered by their payload sequence,
 and checkpoint append order is preserved. Large legacy singleton rows remain
 subject to the physical-row limit.
 
+Within that admitted row bound, capture uses native canonical JSON encoding of
+one physical payload at a time, with cooperative deadline checks before encoding
+and between output chunks of at most 64 KiB. The single-row working allocation
+includes decoded values and escaped JSON text/bytes overlap. Namespace overrides
+retain incremental encoding. Checksum traversal validates each chosen logical
+row; a separate pass validates ignored/shadowed physical rows, so legacy
+precedence cannot conceal malformed input. Audit-only reads still validate every
+physical row. Both immutable-string observations remain before native encoding.
+This avoids Python work proportional to every JSON punctuation token without
+changing the global incremental encoder or snapshot bytes. Synthetic timing
+measurements do not qualify the shared live capture/old-source verification
+window; both operations still must complete within their existing deadline.
+The existing cooperative storage budget optionally retains at most eight fixed
+capture phase names with monotonic elapsed seconds. Cold CLI success/refusal
+journals include that closed timing projection when capture began, so a timeout
+can identify the last phase without payloads, credentials, exception prose or a
+new telemetry store. Nested live-audit inventory remains attributed to live
+audit. Phase observation does not extend the deadline or authorize a retry.
+
 The final compatible plaintext buffer and existing crypto/envelope allocations
 retain explicit stage admission against actual host/cgroup headroom with the
 existing safety margin. Capture and live-audit validation release their owning
