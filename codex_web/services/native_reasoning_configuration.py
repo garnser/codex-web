@@ -52,12 +52,13 @@ def install_native_reasoning_configuration(service):
 
 
 def resolve_native_reasoning_settings(service):
-    enabled=service.resolve(PREFIX+'enabled')
+    rows=service.resolve_many(tuple(PREFIX+name for name in FIELDS))
+    enabled=rows[PREFIX+'enabled']
     if enabled.value is False:
         return None
     if enabled.value is not True or enabled.source!='published':
         raise NativeReasoningPolicyError('Explicit published native reasoning opt-in required')
-    rows={name:service.resolve(PREFIX+name) for name in FIELDS}
+    rows={name:rows[PREFIX+name] for name in FIELDS}
     if any(row.source!='published' for row in rows.values()):
         raise NativeReasoningPolicyError('Complete published native reasoning configuration required')
     settings=NativeReasoningSettings(**{name:row.value for name,row in rows.items()})

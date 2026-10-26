@@ -473,10 +473,37 @@ class ConfigurationService:
         now: float | None = None,
     ) -> EffectiveConfiguration:
         spec = self.specs.get(key)
+        return self._resolve_records(spec, self.store.load(), context, now=now)
+
+    def resolve_many(
+        self,
+        keys: tuple[str, ...],
+        context: ConfigurationContext | None = None,
+        *,
+        now: float | None = None,
+    ) -> dict[str, EffectiveConfiguration]:
+        """Resolve one fresh canonical snapshot; retain no cross-call cache."""
+        specs = {key: self.specs.get(key) for key in keys}
+        if not specs:
+            return {}
+        records = self.store.load()
+        observed_at = time.time() if now is None else now
+        return {key: self._resolve_records(spec, records, context, now=observed_at)
+                for key, spec in specs.items()}
+
+    def _resolve_records(
+        self,
+        spec: ConfigurationSpec,
+        records: list[ConfigurationRecord],
+        context: ConfigurationContext | None,
+        *,
+        now: float | None,
+    ) -> EffectiveConfiguration:
+        key = spec.key
         context = context or ConfigurationContext()
         published = [
             record
-            for record in self.store.load()
+            for record in records
             if record.key == key
             and record.state == ConfigurationLifecycle.PUBLISHED
             and self._record_matches_context(record, context)

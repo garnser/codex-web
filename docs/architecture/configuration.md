@@ -140,3 +140,16 @@ Inherited shared records retain their original scope and impact; their usage and
 more-specific override metadata describe that shared record's authorized consumers,
 not a claim that those consumers belong to the selected Project. Omitting the
 query context retains the existing shared-administration contract.
+
+### Fresh multi-key resolution
+
+`ConfigurationService.resolve_many` resolves a caller's keys from one fresh
+registry read and one observation time, using the same scope, targeting, expiry,
+kill-switch and provenance rules as individual resolution. The snapshot belongs
+only to that call; the next call reads current publications again.
+
+Native reasoning resolves its opt-in and reference pins together on every current
+authority check. Disabled startup still registers no route or model. Publication,
+revocation and changed pins remain visible to the next check; no attestation check
+or five-second preparation budget is removed or extended. Fewer catalog reads do
+not establish the cause of a live timeout or replace genuine native qualification.
