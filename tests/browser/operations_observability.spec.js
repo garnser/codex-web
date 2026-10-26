@@ -182,6 +182,10 @@ test('Operations overview unifies canonical health, worker lifecycle and failure
         pendingApprovals: 1,
         oldestQueueAgeSeconds: 30,
         averageQueueAgeSeconds: 10,
+        heldQueueReasons: { 'retained-thread': ['autonomy_paused'] },
+        unknownQueueAdmissionThreads: { 'unknown-thread': 1 },
+        heldActionableProjects: [{ owner: 'quinn', projectId: 'project-a', reason: 'bot_runtime_operator_paused' }],
+        unknownAdmissionOwners: ['james'],
         healthProblems: ['worker capacity'],
         supervisorTasks: {},
       },
@@ -234,6 +238,10 @@ test('Operations overview unifies canonical health, worker lifecycle and failure
     document.getElementById('refresh-operations').click();
   });
 
+  await expect(page.locator('#operations-runtime')).toContainText('retained-thread=autonomy_paused');
+  await expect(page.locator('#operations-runtime')).toContainText('unknown-thread=1');
+  await expect(page.locator('#operations-runtime')).toContainText('quinn@project-a: bot_runtime_operator_paused');
+  await expect(page.locator('#operations-runtime')).toContainText('unobserved owner admission: james');
   const overview = page.locator('#operations-overview');
   await expect(overview).toContainText('Runtime');
   await expect(overview).toContainText('degraded');

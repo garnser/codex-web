@@ -78,3 +78,26 @@ GET /api/projects/{project_id}/readiness
 ```
 
 Only then retry executable work. If a submitted turn was retained by execution preflight, use its authorized Retry action rather than submitting a duplicate side effect.
+
+## Intentional holds and runtime stalls
+
+Runtime readiness explains known admission holds without resuming work. In Operations,
+**Known queue holds** and **Known owner holds** show the canonical reason and affected
+Thread or Project. Queue depth and age still include every retained original.
+
+`heldQueueThreads` / `heldQueueReasons` describe old queued requests that ordinary
+admission cannot run, including retained requests awaiting reconciliation. The owner
+projection reports `autonomy.heldActionableProjects`. GLOBAL pauses affect ordinary
+automated queues; human origins retain their existing admission behavior. Project and
+bot-runtime pauses explain watchdog inactivity but do not confer a blanket hold on
+already queued native input. These observations grant no authority and never claim,
+remove, retry, or reconcile work.
+
+A mixed queue still fails readiness when a runnable original has stalled. Missing,
+failed, or bounded-out observations remain unhealthy through
+`unknownQueueAdmissionThreads` and `autonomy.unknownAdmissionOwners`. Governed pause
+exceptions require their existing admission witnesses; health does not execute those
+validators or assume a paused request is ineligible. An operator may therefore see
+known holds alongside unobserved admission that still needs canonical reconciliation.
+Disabled autonomy, dead tasks, terminal failures, dependency failures, and stale health
+snapshots retain their existing readiness failures.

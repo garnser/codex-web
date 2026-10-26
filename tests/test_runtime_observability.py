@@ -65,6 +65,10 @@ class RuntimeObservabilityTests(unittest.TestCase):
             _daemon_health=lambda: {
                 "ok": True,
                 "problems": [],
+                "heldQueueThreads": {"thread-1": 1},
+                "heldQueueReasons": {"thread-1": ["autonomy_paused"]},
+                "unknownQueueAdmissionThreads": {"thread-2": 1},
+                "autonomy": {"heldActionableProjects": [{"owner": "quinn", "projectId": "p", "reason": "autonomy_paused"}]},
                 "runtimeConnections": 2,
                 "slackBackfillCooldownRemainingSeconds": 12.5,
                 "gitlabSyncConsecutiveFailures": 1,
@@ -78,6 +82,10 @@ class RuntimeObservabilityTests(unittest.TestCase):
         self.assertTrue(snapshot["runtime"]["healthy"])
         self.assertEqual(snapshot["runtime"]["activeTurns"], 1)
         self.assertEqual(snapshot["runtime"]["queuedTurns"], 1)
+        self.assertEqual(snapshot["runtime"]["heldQueueReasons"], {"thread-1": ["autonomy_paused"]})
+        self.assertEqual(snapshot["runtime"]["unknownQueueAdmissionThreads"], {"thread-2": 1})
+        self.assertEqual(snapshot["runtime"]["heldActionableProjects"][0]["owner"], "quinn")
+
         self.assertGreaterEqual(snapshot["runtime"]["oldestQueueAgeSeconds"], 89)
         self.assertEqual(snapshot["runtime"]["pendingApprovals"], 1)
 

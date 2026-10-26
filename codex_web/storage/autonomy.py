@@ -176,6 +176,19 @@ class AutonomyStateStore:
         )
         return [AutonomyCycleRecord.model_validate(raw) for raw in rows.values()]
 
+    def observe_control(self) -> AutonomyControl:
+        """Read current control without initializing or migrating the ledger.
+
+        Diagnostics must report missing/incompatible coverage rather than
+        performing canonical writes or assuming an unobserved active policy.
+        """
+        values = self.store.record_get_many(self.namespace, ("schema_version", "control"))
+        if values.get("schema_version") != AUTONOMY_STATE_CONTRACT.current:
+            raise ValueError("autonomy control observation requires current schema")
+        if values.get("control") is None:
+            raise ValueError("autonomy control observation is unavailable")
+        return AutonomyControl.model_validate(values["control"])
+
     def control(self) -> AutonomyControl:
         self._ensure_records()
         version = self.store.record_get(self.namespace, "schema_version")

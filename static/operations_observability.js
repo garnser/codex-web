@@ -104,6 +104,8 @@
       <strong>Runtime · ${runtime.healthy ? "healthy" : "unhealthy"}</strong>
       <small>Active turns: ${escapeHtml(runtime.activeTurns)} · queued turns: ${escapeHtml(runtime.queuedTurns)} across ${escapeHtml(runtime.queueThreads)} thread(s) · pending approvals: ${escapeHtml(runtime.pendingApprovals)}</small>
       <small>Queue age: oldest ${duration(runtime.oldestQueueAgeSeconds)} · average ${duration(runtime.averageQueueAgeSeconds)}</small>
+      <small>Known queue holds: ${listText(runtime.heldQueueReasons)} · unobserved queue admission: ${listText(runtime.unknownQueueAdmissionThreads)}</small>
+      <small>Known owner holds: ${listText((runtime.heldActionableProjects || []).map((item) => `${item.owner}@${item.projectId}: ${item.reason}`))} · unobserved owner admission: ${listText(runtime.unknownAdmissionOwners)}</small>
       <small>Health problems: ${listText(runtime.healthProblems)}</small>
     </div>
     <div class="comm-entry">

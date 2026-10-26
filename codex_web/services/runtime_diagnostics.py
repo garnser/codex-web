@@ -159,6 +159,7 @@ class RuntimeHealthService:
         thread_is_active: Callable[[str], bool] | None = None,
         state_store_status: Callable[[], dict[str, Any]] | None = None,
         autonomy_health: Callable[[], dict[str, Any]] | None = None,
+        work_admission: Callable[[], Any] | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.codex = codex
@@ -178,6 +179,7 @@ class RuntimeHealthService:
         self.thread_is_active = thread_is_active or (lambda _thread_id: False)
         self.state_store_status = state_store_status or (lambda: {})
         self.autonomy_health = autonomy_health or (lambda: {})
+        self.work_admission = work_admission
         self.event_sink = event_sink
 
         self._snapshot_lock = threading.Lock()
@@ -423,13 +425,28 @@ class RuntimeHealthService:
         queued_turn_count = sum(
             len(items) for items in queues.values()
         )
-        stale_queues = {
-            thread_id: len(items)
-            for thread_id, items in queues.items()
-            if items
-            and now - min(item.created_at for item in items) > 900
-            and not self.thread_is_active(thread_id)
-        }
+        admission = self.work_admission() if self.work_admission is not None else None
+        stale_queues, held_queues, held_reasons, unknown_queues = {}, {}, {}, {}
+        for thread_id, items in queues.items():
+            if not items or self.thread_is_active(thread_id):
+                continue
+            for item in items:
+                if now - item.created_at <= 900:
+                    continue
+                observed = admission.queued(item) if admission is not None else {
+                    'state': 'unknown', 'code': 'admission_observation_unavailable'}
+                if observed['state'] == 'held':
+                    held_queues[thread_id] = held_queues.get(thread_id, 0) + 1
+                    held_reasons.setdefault(thread_id, set()).add(observed['code'])
+                elif observed['state'] == 'eligible':
+                    stale_queues[thread_id] = stale_queues.get(thread_id, 0) + 1
+                else:
+                    unknown_queues[thread_id] = unknown_queues.get(thread_id, 0) + 1
+        # Missing observations remain fail closed; held entries never hide an
+        # eligible stale input in the same queue. Total queue depth is unchanged.
+        if unknown_queues:
+            problems.append("queue admission coverage unavailable for "
+                            f"{len(unknown_queues)} thread(s)")
         if stale_queues:
             problems.append(
                 "queued turns have waited over 900s for "
@@ -529,6 +546,10 @@ class RuntimeHealthService:
                     "actionable owners are not active or queued: "
                     + ", ".join(idle_owners)
                 )
+            unknown_owners = list(autonomy.get("unknownAdmissionOwners") or [])
+            if unknown_owners:
+                problems.append("owner admission coverage unavailable for: "
+                                + ", ".join(unknown_owners))
 
         active_turn_count = int(
             self._profile(
@@ -557,6 +578,9 @@ class RuntimeHealthService:
                 self.terminal_recovery_tasks
             ),
             "staleQueueThreads": stale_queues,
+            "heldQueueThreads": held_queues,
+            "heldQueueReasons": {key: sorted(value) for key, value in held_reasons.items()},
+            "unknownQueueAdmissionThreads": unknown_queues,
             "recentDeliveryFailures": len(
                 recent_delivery_failures
             ),

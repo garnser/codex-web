@@ -404,6 +404,11 @@ class RuntimeService:
                 "healthProblems": list(
                     health.get("problems") or []
                 ),
+                "heldQueueThreads": dict(health.get("heldQueueThreads") or {}),
+                "heldQueueReasons": dict(health.get("heldQueueReasons") or {}),
+                "unknownQueueAdmissionThreads": dict(health.get("unknownQueueAdmissionThreads") or {}),
+                "heldActionableProjects": list((health.get("autonomy") or {}).get("heldActionableProjects") or []),
+                "unknownAdmissionOwners": list((health.get("autonomy") or {}).get("unknownAdmissionOwners") or []),
                 "activeTurns": len(active_turns),
                 "queuedTurns": len(queued),
                 "queueThreads": sum(

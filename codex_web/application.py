@@ -410,6 +410,7 @@ from codex_web.services.upgrades import UpgradeService
 from codex_web.services.identity import IdentityService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.runtime_work_admission import RuntimeWorkAdmission, actionable_owner_health
 from codex_web.services.runtime_diagnostics import (
     RuntimeDiagnosticsService,
     RuntimeHealthService,
@@ -4634,6 +4635,12 @@ def _execution_readiness_health():
     return payload
 
 
+def _runtime_work_admission():
+    return RuntimeWorkAdmission(control=autonomy_controller.store.observe_control(),
+        runtime_enabled=runtime_policy.autonomy_enabled(), projects=project_service,
+        gates=reconciliation_gate_service, preflights=execution_preflight_service.store)
+
+
 def _autonomy_health():
     enabled = runtime_policy.autonomy_enabled()
     supervisor = getattr(app.state, "runtime_supervisor", None)
@@ -4661,36 +4668,15 @@ def _autonomy_health():
         coerce_owner=work_item_state_machine._coerce_owner,
         actionable_stages=AutonomyService.ACTIONABLE_OWNER_STAGES,
     )
-    idle_actionable_owners = []
-    for owner in OWNER_QUEUE_AGENTS:
-        actionable_projects = actionable_projects_by_owner.get(owner, set())
-        if not actionable_projects:
-            continue
-        owner_is_active_or_queued = False
-        for actionable_project in actionable_projects:
-            binding = agent_channel_preference_service.binding_for_agent(
-                owner,
-                actionable_project,
-                preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
-            )
-            if (
-                binding is not None
-                and binding.thread_id
-                and (
-                    turn_execution_service.thread_is_active(
-                        binding.thread_id
-                    )
-                    or turn_queue_policy.depth(binding.thread_id)
-                )
-            ):
-                owner_is_active_or_queued = True
-                break
-        if not owner_is_active_or_queued:
-            idle_actionable_owners.append(owner)
     return {
         "enabled": enabled,
         "stoppedTasks": stopped,
-        "idleActionableOwners": idle_actionable_owners,
+        **actionable_owner_health(actionable_projects_by_owner, owners=OWNER_QUEUE_AGENTS,
+            admission=_runtime_work_admission(),
+            binding_for=lambda owner, project: agent_channel_preference_service.binding_for_agent(
+                owner, project, preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL),
+            thread_active=turn_execution_service.thread_is_active,
+            queue_depth=turn_queue_policy.depth),
     }
 
 
@@ -4712,6 +4698,7 @@ runtime_health_service = RuntimeHealthService(
     thread_is_active=turn_execution_service.thread_is_active,
     state_store_status=state_store.status,
     autonomy_health=_autonomy_health,
+    work_admission=_runtime_work_admission,
     event_sink=bot_runtime_telemetry.append,
 )
 app.state.static_asset_version_service = static_asset_version_service
