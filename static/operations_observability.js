@@ -106,6 +106,7 @@
       <small>Queue age: oldest ${duration(runtime.oldestQueueAgeSeconds)} · average ${duration(runtime.averageQueueAgeSeconds)}</small>
       <small>Known queue holds: ${listText(runtime.heldQueueReasons)} · unobserved queue admission: ${listText(runtime.unknownQueueAdmissionThreads)}</small>
       <small>Known owner holds: ${listText((runtime.heldActionableProjects || []).map((item) => `${item.owner}@${item.projectId}: ${item.reason}`))} · unobserved owner admission: ${listText(runtime.unknownAdmissionOwners)}</small>
+      <small>Missing queue Projects (project_not_found): ${listText(runtime.missingQueueAdmissionProjects)} · unknown owner Projects: ${listText((runtime.unknownActionableProjects || []).map((item) => `${item.owner}@${item.projectId}: ${item.reason}`))}</small>
       <small>Health problems: ${listText(runtime.healthProblems)}</small>
     </div>
     <div class="comm-entry">

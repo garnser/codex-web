@@ -427,6 +427,7 @@ class RuntimeHealthService:
         )
         admission = self.work_admission() if self.work_admission is not None else None
         stale_queues, held_queues, held_reasons, unknown_queues = {}, {}, {}, {}
+        unknown_projects = {}
         for thread_id, items in queues.items():
             if not items or self.thread_is_active(thread_id):
                 continue
@@ -442,6 +443,8 @@ class RuntimeHealthService:
                     stale_queues[thread_id] = stale_queues.get(thread_id, 0) + 1
                 else:
                     unknown_queues[thread_id] = unknown_queues.get(thread_id, 0) + 1
+                    if observed.get('code') == 'project_not_found':
+                        unknown_projects.setdefault(thread_id, set()).add(observed['projectId'])
         # Missing observations remain fail closed; held entries never hide an
         # eligible stale input in the same queue. Total queue depth is unchanged.
         if unknown_queues:
@@ -581,6 +584,7 @@ class RuntimeHealthService:
             "heldQueueThreads": held_queues,
             "heldQueueReasons": {key: sorted(value) for key, value in held_reasons.items()},
             "unknownQueueAdmissionThreads": unknown_queues,
+            "missingQueueAdmissionProjects": {key: sorted(value) for key, value in unknown_projects.items()},
             "recentDeliveryFailures": len(
                 recent_delivery_failures
             ),
