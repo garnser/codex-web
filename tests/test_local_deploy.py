@@ -5,6 +5,8 @@ import json
 import socket
 import threading
 import io
+import os
+import stat
 from scripts.local_deploy import report_diagnostic
 import subprocess
 import tempfile
@@ -19,6 +21,15 @@ from scripts.local_deploy import (health, set_service_revision, verify_canonical
 
 class CandidateMaterializationTests(unittest.TestCase):
     def setUp(self):
+        # Begin with an already service-readable repository. The permission
+        # regression applies 0077 only to the actual installer Git operations.
+        previous_umask = os.umask(0o022)
+        try:
+            self._set_up_repositories()
+        finally:
+            os.umask(previous_umask)
+
+    def _set_up_repositories(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -62,6 +73,49 @@ class CandidateMaterializationTests(unittest.TestCase):
         self.assertEqual(self.git(self.live, "status", "--porcelain"), "")
         checkout(self.live, self.candidate)
         self.assertEqual((self.live / "candidate.txt").read_text(), "qualified candidate\n")
+
+    def test_private_operator_umask_keeps_code_and_git_metadata_readable(self):
+        nested = self.seed / "new_package" / "nested"
+        nested.mkdir(parents=True)
+        (nested / "module.py").write_text("VALUE = 'qualified'\n")
+        executable = nested / "tool"
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+        self.git(self.seed, "add", ".")
+        self.git(self.seed, "commit", "-m", "Nested candidate")
+        self.candidate = self.git(self.seed, "rev-parse", "HEAD").strip()
+        self.git(self.seed, "push", "origin", "main")
+        self.git(self.source, "fetch", "origin")
+        private = self.live / "data"
+        private.mkdir(mode=0o700)
+        secret = private / "credential.fixture"
+        secret.write_text("private fixture only\n")
+        secret.chmod(0o600)
+        (self.live / ".git" / "info" / "exclude").write_text("data/\n")
+        original = (secret.read_bytes(), private.stat().st_mode, secret.stat().st_mode)
+        previous_umask = os.umask(0o077)
+        try:
+            self.materialize()
+            checkout(self.live, self.candidate)
+            self.assertEqual(os.umask(0o077), 0o077)
+            journal = self.root / "private-journal.fixture"
+            journal.write_text("operator journal remains private\n")
+            self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(stat.S_IMODE((self.live / "new_package").stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((self.live / "new_package/nested").stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((self.live / "new_package/nested/module.py").stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((self.live / "new_package/nested/tool").stat().st_mode), 0o755)
+        for path in (self.live / ".git").rglob("*"):
+            with self.subTest(git_path=path.relative_to(self.live)):
+                mode = stat.S_IMODE(path.stat().st_mode)
+                self.assertEqual(mode & (0o055 if path.is_dir() else 0o044),
+                                 0o055 if path.is_dir() else 0o044)
+        self.assertEqual((secret.read_bytes(), private.stat().st_mode, secret.stat().st_mode), original)
+        self.assertEqual((self.live / "old.txt").read_text(), "original\n")
+        self.assertEqual(self.git(self.live, "rev-parse", "HEAD").strip(), self.candidate)
+        self.assertEqual(self.git(self.live, "status", "--porcelain"), "")
 
     def test_complete_candidate_does_not_fetch(self):
         self.materialize()

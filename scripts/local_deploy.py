@@ -57,10 +57,11 @@ def report_diagnostic(plan_id: str | None, source: str, target: str, phase: str,
         print(json.dumps({"event": "diagnostic_unavailable", "phase": phase}), flush=True)
 
 
-def run(*args: str, check: bool = True, timeout: int = 900) -> subprocess.CompletedProcess[str]:
+def run(*args: str, check: bool = True, timeout: int = 900,
+        umask: int = -1) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(args), flush=True)
     return subprocess.run(args, check=check, text=True, capture_output=True, timeout=timeout,
-                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, umask=umask)
 
 
 def git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -72,9 +73,12 @@ def revision(path: Path, value: str = "HEAD") -> str:
 
 
 def safe_git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    # A privileged caller may keep journals and runtime DATA private with 0077.
+    # Only Git's code/object/metadata writes need service-reader access; changing
+    # the parent umask or recursively chmodding the checkout would expose DATA.
     return run("git", "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false",
                "-c", "fetch.unpackLimit=1", "-c", "transfer.unpackLimit=1",
-               "-C", str(path), *args, check=check, timeout=120)
+               "-C", str(path), *args, check=check, timeout=120, umask=0o022)
 
 
 def origin_identity(value: str) -> tuple[str, str, str]:

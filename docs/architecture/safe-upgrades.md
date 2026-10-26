@@ -225,6 +225,15 @@ tree and the same archive digest before restarting. Object materialization
 changes no API or persisted schema and retains canonical authority and rollback
 gates.
 
+Git subprocesses use a child-only `0022` umask so privileged fetches and
+checkouts leave tracked code, traversed directories and revision metadata
+readable by the unprivileged service account. The operator's own restrictive
+umask remains unchanged for journals and runtime data. The installer does not
+recursively change checkout permissions or ownership: ignored DATA, credentials
+and other untracked paths retain their existing protection. This access contract
+does not relax the clean-tree, exact-source, canonical qualification or restart
+verification gates.
+
 The existing Control Center includes recent completed Plans and a scoped local
 installation inspector. Its admin/MFA (or `upgrade:admin` service) read joins the
 canonical Plan, Release, post-upgrade Evidence and up to eight matching installer
