@@ -200,34 +200,70 @@ class RecoveryReconciliationService:
         return state.reconciliations.get(event_id)
 
 
-def unresolved_unknown(service, state, actor, latest_backup, latest_verify):
-    """History remains unknown; explicit proof never replaces fresh recovery."""
-    from codex_web.recovery import RestoreVerificationStatus
+def _validated_custody_records(service, state, actor):
+    """Return scoped proof-validated settlements, or None for unresolved custody."""
     scoped = [f for f in state.scheduled_firings.values()
         if (f.organization_id, f.workspace_id) == (actor.organization_id, actor.workspace_id)]
     pending = [f for f in scoped if f.status == "unknown"]
     reconciled = [r for r in state.reconciliations.values()
         if (r.original.organization_id, r.original.workspace_id) == (actor.organization_id, actor.workspace_id)]
     if not pending and not reconciled:
-        return False
+        return []
     if not hasattr(service.evidence, "store"):
-        return True
+        return None
     evidence = service.evidence.store.load()
     for firing in pending:
         record = state.reconciliations.get(firing.event_id)
         if record is None or not record.custody_released or record.outcome not in ("failed", "unknown"):
-            return True
+            return None
         try:
             validate_proof(evidence, record.request, record.original, actor, float(service.clock()))
         except RecoveryConflictError:
-            return True
+            return None
     for record in reconciled:
         # Even a proven successful historical effect is not fresh qualification.
         # Evidence revocation or expiration is not ignored by the consumer.
         try:
             validate_proof(evidence, record.request, record.original, actor, float(service.clock()))
         except RecoveryConflictError:
-            return True
+            return None
+    return reconciled
+
+
+def capture_custody_released(service, *, actor):
+    """Capture-only: current settled custody may precede fresh backup verification.
+
+    Never infers a remote owner is idle from an empty local executor. Every
+    historical UNKNOWN must retain its independently verified fencing proof.
+    Ordinary Recovery health still requires a newer matching backup/PASS.
+    """
+    if not hasattr(service, "store"):
+        return False
+    state = service.store.load()
+    RecoveryPolicyControl(service).require_scope(state, actor)
+    scope = (actor.organization_id, actor.workspace_id)
+    scoped = [f for f in state.scheduled_firings.values()
+              if (f.organization_id, f.workspace_id) == scope]
+    if any(f.status == "running" for f in scoped):
+        return False
+    for firing in scoped:
+        record = state.reconciliations.get(firing.event_id)
+        if firing.status == "unknown" and record is not None and (
+                record.original.organization_id, record.original.workspace_id) != scope:
+            return False
+    records = _validated_custody_records(service, state, actor)
+    # No records cannot explain this blocker. Require explicit release even for
+    # settlements no longer referenced by a pending UNKNOWN firing.
+    return bool(records) and all(record.custody_released is True for record in records)
+
+
+def unresolved_unknown(service, state, actor, latest_backup, latest_verify):
+    """History remains unknown; explicit proof never replaces fresh recovery."""
+    from codex_web.recovery import RestoreVerificationStatus
+    reconciled = _validated_custody_records(service, state, actor)
+    if reconciled is None:
+        return True
+    for record in reconciled:
         if (latest_backup is None or latest_verify is None
                 or latest_backup.created_at <= record.reconciled_at
                 or latest_verify.verified_at <= record.reconciled_at

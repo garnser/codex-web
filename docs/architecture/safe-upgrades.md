@@ -339,6 +339,16 @@ its version, actual Recovery executor idle status, and a fresh canonical Upgrade
 preflight with zero action/assignment/native/fenced counts. Capture alone may
 proceed despite the exact stale RPO/restore-freshness/RTO qualification blockers;
 other compatibility, authority, scheduled-owner or recovery failures still refuse.
+A settled scheduled UNKNOWN can leave the reconciliation health blocker present
+when a newer captured backup has not yet earned a matching restore PASS. Capture
+alone may proceed in that case only after rereading canonical Recovery and
+independent Evidence/Verification: every unknown custody is explicitly released,
+all retained fencing/owner/effect proofs remain valid and unexpired, and no
+scoped scheduled firing is running. Missing, revoked, non-independent or invalid
+proof still refuses; local executor idleness never proves a foreign owner idle.
+The same check repeats at both capture boundaries. This neither changes UNKNOWN
+to success nor qualifies deployment: ordinary Recovery health still requires a
+newer matching backup and isolated restore PASS, current policy and RPO/RTO.
 It durably writes `pre-stop-qualified.json`. Only then may the reviewed operator
 procedure stop the positively drained service. The helper waits at most 30
 seconds for that same invocation to exit cleanly, and refuses a replacement,

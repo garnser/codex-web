@@ -80,6 +80,11 @@ def qualify_capture(upgrades, observed_plan, *, actor, source_revision,
             or release.status in {'blocked', 'superseded', 'rolled_back'}):
         raise UpgradePreflightError('Preinstall backup Release binding changed')
     pf = plan.preflight
+    permitted_blockers = _CAPTURE_RECOVERY_BLOCKERS
+    if pf is not None and 'recovery:scheduled_recovery_requires_reconciliation' in pf.blockers:
+        from codex_web.services.recovery_reconciliation import capture_custody_released
+        if capture_custody_released(upgrades.recovery, actor=actor):
+            permitted_blockers = permitted_blockers | {'recovery:scheduled_recovery_requires_reconciliation'}
     if (pf is None or not pf.evidence_id
             or pf.service_instance_id != service_instance_id
             or pf.admission_epoch != plan.admission_epoch
@@ -89,7 +94,7 @@ def qualify_capture(upgrades, observed_plan, *, actor, source_revision,
             or (offline is None and now - pf.evaluated_at > 30)
             or pf.active_action_intents or pf.active_worker_assignments
             or pf.active_native_admissions or pf.active_fenced_admissions
-            or set(pf.blockers) - _CAPTURE_RECOVERY_BLOCKERS
+            or set(pf.blockers) - permitted_blockers
             or pf.satisfied != (not pf.blockers)
             or pf.incompatible_worker_ids or pf.incompatible_extension_ids
             or pf.incompatible_definition_record_ids
