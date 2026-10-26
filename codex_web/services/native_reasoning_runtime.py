@@ -7,6 +7,8 @@ validator; those are checked by the same credential owner at every lease edge.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import contextlib
+import hashlib
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +24,8 @@ from codex_web.services.codex_reasoning_credentials import TrustedLocalReasoning
 from codex_web.services.codex_reasoning_policy import (ReasoningOnlyCodexRuntime,
     ReasoningOnlyCodexAdapter, NativeReasoningPolicyError, QUALIFIED_CODEX_VERSION)
 from codex_web.services.native_model_provider import (NativeCodexModelProviderAdapter,
-    current_native_model_invocation)
+    current_native_model_invocation, _current_native_model_invocation,
+    NativeReasoningPreparationError)
 from codex_web.services.native_reasoning_bridge import CanonicalNativeReasoningBridge
 
 
@@ -67,7 +70,50 @@ class ReasoningSessionManager(AssignmentBoundAgentProcessSessionManager):
         if context.process_owner is None:
             raise NativeReasoningPolicyError('Native process join owner unavailable')
         context.process_owner.attach(assignment_id, lambda: self.stop(assignment_id))
-        return await super().start(assignment_id)
+        session = await super().start(assignment_id)
+        session._native_invocation_context = context
+        session._native_invocation_fence = session.fence
+        return session
+
+    @contextlib.contextmanager
+    def queued_input_context(self, queued):
+        """Carry this serving owner's original scope, never a queue bearer grant.
+
+        A queue consumer may predate the consultation. Its ambient ContextVar
+        is consequently neither sufficient nor required for this exact input.
+        All canonical preparation and final writer checks still run in scope.
+        """
+        matches = [session for session in self.sessions.values()
+            if (context := getattr(session, '_native_invocation_context', None)) is not None
+            and context.process_owner is not None
+            and context.process_owner.native_session_id == queued.thread_id]
+        if not matches:
+            yield
+            return
+        if len(matches) != 1:
+            raise NativeReasoningPolicyError('Original native serving owner is ambiguous')
+        serving = matches[0]
+        context = serving._native_invocation_context
+        owner = context.process_owner
+        binding = self.reasoning_binding
+        if (owner.assignment_id != serving.assignment_id
+                or serving.fence != serving._native_invocation_fence
+                or queued.execution_id != context.execution_id
+                or queued.project_id != context.project_id
+                or queued.agent_profile_actor_id != context.actor_id
+                or queued.agent_profile_id != binding.agent_profile_id
+                or queued.agent_profile_revision != binding.agent_profile_revision
+                or queued.execution_profile_id != binding.execution_profile_id
+                or queued.model != context.concrete_model
+                or queued.sandbox != 'read-only' or queued.approval_policy != 'never'
+                or hashlib.sha256(queued.message.encode()).hexdigest() != context.input_message_sha256):
+            raise NativeReasoningPolicyError('Original queued native invocation binding changed')
+        owner.validate_current()
+        token = _current_native_model_invocation.set(context)
+        try:
+            yield
+        finally:
+            _current_native_model_invocation.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +205,7 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
         # this permits only the native inference protocol's first-party hosts.
         egress_endpoints_resolver=lambda: (AgentRuntimeModelEgressEndpoint('chatgpt.com', 443),),
         control_plane_broker_factory=None)
+    manager.reasoning_binding = binding
     adapter = ReasoningOnlyCodexAdapter(SimpleNamespace(host=host))
 
     def attest(serving, expected, context, model):
@@ -193,7 +240,10 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
 
     def preparation_context(*, assignment, actor, project, sandbox, request_checksum):
         from codex_web.services.procedure_discovery import OperationContext, checksum
-        context = current_native_model_invocation()
+        try:
+            context = current_native_model_invocation()
+        except Exception as exc:
+            raise NativeReasoningPreparationError('invocation_context') from exc
         serving = manager.get(assignment.id)
         if (serving is None or context.requester is None
                 or (actor.identity_id,actor.organization_id,actor.workspace_id,actor.principal_kind) !=
@@ -201,8 +251,11 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
                 or project.id != context.project_id
                 or sandbox != 'read-only' or not request_checksum
                 or request_checksum != context.input_message_sha256):
-            raise NativeReasoningPolicyError('Native reasoning original input proof unavailable')
-        attest(serving, assignment, context, SimpleNamespace(concrete_model=binding.concrete_model))
+            raise NativeReasoningPreparationError('original_input_binding')
+        try:
+            attest(serving, assignment, context, SimpleNamespace(concrete_model=binding.concrete_model))
+        except Exception as exc:
+            raise NativeReasoningPreparationError('session_attestation') from exc
         proof = checksum({'assignment':assignment.id,'fence':assignment.fence,
             'execution':assignment.execution_id,'workspace':assignment.execution_workspace_id,
             'activation':context.activation_id,'role':context.role_id,
@@ -249,6 +302,15 @@ def register_native_reasoning_components(components, *, gateway, registry, telem
     if turn_execution.procedure_admission is None:
         raise NativeReasoningPolicyError('Canonical native procedure admission unavailable')
     turn_execution.procedure_admission.reasoning_preparation = components.preparation_context
+    turn_execution.native_reasoning_input_context = components.manager.queued_input_context
+    previous_admission_observer = turn_execution.queued_preflight.queued_disposition_observer
+    def admitted(attempt):
+        try:
+            components.bridge.observe_admission(attempt)
+        finally:
+            if previous_admission_observer is not None:
+                previous_admission_observer(attempt)
+    turn_execution.queued_preflight.queued_disposition_observer = admitted
     previous_notifier = telemetry.observation_notifier
     def observed(record):
         try:

@@ -382,6 +382,23 @@ caller authorization is evaluated only if a scoped native route is selected.
 Native completed commentary and final answers remain separate; only a bounded
 completed final answer is returned as the model result.
 
+An already-running queue consumer can predate the private consultation context.
+The original serving session therefore retains its ephemeral invocation binding
+and restores it only around the exact queued input's canonical preparation and
+send. Thread, logical execution, requester, Profile/contract, model, input digest,
+serving fence and current cancellation/deadline must match; the surrounding task's
+context is restored afterward. This is not a public source-prefix exception or
+durable bearer credential. Scope, lease, Skill, caller and native writer guards
+remain mandatory.
+
+A typed local preparation refusal may retain an original claim/snapshot-bound
+preinput witness in the existing preflight record. Its notification only wakes
+the bridge: the bridge re-reads the exact canonical original before returning a
+known refusal. A plain blocked label, changed witness, possible START/resume or
+missing observation remains unknown. Neither branch retries the consultation.
+Preparation blockers expose only a fixed stage and allowlisted exception class,
+without exception prose or request contents.
+
 Native reasoning startup uses the existing Configuration Registry, category
 `Model & Provider`, with startup-only `model.native_reasoning.*` keys:
 `enabled` (default false), `provider_id`, `model_id`, `concrete_model`,

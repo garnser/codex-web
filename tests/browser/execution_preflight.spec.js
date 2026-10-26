@@ -1,5 +1,15 @@
 const { test, expect } = require('@playwright/test');
 
+test('native preparation refusal shows closed diagnostics and original preflight without replay', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?nativePreparation');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const card = page.locator('.message.tool');
+  await expect(card).toContainText('Native preparation: invocation_context · exception RuntimeError');
+  await expect(card).toContainText('Original preflight: preflight-thread-turn-1');
+  await expect(card).toContainText('diagnostics do not authorize retry');
+  expect(await page.evaluate(() => window.__apiCalls.filter(item => item.method === 'POST'))).toEqual([]);
+});
+
 test('exhausted healthy runner exposes retained-message renewal and authorized retry', async ({page}) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?assignmentExhausted');
   await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);

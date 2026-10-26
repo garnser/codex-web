@@ -66,6 +66,11 @@
       updated_at: 1800000010,
       blockers: [blocker],
     }];
+    if (new URLSearchParams(location.search).has('nativePreparation')) {
+      attempts[0].blockers = [{code: 'native_reasoning_preparation_unavailable',
+        message: 'Current canonical tool-free reasoning preparation is unavailable',
+        native_preparation_stage: 'invocation_context', native_exception_type: 'RuntimeError'}];
+    }
     if (new URLSearchParams(location.search).has('ownerRecovery')) {
       attempts[0].queued_turn_snapshot = {id: 'owner-recovery-retained',
         owner_lane_recovery: {failed_assignment_id: 'lost-owner-assignment',

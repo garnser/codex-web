@@ -27,8 +27,9 @@ class NativeReasoningRegistrationTests(unittest.TestCase):
         self.previous_notifier = Mock()
         self.telemetry = NS(observation_notifier=self.previous_notifier, subscribe=Mock())
         self.gateway, self.registry, self.executives = Mock(), Mock(), NS()
-        self.components = NS(manager=object(), runtime_adapter=object(), model_adapter=object(),
-            bridge=NS(observe_usage=Mock()), invocation_authorizer=object(),
+        self.execution.queued_preflight = NS(queued_disposition_observer=None)
+        self.components = NS(manager=NS(queued_input_context=Mock()), runtime_adapter=object(), model_adapter=object(),
+            bridge=NS(observe_usage=Mock(), observe_admission=Mock()), invocation_authorizer=object(),
             preparation_context=object())
         self.binding = ExecutionRuntimeBinding(provider_id='openai', runtime_id='codex-reasoning',
             capability_revision=1)
@@ -60,6 +61,8 @@ class NativeReasoningRegistrationTests(unittest.TestCase):
                           self.fallback.return_value)
         self.assertIs(self.execution.procedure_admission.reasoning_preparation,
                       self.components.preparation_context)
+        self.assertIs(self.execution.native_reasoning_input_context,
+                      self.components.manager.queued_input_context)
         self.assertIs(self.executives.native_invocation_authorizer,
                       self.components.invocation_authorizer)
         self.registry.register.assert_called_once()

@@ -657,9 +657,21 @@ class NativeProcedureAdmissionService:
                                               sandbox, request_checksum),
                     seconds=5., name='native-reasoning-procedure-context')
             except Exception as exc:
+                # The original local preparation owner alone supplies these
+                # closed diagnostics. Exception prose and provider payloads do
+                # not enter the retained blocker or confer retry authority.
+                from codex_web.services.threads import bootstrap_exception_type
+                from codex_web.services.native_model_provider import NativeReasoningPreparationError
+                stage = 'procedure_context'
+                diagnostic_exception = exc
+                if isinstance(exc, NativeReasoningPreparationError):
+                    stage = exc.stage
+                    diagnostic_exception = exc.__cause__ or exc
                 raise ExecutionPrestartRefusal(status_code=409, detail={
                     'code':'native_reasoning_preparation_unavailable',
-                    'message':'Current canonical tool-free reasoning preparation is unavailable'}) from exc
+                    'message':'Current canonical tool-free reasoning preparation is unavailable',
+                    'native_preparation_stage':stage,
+                    'native_exception_type':bootstrap_exception_type(diagnostic_exception)}) from exc
         else:
             targets = assignment.resource_ids if assignment is not None else ()
             enforcement, policy_source = await asyncio.to_thread(self._native_policy, assignment, actor, project, sandbox)

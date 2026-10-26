@@ -279,6 +279,7 @@ class TurnExecutionService:
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
         self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
+        self.native_reasoning_input_context = None
         self.thread_handoffs: set[str] = set()
         self.activity_heartbeat_at: dict[str, float] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
@@ -4326,7 +4327,10 @@ class TurnExecutionService:
                         attempt_id=retained_attempt.id, claim_id=admission_claim_id)
                 restart_context = await PostTurnReadinessService._run_owned(prepare_restart_context,
                     seconds=10, name='home-restart-admission-' + queued.id)
-            with restart_context:
+            reasoning_context = contextlib.nullcontext()
+            if self.native_reasoning_input_context is not None:
+                reasoning_context = self.native_reasoning_input_context(queued)
+            with restart_context, reasoning_context:
                 start_response = await self.start_thread_turn_now(
                     thread_id,
                     project=project,

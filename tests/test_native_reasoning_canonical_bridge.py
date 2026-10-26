@@ -32,6 +32,9 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_thread_turn_original_start_and_usage_complete_once(self):
         await self._run_private_case()
 
+    async def test_original_serving_scope_reaches_existing_contextless_queue_consumer(self):
+        await self._run_private_case(existing_consumer=True)
+
     async def test_null_gateway_budget_keeps_actual_joint_context_capacity(self):
         await self._run_private_case(token_optout=True)
 
@@ -43,7 +46,7 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
                                      expected_refusal=True)
 
     async def _run_private_case(self, *, token_optout=False, input_usage=11000,
-                                output_usage=256, expected_refusal=False):
+                                output_usage=256, expected_refusal=False, existing_consumer=False):
         f=canonical_fixtures.HomeCanonicalSendTests()
         self.addAsyncCleanup(self.cleanup,f)
         await f.asyncSetUp()
@@ -104,6 +107,8 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
                     else:result={'thread':{'id':'native-reasoning-thread'}}
                     await native._dispatch_message({'id':message['id'],'result':result})
                 native._send=send;session.runtime=native;native_sessions[assignment_id]=session
+                session._native_invocation_context=context
+                session._native_invocation_fence=session.fence
                 return session
             async def stop(self,assignment_id):
                 if native_sessions.pop(assignment_id,None) is not None:
@@ -134,6 +139,20 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
         binding=NativeReasoningBinding(provider_id='native',model_id='model',concrete_model='model',
             agent_profile_id=profile.profile_id,agent_profile_revision=profile.revision,
             execution_profile_id='reasoning-only',worker_id=f.f.worker.id)
+        from codex_web.services.native_reasoning_runtime import ReasoningSessionManager
+        manager.reasoning_binding=binding
+        manager.queued_input_context=ReasoningSessionManager.queued_input_context.__get__(manager)
+        f.execution.native_reasoning_input_context=manager.queued_input_context
+        if existing_consumer:
+            original_drain=f.execution.drain_thread_queue
+            async def held_drain(thread_id):
+                while not f.queue_store.get(thread_id):
+                    await asyncio.sleep(.001)
+                await original_drain(thread_id)
+            f.execution.drain_thread_queue=held_drain
+            # Created before adapter.invoke_scoped binds its private context.
+            f.execution.schedule_queue_drain('native-reasoning-thread')
+            existing_task=f.execution.queue_drain_tasks['native-reasoning-thread']
         bridge=CanonicalNativeReasoningBridge(binding=binding,threads=threads,turns=f.turns,sessions=f.sessions.store,
             usage=usage,preflight=f.execution.queued_preflight,execution=f.execution,hub=hub,
             attest_session=lambda serving,assignment,context,model:serving.validate_current())
@@ -204,6 +223,9 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(f.f.workers.store.assignment(active.assignment_id).status,'succeeded')
             return
         result=await asyncio.wait_for(invocation,5)
+        if existing_consumer:
+            await existing_task
+            self.assertTrue(existing_task.done())
         self.assertEqual(result.text,'{"answer":"ok"}')
         if token_optout:
             self.assertEqual((result.invocation.attempts[0].input_tokens,

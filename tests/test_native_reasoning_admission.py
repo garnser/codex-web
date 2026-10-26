@@ -65,6 +65,22 @@ class NativeReasoningAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.admission.reasoning_preparation=preparation
         with self.assertRaises(ExecutionPrestartRefusal):await self.admit(request_checksum='b'*64)
 
+    async def test_actual_preparation_cause_is_closed_stage_and_exception_not_prose(self):
+        from codex_web.services.native_model_provider import NativeReasoningPreparationError
+        for stage in ('invocation_context', 'original_input_binding', 'session_attestation'):
+            def unavailable(**kwargs):
+                try:
+                    raise RuntimeError('private fixture detail must never be projected')
+                except RuntimeError as exc:
+                    raise NativeReasoningPreparationError(stage) from exc
+            self.admission.reasoning_preparation = unavailable
+            with self.subTest(stage=stage), self.assertRaises(ExecutionPrestartRefusal) as caught:
+                await self.admit()
+            detail = caught.exception.detail
+            self.assertEqual(detail['native_preparation_stage'], stage)
+            self.assertEqual(detail['native_exception_type'], 'RuntimeError')
+            self.assertNotIn('private fixture', str(detail))
+
     async def test_final_native_guard_rechecks_current_attested_fence(self):
         f=self.fixture
         result,_=await self.admit()
