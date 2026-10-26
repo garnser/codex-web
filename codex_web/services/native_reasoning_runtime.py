@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.execution_workers import ExecutionRuntimeBinding
+from codex_web.resources import (RepositoryExecutionScope, RepositoryExecutionTarget,
+    RepositoryTargetSource, RepositoryWriteMode)
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.services.agent_model_egress import AgentRuntimeModelEgressEndpoint
 from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSessionManager
@@ -22,6 +24,29 @@ from codex_web.services.codex_reasoning_policy import (ReasoningOnlyCodexRuntime
 from codex_web.services.native_model_provider import (NativeCodexModelProviderAdapter,
     current_native_model_invocation)
 from codex_web.services.native_reasoning_bridge import CanonicalNativeReasoningBridge
+
+
+def _empty_repository_scope(assignment):
+    """Accept canonical repository-free provenance without granting a repository."""
+    scope, target = assignment.repository_scope, assignment.repository_target
+    # Retain the older absent-envelope representation, but never let an absent
+    # scope hide a target or an orphan scope bypass target consistency.
+    if scope is None or target is None:
+        return scope is None and target is None
+    tenant = (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+    return (
+        isinstance(scope, RepositoryExecutionScope)
+        and isinstance(target, RepositoryExecutionTarget)
+        and (scope.organization_id, scope.workspace_id, scope.project_id) == tenant
+        and (target.organization_id, target.workspace_id, target.project_id) == tenant
+        and scope.source == target.source == RepositoryTargetSource.ORCHESTRATION_ONLY
+        and scope.source_ref == target.source_ref == 'explicit'
+        and scope.write_mode == RepositoryWriteMode.SINGLE
+        and not scope.writable_repository_ids and not scope.read_only_repository_ids
+        and target.mutable_repository_id is None and not target.read_only_repository_ids
+        and not scope.selection_evidence and not target.selection_evidence
+        and scope == RepositoryExecutionScope.from_target(target)
+    )
 
 
 class ReasoningCodexSession(AssignmentBoundCodexSession):
@@ -77,7 +102,7 @@ def build_native_reasoning_components(*, binding, local_worker, host, codex_home
             (context.organization_id, context.workspace_id, context.project_id,
              binding.worker_id, binding.execution_profile_id)
                 or assignment.resource_ids or assignment.secret_refs
-                or assignment.repository_scope is not None or assignment.resource_context is not None
+                or not _empty_repository_scope(assignment) or assignment.resource_context is not None
                 or assignment.sandbox != 'read-only' or assignment.network.enabled
                 or profile is None or profile.profile_id != binding.agent_profile_id
                 or profile.profile_revision != binding.agent_profile_revision

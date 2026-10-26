@@ -420,7 +420,13 @@ Existing operator diagnostic surfaces consume these events; no new UI control
 or authority is introduced.
 
 Current tenant, Profile revision, Definition, worker, empty physical workspace
-and live resource lease are revalidated at preparation and final input. Existing
+and live resource lease are revalidated at preparation and final input. Canonical
+scratch binding retains an empty `orchestration_only` repository target and scope
+rather than omitting the envelopes. Native preparation accepts only matching
+current-tenant/project, explicit, single-mode envelopes without repository IDs or
+selection evidence; nonempty, mismatched and cross-scope envelopes refuse. The
+older representation with both envelopes absent remains compatible. This changes
+no persisted schema, capabilities or credential authority (#1831). Existing
 Skill discovery receives the exact `model.reasoning` operation and attested empty
 tool capability sets: unrelated remote mutation procedures are unmatched, while
 explicit missing/quarantined/version-skewed Skill pins and applicable procedures
