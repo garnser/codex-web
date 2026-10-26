@@ -537,25 +537,31 @@ class ExecutionPreflightStore:
         self.store.record_mutate(self.NAMESPACE,(*keys,batch_key),refuse)
         return result
 
+    @classmethod
+    def queued_retention_matches(cls, current, *, organization_id, workspace_id,
+                                 project_id, snapshot):
+        """Pure identity comparison shared by retention and diagnostic readers."""
+        expected = current.queued_turn_snapshot
+        if expected is not None and current.replacement_thread_id:
+            expected = dict(expected)
+            original_thread = expected.get('thread_id')
+            expected['thread_id'] = current.replacement_thread_id
+            reply = expected.get('reply_target')
+            if reply and reply.get('thread_id') == original_thread:
+                expected['reply_target'] = dict(reply, thread_id=current.replacement_thread_id)
+        return (current.organization_id == organization_id
+                and current.workspace_id == workspace_id
+                and current.project_id == project_id
+                and cls.queued_snapshots_equal(expected, snapshot))
+
     def retain_queued(self, attempt: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
         """Commit the full request before queue removal; retries preserve its state."""
         def retain(raw):
             if raw is not None:
                 current = ExecutionPreflightAttempt.model_validate(raw)
-                expected = current.queued_turn_snapshot
-                if expected is not None and current.replacement_thread_id:
-                    expected = dict(expected)
-                    original_thread = expected.get('thread_id')
-                    expected['thread_id'] = current.replacement_thread_id
-                    reply = expected.get('reply_target')
-                    if reply and reply.get('thread_id') == original_thread:
-                        expected['reply_target'] = dict(reply, thread_id=current.replacement_thread_id)
-                if (
-                    current.organization_id != attempt.organization_id
-                    or current.workspace_id != attempt.workspace_id
-                    or current.project_id != attempt.project_id
-                    or not self.queued_snapshots_equal(expected, attempt.queued_turn_snapshot)
-                ):
+                if not self.queued_retention_matches(current,
+                        organization_id=attempt.organization_id, workspace_id=attempt.workspace_id,
+                        project_id=attempt.project_id, snapshot=attempt.queued_turn_snapshot):
                     raise ValueError("retained queued request identity changed")
                 return raw
             return attempt.model_dump(mode="json")

@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from codex_web.identity import AuthenticationActor
+from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.reconciliation_gates import (
     ReconcilerDeclaration,
     ReconcilerStartupClass,
@@ -91,7 +91,7 @@ class ReconciliationGateService:
     @staticmethod
     def _same_scope(
         value: ReconciliationProjectControl | ReconciliationMaintenanceLease,
-        actor: AuthenticationActor,
+        actor: AuthenticationActor | TenantScope,
     ) -> bool:
         return (
             value.organization_id == actor.organization_id
@@ -102,7 +102,7 @@ class ReconciliationGateService:
         self,
         service_id: str,
         project_id: str,
-        actor: AuthenticationActor,
+        actor: AuthenticationActor | TenantScope,
     ) -> ReconciliationProjectControl:
         state = self._load()
         current = next(
@@ -123,6 +123,15 @@ class ReconciliationGateService:
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
         )
+
+    def operator_paused(self, service_id: str, project_id: str, *, scope: TenantScope) -> bool:
+        """Read the canonical pause without readiness probes or identity creation.
+
+        This is an observation, not an authorization or an eligibility decision.
+        """
+        if service_id not in self._declarations:
+            raise ReconciliationGateError(f"reconciler is not declared: {service_id}")
+        return self._control(service_id, project_id, scope).paused
 
     def _active_maintenance(
         self,

@@ -164,6 +164,8 @@ class RuntimeHealthServiceTests(unittest.TestCase):
                 load_queues=lambda: {"thread-1": [queued]},
                 slack_provider_health=lambda: {},
                 gitlab_sync_status=lambda: {},
+                work_admission=lambda: SimpleNamespace(queued=lambda item: {
+                    'state': 'eligible', 'code': 'no_known_hold'}),
             )
 
             snapshot = service.refresh_sync()
