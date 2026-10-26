@@ -323,7 +323,7 @@ for line in sys.stdin:
 
     async def test_resource_timeout_reports_distinct_stage_and_never_caches_partial_scan(self):
         from unittest.mock import patch
-        from codex_web.storage.state_store import check_operation_budget
+        from codex_web.storage.state_store import check_operation_budget, storage_operation_budget
         for stage, owner, attribute in (
             ('resource_disk_seconds', self.backend, 'execution_disk_usage'),
             ('resource_readonly_seconds', self.local_worker, 'readonly_disk_bytes'),
@@ -331,31 +331,52 @@ for line in sys.stdin:
         ):
             with self.subTest(stage=stage):
                 session, gate = await self.session()
-                session._bound_assignment = self.short_lease(session.assignment_id)
-                session._clock = time.time
                 session.last_disk_validation_monotonic = None
                 cached = session.last_disk_bytes
+                entered = threading.Event()
+
                 def blocked(*args):
+                    # Expire this real operation budget only after reaching the
+                    # selected stage. A short lease before setup can expire in
+                    # queue/authority reads and never exercise the resource scan.
+                    budget = storage_operation_budget.get()
+                    self.assertIsNotNone(budget)
+                    budget.deadline = min(budget.deadline, time.monotonic() + .05)
+                    entered.set()
                     while True:
                         check_operation_budget()
                         time.sleep(.005)
-                with patch.object(owner, attribute, blocked, create=True):
-                    gate.set()
-                    await asyncio.wait_for(session.watchdog_task, 2)
-                    for _ in range(100):
-                        if not session._executor_work:
-                            break
-                        await asyncio.sleep(.005)
-                self.assertFalse(session._executor_work)
-                self.assertTrue(self.backend.processes[-1].killed)
-                self.assertGreater(session._supervision_timings[stage], .02)
-                if stage != 'resource_rss_seconds':
-                    self.assertEqual(session.last_disk_bytes, cached)
-                    self.assertIsNone(session.last_disk_validation_monotonic)
-                observation = session._failure_observation
-                self.assertEqual(observation['code'], 'execution_timeout')
-                self.assertEqual(observation['phase'], 'validation')
-                self.worker_service.recover_expired(actor=self.admin, now=time.time())
+
+                try:
+                    with patch.object(owner, attribute, blocked, create=True):
+                        gate.set()
+                        await asyncio.wait_for(session.watchdog_task, 2)
+                        for _ in range(100):
+                            if not session._executor_work:
+                                break
+                            await asyncio.sleep(.005)
+                    self.assertTrue(entered.is_set(), 'selected resource stage was not exercised')
+                    self.assertFalse(session._executor_work)
+                    self.assertTrue(self.backend.processes[-1].killed)
+                    self.assertGreater(session._supervision_timings[stage], .02)
+                    if stage != 'resource_rss_seconds':
+                        self.assertEqual(session.last_disk_bytes, cached)
+                        self.assertIsNone(session.last_disk_validation_monotonic)
+                    observation = session._failure_observation
+                    self.assertEqual(observation['code'], 'execution_timeout')
+                    self.assertEqual(observation['phase'], 'validation')
+                finally:
+                    # Subtest assertion failures must not leave an active
+                    # assignment that prevents the next stage fixture starting.
+                    await session.stop()
+                    pending = list(session._executor_work)
+                    if pending:
+                        await asyncio.wait_for(asyncio.gather(
+                            *[asyncio.wrap_future(work) for work in pending],
+                            return_exceptions=True), 2)
+                    current = self.worker_service.store.assignment(session.assignment_id)
+                    expires = current.lease.expires_at if current.lease is not None else time.time()
+                    self.worker_service.recover_expired(actor=self.admin, now=expires + 1)
 
     async def test_real_resource_failure_is_durable_and_sanitized_before_stop(self):
         session, gate = await self.session()
