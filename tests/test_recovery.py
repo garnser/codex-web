@@ -292,17 +292,18 @@ class RecoveryTests(unittest.TestCase):
 
         payload = {"unicode": "café\u2028", "values": [None, True, -0.0, {"z": 1, "a": []}]}
         self.state.put("business", payload)
-        snapshot_documents = self.service._snapshot_documents
+        from codex_web.services.recovery_snapshot_capture import SnapshotCapture
+        original_values = SnapshotCapture.values
         encrypt = self.crypto.encrypt
         references = []
 
-        def capture():
-            catalog = Catalog(snapshot_documents())
-            # Pydantic copies the outer documents mapping but retains these
-            # nested Any values. Check both lifetimes, not just the wrapper.
-            catalog["business"] = Catalog(catalog["business"])
-            references.extend((weakref.ref(catalog), weakref.ref(catalog["business"])))
-            return catalog
+        def capture_rows(reader, keys):
+            for value in original_values(reader, keys):
+                if isinstance(value, dict):
+                    value = Catalog(value)
+                    references.append(weakref.ref(value))
+                yield value
+                del value
 
         def encrypt_after_catalog_release(key_id, plaintext, context, *, actor):
             self.assertTrue(all(ref() is None for ref in references),
@@ -313,7 +314,7 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(plaintext, json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode())
             return encrypt(key_id, plaintext, context, actor=actor)
 
-        with patch.object(self.service, "_snapshot_documents", side_effect=capture), patch.object(
+        with patch.object(SnapshotCapture, "values", new=capture_rows), patch.object(
             self.crypto, "encrypt", side_effect=encrypt_after_catalog_release,
         ):
             manifest = self.service.create_backup(actor=self.actor)

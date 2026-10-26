@@ -6,6 +6,7 @@ from codex_web.autonomy_audit import AuditIntegrityStatus, AutonomyAuditKind, Au
 from codex_web.recovery import RestoreVerificationStatus
 from codex_web.services.recovery import RecoveryConflictError
 from codex_web.storage.state_store import state_documents_checksum
+from codex_web.services.recovery_snapshot_capture import SnapshotCapture
 from tests.test_autonomy_audit import _Signer
 from tests import test_recovery as fixture
 
@@ -31,14 +32,15 @@ class RecoveryAuditSnapshotTests(unittest.TestCase):
             with self.subTest(checkpoint=checkpoint):
                 frozen = self.integrity()
 
+                snapshot_checksum = SnapshotCapture.checksum
                 def concurrent_write(documents):
-                    checksum = state_documents_checksum(documents)
+                    checksum = snapshot_checksum(documents)
                     self.append()
                     if checkpoint:
                         self.audit.checkpoint(organization_id="org-a", workspace_id="ws-a")
                     return checksum
 
-                with patch("codex_web.services.recovery.state_documents_checksum", side_effect=concurrent_write):
+                with patch.object(SnapshotCapture, "checksum", new=concurrent_write):
                     manifest = self.service.create_backup(actor=self.actor)
                 current = self.integrity()
                 self.assertEqual(current.status, AuditIntegrityStatus.VERIFIED)
@@ -51,14 +53,15 @@ class RecoveryAuditSnapshotTests(unittest.TestCase):
                 self.assertTrue(verification.checksum_valid)
 
     def test_corrupt_live_audit_after_valid_export_still_refuses_backup(self):
+        snapshot_checksum = SnapshotCapture.checksum
         def corrupt_live(documents):
-            checksum = state_documents_checksum(documents)
+            checksum = snapshot_checksum(documents)
             raw = self.audit_store.load().model_dump(mode="json")
             raw["records"][0]["payload"]["reason_code"] = "tampered"
             self.state.put("autonomy_audit", raw)
             return checksum
 
-        with patch("codex_web.services.recovery.state_documents_checksum", side_effect=corrupt_live):
+        with patch.object(SnapshotCapture, "checksum", new=corrupt_live):
             with self.assertRaises(RecoveryConflictError):
                 self.service.create_backup(actor=self.actor)
         self.assertEqual(self.integrity().status, AuditIntegrityStatus.FAILED)
@@ -68,13 +71,14 @@ class RecoveryAuditSnapshotTests(unittest.TestCase):
     def test_first_valid_append_after_absent_audit_export_preserves_absent_anchor(self):
         self.state.delete("autonomy_audit")
 
+        snapshot_checksum = SnapshotCapture.checksum
         def concurrent_first_append(documents):
             self.assertIsNone(documents.get("autonomy_audit"))
-            checksum = state_documents_checksum(documents)
+            checksum = snapshot_checksum(documents)
             self.append()
             return checksum
 
-        with patch("codex_web.services.recovery.state_documents_checksum", side_effect=concurrent_first_append):
+        with patch.object(SnapshotCapture, "checksum", new=concurrent_first_append):
             manifest = self.service.create_backup(actor=self.actor)
         self.assertEqual(self.integrity().status, AuditIntegrityStatus.VERIFIED)
         self.assertIsNone(manifest.audit_root_hash)
@@ -84,15 +88,13 @@ class RecoveryAuditSnapshotTests(unittest.TestCase):
         self.assertTrue(verification.audit_continuity_valid)
 
     def test_corrupt_snapshot_payload_refuses_even_when_live_audit_is_valid(self):
-        capture = self.service._snapshot_documents
-
-        def corrupt_snapshot():
-            documents = capture()
-            row = next(v for k, v in documents["autonomy_audit"].items() if k.startswith("record:"))
-            row["payload"]["reason_code"] = "tampered snapshot"
-            return documents
-
-        with patch.object(self.service, "_snapshot_documents", side_effect=corrupt_snapshot):
+        read_items = SnapshotCapture.record_items
+        def corrupt_snapshot(capture, namespace, keys):
+            for key, row in read_items(capture, namespace, keys):
+                if capture.only_namespace is None and namespace == 'autonomy_audit' and key.startswith('record:'):
+                    row['payload']['reason_code'] = 'tampered snapshot'
+                yield key, row
+        with patch.object(SnapshotCapture, 'record_items', new=corrupt_snapshot):
             with self.assertRaises(RecoveryConflictError):
                 self.service.create_backup(actor=self.actor)
         self.assertEqual(self.integrity().status, AuditIntegrityStatus.VERIFIED)
@@ -102,14 +104,13 @@ class RecoveryAuditSnapshotTests(unittest.TestCase):
     def test_corrupt_snapshot_checkpoint_signature_refuses_backup(self):
         self.audit.signer = _Signer()
         self.audit.checkpoint(organization_id="org-a", workspace_id="ws-a")
-        capture = self.service._snapshot_documents
-
-        def corrupt_snapshot():
-            documents = capture()
-            documents["autonomy_audit"]["checkpoints"][0]["signature"] = "tampered signature"
-            return documents
-
-        with patch.object(self.service, "_snapshot_documents", side_effect=corrupt_snapshot):
+        read_items = SnapshotCapture.record_items
+        def corrupt_snapshot(capture, namespace, keys):
+            for key, row in read_items(capture, namespace, keys):
+                if capture.only_namespace is None and namespace == 'autonomy_audit' and key == 'checkpoints':
+                    row[0]['signature'] = 'tampered signature'
+                yield key, row
+        with patch.object(SnapshotCapture, 'record_items', new=corrupt_snapshot):
             with self.assertRaises(RecoveryConflictError):
                 self.service.create_backup(actor=self.actor)
         self.assertEqual(self.integrity().status, AuditIntegrityStatus.VERIFIED)

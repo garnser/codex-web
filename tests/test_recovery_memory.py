@@ -158,9 +158,10 @@ class RecoveryMemoryIntegrationTests(unittest.TestCase):
     tearDown = recovery_fixtures.RecoveryTests.tearDown
 
     def test_warm_capture_refuses_before_documents_or_crypto_or_publication(self):
-        with patch('codex_web.services.recovery_memory.snapshot_size', return_value=(161864, 391916926)), \
-             patch('codex_web.services.recovery_memory.memory_headroom', return_value=MemoryHeadroom(2*1024**3, 'fixture')), \
-             patch.object(self.state, 'documents') as export, \
+        with patch('codex_web.services.recovery_snapshot_capture.SnapshotCapture.read_inventory',
+                   return_value=(356846, 751309389, 27739334, 15179582)), \
+             patch('codex_web.services.recovery_memory.memory_headroom', return_value=MemoryHeadroom(1024**3, 'fixture')), \
+             patch('codex_web.services.recovery_snapshot_capture.SnapshotCapture.values') as export, \
              patch.object(self.crypto, 'encrypt') as encrypt, \
              patch.object(self.destination, 'put') as publish:
             with self.assertRaisesRegex(RecoveryMemoryConflictError, 'capture_snapshot.*estimated_required_bytes'):
@@ -171,9 +172,10 @@ class RecoveryMemoryIntegrationTests(unittest.TestCase):
         self.assertEqual(self.service.store.load().backups, {})
 
     def test_unknown_inventory_refuses_before_export(self):
-        with patch('codex_web.services.recovery_memory.snapshot_size', side_effect=RecoveryMemoryRefused('size_unknown')), \
-             patch.object(self.state, 'documents') as export:
-            with self.assertRaisesRegex(RecoveryMemoryConflictError, 'size_unknown'):
+        with patch('codex_web.services.recovery_snapshot_capture.SnapshotCapture.read_inventory',
+                   return_value=(None, 0, 0, 0)), \
+             patch('codex_web.services.recovery_snapshot_capture.SnapshotCapture.values') as export:
+            with self.assertRaisesRegex(RecoveryMemoryConflictError, 'inventory_unknown'):
                 self.service.create_backup(actor=self.actor)
         export.assert_not_called()
 
@@ -201,11 +203,13 @@ class RecoveryMemoryIntegrationTests(unittest.TestCase):
             self.destination.size('file:///outside/tenant/backup.json')
 
     def test_exact_stage_refusal_before_encryption_and_no_backup_effect(self):
-        def changed_headroom():
-            changed_headroom.calls += 1
-            return MemoryHeadroom(100*1024**3 if changed_headroom.calls == 1 else 0, 'fixture')
-        changed_headroom.calls = 0
-        with patch('codex_web.services.recovery_memory.memory_headroom', side_effect=changed_headroom), \
+        from codex_web.services.recovery import _memory_admit
+        def stage_admission(stage, allocation):
+            available = 0 if stage == 'capture_encrypt' else 100*1024**3
+            with patch('codex_web.services.recovery_memory.memory_headroom',
+                       return_value=MemoryHeadroom(available, 'fixture')):
+                return _memory_admit(stage, allocation)
+        with patch('codex_web.services.recovery._memory_admit', new=stage_admission), \
              patch.object(self.crypto, 'encrypt') as encrypt:
             with self.assertRaisesRegex(RecoveryMemoryConflictError, 'capture_encrypt'):
                 self.service.create_backup(actor=self.actor)

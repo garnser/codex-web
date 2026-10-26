@@ -44,6 +44,42 @@ No persisted migration or new operator surface is introduced. Synthetic
 allocation evidence does not establish the cause of a historical host OOM or
 qualify the whole backup pipeline's memory use.
 
+### Bounded semantic Recovery capture
+
+Recovery capture uses a metadata inventory and indexed payload batches instead
+of retaining the complete decoded catalog. PostgreSQL metadata and payload reads
+share one owning repeatable-read transaction; SQLite uses one read transaction.
+Physical rows are validated even when a legacy singleton shadows keyed rows.
+Logical namespace/key ordering, legacy precedence, empty markers and the
+`BackupSnapshot` 1.0 canonical plaintext/checksum remain unchanged. No plaintext
+payload spool, second database or replacement storage-preservation format is
+created.
+
+The current capture contract admits at most 1,000,000 physical rows, 2 GiB of
+encoded source plus namespace bytes, 4,096 logical namespaces, a 512 MiB estimated
+metadata inventory, and 32 MiB per physical payload. Metadata admission reserves
+512 bytes per row plus four times the encoded namespace bytes. Payload reads
+are limited by both 512 rows and 32 MiB per batch. Small control namespaces have
+a separate 32 MiB aggregate limit. The audit record catalog is streamed through
+the existing audit integrity owner; all record schemas are checked before
+partition filtering, selected records are ordered by their payload sequence,
+and checkpoint append order is preserved. Large legacy singleton rows remain
+subject to the physical-row limit.
+
+The final compatible plaintext buffer and existing crypto/envelope allocations
+retain explicit stage admission against actual host/cgroup headroom with the
+existing safety margin. Capture and live-audit validation release their owning
+transactions sequentially, so the official PostgreSQL pool still supports size
+one. No persisted schema, authority, deadline, production service memory limit
+or Recovery inspector surface changes. Existing Recovery/Upgrade results remain
+the operator surface for capacity refusals and backup/restore evidence.
+
+A bound refusal means the capture contract cannot safely represent the current
+catalog within those limits; operators must inspect the closed inventory and
+stage sizing rather than increase a service limit or retry unchanged. Synthetic
+allocation/restore tests qualify their fixtures only. Actual cold capture and
+old-source isolated restore verification remain separate release requirements.
+
 codex-web keeps SQLite as the default local durable store and exposes the same transactional document-store contract through an optional PostgreSQL backend for shared deployments. Local installation remains broker-free by default; shared delivery and coordination are explicit deployment choices rather than hidden requirements.
 
 A distributed deployment must preserve the same canonical-state guarantees. PostgreSQL, Redis, NATS, RabbitMQ, Kafka, or any other infrastructure component is never allowed to become an alternate source of business truth merely because it participates in storage, coordination, or event delivery.
