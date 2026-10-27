@@ -45,6 +45,7 @@ from codex_web.services.provider_capacity import (
     ProviderCapacityService,
 )
 from codex_web.services.project_runtime import assignment_sandbox_policy
+from codex_web.services.projects import ProjectNotFoundError
 from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
 from codex_web.services.execution_preflight import QueuedRetentionRefused
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
@@ -4118,7 +4119,7 @@ class TurnExecutionService:
             for candidate in TurnQueuePolicy.admission_candidates(items):
                 try:
                     candidate_project = h._project(candidate.project_id)
-                except HTTPException:
+                except (HTTPException, ProjectNotFoundError):
                     # Without canonical tenant provenance, keep this request
                     # in its original queue rather than inventing a tenant.
                     continue

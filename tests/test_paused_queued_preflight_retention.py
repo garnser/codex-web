@@ -11,18 +11,19 @@ from codex_web.models import BotBinding
 from codex_web.owner_routing import OwnerRoutingBinding, OwnerRoutingPin
 from codex_web.services.bot_event_dispatch import BotEventDispatchService
 from codex_web.services.queued_operator_admission import QueuedOperatorAdmissionService
+from codex_web.services.projects import ProjectNotFoundError
 from codex_web.storage.turn_queue import TurnQueueRepository
-from tests.test_notification_batch_runtime import NotificationBatchRuntimeTests
-from tests.test_turn_execution import TurnExecutionStartTests
+from tests import test_notification_batch_runtime as batch_fixtures
+from tests import test_turn_execution as turn_fixtures
 
 
 class PausedQueuedPreflightRetentionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        f = NotificationBatchRuntimeTests()
+        f = batch_fixtures.NotificationBatchRuntimeTests()
         f.setUp()
         self.addCleanup(f.doCleanups)
         self.f = f
-        self.host, _, self.sessions, self.runtime = TurnExecutionStartTests()._service()
+        self.host, _, self.sessions, self.runtime = turn_fixtures.TurnExecutionStartTests()._service()
         self.queues = TurnQueueRepository(f.state, Path(f.temp.name) / 'queues.json')
         self.host._thread_queue = self.queues.get
         self.host._thread_queue_record = self.queues.get
@@ -145,10 +146,18 @@ class PausedQueuedPreflightRetentionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_project_creates_no_attempt_or_queue_mutation(self):
         original = self.enqueue(project_id='missing-project')
-        def missing(_):
-            raise HTTPException(status_code=404, detail='Project unavailable')
-        self.host._project = missing
-        await self.runtime.drain_thread_queue('thread-a')
+        for error in (HTTPException(status_code=404, detail='Project unavailable'),
+                      ProjectNotFoundError('Project not found')):
+            with self.subTest(error=type(error).__name__):
+                def missing(_, error=error):
+                    raise error
+                self.host._project = missing
+                await self.runtime.drain_thread_queue('thread-a')
+                self.assertIsNone(self.attempt(original))
+                self.assertEqual(self.queues.get('thread-a')[0], original)
+        self.host._project = Mock(side_effect=RuntimeError('Unexpected storage failure'))
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected storage failure'):
+            await self.runtime.drain_thread_queue('thread-a')
         self.assertIsNone(self.attempt(original))
         self.assertEqual(self.queues.get('thread-a')[0], original)
         self.assertFalse(self.sessions.session.requests)
@@ -161,6 +170,9 @@ class PausedQueuedPreflightRetentionTests(unittest.IsolatedAsyncioTestCase):
             self.preview(original, actor=self.f.actor.model_copy(update={'organization_id': 'foreign'}))
         self.queues.update('thread-a', lambda items: [item.model_copy(
             update={'agent_profile_revision': item.agent_profile_revision + 1}) for item in items])
+        changed_queue = [item.model_dump(mode='json') for item in self.queues.get('thread-a')]
+        await self.runtime.drain_thread_queue('thread-a')
+        self.assertEqual([item.model_dump(mode='json') for item in self.queues.get('thread-a')], changed_queue)
         with self.assertRaises(HTTPException):
             self.preview(original)
         self.assertEqual(self.attempt(original).model_dump(mode='json'), before)
@@ -177,4 +189,14 @@ class PausedQueuedPreflightRetentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.preview(first)['automation_will_resume'])
         with self.assertRaises(HTTPException):
             self.preview(second)
+        self.assertFalse(self.sessions.session.requests)
+
+    async def test_unexpected_retention_storage_error_propagates_without_admission(self):
+        original = self.enqueue()
+        self.f.preflight.store.retain_queued = Mock(
+            side_effect=ValueError('Unexpected retention storage failure'))
+        with self.assertRaisesRegex(ValueError, 'Unexpected retention storage failure'):
+            await self.runtime.drain_thread_queue('thread-a')
+        self.assertIsNone(self.attempt(original))
+        self.assertEqual(self.queues.get('thread-a')[0], original)
         self.assertFalse(self.sessions.session.requests)

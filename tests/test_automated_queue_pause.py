@@ -29,14 +29,22 @@ class AutomatedQueuePauseTests(unittest.IsolatedAsyncioTestCase):
                 SQLiteStateStore(Path(directory) / 'state.sqlite')))
         return host, runtime
 
-    async def test_paused_drain_keeps_exact_snapshot_without_preflight_writes(self):
+    async def test_paused_drain_retains_exact_snapshot_without_admission(self):
         with tempfile.TemporaryDirectory() as directory:
             host, runtime = self.runtime(directory)
             item = runtime.enqueue_turn(thread_id='t', project_id='p', message='automatic', source='gitlab')
             before = item.model_dump(mode='json')
-            runtime.queued_preflight.retain_queued = Mock(side_effect=AssertionError('must not write'))
             await runtime.drain_thread_queue('t')
+            attempt = runtime.queued_preflight.store.get('preflight-queued-' + item.id)
+            self.assertIsNotNone(attempt)
+            self.assertEqual(attempt.queued_turn_snapshot, before)
+            self.assertEqual(attempt.status, 'queued')
+            self.assertIsNone(attempt.started_at)
+            self.assertIsNone(attempt.queued_start_receipt)
+            self.assertIsNone(attempt.operator_admission)
+            retained = attempt.model_dump(mode='json')
             await runtime.drain_thread_queue('t')
+            self.assertEqual(runtime.queued_preflight.store.get(attempt.id).model_dump(mode='json'), retained)
             self.assertEqual(host.queues['t'][0].model_dump(mode='json'), before)
             runtime.start_thread_turn_now.assert_not_awaited()
             runtime.schedule_queue_drain.assert_not_called()
