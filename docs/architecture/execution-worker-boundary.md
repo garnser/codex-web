@@ -1639,3 +1639,15 @@ Session/assignment attribution, the pre-resume refusal and its existing explicit
 recovery action. Existing Session traces continue separating current custody
 from historical execution. No new registry, persisted field or compatibility
 version is introduced; refusal metadata uses the existing extensible blocker.
+
+### Reasoning-only startup tooling
+
+The code-owned reasoning session provisions its canonical scratch workspace,
+worker claim, fence, credential boundary, isolated native process and egress
+relay as usual. Because its runtime refuses operational tools, it does not
+provision an execution Python virtual environment or register a managed
+validation-output slot. Native system executables, current authority checks and
+positive process cleanup remain unchanged. Operational agent sessions retain
+their Python environment and managed validation outputs. This avoids unrelated
+setup; it does not change the finite inference deadline or establish live
+Executive completion.
