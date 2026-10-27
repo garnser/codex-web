@@ -220,3 +220,14 @@ It does not assert that no workspace, assignment or worker was created, nor gran
 retry, cancellation, rollback or known-outcome authority. Provider-started errors
 cannot acquire this controller-owned projection. Existing deadlines, admission
 checks, reservations, fencing and cleanup remain authoritative.
+
+### Native non-operational items
+
+Native `userMessage`, `agentMessage`, `reasoning`, `plan` and
+`contextCompaction` items are not tool calls. Their item-start/completion
+notifications retain normal turn accounting without incrementing operation
+counters. Unknown nonempty item types remain conservatively counted; actual
+command, file-change, dynamic-tool and explicit SDK/requested-tool events retain
+their existing counting and fingerprint deduplication. This changes new
+observations only; retained history is not rewritten and zero-tool native
+reasoning contracts are not relaxed.

@@ -512,7 +512,12 @@ class AgentRuntimeTelemetryService:
         item = params.get("item") if isinstance(params, dict) else None
         if isinstance(item, dict):
             item_type = str(item.get("type") or "")
-            if item_type:
+            # Native item lifecycle also reports messages and reasoning, not
+            # only operations. Exclude the known non-operational protocol types;
+            # retain unknown types conservatively and keep explicit tool events.
+            if item_type and item_type.casefold() not in {
+                "usermessage", "agentmessage", "reasoning", "plan", "contextcompaction",
+            }:
                 tools.append((item_type, item))
 
         if not tools and "tool/requested" in event_type:

@@ -151,6 +151,78 @@ class AgentRuntimeTelemetryTests(unittest.TestCase):
         self.assertEqual(terminal.tool_call_count, 1)
         self.assertEqual(len(terminal.evidence_ids), 1)
 
+    def _native_observer(self, turn_id):
+        native = SimpleNamespace(provider_id="openai", runtime_id="codex",
+            runtime_type="codex-app-server", capabilities=(
+                AgentProviderCapability.AGENT_EXECUTION, AgentProviderCapability.USAGE_PARTIAL))
+        self.registry.register(native, capability_revision=9)
+        self.session_service.adopt(provider_id="openai", runtime_id="codex",
+            runtime_type="codex-app-server", provider_native_session_id="private-native-thread",
+            request=AgentRuntimeSessionRequest(project_id="project-a", execution_id="execution-native",
+                assignment_id="assignment-native", execution_workspace_id="execws-native"),
+            actor=self.actor, capability_snapshot=native.capabilities, capability_revision=9)
+
+        def observe(kind, payload):
+            return self.service.observe_event("openai", "codex", AgentRuntimeEvent(
+                event_type=kind, provider_native_session_id="private-native-thread",
+                provider_native_turn_id=turn_id, payload=payload))
+        return observe
+
+    def test_native_notification_sequence_completes_with_zero_tools(self):
+        observe = self._native_observer("native-no-tools")
+        observe("turn/started", {})
+        for kind in ("userMessage", "agentMessage", "reasoning", "plan", "contextCompaction"):
+            item = {"id": "private-" + kind, "type": kind}
+            for event in ("item/started", "item/completed"):
+                record = observe(event, {"params": {"item": item}})
+                self.assertEqual(record.terminal_outcome, RuntimeTerminalOutcome.UNKNOWN)
+                self.assertEqual(record.tool_call_count, 0, (kind, event))
+        self.assertIsNone(observe("item/agentMessage/delta", {"delta": "private text"}))
+        observe("thread/tokenUsage/updated", {"params": {"tokenUsage": {
+            "last": {"inputTokens": 12, "outputTokens": 8, "totalTokens": 20}}}})
+        self.clock[0] += 2
+        terminal = observe("turn/completed", {"params": {"turn": {"status": "completed"}}})
+        self.assertEqual(terminal.terminal_outcome, RuntimeTerminalOutcome.SUCCEEDED)
+        self.assertEqual(terminal.model_call_count, 1)
+        self.assertEqual((terminal.tool_call_count, terminal.shell_command_count,
+                          terminal.file_edit_count, terminal.git_operation_count), (0, 0, 0, 0))
+        self.assertEqual((terminal.input_tokens, terminal.output_tokens, terminal.total_tokens), (12, 8, 20))
+        self.assertEqual(terminal.assignment_id, "assignment-native")
+        self.assertEqual(terminal.execution_workspace_id, "execws-native")
+        self.assertEqual(len(terminal.evidence_ids), 1)
+        proof = self.evidence_store.load().evidence[-1]
+        self.assertEqual(proof.result, "pass")
+        self.assertEqual(proof.metadata["tool_call_count"], 0)
+
+    def test_native_operations_and_unknown_items_remain_counted_and_deduplicated(self):
+        observe = self._native_observer("native-real-tools")
+        observe("turn/started", {})
+        for index, item in enumerate((
+            {"type": "commandExecution", "command": "git status"},
+            {"type": "fileChange"}, {"type": "dynamicToolCall"},
+            {"type": "futureNativeOperation"},
+        ), start=1):
+            payload = {"params": {"item": {"id": "operation-" + str(index), **item}}}
+            first = observe("item/completed", payload)
+            duplicate = observe("item/completed", payload)
+            self.assertEqual(first.id, duplicate.id)
+            self.assertEqual(duplicate.tool_call_count, index)
+        terminal = observe("turn/completed", {"usage": {"input_tokens": 1, "output_tokens": 1}})
+        self.assertEqual(terminal.terminal_outcome, RuntimeTerminalOutcome.SUCCEEDED)
+        self.assertEqual((terminal.tool_call_count, terminal.shell_command_count,
+                          terminal.file_edit_count, terminal.git_operation_count), (4, 1, 1, 1))
+        self.assertEqual(self.evidence_store.load().evidence[-1].metadata["tool_call_count"], 4)
+
+    def test_nonoperational_item_does_not_hide_explicit_sdk_or_requested_tool(self):
+        observe = self._native_observer("native-explicit-tools")
+        record = observe("item/completed", {"params": {"item": {"type": "agentMessage"}},
+            "message": {"content": [{"type": "tool_use", "name": "Bash",
+                                      "input": {"command": "git status"}}]}})
+        self.assertEqual((record.tool_call_count, record.shell_command_count), (1, 1))
+        record = observe("tool/requested", {"params": {"item": {"type": "plan"}},
+                                           "tool_name": "unknown-requested-tool"})
+        self.assertEqual(record.tool_call_count, 2)
+
     def test_only_exact_turn_and_sdk_result_events_are_terminal(self) -> None:
         cases = [
             ("turn/completed", {}, RuntimeTerminalOutcome.SUCCEEDED),

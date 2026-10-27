@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import hmac
 import logging
 import os
@@ -230,8 +231,12 @@ class AssignmentBoundAgentModelEgressBroker:
                 < self.validation_cache_seconds
             ):
                 return
+            # The canonical credential validator may require the original
+            # invocation's ContextVars. Executor threads do not inherit them;
+            # carry this dispatch's context without retaining it in the pool.
+            context = contextvars.copy_context()
             await asyncio.get_running_loop().run_in_executor(
-                self._blocking_pool(), self._validate_current
+                self._blocking_pool(), context.run, self._validate_current
             )
             self._last_validation_at = time.monotonic()
 
