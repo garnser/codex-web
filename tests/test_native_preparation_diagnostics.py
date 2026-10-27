@@ -75,7 +75,7 @@ class NativePreparationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.bridge(guard=refused)
         with self.assertRaisesRegex(TimeoutError, 'private policy data'):
             await self.invoke()
-        event, = self.events
+        event, = [row for row in self.events if row['type'] == 'native_reasoning_preparation_failed']
         self.assertEqual((event['native_preparation_stage'], event['native_exception_type']),
                          ('initial_current_guard', 'TimeoutError'))
         self.assertNotIn('provider_start_called', event)

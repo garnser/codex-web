@@ -221,6 +221,24 @@ Diagnostic failure cannot replace the original refusal or its cleanup. Failures
 after native input admission retain their existing unknown-outcome semantics.
 These events confer no retry, replay, START, completion or accounting authority.
 
+Cancellation and finite dependency timeouts also record
+`native_reasoning_lifecycle_interrupted` in that same event journal. It captures
+the interrupted closed phase, total and phase monotonic elapsed seconds (capped
+at one day), and already-bound execution/native identifiers. It contains no
+exception text, prompt, output, reasoning, credentials or process diagnostics.
+`native_input_requested` means the original TurnService call was entered;
+`native_queue_submitted` means it returned its queue ID. Neither proves native
+START. Canonical START and measured terminal usage remain separate evidence.
+
+The cancellation snapshot precedes the original owned cleanup join, so cleanup
+cannot overwrite the phase that was waiting at the deadline. Cancellation during
+completion or cleanup is reported as that phase. A broken diagnostic sink cannot
+replace the primary exception or skip joining the original cleanup. No new store,
+timer, model call, retry, deadline extension or successful outcome is introduced.
+Operators inspect these events through existing diagnostics; no new UI object or
+success indicator is added. This evidence does not identify or fix the underlying
+cause of an inference timeout.
+
 ### Overlapping independent context retrieval
 
 When both WorkGraph and Organizational Memory are visible, context preparation may overlap their existing governed operations. The graph snapshot and its bounded Executive projection run in one additional worker; Memory retrieval and its canonical retrieval audit remain on the calling thread. Both complete before preparation returns, retaining graph-first error precedence. A completed authorized Memory retrieval can therefore retain its truthful retrieval-attempt audit even when the sibling graph operation fails; no activation or model invocation is created by that failure.

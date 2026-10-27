@@ -8,6 +8,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
+import re
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -17,6 +20,15 @@ from codex_web.models import TurnCreate
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
 from codex_web.services.queued_native_start import validate_attribution
 from codex_web.services.threads import bootstrap_exception_type, bootstrap_preparation_diagnostic
+
+
+_LIFECYCLE_PHASES = frozenset({
+    'initial_current_guard', 'authentication_metadata', 'post_authentication_current_guard',
+    'thread_bootstrap', 'session_lookup', 'session_binding', 'assignment_lookup',
+    'assignment_validation', 'session_attestation', 'input_preparation',
+    'queued_admission', 'terminal_observation', 'usage_observation',
+    'completion_observation', 'result_attribution', 'assignment_completion', 'cleanup',
+})
 
 
 class NativeReasoningPrestartRefused(ModelProviderAdapterError):
@@ -186,6 +198,46 @@ class CanonicalNativeReasoningBridge:
             # its cleanup ownership, or the no-replay outcome.
             pass
 
+    @staticmethod
+    def _lifecycle_phase(checkpoint, phase, **identifiers):
+        checkpoint.update(phase=phase, phase_started_at=time.monotonic(), **identifiers)
+
+    def _lifecycle_interrupted(self, context, checkpoint, reason):
+        # Diagnostic only: queue submission is not canonical native START, and
+        # missing terminal/usage evidence remains UNKNOWN rather than retryable.
+        try:
+            if checkpoint.get('reported'):
+                return
+            checkpoint['reported'] = True
+            now = time.monotonic()
+            elapsed = now - checkpoint['started_at']
+            phase_elapsed = now - checkpoint['phase_started_at']
+            if not (math.isfinite(elapsed) and math.isfinite(phase_elapsed)):
+                return
+            phase = checkpoint['phase']
+            if phase not in _LIFECYCLE_PHASES or reason not in {'cancelled', 'timeout'}:
+                return
+            event = dict(type='native_reasoning_lifecycle_interrupted',
+                native_lifecycle_phase=phase, interruption=reason,
+                elapsed_seconds=min(86400., max(0., elapsed)),
+                phase_elapsed_seconds=min(86400., max(0., phase_elapsed)),
+                native_input_requested=checkpoint.get('input_requested', False),
+                native_queue_submitted=checkpoint.get('queue_submitted', False))
+            for key in ('organization_id', 'workspace_id', 'project_id', 'execution_id',
+                        'activation_id', 'role_id'):
+                value = getattr(context, key, None)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,200}', value):
+                    event[key] = value
+            for key in ('thread_id', 'session_id', 'assignment_id', 'queued_id', 'turn_id'):
+                value = checkpoint.get(key)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,200}', value):
+                    event[key] = value
+            self.threads.event_sink(event)
+        except (Exception, asyncio.CancelledError):
+            # A failed diagnostic must never replace cancellation/the original
+            # timeout or interrupt the owned process's positive cleanup join.
+            pass
+
     def _result(self, *, context, actor, session, assignment, thread_id,
                 turn_id, queued_id, text):
         context.validate_current()
@@ -238,14 +290,22 @@ class CanonicalNativeReasoningBridge:
 
     async def invoke(self, provider, model, request, *, actor, context):
         cancelled = asyncio.Event()
+        started_at = time.monotonic()
+        lifecycle = dict(started_at=started_at, phase_started_at=started_at,
+                         phase='initial_current_guard')
         owner = asyncio.create_task(self._invoke_owned(provider, model, request,
-            actor=actor, context=context, cancelled=cancelled), name='canonical-native-model-owner')
+            actor=actor, context=context, cancelled=cancelled, lifecycle=lifecycle),
+            name='canonical-native-model-owner')
         try:
             # wait() never propagates cancellation into this owned task. Unlike
             # a detached shield Future, its exception is observed by this owner.
             await asyncio.wait((owner,))
             return owner.result()
+        except TimeoutError:
+            self._lifecycle_interrupted(context, lifecycle, 'timeout')
+            raise
         except asyncio.CancelledError:
+            self._lifecycle_interrupted(context, lifecycle, 'cancelled')
             cancelled.set()
             if context is not None and context.process_owner is not None:
                 context.process_owner.cancelled.set()
@@ -262,12 +322,18 @@ class CanonicalNativeReasoningBridge:
                 owner.exception()
             raise
 
-    async def _invoke_owned(self, provider, model, request, *, actor, context, cancelled):
+    async def _invoke_owned(self, provider, model, request, *, actor, context, cancelled, lifecycle=None):
+        if lifecycle is None:
+            started_at = time.monotonic()
+            lifecycle = dict(started_at=started_at, phase_started_at=started_at,
+                             phase='initial_current_guard')
         if not self.supports(provider, model, context):
             raise ModelProviderAdapterError('Native reasoning binding unavailable')
         try:
             await self._owned(context.validate_current)
         except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                self._lifecycle_interrupted(context, lifecycle, 'timeout')
             self._preparation_failed(context, 'initial_current_guard', exc)
             raise
         b = self.binding
@@ -324,20 +390,24 @@ class CanonicalNativeReasoningBridge:
 
         self.hub.subscribe_filtered(observe, event_types=('codex.event',))
         preparation_stage = 'thread_bootstrap'
+        self._lifecycle_phase(lifecycle, preparation_stage)
         try:
             if self.authentication_preparation is not None:
                 # Scope was checked above. Reuse the canonical coalesced account
                 # metadata owner before the existing authentication preflight;
                 # never infer sign-in from transport readiness or stale evidence.
                 preparation_stage = 'authentication_metadata'
+                self._lifecycle_phase(lifecycle, preparation_stage)
                 await PostTurnReadinessService._run_owned(
                     self.authentication_preparation, seconds=5.,
                     name='native-authentication-metadata')
                 preparation_stage = 'post_authentication_current_guard'
+                self._lifecycle_phase(lifecycle, preparation_stage)
                 await self._owned(context.validate_current)
                 if cancelled.is_set():
                     raise asyncio.CancelledError
                 preparation_stage = 'thread_bootstrap'
+                self._lifecycle_phase(lifecycle, preparation_stage)
             # Stable bootstrap correlation is provenance, never permission to
             # retry an unknown invocation. Executive owns the single reservation.
             bootstrap = uuid.uuid5(uuid.NAMESPACE_URL, context.execution_id).hex
@@ -349,32 +419,40 @@ class CanonicalNativeReasoningBridge:
                 actor=actor, bootstrap_token=bootstrap, admission_guard=context.validate_current)
             thread_id = response['thread']['id']
             preparation_stage = 'session_lookup'
+            self._lifecycle_phase(lifecycle, preparation_stage, thread_id=thread_id,
+                                  session_id=response['agentSessionId'])
             context.process_owner.bind_native_session(thread_id)
             session = await self._owned(lambda: self.sessions.get(response['agentSessionId'],
                 organization_id=context.organization_id, workspace_id=context.workspace_id))
             preparation_stage = 'session_binding'
+            self._lifecycle_phase(lifecycle, preparation_stage, assignment_id=session.assignment_id)
             if (session.provider_id != 'openai' or session.runtime_id != self.runtime_id
                     or session.provider_native_session_id != thread_id
                     or session.project_id != context.project_id or session.resource_ids
                     or session.worker_id != b.worker_id or session.model != b.concrete_model):
                 raise ValueError('Native reasoning canonical session binding changed')
             preparation_stage = 'assignment_lookup'
+            self._lifecycle_phase(lifecycle, preparation_stage)
             manager, serving = self.execution._session_for_assignment(session.assignment_id)
             native_runtime = serving.runtime
             usage_ready = loop.create_future()
             self._usage_waiters[session.id] = (loop, usage_ready)
             preparation_stage = 'assignment_validation'
+            self._lifecycle_phase(lifecycle, preparation_stage)
             assignment = await self._owned(serving.validate_current)
             preparation_stage = 'session_attestation'
+            self._lifecycle_phase(lifecycle, preparation_stage)
             await self._owned(lambda: self.attest_session(serving, assignment, context, model))
             # JSON keeps individual message boundaries as data. The system
             # policy is separately installed by the restricted native runtime.
             preparation_stage = 'input_preparation'
+            self._lifecycle_phase(lifecycle, preparation_stage)
             message = json.dumps([item.model_dump(mode='json') for item in request.messages],
                                  ensure_ascii=False, separators=(',', ':'))
             if cancelled.is_set():
                 raise asyncio.CancelledError
             native_admitted = True  # Subsequent unknowns cannot be replayed.
+            self._lifecycle_phase(lifecycle, 'queued_admission', input_requested=True)
             self._admission_waiters[context.execution_id] = (loop, refused)
             started = await self.turns.start(thread_id, TurnCreate(message=message,
                 project_id=context.project_id, sandbox='read-only', approval_policy='never',
@@ -384,22 +462,28 @@ class CanonicalNativeReasoningBridge:
                 actor=actor, execution_id=context.execution_id,
                 admission_guard=context.validate_current, allow_assignment_renewal=False)
             queued_id = started['queuedId']
+            self._lifecycle_phase(lifecycle, 'terminal_observation', queued_id=queued_id,
+                                  queue_submitted=True)
             # A disposition may commit before TurnService returns its queue ID.
             # The notification was installed first; the result remains subject
             # to an exact canonical re-read, including absence of any START.
             turn_id = await self._wait_original_terminal(terminal, refused, cancelled,
                 context=context, thread_id=thread_id, queued_id=queued_id)
+            self._lifecycle_phase(lifecycle, 'usage_observation', turn_id=turn_id)
             observed_turn = await self._wait_or_cancel(usage_ready, cancelled)
             if observed_turn != turn_id or native_runtime.reasoning_refusal:
                 raise ValueError('Native usage or restricted request attribution changed')
             completion = self.execution.thread_completion_tasks.get(thread_id)
+            self._lifecycle_phase(lifecycle, 'completion_observation')
             if completion is not None:
                 await asyncio.shield(completion)
+            self._lifecycle_phase(lifecycle, 'result_attribution')
             result = await self._owned(lambda: self._result(context=context, actor=actor,
                 session=session, assignment=assignment, thread_id=thread_id,
                 turn_id=turn_id, queued_id=queued_id, text=text.result()))
             # Only a positively attributed completed inference can release its
             # ephemeral scratch custody. Unknown originals remain held.
+            self._lifecycle_phase(lifecycle, 'assignment_completion')
             await manager.complete(assignment.id, succeeded=True)
             return result
         except asyncio.CancelledError:
@@ -407,6 +491,8 @@ class CanonicalNativeReasoningBridge:
         except NativeReasoningPrestartRefused:
             raise
         except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                self._lifecycle_interrupted(context, lifecycle, 'timeout')
             if native_admitted:
                 raise ModelProviderOutcomeUnknownError(
                     'Native inference original retained; inspect canonical START/usage') from exc
@@ -423,6 +509,7 @@ class CanonicalNativeReasoningBridge:
             if stop is None and manager is not None and assignment is not None:
                 stop = lambda: manager.stop(assignment.id)
             if stop is not None:
+                self._lifecycle_phase(lifecycle, 'cleanup')
                 # Existing stop owns watchdog/process interruption and positive
                 # reap, including failures before thread/create returns a DTO.
                 cleanup = asyncio.create_task(stop())
