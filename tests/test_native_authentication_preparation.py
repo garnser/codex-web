@@ -84,7 +84,9 @@ class NativeAuthenticationPreparationTests(unittest.IsolatedAsyncioTestCase):
                 await self.invoke(built)
             self.assertEqual(runtime.calls, [('account/read', {'refreshToken': False})])
             self.assertEqual(len(built[3]), 1)
-            self.assertEqual(built[4][-1]['native_preparation_stage'], 'thread_bootstrap')
+            preparation, = [event for event in built[4]
+                            if event['type'] == 'native_reasoning_preparation_failed']
+            self.assertEqual(preparation['native_preparation_stage'], 'thread_bootstrap')
 
     async def test_refresh_reaches_real_binding_and_revoked_auth_still_allocates_nothing(self):
         from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
@@ -163,7 +165,9 @@ class NativeAuthenticationPreparationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModelProviderAdapterError):
             await self.invoke(built)
         self.assertEqual(built[3], [])
-        self.assertEqual(built[4][-1]['native_preparation_stage'], 'authentication_metadata')
+        preparation, = [event for event in built[4]
+                        if event['type'] == 'native_reasoning_preparation_failed']
+        self.assertEqual(preparation['native_preparation_stage'], 'authentication_metadata')
         refresh_calls = []
         async def refresh():
             refresh_calls.append(True)
@@ -186,7 +190,9 @@ class NativeAuthenticationPreparationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModelProviderAdapterError):
             await self.invoke(built)
         self.assertEqual(built[3], [])
-        self.assertEqual(built[4][-1]['native_preparation_stage'], 'post_authentication_current_guard')
+        preparation, = [event for event in built[4]
+                        if event['type'] == 'native_reasoning_preparation_failed']
+        self.assertEqual(preparation['native_preparation_stage'], 'post_authentication_current_guard')
 
     async def test_timeout_and_cancel_join_same_metadata_owner_without_late_thread(self):
         original = PostTurnReadinessService._run_owned
