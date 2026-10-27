@@ -515,3 +515,11 @@ workspace, native session and message digest, with the canonical START guard for
 resume/turn input. Bootstrap is limited to one send for its owned process;
 interrupt remains available for owned cleanup. These checks do not grant a
 public thread operation permission merely because another consultation is live.
+
+Assignment model-egress validation carries the accepted request's ContextVars
+into its existing bounded executor for each validation dispatch. This preserves
+the canonical invocation required by the credential validator; it does not
+replace assignment, lease, fencing or cancellation checks. Executor threads do
+not retain that context after validation, and an unrelated caller cannot supply
+authority for the original session. The existing validation lock, short success
+cache and exact destination allowlist remain in force.
