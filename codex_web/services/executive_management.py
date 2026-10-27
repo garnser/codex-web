@@ -1420,6 +1420,7 @@ class ExecutiveManagementService:
         role: ExecutiveRoleDefinition,
         *,
         available_context_refs: tuple[str, ...] = (),
+        available_business_context_refs: tuple[str, ...] = (),
         require_business_context_ref: bool = False,
     ) -> ExecutiveRoleOutput:
         try:
@@ -1452,7 +1453,9 @@ class ExecutiveManagementService:
                 f"Executive role {role.id} cited unavailable canonical context: "
                 + ", ".join(unknown_refs)
             )
-        if require_business_context_ref and not output.context_refs:
+        if require_business_context_ref and not set(output.context_refs).intersection(
+            available_business_context_refs
+        ):
             raise ExecutiveConsultationError(
                 f"Executive role {role.id} must cite at least one supplied governed "
                 "business context reference"
@@ -1559,13 +1562,18 @@ class ExecutiveManagementService:
             *filtered_context.get("business_facts", []),
             *filtered_context.get("business_kpis", []),
         ]
-        available_context_refs = tuple(
+        business_context_refs = tuple(
             dict.fromkeys(
                 str(item.get("citation"))
                 for item in business_rows
                 if item.get("citation")
             )
         )
+        available_context_refs = tuple(dict.fromkeys((
+            *business_context_refs,
+            *(str(item["citation"]) for item in filtered_context.get("memory", [])
+              if item.get("citation")),
+        )))
         try:
             response = await self.model_gateway.invoke(
                 ModelInvocationRequest(
@@ -1606,6 +1614,7 @@ class ExecutiveManagementService:
                 response.text,
                 role,
                 available_context_refs=available_context_refs,
+                available_business_context_refs=business_context_refs,
                 require_business_context_ref=bool(business_rows),
             ),
             model_invocation_id=response.invocation.id,

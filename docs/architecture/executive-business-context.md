@@ -153,6 +153,12 @@ ExecutiveRoleOutput includes context_refs. When a role is given governed
 business context, it must record at least one supplied marker and may not cite a
 marker absent from its filtered canonical context.
 
+Exact supplied `[memory:<id>@v<version>]` markers are also valid `context_refs`
+when memory is visible to that role. Unknown IDs, other versions and role-hidden
+references remain unavailable. When governed business context requires a citation,
+at least one supplied business marker is still required; memory alone does not
+satisfy that requirement.
+
 The validated output is stored in the Executive consultation, so the activation
 records both:
 
