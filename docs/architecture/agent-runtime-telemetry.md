@@ -189,6 +189,30 @@ usage inspection from blocking ASGI and native RPC scheduling. It does not reduc
 the catalog's total validation, CPU or database work, and introduces no cache or
 storage migration.
 
+### Bounded current native-turn inspection
+
+The same runtime-usage GET accepts parallel repeated `native_session_id` and
+`native_turn_id` parameters for one to forty distinct pairs. This optional mode
+requires `project_id`, `provider_id` and `include_items=true`; `runtime_id` may
+further constrain the identity. Other historical filters cannot be combined with
+it. Existing list/summary requests and their UI projections remain unchanged.
+
+This read uses only initialized canonical AgentSession aliases (at most two
+aliases per requested native identity) and one point batch of deterministic usage
+IDs. It does not list history, migrate legacy state, start/resume a native process
+or read a transcript. Each requested pair returns either a bounded closed usage
+projection or explicit UNKNOWN for missing, ambiguous, legacy-incomplete or
+changed custody. Tenant/workspace/Project/provider/runtime and the complete
+recorded assignment/execution tuple must match. A historical terminal record
+requires no current live lease; stale attribution is never called current.
+
+The response contains counters, times, terminal outcome, completeness and
+references, without fingerprints or content. It is observational, not accounting
+or input authority. Counter changes are telemetry activity, not semantic output
+progress; a successful runtime turn is not Work/MR completion. Operational
+observers can batch their known current pairs through this mode without one
+catalog scan per lane. Missing observations cannot establish a stall.
+
 ### Measured terminal call-count settlement
 
 The existing call-count inference applies equally to fresh terminal records and

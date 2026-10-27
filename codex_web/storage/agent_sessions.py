@@ -126,6 +126,32 @@ class AgentSessionStore:
             and self.store.record_get(self.records_namespace, self._meta_key)
                 == {'schema_version': '1.0'})
 
+    def inspect_native(self, native_id: str) -> AgentSession | None:
+        """Read one unambiguous indexed identity without adoption or migration.
+
+        Inspect at most two aliases across providers/runtimes/tenants. Multiple
+        retained owners are unknown, never permission to select the newest.
+        """
+        if not self.reads_initialized():
+            return None
+        rows, cursor = self.store.record_page(
+            self.records_namespace, key_prefix=self._native_prefix(native_id), limit=2,
+        )
+        if cursor is not None or len(rows) != 1:
+            return None
+        key, alias = next(iter(rows.items()))
+        if not isinstance(alias, dict) or set(alias) != {'session_id'} or not isinstance(alias['session_id'], str):
+            return None
+        raw = self.store.record_get(self.records_namespace, self._session_key(alias['session_id']))
+        try:
+            session = AgentSession.model_validate(raw)
+        except (ValueError, TypeError):
+            return None
+        if (session.id != alias['session_id'] or session.provider_native_session_id != native_id
+                or self._native_key(session) != key):
+            return None
+        return session
+
     def _ensure_records(self) -> None:
         if self._records_ready:
             return

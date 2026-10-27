@@ -247,3 +247,24 @@ class AgentRuntimeUsageStore:
             self._ensure_records()
             payload = self.store.record_get(self.namespace, record_id)
         return AgentRuntimeUsage.model_validate(payload) if payload is not None else None
+
+    def inspect_many(self, record_ids: tuple[str, ...]) -> dict[str, AgentRuntimeUsage]:
+        """Point inspection only; legacy state remains incomplete, not migrated."""
+        if len(record_ids) > 40:
+            raise ValueError('usage inspection exceeds 40 records')
+        if not record_ids:
+            return {}
+        with self._lock:
+            if (not self.store.record_collection_exists(self.namespace)
+                    or self.store.record_get(self.namespace, 'schema_version') is not None):
+                return {}
+            raw = self.store.record_get_many(self.namespace, record_ids)
+        records = {}
+        for key, value in raw.items():
+            try:
+                record = AgentRuntimeUsage.model_validate(value)
+            except (ValueError, TypeError):
+                continue
+            if record.id == key:
+                records[key] = record
+        return records
