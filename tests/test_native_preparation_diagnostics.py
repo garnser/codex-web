@@ -102,9 +102,21 @@ class NativePreparationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_post_input_failure_remains_unknown_without_preparation_evidence(self):
         self.bridge()
-        with self.assertRaises(ModelProviderOutcomeUnknownError):
+        with self.assertRaises(ModelProviderOutcomeUnknownError) as caught:
             await self.invoke()
-        self.assertEqual(self.events, [])
+        self.assertIs(caught.exception.__cause__, self.turns.start.side_effect)
+        self.assertEqual([e for e in self.events
+                          if e['type'] == 'native_reasoning_preparation_failed'], [])
+        event, = self.events
+        self.assertEqual((event['type'], event['native_lifecycle_phase'],
+                          event['interruption'], event['native_exception_type']),
+                         ('native_reasoning_lifecycle_interrupted', 'queued_admission',
+                          'failed', 'RuntimeError'))
+        self.assertTrue(event['native_input_requested'])
+        self.assertFalse(event['native_queue_submitted'])
+        self.assertNotIn('native_input_admitted', event)
+        self.assertNotIn('native_start_confirmed', event)
+        self.assertNotIn('private', repr(event))
         self.turns.start.assert_awaited_once()
         self.assertEqual(self.stopped, ['original'])
 
