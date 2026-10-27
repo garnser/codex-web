@@ -86,6 +86,74 @@ class AgentRuntimeTelemetryService:
         self._unsubscribers.append(unsubscribe)
         return unsubscribe
 
+    def current_native_turns(
+        self, actor: AuthenticationActor, *, project_id: str, provider_id: str,
+        pairs: tuple[tuple[str, str], ...], runtime_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Bounded observational projection, never native input or accounting truth."""
+        if (not 1 <= len(pairs) <= 40 or len(set(pairs)) != len(pairs)
+                or not project_id or not provider_id
+                or any(not isinstance(value, str) or not value or len(value) > 200
+                       for pair in pairs for value in pair)):
+            raise ValueError('one to forty distinct native session/turn pairs required')
+        sessions = {}
+        selected = {}
+        for native_id, turn_id in pairs:
+            if native_id not in sessions:
+                sessions[native_id] = self.sessions.inspect_native(native_id)
+            session = sessions[native_id]
+            if (session is not None
+                    and (session.organization_id, session.workspace_id, session.project_id,
+                         session.provider_id) == (actor.organization_id, actor.workspace_id,
+                                                  project_id, provider_id)
+                    and (runtime_id is None or session.runtime_id == runtime_id)):
+                selected[(native_id, turn_id)] = (session, self._record_id(session, turn_id))
+        # At most one usage point batch, independent of unrelated history.
+        records = self.store.inspect_many(tuple(value[1] for value in selected.values()))
+        items = []
+        fields = ('id','organization_id','workspace_id','project_id','execution_id',
+                  'assignment_id','execution_workspace_id','agent_session_id','provider_id',
+                  'runtime_id','provider_native_session_id','provider_native_turn_id',
+                  'input_tokens','output_tokens','total_tokens','reasoning_output_tokens',
+                  'tool_call_count','shell_command_count','file_edit_count','git_operation_count',
+                  'subagent_count','model_call_count','context_compaction_count',
+                  'runtime_duration_seconds','terminal_outcome','telemetry_completeness',
+                  'started_at','completed_at','observed_at','evidence_ids')
+        for pair in pairs:
+            entry = dict(native_session_id=pair[0], native_turn_id=pair[1], state='unknown',
+                         reason='attribution_unavailable', usage=None)
+            choice = selected.get(pair)
+            if choice is not None:
+                session, record_id = choice
+                record = records.get(record_id)
+                entry['reason'] = 'usage_unavailable'
+                if record is not None:
+                    expected = (actor.organization_id, actor.workspace_id, project_id,
+                                session.id, session.assignment_id, session.execution_id,
+                                session.execution_workspace_id, provider_id, session.runtime_id,
+                                pair[0], pair[1])
+                    actual = (record.organization_id, record.workspace_id, record.project_id,
+                              record.agent_session_id, record.assignment_id, record.execution_id,
+                              record.execution_workspace_id, record.provider_id, record.runtime_id,
+                              record.provider_native_session_id, record.provider_native_turn_id)
+                    entry['reason'] = 'stale_attribution'
+                    if actual == expected:
+                        projection = record.model_dump(mode='json', include=set(fields))
+                        # Closed fields only; even corrupt oversized references cannot
+                        # turn this monitoring read into an unbounded response.
+                        try:
+                            bounded = len(json.dumps(projection, allow_nan=False).encode()) <= 4096
+                        except ValueError:
+                            bounded = False
+                        if bounded:
+                            entry.update(state='observed', reason=None, usage=projection)
+                        else:
+                            entry['reason'] = 'projection_too_large'
+            items.append(entry)
+        return {'items': items, 'count': len(items), 'read_only': True,
+                'complete': all(item['state'] == 'observed' for item in items),
+                'semantic_task_completion_inferred': False}
+
     def list(
         self,
         actor: AuthenticationActor,
