@@ -1182,6 +1182,13 @@ native retry, preserving denied/stale states and fencing late Project responses.
 
 ### One reviewed original while automation remains paused
 
+The ordinary queue drain first retains each exact durable original using its
+canonical Project tenant/workspace, even while automation is paused. Retention
+only exposes the existing inspector and single-original admission action; the
+pause guard still precedes receipt reconciliation, batching, claiming, dequeue
+and native input. Unknown Project provenance leaves the queue untouched and
+creates no retained attempt.
+
 The retained-request inspector can review and admit one `queued`, proven-unstarted
 original through `GET/POST .../preflight-attempts/{id}/operator-admission`.
 The POST requires `expected_snapshot_sha256`, `expected_queue_sha256` and a bounded

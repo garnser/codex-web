@@ -45,6 +45,7 @@ from codex_web.services.provider_capacity import (
     ProviderCapacityService,
 )
 from codex_web.services.project_runtime import assignment_sandbox_policy
+from codex_web.services.projects import ProjectNotFoundError
 from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
 from codex_web.services.execution_preflight import QueuedRetentionRefused
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
@@ -4116,11 +4117,9 @@ class TurnExecutionService:
             refused_count = 0
             refused_sample = []
             for candidate in TurnQueuePolicy.admission_candidates(items):
-                if await asyncio.to_thread(self._queued_automation_wait_reason, candidate) is not None:
-                    continue
                 try:
                     candidate_project = h._project(candidate.project_id)
-                except HTTPException:
+                except (HTTPException, ProjectNotFoundError):
                     # Without canonical tenant provenance, keep this request
                     # in its original queue rather than inventing a tenant.
                     continue
@@ -4136,6 +4135,12 @@ class TurnExecutionService:
                     refused_count += 1
                     if len(refused_sample) < 10:
                         refused_sample.append(candidate.id)
+                    continue
+                # Retaining the exact durable original is not execution admission.
+                # A paused request must be inspectable by the existing one-original
+                # operator action, but may not reconcile receipts, batch, claim,
+                # dequeue or start without its ordinary current pause guard.
+                if await asyncio.to_thread(self._queued_automation_wait_reason, candidate) is not None:
                     continue
                 if attempt.status == 'started' and attempt.queued_start_receipt is not None:
                     # A restored queue copy is redundant only when the original

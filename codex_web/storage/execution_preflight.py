@@ -12,6 +12,10 @@ from codex_web.models import (
 from codex_web.storage.state_store import StateStore
 
 
+class QueuedRetentionIdentityChanged(ValueError):
+    """An existing queued original differs from the incoming snapshot."""
+
+
 class ExecutionPreflightStore:
     """Keyed durable store for blocked/retried execution attempts.
 
@@ -562,7 +566,7 @@ class ExecutionPreflightStore:
                 if not self.queued_retention_matches(current,
                         organization_id=attempt.organization_id, workspace_id=attempt.workspace_id,
                         project_id=attempt.project_id, snapshot=attempt.queued_turn_snapshot):
-                    raise ValueError("retained queued request identity changed")
+                    raise QueuedRetentionIdentityChanged("retained queued request identity changed")
                 return raw
             return attempt.model_dump(mode="json")
 

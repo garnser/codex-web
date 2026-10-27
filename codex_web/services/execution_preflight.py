@@ -22,7 +22,9 @@ from codex_web.models import (
     QueuedBootstrapPrestartRefusal,
 )
 from codex_web.services.identity import IdentityService
-from codex_web.storage.execution_preflight import ExecutionPreflightStore
+from codex_web.storage.execution_preflight import (
+    ExecutionPreflightStore, QueuedRetentionIdentityChanged,
+)
 
 
 class QueuedRetentionRefused(ValueError):
@@ -94,7 +96,10 @@ class ExecutionPreflightService:
             current.replacement_thread_id or current.thread_id
         ) != queued.thread_id:
             self._restore_queued_route(current, attempt)
-        return self.store.retain_queued(attempt)
+        try:
+            return self.store.retain_queued(attempt)
+        except QueuedRetentionIdentityChanged as exc:
+            raise QueuedRetentionRefused(str(exc)) from exc
 
     def _restore_queued_route(
         self, current: ExecutionPreflightAttempt, incoming: ExecutionPreflightAttempt,
