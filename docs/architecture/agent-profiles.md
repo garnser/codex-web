@@ -161,3 +161,9 @@ not Project-owned records. Their lazy workload and invocation-access panels use
 the selected Project. Switching Projects removes the previous panels, aborts
 reads and rejects late results; no selected Project means no context request.
 Editing a shared identity retains its canonical workspace authority boundary.
+
+Each execution resolution uses one fresh, tenant-filtered profile revision list
+for both current lifecycle/access and an optional older immutable revision.
+This snapshot is local to that resolver call; the next call re-reads canonical
+state. Access is still decided from the latest revision before selecting the
+requested revision. Later worker and START authority checks remain independent.
