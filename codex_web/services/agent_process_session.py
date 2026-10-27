@@ -387,6 +387,10 @@ class AssignmentBoundAgentProcessSession:
             )
         return assignment, workspace_path
 
+    def _uses_operational_tool_environment(self) -> bool:
+        """Operational sessions provision Python tools and validation outputs."""
+        return True
+
     def _spawn_delegated_process(
         self,
         assignment: ExecutionAssignment,
@@ -423,7 +427,7 @@ class AssignmentBoundAgentProcessSession:
             )
             python_environment = (
                 python_environment_resolver(assignment)
-                if callable(python_environment_resolver)
+                if self._uses_operational_tool_environment() and callable(python_environment_resolver)
                 else None
             )
             if python_environment is not None:
@@ -698,7 +702,8 @@ class AssignmentBoundAgentProcessSession:
                 self.fence = lease.fence
                 self._bound_assignment = assignment
                 evidence = self.local_worker.artifact_evidence
-                if evidence is not None and evidence.content is not None:
+                if (self._uses_operational_tool_environment()
+                        and evidence is not None and evidence.content is not None):
                     await asyncio.to_thread(self.local_worker.python_environment, assignment)
                     self.managed_validation = ManagedValidationCustody(evidence, assignment, workspace_path,
                         self.local_worker.worker_actor)

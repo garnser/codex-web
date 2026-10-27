@@ -53,6 +53,12 @@ def _empty_repository_scope(assignment):
 
 
 class ReasoningCodexSession(AssignmentBoundCodexSession):
+    def _uses_operational_tool_environment(self) -> bool:
+        # The code-owned reasoning runtime refuses operational tools. Its native
+        # process and egress relay still use their original system executables;
+        # no execution venv or managed tool-output runner is consumed.
+        return False
+
     def _spawn_delegated_process(self, assignment, workspace_path, broker, control_broker):
         if control_broker is not None or self.control_plane_broker_factory is not None:
             raise NativeReasoningPolicyError('Reasoning session cannot expose operational broker')
