@@ -74,6 +74,7 @@ class NativeCanonicalBridgeTests(unittest.IsolatedAsyncioTestCase):
             local_worker=f.native_sessions[f.target.id].local_worker
             sessions=native_sessions
             checkpoint=AssignmentBoundAgentProcessSessionManager.checkpoint
+            _prepare_completion_index=AssignmentBoundAgentProcessSessionManager._prepare_completion_index
             complete=AssignmentBoundAgentProcessSessionManager.complete
             def get(self,assignment_id):return native_sessions.get(assignment_id)
             async def start(self,assignment_id):
