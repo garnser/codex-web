@@ -252,3 +252,15 @@ cause of an inference timeout.
 When both WorkGraph and Organizational Memory are visible, context preparation may overlap their existing governed operations. The graph snapshot and its bounded Executive projection run in one additional worker; Memory retrieval and its canonical retrieval audit remain on the calling thread. Both complete before preparation returns, retaining graph-first error precedence. A completed authorized Memory retrieval can therefore retain its truthful retrieval-attempt audit even when the sibling graph operation fails; no activation or model invocation is created by that failure.
 
 Each Executive service admits at most two additional context workers, without a waiting queue. Saturated requests use the original sequential path. The worker uses a copied context, including tenant tracing and the same cooperative storage deadline, and its private executor is joined and shut down on every exit. It does not depend on the default executor already occupied by the parent. Unsupported/custom storage compositions and canonical PostgreSQL owning callbacks retain sequential execution; an owning transaction's connection is never transferred across threads. The original five-second API window, visibility, full current validation, retrieval limits, audit preservation, and persist-only-after-success rule remain unchanged. Overlap does not establish a production deadline pass; that still requires genuine post-deployment qualification.
+
+
+Managed native completion first advances the canonical ActionIntent readiness-origin
+index through its existing preparation API. This preparation has a 30-second
+cooperative storage budget (bounded by the caller's remaining budget) and at most
+eight advancing cursor observations, with current worker lease/fence authority
+validated before every step. Every cooperative store guard also observes parent
+budget cancellation. Cancellation joins the original preparation owner.
+Only preparation progress is continued: the worker terminal transition is called
+once and retains its final current-origin check under the canonical writer lock.
+Unresolved origins, invalid or stalled indexes and changed custody still refuse
+completion. This does not retry a model call or infer that an unknown origin is empty.

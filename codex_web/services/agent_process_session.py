@@ -1580,6 +1580,55 @@ class AssignmentBoundAgentProcessSessionManager:
             assignment_id,
         ))
 
+    async def _prepare_completion_index(self, session, assignment):
+        # Continue canonical preparation, never the terminal transition. The
+        # synchronous worker API keeps its bounded page and final-lock guards.
+        from codex_web.services.async_operations import run_settled
+        from codex_web.storage.action_intents import ReadinessOriginIndexProgressing
+        parent = storage_operation_budget.get()
+        seconds = min(30., parent.remaining() if parent is not None else 30.)
+
+        class PreparationBudget(StorageOperationBudget):
+            def remaining(self):
+                # Every cooperative store guard must observe parent retirement,
+                # including writes inside a still-running preparation page.
+                if parent is not None:
+                    parent.remaining()
+                return super().remaining()
+
+        budget = PreparationBudget(seconds)
+
+        def prepare():
+            token = storage_operation_budget.set(budget)
+            try:
+                seen = set()
+                for _ in range(8):
+                    check_operation_budget()
+                    current = session.validate_current()
+                    if (current.id, current.assigned_worker_id, current.fence) != (
+                            assignment.id, session.worker_id, session.fence):
+                        raise AssignmentBoundAgentProcessSessionStaleError(
+                            "assignment completion preparation custody changed")
+                    try:
+                        self.local_worker.worker_service.prepare_completion_index(
+                            session.worker_id, actor=self.local_worker.worker_actor)
+                        check_operation_budget()
+                        return
+                    except ReadinessOriginIndexProgressing as exc:
+                        progress = (exc.epoch, exc.cursor)
+                        if progress in seen:
+                            raise
+                        seen.add(progress)
+                raise AssignmentBoundAgentProcessSessionStaleError(
+                    "assignment completion index preparation budget exhausted")
+            finally:
+                storage_operation_budget.reset(token)
+
+        # Cancellation/deadline retires cooperative store writes and joins the
+        # original executor owner before returning; it cannot detach a writer.
+        await asyncio.wait_for(run_settled(prepare, on_cancel=budget.cancelled.set),
+                               timeout=seconds)
+
     async def complete(
         self,
         assignment_id: str,
@@ -1611,6 +1660,7 @@ class AssignmentBoundAgentProcessSessionManager:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no completable fenced lease"
             )
+        await self._prepare_completion_index(session, assignment)
         await self.checkpoint(assignment_id)
         completed = await run_settled(partial(self.local_worker.worker_service.complete,
             session.worker_id,
