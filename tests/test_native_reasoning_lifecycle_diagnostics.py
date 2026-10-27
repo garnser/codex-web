@@ -3,7 +3,7 @@ import asyncio
 import math
 import unittest
 from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from codex_web.events import EventHub
 from codex_web.services.native_model_provider import NativeProcessOwnership
@@ -109,12 +109,14 @@ class NativeLifecycleDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             async with timeout:
                 return await f.bridge.invoke(f.provider, f.model, f.request, actor=NS(), context=f.context)
         task = asyncio.create_task(original())
+        interruption_requested = False
         try:
             await asyncio.wait_for(f.entered.wait(), 2)
             if deadline:
                 timeout.reschedule(asyncio.get_running_loop().time() - 1)
             else:
                 task.cancel()
+            interruption_requested = True
             # Snapshot must occur at the interrupted wait, before cleanup can
             # replace that phase. The original owner remains positively joined.
             for _ in range(30):
@@ -143,6 +145,10 @@ class NativeLifecycleDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(event['queued_id'], 'queue-original')
             self.assertFalse(task.done())
         finally:
+            # An entry assertion can fail before the intended interruption.
+            # Cancel that original only once; never recancel its owned cleanup.
+            if not interruption_requested and not task.done():
+                task.cancel()
             f.release.set()
             if f.completion is not None and not f.completion.done():
                 f.completion.set_result(None)
@@ -194,6 +200,92 @@ class NativeLifecycleDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(f.events, [])
         self.assertEqual(f.calls, ['create','input_requested','result','complete','stop'])
         self.assertTrue(f.joined.is_set())
+
+    async def test_ordinary_admitted_failures_keep_phase_category_unknown_and_join(self):
+        from codex_web.model_providers import ModelProviderOutcomeUnknownError
+        for phase in ('terminal_observation', 'result_attribution', 'assignment_completion'):
+            with self.subTest(phase=phase):
+                f = self.fixture('success'); f.release.set()
+                original = ValueError('private provider response')
+                if phase == 'terminal_observation':
+                    async def terminal(*args, **kwargs): raise original
+                    f.bridge._wait_original_terminal = terminal
+                elif phase == 'result_attribution':
+                    def result(**kwargs): raise original
+                    f.bridge._result = result
+                else:
+                    manager, _ = f.bridge.execution._session_for_assignment('assignment-original')
+                    manager.complete = AsyncMock(side_effect=original)
+                with self.assertRaises(ModelProviderOutcomeUnknownError) as caught:
+                    await f.bridge.invoke(f.provider, f.model, f.request, actor=NS(), context=f.context)
+                self.assertIs(caught.exception.__cause__, original)
+                self.assertEqual(len(f.events), 1, 'ordinary admitted failure lost lifecycle evidence')
+                event, = f.events
+                self.assertEqual((event['native_lifecycle_phase'], event['interruption'],
+                                  event['native_exception_type']), (phase, 'failed', 'ValueError'))
+                self.assertNotIn('private', repr(event))
+                self.assertTrue(f.joined.is_set())
+                self.assertEqual(f.calls.count('stop'), 1)
+                self.assertEqual(f.bridge._usage_waiters, {})
+                self.assertEqual(f.bridge._admission_waiters, {})
+
+    async def test_ordinary_failure_sink_cannot_replace_original_or_join(self):
+        from codex_web.model_providers import ModelProviderOutcomeUnknownError
+        f = self.fixture('success', sink_failure=asyncio.CancelledError()); f.release.set()
+        original = TypeError('private malformed result')
+        def result(**kwargs): raise original
+        f.bridge._result = result
+        with self.assertRaises(ModelProviderOutcomeUnknownError) as caught:
+            await f.bridge.invoke(f.provider, f.model, f.request, actor=NS(), context=f.context)
+        self.assertIs(caught.exception.__cause__, original)
+        self.assertTrue(f.joined.is_set()); self.assertEqual(f.calls.count('stop'), 1)
+        self.assertEqual(len(f.events), 1)
+
+    async def test_ordinary_cleanup_failure_retains_original_exception(self):
+        original = LookupError('private cleanup failure')
+        f = self.fixture('success', cleanup_failure=original); f.release.set()
+        with self.assertRaises(LookupError) as caught:
+            await f.bridge.invoke(f.provider, f.model, f.request, actor=NS(), context=f.context)
+        self.assertIs(caught.exception, original)
+        event, = f.events
+        self.assertEqual((event['native_lifecycle_phase'], event['interruption'],
+                          event['native_exception_type']), ('cleanup', 'failed', 'LookupError'))
+        self.assertTrue(f.joined.is_set()); self.assertNotIn('private', repr(event))
+
+    def test_ordinary_failure_unknown_exception_name_is_closed(self):
+        f = self.fixture('unused')
+        malicious = type('private_credential_exception', (Exception,), {})('private payload')
+        checkpoint = dict(started_at=0., phase_started_at=0., phase='result_attribution')
+        f.bridge._lifecycle_interrupted(f.context, checkpoint, 'failed', malicious)
+        event, = f.events
+        self.assertEqual(event['native_exception_type'], 'Exception')
+        self.assertNotIn('private', repr(event))
+
+    async def test_entry_timeout_preserves_failure_and_joins_pending_original(self):
+        original_fixture = self.fixture
+        original_wait_for = asyncio.wait_for
+        captured = []
+        failure = TimeoutError('original fixture entry timeout')
+        def fixture(*args, **kwargs):
+            f = original_fixture(*args, **kwargs)
+            captured.append((f, f.entered))
+            f.entered = asyncio.Event()  # The helper's expected entry never arrives.
+            return f
+        async def entry_timeout(awaitable, timeout):
+            try:
+                await original_wait_for(captured[0][1].wait(), timeout)
+            finally:
+                awaitable.close()
+            raise failure
+        with patch.object(self, 'fixture', side_effect=fixture), patch(
+                'asyncio.wait_for', side_effect=entry_timeout):
+            with self.assertRaises(TimeoutError) as caught:
+                await self.interrupted('usage_observation')
+        self.assertIs(caught.exception, failure)
+        f, _ = captured[0]
+        self.assertTrue(f.joined.is_set()); self.assertEqual(f.calls.count('stop'), 1)
+        self.assertEqual(f.bridge._usage_waiters, {})
+        self.assertEqual(f.bridge._admission_waiters, {})
 
     def test_diagnostic_rejects_open_phase_and_sensitive_identifiers(self):
         f = self.fixture('unused')

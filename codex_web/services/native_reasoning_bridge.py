@@ -202,7 +202,7 @@ class CanonicalNativeReasoningBridge:
     def _lifecycle_phase(checkpoint, phase, **identifiers):
         checkpoint.update(phase=phase, phase_started_at=time.monotonic(), **identifiers)
 
-    def _lifecycle_interrupted(self, context, checkpoint, reason):
+    def _lifecycle_interrupted(self, context, checkpoint, reason, error=None):
         # Diagnostic only: queue submission is not canonical native START, and
         # missing terminal/usage evidence remains UNKNOWN rather than retryable.
         try:
@@ -215,7 +215,7 @@ class CanonicalNativeReasoningBridge:
             if not (math.isfinite(elapsed) and math.isfinite(phase_elapsed)):
                 return
             phase = checkpoint['phase']
-            if phase not in _LIFECYCLE_PHASES or reason not in {'cancelled', 'timeout'}:
+            if phase not in _LIFECYCLE_PHASES or reason not in {'cancelled', 'timeout', 'failed'}:
                 return
             event = dict(type='native_reasoning_lifecycle_interrupted',
                 native_lifecycle_phase=phase, interruption=reason,
@@ -223,6 +223,8 @@ class CanonicalNativeReasoningBridge:
                 phase_elapsed_seconds=min(86400., max(0., phase_elapsed)),
                 native_input_requested=checkpoint.get('input_requested', False),
                 native_queue_submitted=checkpoint.get('queue_submitted', False))
+            if reason == 'failed':
+                event['native_exception_type'] = bootstrap_exception_type(error)
             for key in ('organization_id', 'workspace_id', 'project_id', 'execution_id',
                         'activation_id', 'role_id'):
                 value = getattr(context, key, None)
@@ -320,6 +322,13 @@ class CanonicalNativeReasoningBridge:
                     break
             if owner.done() and not owner.cancelled():
                 owner.exception()
+            raise
+        except NativeReasoningPrestartRefused:
+            raise
+        except Exception as exc:
+            # Also observe an ordinary initial guard/cleanup failure. The first
+            # snapshot wins when an admitted failure was recorded before cleanup.
+            self._lifecycle_interrupted(context, lifecycle, 'failed', exc)
             raise
 
     async def _invoke_owned(self, provider, model, request, *, actor, context, cancelled, lifecycle=None):
@@ -493,6 +502,10 @@ class CanonicalNativeReasoningBridge:
         except Exception as exc:
             if isinstance(exc, TimeoutError):
                 self._lifecycle_interrupted(context, lifecycle, 'timeout')
+            elif native_admitted:
+                # Observe the original category before UNKNOWN wrapping and
+                # before cleanup changes the phase. This grants no result or retry.
+                self._lifecycle_interrupted(context, lifecycle, 'failed', exc)
             if native_admitted:
                 raise ModelProviderOutcomeUnknownError(
                     'Native inference original retained; inspect canonical START/usage') from exc

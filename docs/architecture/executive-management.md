@@ -230,6 +230,14 @@ exception text, prompt, output, reasoning, credentials or process diagnostics.
 `native_queue_submitted` means it returned its queue ID. Neither proves native
 START. Canonical START and measured terminal usage remain separate evidence.
 
+Ordinary admitted failures also use this event with `interruption=failed` and
+`native_exception_type` from the existing closed exception-category mapper
+(unknown classes become `Exception`). The snapshot precedes UNKNOWN wrapping
+and cleanup, so successful native usage followed by a result-attribution or
+assignment-completion failure remains distinguishable. Initial guard and cleanup
+failures retain their original exceptions. No exception message or arbitrary
+class name is recorded, and successful inference alone grants no result authority.
+
 The cancellation snapshot precedes the original owned cleanup join, so cleanup
 cannot overwrite the phase that was waiting at the deadline. Cancellation during
 completion or cleanup is reported as that phase. A broken diagnostic sink cannot
