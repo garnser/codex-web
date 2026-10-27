@@ -751,7 +751,17 @@ class AgentProfileService:
         # Current lifecycle/access governs whether new work may start. An
         # explicit older configuration revision can be replayed only while the
         # logical profile itself remains active and invokable.
-        current = self._latest(profile_id, actor=actor)
+        # Resolve current policy and an optional immutable revision from one
+        # fresh call-local catalog read. Never cache this across invocations:
+        # a newer lifecycle/access revision must govern the next admission.
+        revisions = self.store.list_revisions(
+            profile_id=profile_id,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        if not revisions:
+            raise AgentProfileNotFound("agent profile not found")
+        current = revisions[-1]
         decision = self.access_decision(
             current,
             actor=actor,
@@ -762,16 +772,11 @@ class AgentProfileService:
                 "agent profile cannot be invoked",
                 decision=decision,
             )
-        profile = (
-            self.get(
-                profile_id,
-                actor=actor,
-                revision=revision,
-                require_visible=False,
-            )
-            if revision is not None
-            else current
-        )
+        if revision is None:
+            return current, decision
+        profile = next((item for item in revisions if item.revision == revision), None)
+        if profile is None:
+            raise AgentProfileNotFound("agent profile revision not found")
         return profile, decision
 
     def execution_history(
