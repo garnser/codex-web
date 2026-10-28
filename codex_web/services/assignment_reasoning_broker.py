@@ -18,10 +18,22 @@ from codex_web.control_plane_broker import ControlPlaneBrokerOperation
 from codex_web.procedure_execution import ProcedureStart, ProcedureAdvance
 from codex_web.executive_roles import ExecutiveActivationCreate
 from codex_web.identity import PrincipalKind
+from codex_web.definitions import DefinitionContext, reference_for
 from codex_web.services.async_operations import run_settled
+from codex_web.services.definitions import DefinitionNotFoundError, DefinitionCompatibilityError, DefinitionConflictError
+from codex_web.services.goals import GoalError
+from codex_web.services.decisions import DecisionAuthorizationError
+from codex_web.storage.decisions import DecisionNotFoundError
+from codex_web.services.skills import SkillError
+from codex_web.services.skill_security import SkillSecurityBlocked
+from codex_web.services.identity import AuthorizationError
+from codex_web.services.procedure_execution import ProcedureExecutionError as ReadAssignmentError
 
 
 _SPECS = (
+    ("goal.read", "GET", "/api/goals/{ref}", "api.goals.read"),
+    ("decision.read", "GET", "/api/decisions/{ref}", "api.decisions.read"),
+    ("skill.procedure.read", "GET", "/api/skills/{ref}", "api.skills.read"),
     ("procedure.read", "GET", "/api/execution-workers/assignments/{ref}/procedure", "execution.read"),
     ("procedure.start", "POST", "/api/execution-workers/assignments/{ref}/procedure/start", "execution.execute"),
     ("procedure.advance", "POST", "/api/execution-workers/assignments/{ref}/procedure/advance", "execution.execute"),
@@ -29,6 +41,7 @@ _SPECS = (
     ("executive.activation.create", "POST", "/api/executive/activations", "executive.consult"),
     ("executive.activation.consult", "POST", "/api/executive/activations/{ref}/consult", "executive.consult"),
 )
+CONTEXT_READ_IDS = frozenset({"goal.read", "decision.read", "skill.procedure.read"})
 OPERATIONS = tuple(ControlPlaneBrokerOperation(id=name, method=method,
     path_template=path, capability=capability,
     authority_level=AuthorityLevel.READ if method == "GET" else AuthorityLevel.EXECUTE)
@@ -45,10 +58,13 @@ def resolve(method, path):
         match = re.fullmatch(pattern, path)
         if match and operation.method == method:
             target = unquote(match.group(1)) if match.groups() else None
-            if target is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", target):
+            target_pattern = (r"[a-z0-9][a-z0-9._-]{0,199}" if operation.id == "skill.procedure.read"
+                              else r"[A-Za-z0-9_-]{1,200}")
+            if target is not None and not re.fullmatch(target_pattern, target):
                 deny("invalid exact reference")
             return operation, target
-    if path.startswith(("/api/executive/", "/api/execution-workers/assignments/")):
+    if path.startswith(("/api/executive/", "/api/execution-workers/assignments/",
+                        "/api/goals", "/api/decisions", "/api/skills")):
         deny("unsupported assignment reasoning operation")
     return None
 
@@ -73,6 +89,7 @@ class AssignmentReasoningBroker:
                 or current.resource_context != assignment.resource_context
                 or current.resource_ids != assignment.resource_ids
                 or current.execution_profile_definition != assignment.execution_profile_definition
+                or current.execution_profile_id != assignment.execution_profile_id
                 or current.agent_profile != assignment.agent_profile
                 or current.created_by != assignment.created_by
                 or (current.organization_id, current.workspace_id) != (assignment.organization_id, assignment.workspace_id)):
@@ -133,6 +150,69 @@ class AssignmentReasoningBroker:
             for binding in bindings:
                 for work_ref in binding.root_work_item_refs:
                     self.scoped(self.broker._state_for_target(assignment, work_ref), assignment, actor, operation)
+
+    def read_context(self, target, query, assignment, actor, operation):
+        """Exact canonical objects only; no inventory or caller-authored projection."""
+        if not target or not assignment.project_id:
+            deny("exact object read requires a target and assignment project")
+        if operation.id == "goal.read":
+            item = self.executives.goals.get(target, scope=actor.tenant,
+                                            project_id=assignment.project_id)
+            if (item.id != target or (item.organization_id, item.workspace_id) !=
+                    (assignment.organization_id, assignment.workspace_id)
+                    or not item.work_graph_bindings
+                    or any(b.project_id != assignment.project_id for b in item.work_graph_bindings)):
+                deny("Goal has no exclusive assignment-project binding")
+            for binding in item.work_graph_bindings:
+                for ref in binding.root_work_item_refs:
+                    self.scoped(self.broker._state_for_target(assignment, ref), assignment, actor, operation)
+            return {"item": item.model_dump(mode="json")}
+        if operation.id == "decision.read":
+            item = self.executives.decisions.get(target, actor=actor)
+            if item.id != target:
+                deny("canonical Decision read returned a different object")
+            self.scoped(item, assignment, actor, operation)
+            for link in item.work_links:
+                if link.project_id != assignment.project_id:
+                    deny("Decision Work link exceeds assignment project")
+                if link.work_item_ref:
+                    self.scoped(self.broker._state_for_target(assignment, link.work_item_ref),
+                                assignment, actor, operation)
+            return {"item": item.model_dump(mode="json")}
+        skills = self.procedures.skills
+        context = DefinitionContext(organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id, project_id=assignment.project_id)
+        record = skills.definitions.resolve(definition_id=target, kind="agent.skill",
+            context=context, now=float(skills.clock()))
+        reference = reference_for(record)
+        if (reference.record_id != query["record_id"][0]
+                or str(reference.revision) != query["revision"][0]
+                or reference.checksum != query["checksum"][0]):
+            deny("requested procedure reference is not the exact effective published revision")
+        skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
+        item = skills.get(target, actor=actor, project_id=assignment.project_id,
+                          revision=reference.revision)
+        if item["definitionReference"] != reference.model_dump(mode="json"):
+            deny("canonical procedure read resolved a different record")
+        if reference_for(skills.definitions.resolve(definition_id=target, kind="agent.skill",
+                context=context, now=float(skills.clock()))) != reference:
+            deny("effective procedure changed during read")
+        skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
+        return {"item": item}
+
+    @staticmethod
+    def read_query(operation, query):
+        if operation.id != "skill.procedure.read":
+            if query:
+                deny("exact object read accepts no query")
+            return
+        if (set(query) != {"record_id", "revision", "checksum"}
+                or any(not isinstance(v, list) or len(v) != 1 or not isinstance(v[0], str)
+                       for v in query.values())
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", query["record_id"][0])
+                or not re.fullmatch(r"[1-9][0-9]{0,8}", query["revision"][0])
+                or not re.fullmatch(r"[0-9a-f]{64}", query["checksum"][0])):
+            deny("procedure read requires exact record_id, revision and checksum")
 
     def prepared_context(self, item, assignment, actor, operation):
         # These canonical projections lack a verifiable Resource envelope. Do
@@ -219,12 +299,30 @@ class AssignmentReasoningBroker:
         })
 
     async def dispatch(self, assignment, worker_actor, operation, target, payload, query, validator=None):
-        if query and (operation.id != "procedure.read" or set(query) != {"run_id"}
+        if operation.id in CONTEXT_READ_IDS:
+            self.read_query(operation, query)
+        elif query and (operation.id != "procedure.read" or set(query) != {"run_id"}
                 or not isinstance(query["run_id"], list) or len(query["run_id"]) != 1
                 or not isinstance(query["run_id"][0], str) or not 0 < len(query["run_id"][0]) <= 100):
             deny("only procedure.read accepts an exact run_id query")
         if operation.id not in {"procedure.start", "procedure.advance", "executive.activation.create"} and payload:
             deny("this operation accepts no body")
+        if operation.id in CONTEXT_READ_IDS:
+            def exact_read():
+                try:
+                    current, actor = self.current(assignment, worker_actor, operation, target, validator)
+                    result = self.read_context(target, query, current, actor, operation)
+                    # A successful owner read is not authority after lease/fence
+                    # or declaration retirement during the read.
+                    self.current(assignment, worker_actor, operation, target, validator)
+                    return result
+                except ReadAssignmentError:
+                    deny("context read assignment lease or fence is unavailable")
+                except (GoalError, DecisionNotFoundError, DecisionAuthorizationError,
+                        SkillError, SkillSecurityBlocked, AuthorizationError,
+                        DefinitionNotFoundError, DefinitionCompatibilityError, DefinitionConflictError):
+                    deny("canonical context is unavailable or ineligible")
+            return await run_settled(exact_read)
         current, actor = await run_settled(lambda: self.current(assignment, worker_actor, operation, target, validator))
         if operation.id.startswith("procedure."):
             if operation.id == "procedure.start":

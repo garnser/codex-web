@@ -184,6 +184,7 @@ class ExecutionProfileDefinitionService:
                 "repository.check.rerun", "action_intent.reconcile",
                 "project.read", "resource.read", "execution.read", "evidence.read",
                 "control_plane.operations.list", "work_graph.edge.create",
+                "goal.read", "decision.read", "skill.procedure.read",
             }
         )
         if not administrative_operation:
