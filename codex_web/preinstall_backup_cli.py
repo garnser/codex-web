@@ -25,7 +25,10 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from codex_web.canonical_json import canonical_json_bytes
 from codex_web.local_deployment import LOCAL_DEPLOY_LOCK
-from codex_web.preinstall_backup import OfflineCaptureProof, compose_capture_runtime, qualify_capture
+from codex_web.preinstall_backup import (
+    DEFAULT_CAPTURE_DURATION_SECONDS, OfflineCaptureProof, compose_capture_runtime,
+    qualify_capture, validate_capture_duration_seconds,
+)
 from codex_web.upgrades import UpgradePlan
 
 
@@ -190,6 +193,14 @@ def recovery_custody(store):
 DEFAULT_MEMORY_BUDGET_BYTES = 6 * 1024**3
 
 
+def capture_duration_seconds(value: str) -> int:
+    try:
+        return validate_capture_duration_seconds(int(value))
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(
+            'Capture duration must be an integer between 1 and 900 seconds') from error
+
+
 def memory_budget_bytes(value: str) -> int:
     """An explicit finite operation ceiling, never an observed capacity."""
     if type(value) is not str:
@@ -245,6 +256,9 @@ def parser():
     result.add_argument('--memory-budget-bytes', type=memory_budget_bytes,
         default=DEFAULT_MEMORY_BUDGET_BYTES,
         help='Reviewed ceiling for this supervised helper only (default: 6 GiB); actual finite cgroup and headroom checks remain required')
+    result.add_argument('--capture-duration-seconds', type=capture_duration_seconds,
+        default=DEFAULT_CAPTURE_DURATION_SECONDS,
+        help='Reviewed finite capture and association duration from the original pre-stop observation (default: 600; maximum: 900); supervisor, credential, Evidence and Recovery freshness limits still apply')
     result.add_argument('--execute', action='store_true', required=True)
     return result
 
@@ -318,6 +332,8 @@ def main(argv=None):
         record(options.journal_directory, 'pre-stop-qualified', {
             'pre_stop_plan': observed['plan'].model_dump(mode='json'),
             'historical_observation_at': prepared_at, 'recovery_executor': executor,
+            'capture_duration_seconds': options.capture_duration_seconds,
+            'capture_deadline_at': prepared_at + options.capture_duration_seconds,
             'recovery_custody_sha256': custody, 'memory_budget_bytes': options.memory_budget_bytes,
             'memory_cap': asdict(cap),
             'runtime_pid': options.expected_runtime_pid, 'service_invocation': host.initial['InvocationID'],
@@ -332,7 +348,9 @@ def main(argv=None):
         record(options.journal_directory, 'service-stopped', {'stopped_at': time.time(),
             'service': host.service(), 'historical_preflight_not_refreshed': True})
         runtime.offline = OfflineCaptureProof(hashlib.sha256(canonical_json_bytes(
-            observed['plan'].model_dump(mode='json'))).hexdigest(), prepared_at, prepared_at + 600, guard)
+            observed['plan'].model_dump(mode='json'))).hexdigest(), prepared_at,
+            prepared_at + options.capture_duration_seconds, guard,
+            capture_duration_seconds=options.capture_duration_seconds)
         stage = 'capture_once'
         # Existing cooperative storage deadlines reach the owned Recovery
         # thread through its copied context. Expiry never detaches that writer
@@ -345,6 +363,8 @@ def main(argv=None):
             storage_operation_budget.reset(budget_token)
         record(options.journal_directory, 'capture-completed', {'plan_id': plan.id,
             'backup_id': plan.pre_upgrade_backup_id, 'memory_budget_bytes': options.memory_budget_bytes,
+            'capture_duration_seconds': options.capture_duration_seconds,
+            'capture_deadline_at': runtime.offline.deadline_at,
             'capture_timings': budget.recovery_capture_timings(),
             'restore_qualification_claimed': False,
             'deployment_qualification_claimed': False, 'operator_must_restore_service': True})

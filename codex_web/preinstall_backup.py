@@ -21,6 +21,15 @@ _CAPTURE_RECOVERY_BLOCKERS = frozenset({
     'recovery:restore_verification_not_fresh', 'recovery:rto_not_satisfied',
 })
 
+DEFAULT_CAPTURE_DURATION_SECONDS = 600
+MAX_CAPTURE_DURATION_SECONDS = 900
+
+
+def validate_capture_duration_seconds(value):
+    if type(value) is not int or not 1 <= value <= MAX_CAPTURE_DURATION_SECONDS:
+        raise ValueError('Capture duration must be an integer between 1 and 900 seconds')
+    return value
+
 
 def _plan_context(plan):
     # A fresh real-service preflight may update only its own observations and
@@ -151,13 +160,15 @@ class OfflineCaptureProof:
     prepared_at: float
     deadline_at: float
     check_stopped: object
+    capture_duration_seconds: int = DEFAULT_CAPTURE_DURATION_SECONDS
 
     def validate(self, observed_plan, *, now):
+        duration = validate_capture_duration_seconds(self.capture_duration_seconds)
         pf = observed_plan.preflight
         if (pf is None or not pf.evaluated_at <= self.prepared_at
                 or self.prepared_at - pf.evaluated_at > 30
                 or not self.prepared_at <= now <= self.deadline_at
-                or not 0 < self.deadline_at - self.prepared_at <= 600
+                or not 0 < self.deadline_at - self.prepared_at <= duration
                 or hashlib.sha256(canonical_json_bytes(observed_plan.model_dump(mode='json'))).hexdigest()
                     != self.pre_stop_plan_sha256):
             raise UpgradePreflightError('Offline capture historical admission changed or expired')

@@ -326,6 +326,46 @@ class PreinstallBackupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.preflight.evaluated_at, 1000.0)
         self.assertFalse(plan.preflight.satisfied)
 
+    async def test_reviewed_720_capture_associates_after_legacy_600_without_reset(self):
+        from dataclasses import replace
+        runtime = self.offline_runtime()
+        runtime.offline = replace(runtime.offline, deadline_at=1720.0,
+            capture_duration_seconds=720)
+        original = self.recovery.create_backup
+        def capture(**kwargs):
+            self.time = 1650.0
+            return original(**kwargs)
+        self.recovery.create_backup = capture
+        plan = await runtime.capture_once()
+        self.assertEqual(plan.pre_upgrade_backup_id, 'backup-1')
+        self.assertEqual(runtime.offline.prepared_at, 1000.0)
+        self.assertEqual(runtime.offline.deadline_at, 1720.0)
+
+    async def test_reviewed_capture_expiry_retains_manifest_without_association(self):
+        from dataclasses import replace
+        runtime = self.offline_runtime()
+        runtime.offline = replace(runtime.offline, deadline_at=1720.0,
+            capture_duration_seconds=720)
+        def capture(**kwargs):
+            self.recovery.backup_count += 1
+            self.time = 1721.0
+            return SimpleNamespace(id='retained-private-manifest')
+        self.recovery.create_backup = capture
+        with self.assertRaises(UpgradePreflightError):
+            await runtime.capture_once()
+        self.assertEqual(self.recovery.backup_count, 1)
+        self.assertIsNone(self.service.get(self.plan.id, actor=self.actor).pre_upgrade_backup_id)
+
+    def test_reviewed_capture_duration_cannot_widen_legacy_or_exceed_finite_cap(self):
+        from dataclasses import replace
+        runtime = self.offline_runtime()
+        with self.assertRaises(UpgradePreflightError):
+            replace(runtime.offline, deadline_at=1720.0).validate(self.plan, now=1000.0)
+        for duration in (True, 0, -1, 901, 720.0, float('inf'), '720'):
+            with self.subTest(duration=duration), self.assertRaises(ValueError):
+                replace(runtime.offline, capture_duration_seconds=duration).validate(
+                    self.plan, now=1000.0)
+
     async def test_offline_postcapture_still_checks_actual_evidence_expiry(self):
         runtime = self.offline_runtime()
         self.service.evidence.store.update(lambda state: state.model_copy(update={
@@ -366,7 +406,8 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = PreinstallBackupTests.asyncTearDown
     runtime = PreinstallBackupTests.runtime
 
-    def invoke(self, clean_stop, *, memory_budget=None, observed_cap=None, cap_after_capture=None):
+    def invoke(self, clean_stop, *, memory_budget=None, observed_cap=None, cap_after_capture=None,
+               capture_duration=600):
         from dataclasses import dataclass
         import os
         from pathlib import Path
@@ -385,7 +426,8 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
             nonlocal actual_cap
             from codex_web.storage.state_store import storage_operation_budget
             self.assertIsNotNone(storage_operation_budget.get())
-            self.assertLessEqual(storage_operation_budget.get().remaining(), 600)
+            self.assertLessEqual(storage_operation_budget.get().remaining(), capture_duration)
+            self.assertEqual(runtime.offline.deadline_at, 1000.0 + capture_duration)
             manifest = original_capture(**kwargs)
             if cap_after_capture is not None:
                 actual_cap = cap_after_capture
@@ -460,6 +502,8 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
             '--operator-token-fd', str(read_fd), '--execute']
         if memory_budget is not None:
             args.extend(['--memory-budget-bytes', str(memory_budget)])
+        if capture_duration != 600:
+            args.extend(['--capture-duration-seconds', str(capture_duration)])
         try:
             with patch.object(cli, 'LOCAL_DEPLOY_LOCK', root/'deploy.lock'), \
                     patch.object(cli, 'OfflineHostGuard', Host), patch.object(cli, 'local_api', api), \
@@ -490,6 +534,18 @@ class OfflineExecutableTests(unittest.IsolatedAsyncioTestCase):
             'capture-completed.json'}.issubset(files))
         self.assertNotIn('private-fixture-token', ''.join(item.read_text()
             for item in (Path(self.temp.name)/'journal').iterdir()))
+
+    async def test_reviewed_720_executable_uses_and_journals_one_fixed_deadline(self):
+        import asyncio
+        import json
+        from pathlib import Path
+        self.assertEqual(await asyncio.to_thread(self.invoke, True,
+            capture_duration=720), 0)
+        for name in ('pre-stop-qualified', 'capture-completed'):
+            proof = json.loads((Path(self.temp.name)/'journal'/f'{name}.json').read_text())
+            self.assertEqual(proof['capture_duration_seconds'], 720)
+            self.assertEqual(proof['capture_deadline_at'], 1720.0)
+        self.assertEqual(self.recovery.backup_count, 1)
 
     async def test_explicit_operation_budget_is_observed_at_every_capture_boundary(self):
         import asyncio

@@ -369,7 +369,15 @@ The helper itself never stops,
 starts, installs or rolls back a service. The operator procedure must independently
 own service restoration, including helper interruption or an unknown result.
 
-During the separate offline window of at most 600 seconds, the pre-stop preflight
+The separate offline capture window defaults to 600 seconds. An explicitly
+reviewed `--capture-duration-seconds` selects an integer from 1 through 900;
+the selection and absolute deadline are journaled before stop and on completion.
+The deadline is fixed at the original pre-stop observation and is never reset
+after manifest creation. Existing four-argument `OfflineCaptureProof` callers
+retain their 600-second bound. The operator must independently review matching
+supervisor, restoration, verification and credential limits before selecting a
+longer duration; the option does not extend those limits or authorize a retry.
+During that window, the pre-stop preflight
 is explicitly **historical admission evidence**, not a newly refreshed observation.
 Before capture and before association the helper checks the current cleanly
 stopped service, sources, locks, canonical hosted scopes, durable zero-work counts,
@@ -392,6 +400,13 @@ The normal production-sized isolated restore, current service-instance drain
 rebinding after restart, fresh full preflight and qualified installer remain
 mandatory. Existing Recovery/Upgrade inspectors display the canonical results;
 no parallel recovery domain or separate success receipt is introduced.
+Capture duration metadata belongs to the operator proof, not BackupSnapshot or
+BackupManifest: it does not change the encrypted backup wire, stored schemas,
+or OLD-source restore semantics. Recovery RPO still measures actual backup age
+from its canonical `created_at`; a longer capture window does not refresh that
+timestamp or relax current restore, Evidence, credential or installation guards.
+The CLI help and closed operation journal expose this operator-only setting;
+it introduces no runtime Configuration record or additional UI authority.
 
 ## Migration phases
 
