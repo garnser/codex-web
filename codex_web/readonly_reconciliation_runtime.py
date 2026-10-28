@@ -285,7 +285,15 @@ def build_readonly_reconciliation_runtime(
     providers = AgentProviderService(AgentProviderStore(state_store),
         model_gateway=ModelGatewayStore(state_store), extensions=ExtensionStateStore(state_store))
     projects = ProjectService(ProjectRepository(Path(projects_file), store=state_store))
+    from codex_web.services.configuration import ConfigurationService
+    from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+    from codex_web.services.procedure_configuration import (
+        PROCEDURE_CONTEXT_CHARACTERS, install_procedure_configuration,
+    )
+    configuration = ConfigurationService(ConfigurationRegistryStore(state_store))
+    install_procedure_configuration(configuration)
     discovery = ProcedureDiscoveryService(skills, resources,
+        context_capacity_resolver=lambda: configuration.resolve(PROCEDURE_CONTEXT_CHARACTERS.key),
         supporting_context=ProcedureSupportingContextService(memory), projects=projects,
         execution_capabilities=ProcedureExecutionCapabilityService(workers, runtimes, providers))
     events = CanonicalEventIngestionService(CanonicalEventBus(CanonicalEventStore(state_store)))
