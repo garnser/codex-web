@@ -87,6 +87,8 @@ A consultation performs:
 
 The activation budget caps model calls, input tokens, output tokens, and cost. Creation fails before any model invocation when the budget cannot cover the selected roles plus required synthesis.
 
+Role output uses non-empty JSON strings for `summary` and `recommendation`. `risks`, `assumptions`, `disagreement`, and `context_refs` are non-null arrays of strings; `[]` means no items. Actual uncertainty and disagreement remain explicit string items. `proposals` is an array of typed proposal objects, with `[]` permitted when none is supported. Null collections and invalid elements remain validation failures; the parser does not normalize them or suppress disagreement.
+
 A role output may contain advisory proposals only. It cannot claim that a Goal, Decision, Work Item, approval, or external action has already happened.
 
 ## Materialization and authority
