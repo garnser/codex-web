@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
 from codex_web.artifact_evidence import EvidenceCreate, VerificationCreate, ArtifactCreate, sha256_digest
-from codex_web.code_host_mr_observation import dispositions
+from codex_web.code_host_mr_observation import dispositions, MRObservationConflict
 from codex_web.mr_observation_evidence import METHOD, current_observation
 from codex_web.mr_continuation_input import METHOD as CONTINUATION_METHOD, INPUT_METHOD, input_values, encoded
 from codex_web.data_governance import ContextFilterRequest
@@ -149,6 +149,20 @@ class WorkerMRVerificationAdapter:
 
     async def create(self, assignment, worker_actor, resolved, payload, validator):
         request = self.request(payload)
+        try:
+            return await self._create(assignment, worker_actor, resolved, payload, validator, request)
+        except MRObservationConflict as exc:
+            from codex_web.services.control_plane_broker import ControlPlaneBrokerRequestError
+            raise ControlPlaneBrokerRequestError(
+                "Original MR observation refused; reconcile exact source without replay",
+                status_code=409, code=exc.code,
+                mr_observation={"assignment_id": assignment.id,
+                    "execution_id": assignment.execution_id, "fence": assignment.fence,
+                    "method": request.method, "source": self.source(assignment, request),
+                    "request_sha256": digest(request.model_dump(mode="json")),
+                    "retryable": False, "reconcile_without_replay": True}) from exc
+
+    async def _create(self, assignment, worker_actor, resolved, payload, validator, request):
         worker, requester, _ = await asyncio.to_thread(self.adapter.principals,
             assignment, worker_actor, resolved, validator, payload)
         await asyncio.to_thread(self.scope, assignment, request)
