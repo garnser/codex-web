@@ -255,3 +255,11 @@ command, file-change, dynamic-tool and explicit SDK/requested-tool events retain
 their existing counting and fingerprint deduplication. This changes new
 observations only; retained history is not rewritten and zero-tool native
 reasoning contracts are not relaxed.
+
+Legacy thread listing preserves an existing unique canonical native session
+across runtimes, including its original execution and assignment provenance.
+The bounded global alias index must establish tenant/project ownership and
+unique custody before a session is selected; invalid, incomplete or ambiguous
+aliases refuse fallback. Only an unowned legacy thread uses default-runtime
+adoption. This does not repair historical duplicate aliases or provide atomic
+cross-runtime first-session creation.

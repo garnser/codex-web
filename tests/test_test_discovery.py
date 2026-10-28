@@ -19,6 +19,7 @@ class TestDiscoveryOwnershipTests(unittest.TestCase):
             'test_reasoning_coldstart_provisioning': 'ReasoningColdstartProvisioningTests',
             'test_skill_scanner_completion_preparation': 'SkillScannerCompletionPreparationTests',
             'test_paused_queued_preflight_retention': 'PausedQueuedPreflightRetentionTests',
+            'test_thread_legacy_native_custody': 'ThreadLegacyNativeCustodyTests',
         }
         loader = unittest.TestLoader()
         for name, owner in consumers.items():
