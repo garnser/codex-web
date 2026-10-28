@@ -77,6 +77,7 @@ class ExecutiveOutputCollectionsTests(unittest.IsolatedAsyncioTestCase):
         expected = copy.deepcopy(payload['proposals'][0]['payload'])
         activation, gateway = self.activation(payload)
         result = await self.service.consult(activation.id, actor=self.actor)
+        self.assertEqual(result.status, ExecutiveActivationStatus.ESCALATED)
         self.assertEqual(result.consultations[0].output.disagreement, tuple(payload['disagreement']))
         self.assertTrue(result.synthesis.escalation_required)
         self.assertEqual(result.synthesis.disagreement, tuple(payload['disagreement']))
@@ -116,6 +117,21 @@ class ExecutiveOutputCollectionsTests(unittest.IsolatedAsyncioTestCase):
             payload['proposals'] = bad
             with self.assertRaisesRegex(ExecutiveConsultationError, 'schema validation'):
                 self.parse(payload)
+        for bad_payload in (None, [], 'not an object'):
+            with self.subTest(proposal_payload=bad_payload):
+                payload = self.output()
+                payload['proposals'] = [{'kind': 'goal', 'title': 'Title',
+                    'rationale': 'Reason', 'payload': bad_payload}]
+                activation, gateway = self.activation(payload)
+                with self.assertRaisesRegex(ExecutiveConsultationError, 'schema validation'):
+                    await self.service.consult(activation.id, actor=self.actor)
+                retained = self.service.get(activation.id, actor=self.actor)
+                self.assertEqual(retained.status, ExecutiveActivationStatus.FAILED)
+                self.assertEqual(retained.proposals, ())
+                self.assertEqual(len(gateway.requests), 1)
+        self.assertEqual(self.goals.created, [])
+        self.assertEqual(self.decisions.items, [])
+        self.assertEqual(self.authority.requests, [])
 
     async def test_required_scalars_and_extra_fields_stay_strict(self):
         for field in ('summary', 'recommendation'):
