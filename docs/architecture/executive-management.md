@@ -264,3 +264,24 @@ Only preparation progress is continued: the worker terminal transition is called
 once and retains its final current-origin check under the canonical writer lock.
 Unresolved origins, invalid or stalled indexes and changed custody still refuse
 completion. This does not retry a model call or infer that an unknown origin is empty.
+
+## Executive invocation duration
+
+`executive.invocation_timeout_seconds` is a canonical deployment Configuration
+integer from 1 through 600 seconds, defaulting to 120. Existing Configuration
+administration exposes its bounds, value and publication provenance. Publication
+applies to the next consultation without a restart. One fresh resolution is
+captured before that consultation is reserved; every role and any synthesis use
+the same value even if an administrator publishes another value while it runs.
+The next consultation resolves again.
+
+The duration covers the complete Model Gateway attempt, including native
+preparation, inference, attribution and completion. The same value bounds the
+native invocation context and its owned process. Correlated metadata records the
+activation, effective seconds and Configuration record/revision; no activation or
+invocation history schema is rewritten. A shared, resource-constrained host may
+need a longer finite allowance; elapsed time alone is not a failure diagnosis.
+Call counts, token/cost budgets, authority, leases, fences, resources and positive
+cleanup joins retain their existing controls. Expiry retains UNKNOWN outcomes
+without retry permission. An operator's outer HTTP wait must accommodate the
+selected duration and cleanup; extending that wait cannot revive an old attempt.

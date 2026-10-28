@@ -8,9 +8,11 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
-from codex_web.observability import operation_stage
+from codex_web.observability import log_event, operation_stage
+from codex_web.configuration import EffectiveConfiguration
+from codex_web.services.executive_configuration import EXECUTIVE_INVOCATION_TIMEOUT
 from codex_web.work_graph_telemetry import graph_read_timings, graph_read_stage
 
 from codex_web.authority import (
@@ -130,6 +132,7 @@ class ExecutiveManagementService:
         *,
         clock=time.time,
         native_invocation_authorizer=None,
+        invocation_duration_resolver: Callable[[], EffectiveConfiguration] | None = None,
     ) -> None:
         self.store = store
         self.roles = roles
@@ -147,6 +150,7 @@ class ExecutiveManagementService:
         self.data_governance = data_governance
         self.clock = clock
         self.native_invocation_authorizer = native_invocation_authorizer
+        self.invocation_duration_resolver = invocation_duration_resolver
         # No admission queue: a saturated service retains sequential retrieval.
         self._context_overlap_slots = threading.BoundedSemaphore(2)
 
@@ -1505,7 +1509,8 @@ class ExecutiveManagementService:
             if any(value not in decisions or not decisions[value].allowed for value in references):
                 raise ExecutiveConsultationError('Native context original governance permission changed')
 
-    def _native_context(self, activation, role_id, actor, max_input, max_output, origin_guard=None):
+    def _native_context(self, activation, role_id, actor, max_input, max_output, origin_guard=None,
+                        *, timeout_seconds=120):
         if self.native_invocation_authorizer is None or not activation.project_id:
             return {}
         from codex_web.services.native_model_provider import NativeModelInvocationContext
@@ -1536,6 +1541,7 @@ class ExecutiveManagementService:
             activation_id=activation.id, role_id=role_id,
             execution_id=f'executive:{activation.id}:{role_id}',
             max_input_tokens=max_input, max_output_tokens=max_output,
+            max_duration_seconds=timeout_seconds,
             validate_current=validate_current)}
 
     @classmethod
@@ -1554,6 +1560,7 @@ class ExecutiveManagementService:
         max_output_tokens: int | None,
         max_cost_usd: float | None,
         native_origin_guard=None,
+        timeout_seconds=120,
     ) -> ExecutiveConsultation:
         started = float(self.clock())
         filtered_context = self._filter_context(activation.context, role)
@@ -1591,6 +1598,7 @@ class ExecutiveManagementService:
                     max_output_tokens=self._output_ceiling(max_output_tokens),
                     max_cost_usd=max_cost_usd,
                     allow_fallback=False,
+                    timeout_seconds=timeout_seconds,
                     reasoning_effort="medium",
                     text_verbosity="low",
                     purpose=f"executive-role:{role.id}",
@@ -1601,7 +1609,8 @@ class ExecutiveManagementService:
                 ),
                 actor=actor,
                 **self._native_context(activation, role.id, actor, max_input_tokens,
-                                       self._output_ceiling(max_output_tokens), native_origin_guard),
+                                       self._output_ceiling(max_output_tokens), native_origin_guard,
+                                       timeout_seconds=timeout_seconds),
             )
         except ModelGatewayError as exc:
             raise ExecutiveConsultationError(
@@ -1695,8 +1704,29 @@ class ExecutiveManagementService:
                 updated,
             )
 
+        duration = (await asyncio.to_thread(self.invocation_duration_resolver)
+                    if self.invocation_duration_resolver is not None else None)
+        if duration is not None and duration.key != EXECUTIVE_INVOCATION_TIMEOUT.key:
+            raise ValueError("Wrong Executive invocation duration configuration key")
+        timeout_seconds = EXECUTIVE_INVOCATION_TIMEOUT.validate_value(
+            duration.value if duration is not None else EXECUTIVE_INVOCATION_TIMEOUT.default
+        )
         consulting = self.store.update(activation.id, mark_consulting)
         try:
+            # Existing correlated metadata only; never change activation history
+            # or let telemetry failure affect the original invocation outcome.
+            try:
+                log_event(logging.getLogger(__name__), logging.INFO,
+                    "executive.invocation.duration", "Executive invocation duration selected",
+                    tenant_id=actor.organization_id, workspace_id=actor.workspace_id,
+                    activation_id=consulting.id,
+                    timeout_seconds=timeout_seconds,
+                    configuration_key=EXECUTIVE_INVOCATION_TIMEOUT.key,
+                    configuration_record_id=duration.record_id if duration else None,
+                    configuration_revision=duration.revision if duration else None,
+                    configuration_source=duration.source if duration else "default")
+            except Exception:
+                pass
             consultations = tuple(
                 await asyncio.gather(
                     *(
@@ -1708,6 +1738,7 @@ class ExecutiveManagementService:
                             max_output_tokens=per_call_output,
                             max_cost_usd=per_call_cost,
                             native_origin_guard=native_origin_guard,
+                            timeout_seconds=timeout_seconds,
                         )
                         for role in roles
                     )
@@ -1764,6 +1795,7 @@ class ExecutiveManagementService:
                         max_output_tokens=self._output_ceiling(per_call_output),
                         max_cost_usd=per_call_cost,
                         allow_fallback=False,
+                        timeout_seconds=timeout_seconds,
                         reasoning_effort="high",
                         text_verbosity="low",
                         purpose="executive-synthesis",
@@ -1774,7 +1806,8 @@ class ExecutiveManagementService:
                     ),
                     actor=actor,
                     **self._native_context(consulting, "synthesis", actor, per_call_input,
-                                           self._output_ceiling(per_call_output), native_origin_guard),
+                                           self._output_ceiling(per_call_output), native_origin_guard,
+                                           timeout_seconds=timeout_seconds),
                 )
                 try:
                     raw = json.loads(result.text)
