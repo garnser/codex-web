@@ -21,6 +21,9 @@ def execution_profile_catalog_seed_payload() -> dict[str, object]:
                 repository_access="mutable",
                 required_worker_capabilities=("git", "command_execution"),
                 control_plane_operations=(
+                    "goal.read",
+                    "decision.read",
+                    "skill.procedure.read",
                     "work_item.read",
                     "work_item.assign",
                     "work_item.handoff",

@@ -2282,6 +2282,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             ack.assert_not_awaited()
 
     async def test_operator_and_worker_catalogs_share_repository_request_metadata(self):
+        import copy
         from fastapi import FastAPI
         from codex_web.api.control_plane_broker import build_control_plane_broker_router
         app = FastAPI()
@@ -2290,10 +2291,15 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
+        context_reads = {"goal.read", "decision.read", "skill.procedure.read"}
+        operator_items = result.json()["items"]
+        undeclared_items = self.service.public_assignment_capability(self.assignment)["operations"]
+        self.assertTrue(context_reads.issubset({item["id"] for item in operator_items}))
+        self.assertTrue(context_reads.isdisjoint({item["id"] for item in undeclared_items}))
         self.assertEqual([item for item in result.json()["items"]
                           if not item["id"].startswith(("project.", "operator."))
-                          and item["id"] != "repository.pull-request.ready"],
-                         self.service.public_assignment_capability(self.assignment)["operations"])
+                          and item["id"] != "repository.pull-request.ready"
+                          and item["id"] not in context_reads], undeclared_items)
         # Engine recognition in the operator catalog is not an opt-in declaration.
         self.assertTrue(any(item["id"] == "operator.host.inspect" for item in result.json()["items"]))
         self.assertFalse(any(item["id"] == "operator.host.inspect" for item in
@@ -2305,6 +2311,42 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item["id"].startswith("operator.") for item in
                              self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertNotIn("assignment_context", result.json())
+
+        # Recognition is not a grant. Opt in only this private fixture through a
+        # published Definition; every declared entry retains the operator's
+        # exact public request metadata, including the strict Skill reference.
+        from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
+        profiles = install_execution_profile_definitions(self.registry)
+        active = profiles.record(organization_id="local", workspace_id="default", project_id="project-a")
+        _, old_reference = profiles.resolve("orchestration-only", organization_id="local",
+            workspace_id="default", project_id="project-a")
+        payload = copy.deepcopy(active.payload)
+        for profile in payload["profiles"]:
+            if profile["id"] == "orchestration-only":
+                profile["control_plane_operations"] = list(dict.fromkeys(
+                    [*profile["control_plane_operations"], *sorted(context_reads)]))
+        draft = self.registry.create_draft(DefinitionDraftCreate(
+            definition_id=active.definition_id, kind=active.kind,
+            definition_schema_version=active.definition_schema_version,
+            scope_type=active.scope_type, scope_id=active.scope_id,
+            payload=payload, actor="fixture", reason="Explicit context-read catalog fixture"))
+        self.registry.approve_publication(draft.record_id, actor="fixture-reviewer",
+            reference="CONTEXT-READ-CATALOG", reason="Review private opt-in declaration")
+        self.registry.publish(draft.record_id, DefinitionPublishRequest(actor="fixture",
+            expected_active_revision=active.revision))
+        self.service.execution_profiles = profiles
+        _, reference = profiles.resolve("orchestration-only", organization_id="local",
+            workspace_id="default", project_id="project-a")
+        self.assignment.execution_profile_definition = reference
+        declared_items = self.service.public_assignment_capability(self.assignment)["operations"]
+        self.assertEqual([item for item in operator_items
+                          if not item["id"].startswith(("project.", "operator."))
+                          and item["id"] != "repository.pull-request.ready"], declared_items)
+        self.assertTrue(context_reads.issubset({item["id"] for item in declared_items}))
+        for stale_or_missing in (old_reference, None):
+            self.assignment.execution_profile_definition = stale_or_missing
+            self.assertTrue(context_reads.isdisjoint({item["id"] for item in
+                self.service.public_assignment_capability(self.assignment)["operations"]}))
 
     async def test_repository_write_assignment_receives_same_scoped_broker(self) -> None:
         assignment = self.assignment.model_copy(

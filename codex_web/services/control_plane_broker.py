@@ -100,6 +100,7 @@ from codex_web.services.project_coordination import (
 
 from codex_web.services.assignment_reasoning_broker import (
     OPERATIONS as REASONING_OPERATIONS, resolve as resolve_reasoning_operation, ProcedureStart, ProcedureAdvance,
+    CONTEXT_READ_IDS,
 )
 from codex_web.executive_roles import ExecutiveActivationCreate
 
@@ -572,6 +573,13 @@ class ControlPlaneBrokerService:
             result["query_parameters"] = ({"allowed": True, "names": ["run_id"]}
                 if item.id == "procedure.read" else {"allowed": False})
             result["response_loss"] = "Read current procedure checkpoint or assignment-origin Executive activation; never blind replay"
+        if item.id in CONTEXT_READ_IDS:
+            result["scope"] = "Exact current assignment/fence, requester, project and explicit current execution Definition; read only"
+            result["query_parameters"] = ({"allowed": True,
+                "required": ["record_id", "revision", "checksum"],
+                "description": "Exact effective published operational-procedure Skill reference; no implicit latest revision"}
+                if item.id == "skill.procedure.read" else {"allowed": False})
+            result["request_body"] = {"allowed": False}
         work_item_model = {
             "work_item.handoff": WorkItemHandoffCreate,
             "work_item.acknowledge": WorkItemAckCreate,
@@ -761,6 +769,17 @@ class ControlPlaneBrokerService:
         enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
         context = self._public_assignment_context(assignment) if enabled else None
         operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        declared_reads = set()
+        if enabled and self.execution_profiles is not None:
+            try:
+                read_profile, read_reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                    organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                    project_id=assignment.project_id)
+                if read_reference == assignment.execution_profile_definition:
+                    declared_reads = set(read_profile.control_plane_operations) & CONTEXT_READ_IDS
+            except (AttributeError, ValueError, LookupError, DefinitionCompatibilityError, DefinitionConflictError):
+                pass
+        operations = [op for op in operations if op["id"] not in CONTEXT_READ_IDS or op["id"] in declared_reads]
         for item in operations:
             if item['id'] == 'repository.read.merge-requirements':
                 declared = False
@@ -1903,6 +1922,7 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("project.")
             or operation.id.startswith("verification.")
             or operation.id.startswith(("procedure.", "executive."))
+            or operation.id in CONTEXT_READ_IDS
             or operation.id == "upgrade.approval.request"
             or operation.id.startswith('operator.host.')
             or operation.id.startswith('operator.project.')
@@ -1923,7 +1943,7 @@ class ControlPlaneBrokerService:
                     assignment, operation.id, resolved.query, actor=requester_actor
                 ),
             )
-        elif operation.id.startswith(("procedure.", "executive.")):
+        elif operation.id.startswith(("procedure.", "executive.")) or operation.id in CONTEXT_READ_IDS:
             resource_ids = tuple(assignment.resource_ids)
         elif resolved.target_ref is not None:
             state = self._state_for_target(assignment, resolved.target_ref)
@@ -2082,12 +2102,12 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id.startswith(("procedure.", "executive.")):
+        if operation.id.startswith(("procedure.", "executive.")) or operation.id in CONTEXT_READ_IDS:
             if self.assignment_reasoning is None:
                 raise ControlPlaneBrokerDeniedError("assignment reasoning adapters unavailable")
             result = await self.assignment_reasoning.dispatch(assignment, worker_actor,
                 operation, resolved.target_ref, payload, resolved.query, assignment_validator)
-            if isinstance(result.get("item"), dict):
+            if isinstance(result.get("item"), dict) and "id" in result["item"]:
                 resolved = _ResolvedOperation(operation, result["item"]["id"], resolved.query)
         elif operation.id == OUTPUT_READ:
             if (body or self.home_host_outputs is None or set(resolved.query) - {'kind', 'stream', 'max_bytes'}

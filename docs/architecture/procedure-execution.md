@@ -328,3 +328,25 @@ shows the selected revisions and `canonical:native-provider-preparation` source;
 the source string itself confers no authority.
 
 A native scratch context can prove its physical resource scope is exactly empty through the same live broker/session owner, current scratch/none Definition, workspace and resource lease. Only registered provider-only procedures may then be rejected as `native_physical_scope_empty` for that single discovery; pinned-reference errors and local/worker procedures retain ordinary refusal. This does not select or authorize a future remote target. Later broker actions resolve their actual target and enforce the required procedure normally. The proof is rechecked at native input. Nonempty preparation additionally requires the current Definition to declare all three procedure broker operations and the actual broker to use the same interpreter.
+
+### Exact context reads through the assignment broker
+
+`goal.read` and `decision.read` expose one canonical object in the assignment's
+tenant and Project. Goals require exclusive bindings to that Project; linked
+Work roots retain Resource checks. `skill.procedure.read` reads one effective
+published operational-procedure Skill through its canonical owner, including
+the full Definition reference, procedure and security view. Its GET query must
+provide the exact `record_id`, `revision` and `checksum`; a superseded or changed
+reference is refused rather than silently replaced by a newer revision. Scope,
+security, lifecycle and freshness gates remain in force. No inventory or generic
+Definition payload endpoint is exposed by these operations.
+
+All three reads require an explicit operation declaration in the current pinned
+execution Definition, current worker and workspace leases, requester authority,
+and assignment/fence revalidation before returning data. The assignment catalog
+advertises only currently declared reads. The repository-write bootstrap seed
+declares them for new installations; an existing administrative catalog requires
+a separately reviewed canonical Definition publication. Deployment does not
+rewrite existing catalog data or assignment pins. These reads grant no mutation,
+provider, verification-publication or procedure-execution rights. Repository-free
+Orchestrator coordination remains separate from a repository worker's WRITE lease.
