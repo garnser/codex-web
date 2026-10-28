@@ -11,6 +11,17 @@ from codex_web import preinstall_backup_cli as cli
 
 
 class OfflineHostGuardTests(unittest.TestCase):
+    def test_capture_duration_defaults_to_600_and_accepts_reviewed_720(self):
+        action = next(item for item in cli.parser()._actions
+            if item.dest == 'capture_duration_seconds')
+        self.assertEqual(action.default, 600)
+        self.assertEqual(action.type('720'), 720)
+        self.assertEqual(action.type('900'), 900)
+        import argparse
+        for value in ('0', '-1', '901', '720.0', 'nan', 'inf', 'True'):
+            with self.subTest(value=value), self.assertRaises(argparse.ArgumentTypeError):
+                action.type(value)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
