@@ -230,14 +230,14 @@ class PreinstallBackupTests(unittest.IsolatedAsyncioTestCase):
                     'crypto:admin', 'artifact-evidence:admin'))
             UpgradeStore(fixture.state).update(lambda state: state)
             before = fixture.state.get(IdentityStateStore.namespace)
-            def compose():
+            def compose(qualify_tool=None):
                 return compose_capture_runtime(fixture.state, operator_token=credential.token,
                 key_material_dir=Path(fixture.temp.name)/'keys',
                 backup_dir=Path(fixture.temp.name)/'backups',
                 refresh=lambda: self.fail('No installed HTTP in fixture'),
                 check_runtime=lambda: None, journal=lambda *_: None,
                 source_revision='a'*40, target_revision='b'*40,
-                service_instance_id='installed-instance')
+                service_instance_id='installed-instance', qualify_tool=qualify_tool)
             from codex_web.storage.execution_workers import ExecutionWorkerStore
             from codex_web.storage.action_intents import ActionIntentStore
             collections = (ActionIntentStore.records_namespace,
@@ -250,6 +250,21 @@ class PreinstallBackupTests(unittest.IsolatedAsyncioTestCase):
             # Fixture initialization only; the composed helper cannot do this.
             ExecutionWorkerStore(fixture.state).load()
             ActionIntentStore(fixture.state).load()
+            class ToolDenied(RuntimeError):
+                pass
+            def refuse_tool(evidence, actor):
+                self.assertIsInstance(evidence, ArtifactEvidenceService)
+                self.assertEqual(actor.identity_id, 'fixture-operator')
+                raise ToolDenied('private fixture tool qualification revoked')
+            # Canonical qualification follows real existing authentication and
+            # precedes any key/destination constructor or Recovery writer.
+            with patch('codex_web.key_backends.LocalFileKeyBackend') as backend, \
+                    patch('codex_web.services.recovery.LocalBackupDestination') as destination:
+                with self.assertRaises(ToolDenied):
+                    compose(refuse_tool)
+                backend.assert_not_called()
+                destination.assert_not_called()
+            self.assertEqual(fixture.state.get(IdentityStateStore.namespace), before)
             runtime = compose()
             self.assertEqual(fixture.state.get(IdentityStateStore.namespace), before)
             recovery = runtime.upgrades.recovery

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 
 import hashlib
 import json
 import os
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -55,11 +57,18 @@ from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.state_store import StateStore, state_documents_checksum, enter_recovery_capture_stage
+from codex_web.storage.state_store import check_operation_budget
 from codex_web.services.recovery_snapshot_strings import (
     SnapshotStringMetadataChanged,
     observe_snapshot_string_bound,
     require_snapshot_string_bound,
 )
+
+# The streaming path retains a single exact plaintext allocation. Everything
+# else (JSON header, encoded/decoded chunks and GCM scratch) has fixed bounds.
+# This allowance deliberately exceeds their combined bounds; the unchanged
+# Recovery margin and downstream plaintext*6 admission still apply separately.
+ENVELOPE_STREAM_WORK_BYTES = 16 * 1024 * 1024
 
 
 class RecoveryError(RuntimeError):
@@ -135,6 +144,38 @@ class LocalBackupDestination:
                 "recovery_memory_size_changed: backup changed after capacity admission"
             )
         return payload
+
+    @contextmanager
+    def open_bounded(self, destination_ref: str, maximum_bytes: int):
+        """Pin one private canonical file for the bounded two-pass reader.
+
+        Opening relative to the directory FD prevents replacement of the path
+        between the size observation and open from redirecting the reader. The
+        envelope reader additionally checks the opened file's size, identity and
+        complete checksum on both passes. It never trusts a pathname as proof
+        that bytes remained unchanged.
+        """
+        self._path(destination_ref)  # Retain the existing destination scope check.
+        path = Path(destination_ref[len("file://"):])
+        if path.parent != self.directory:
+            from codex_web.services.recovery_envelope_stream import EnvelopeStreamUnsupported
+            raise EnvelopeStreamUnsupported("nested_destination_original_reader_required")
+        directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            descriptor = os.open(
+                path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                dir_fd=directory_fd,
+            )
+        finally:
+            os.close(directory_fd)
+        with os.fdopen(descriptor, "rb", buffering=64 * 1024) as handle:
+            info = os.fstat(handle.fileno())
+            if info.st_size != maximum_bytes:
+                raise RecoveryMemoryConflictError("recovery_memory_size_changed: backup changed before open")
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+                raise RecoveryConflictError("bounded recovery file identity or privacy refused")
+            yield handle
 
     def delete(self, destination_ref: str) -> bool:
         try:
@@ -561,6 +602,47 @@ class RecoveryService:
 
         self.store.update(apply)
 
+    def _stream_backup_plaintext(self, destination, manifest, encrypted_size, context,
+                               actor, requirements):
+        """Authenticate one existing envelope without whole-ciphertext copies.
+
+        None means a legacy spelling/destination needs the original algorithm
+        and its original eight-times-envelope admission. It never means that
+        authentication or a semantic check may be skipped.
+        """
+        from codex_web.services.recovery_envelope_stream import (
+            EnvelopeStreamUnsupported, scan_envelope, iter_envelope_ciphertext,
+        )
+        opener = getattr(destination, "open_bounded", None)
+        if not callable(opener) or encrypted_size * 8 <= ENVELOPE_STREAM_WORK_BYTES:
+            # For small envelopes the original complete allocation is already
+            # cheaper than the streaming working allowance. Preserve that path
+            # rather than increasing its minimum admission requirement.
+            return None
+        _memory_admit("restore_envelope_metadata", ENVELOPE_STREAM_WORK_BYTES)
+        try:
+            with opener(manifest.destination_ref, encrypted_size) as handle:
+                scan = scan_envelope(handle, encrypted_size, manifest.envelope_sha256,
+                                     check_operation_budget)
+                # This bounded, transient header validates the unchanged model.
+                # The ciphertext placeholder is never persisted or decrypted;
+                # actual ciphertext comes only from the fully checked iterator.
+                header = EncryptedEnvelope.model_validate({**scan.metadata, "ciphertext_b64": "AA=="})
+                if header.format_version != "1.0":
+                    raise EnvelopeStreamUnsupported("envelope_version_original_reader_required")
+                if requirements is not None:
+                    requirements.append(KeyManifestEntry(key_id=header.key_id, versions=(header.key_version,)))
+                _memory_admit("restore_envelope_stream", scan.plaintext_size + ENVELOPE_STREAM_WORK_BYTES)
+                return self.crypto.decrypt_envelope_stream(
+                    scan.metadata,
+                    iter_envelope_ciphertext(handle, scan, encrypted_size,
+                                             manifest.envelope_sha256, check_operation_budget),
+                    scan.ciphertext_size, context, actor=actor,
+                    checkpoint=check_operation_budget,
+                )
+        except EnvelopeStreamUnsupported:
+            return None
+
     def _snapshot_from_backup(
         self,
         manifest: BackupManifest,
@@ -583,27 +665,29 @@ class RecoveryService:
             ) from exc
         if type(encrypted_size) is not int or encrypted_size < 0:
             raise RecoveryMemoryConflictError("recovery_memory_size_unknown: invalid backup size")
-        _memory_admit("restore_snapshot", encrypted_size * 8)
-        encrypted = bounded_read(manifest.destination_ref, encrypted_size)
-        if hashlib.sha256(encrypted).hexdigest() != manifest.envelope_sha256:
-            raise RecoveryConflictError("encrypted backup checksum mismatch")
-        envelope = EncryptedEnvelope.model_validate(json.loads(encrypted))
-        del encrypted
-        if _requirements is not None:
-            _requirements.append(KeyManifestEntry(key_id=envelope.key_id, versions=(envelope.key_version,)))
         context = EncryptionContext(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             object_type="recovery_backup",
             object_id=manifest.id,
         )
-        _memory_admit("restore_decrypt", len(envelope.ciphertext_b64) * 3)
-        plaintext = self.crypto.decrypt(
-            envelope,
-            context,
-            actor=actor,
+        plaintext = self._stream_backup_plaintext(
+            destination, manifest, encrypted_size, context, actor, _requirements,
         )
-        del envelope
+        if plaintext is None:
+            # Unsupported legacy spellings retain the original algorithm and
+            # estimates. A bounded-reader refusal never reduces this budget.
+            _memory_admit("restore_snapshot", encrypted_size * 8)
+            encrypted = bounded_read(manifest.destination_ref, encrypted_size)
+            if hashlib.sha256(encrypted).hexdigest() != manifest.envelope_sha256:
+                raise RecoveryConflictError("encrypted backup checksum mismatch")
+            envelope = EncryptedEnvelope.model_validate(json.loads(encrypted))
+            del encrypted
+            if _requirements is not None:
+                _requirements.append(KeyManifestEntry(key_id=envelope.key_id, versions=(envelope.key_version,)))
+            _memory_admit("restore_decrypt", len(envelope.ciphertext_b64) * 3)
+            plaintext = self.crypto.decrypt(envelope, context, actor=actor)
+            del envelope
         _memory_admit("restore_decode", len(plaintext) * 6)
         decoded = json.loads(plaintext)
         del plaintext
