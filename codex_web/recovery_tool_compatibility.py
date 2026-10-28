@@ -235,7 +235,7 @@ def validate_recovery_tool_proof(
     _hex(proof['tool_archive_sha256'], 64, 'tool archive SHA')
     for key, prefix in [('tool_artifact_id', 'artifact'),
                         ('compatibility_evidence_id', 'evidence'), ('review_evidence_id', 'evidence')]:
-        _require(type(proof[key]) is str and re.fullmatch(prefix + '-[0-9a-f]{32}', proof[key]) is not None,
+        _require(type(proof[key]) is str and re.fullmatch(prefix + '-(?:[0-9a-f]{32}|[0-9a-f]{64})', proof[key]) is not None,
                  'invalid canonical record ID')
     _require(proof['compatibility_evidence_id'] != proof['review_evidence_id'],
              'independent review Evidence required')

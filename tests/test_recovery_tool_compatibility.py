@@ -84,6 +84,38 @@ class RecoveryToolCompatibilityTests(unittest.TestCase):
         self.assertEqual(result.changed_files[0].path, 'codex_web/services/recovery.py')
         self.assertFalse(hasattr(result, 'approved'))
 
+    def test_real_canonical_idempotent_artifact_and_evidence_ids_are_accepted(self):
+        from codex_web.identity import (AuthenticationActor, AuthenticationAssurance,
+                                        MembershipRole, PrincipalKind)
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        actor = AuthenticationActor(identity_id='operator', principal_kind=PrincipalKind.HUMAN,
+            organization_id='org', workspace_id='ws', roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.LOCAL_TRUSTED)
+        for field, key in (('tool_artifact_id', 'artifact'),
+                           ('compatibility_evidence_id', 'compatibility'),
+                           ('review_evidence_id', 'review')):
+            identifier = ArtifactEvidenceService._idempotent_evidence_id(actor, 'tool-fixture', key)
+            if field == 'tool_artifact_id':
+                identifier = identifier.replace('evidence-', 'artifact-', 1)
+            self.proof[field] = identifier
+        self.save_proof()
+        result = self.validate()
+        self.assertEqual(result.tool_artifact_id, self.proof['tool_artifact_id'])
+        self.assertEqual(result.compatibility_evidence_id, self.proof['compatibility_evidence_id'])
+        self.assertEqual(result.review_evidence_id, self.proof['review_evidence_id'])
+        self.assertEqual(len(result.review_evidence_id.removeprefix('evidence-')), 64)
+
+    def test_noncanonical_record_id_lengths_are_rejected(self):
+        original = dict(self.proof)
+        for field in ('tool_artifact_id', 'compatibility_evidence_id', 'review_evidence_id'):
+            prefix = 'artifact-' if field == 'tool_artifact_id' else 'evidence-'
+            for length in (0, 31, 33, 63, 65):
+                with self.subTest(field=field, length=length):
+                    self.proof = {**original, field: prefix + '1' * length}
+                    self.save_proof()
+                    with self.assertRaises(compatibility.RecoveryToolCompatibilityError):
+                        self.validate()
+
     def test_exact_expected_revisions_and_distinct_tool_are_required(self):
         for change in (dict(base_revision='a' * 40), dict(tool_revision='b' * 40),
                        dict(upgrade_target_revision=self.tool),
