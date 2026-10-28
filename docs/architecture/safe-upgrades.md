@@ -540,7 +540,7 @@ ordinary verification side effect that may be ignored.
 `preinstall_backup_cli` therefore distinguishes `--expected-producer-revision`
 (the complete executable tool checkout) from
 `--expected-upgrade-target-revision` (the exact Release/Upgrade target).
-The separate offline verifier must use the installed source revision; the
+By default the separate offline verifier must use the installed source revision; the
 separate target remains subject to all existing plan, Release, authority,
 preflight, lock, PID, storage-path, memory and deadline checks. The verifier must check its source/tool pin before credential use and at each
 guarded boundary. A target-executable verifier refuses visibly. Capture keeps
@@ -554,6 +554,30 @@ verification and publish its genuine canonical Evidence under the source
 contract. Neither service memory limits nor helper capacity are inferred from
 this source choice; supervised finite limits and real capacity admission remain
 required.
+
+A recovery-only backport can be admitted through an explicit qualified-tool
+proof. This is a separate immutable tool revision derived from the exact
+installed base, never the upgrade target relabeled as the base. The default
+source-equality rule remains unchanged without that proof. Before credentials
+are used, static validation pins the complete clean base/tool/target trees,
+private proof identity and exact reviewed diff. Only the bounded Recovery/crypto
+algorithm and its proof/CLI seams are eligible; domain models, storage writers,
+migrations, dependencies and other executable files remain byte-identical to
+the base. All loaded application-package modules must belong to that one tool
+tree. A path allowlist or a local compatibility assertion alone is insufficient.
+
+After canonical authentication, the existing scoped Artifact/Evidence services
+must confirm the actual tool archive digest and valid independent compatibility,
+CI and review evidence for those exact bindings. Revalidate that qualification
+at the existing guarded publication boundaries; invalidated, expired, changed
+or foreign-scope proof cannot authorize a write. Journals retain the actual
+installed base, executable tool, upgrade target and qualification references.
+The tool preserves the base's actual persisted contracts, including its
+ArtifactEvidence writer. The historical 1.3-to-1.4 writer transition above is
+still incompatible; newer-schema publication is never repaired by downgrading
+an envelope. This exception grants no capture, migration, provider or native
+execution authority and changes no actor, lock, custody, deadline, freshness,
+memory or semantic restore check.
 
 No live-state envelope downgrade, skipped verification, mixed source imports,
 legacy provenance relabeling or rollback promise follows from this distinction.

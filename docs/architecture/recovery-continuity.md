@@ -79,8 +79,9 @@ On Linux, current host `MemAvailable` and all visible cgroup-v2 ancestor limits
 are intersected; swap is not credited. Missing or malformed accounting refuses
 admission rather than assuming host RAM is available to the service.
 
-Capture estimates additional allocation as twelve times source bytes plus 512
-bytes per row; restore estimates eight times encrypted size. Each check also
+The original complete-envelope restore path estimates additional allocation as
+eight times encrypted size. Capture retains its staged inventory, bounded-row
+and string-length estimates. Each check also
 requires 512 MiB of remaining headroom. These are conservative operational
 estimates, **not reservations or guarantees for arbitrary JSON or concurrent
 process growth**. Actual buffer lengths trigger further headroom checks before
@@ -89,6 +90,26 @@ the stage, estimated required bytes and observed available bytes through existin
 Recovery/Upgrade errors; no backup or verification PASS is inferred. Operators
 must review workload/capacity when refused. These checks do not mutate memory or
 swap limits, clear caches, restart services or authorize retries of uncertain work.
+
+For a sufficiently large private local single-envelope backup, Recovery instead
+uses two bounded passes over one pinned file descriptor. The first validates
+bounded JSON metadata, strict Base64 length and the complete manifest checksum.
+After admitting the exact plaintext length plus a 16 MiB working allowance, the
+canonical key service decrypts fixed-size chunks into one private bytearray. It
+releases that buffer only after iterator exhaustion, a second complete checksum
+and file/metadata check, GCM tag authentication and the canonical key audit.
+No plaintext is written to disk. A partially consumed iterator is never
+authentication or recovery evidence.
+
+This algorithm removes whole-envelope/Base64/ciphertext coexistence. It does not
+make semantic snapshot decoding streaming: the existing six-times-plaintext
+admission still runs with the authenticated buffer resident, followed by the
+unchanged JSON/model, documents checksum, schema, key-manifest and audit checks.
+The working allowance is separate from the unchanged 512 MiB margin. Small
+envelopes keep the cheaper original algorithm. Unsupported legacy spellings or
+destinations retain its original eight-times-envelope admission; corruption or
+authentication failure cannot become successful fallback. Neither algorithm
+promises that a particular host has enough capacity.
 
 A separately supervised offline operation can additionally require an actual
 process budget through `require_process_memory_limit`. This reads the current

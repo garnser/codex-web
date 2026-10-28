@@ -6,9 +6,11 @@ import json
 import os
 import time
 from contextlib import contextmanager
+from collections.abc import Callable, Iterable
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from codex_web.crypto import (
     CryptoKeyState,
@@ -696,6 +698,125 @@ class CryptoKeyService:
 
         self.store.update(audit)
         return plaintext
+
+    def decrypt_envelope_stream(
+        self,
+        metadata: dict,
+        ciphertext: Iterable[bytes],
+        ciphertext_size: int,
+        context: EncryptionContext,
+        *,
+        actor: AuthenticationActor,
+        checkpoint: Callable[[], None],
+    ) -> bytearray:
+        """Authenticate one existing envelope without retaining its ciphertext.
+
+        The caller admits the exact plaintext allocation first. This private
+        buffer never leaves the service until the source iterator has completed,
+        GCM has authenticated its final tag, and the canonical key audit commits.
+        No callback receives plaintext or key material.
+        """
+        chunk_bound = 64 * 1024
+        self._ensure_context_scope(context, actor)
+        if type(ciphertext_size) is not int or ciphertext_size < 16:
+            raise CryptoDecryptError("invalid ciphertext stream size")
+        if not isinstance(metadata, dict) or "ciphertext_b64" in metadata:
+            raise CryptoDecryptError("invalid envelope stream metadata")
+        try:
+            # Nonpersisted validation placeholder: no synthetic envelope is
+            # published or passed to the existing one-shot decrypt path.
+            envelope = EncryptedEnvelope.model_validate({**metadata, "ciphertext_b64": "AA=="})
+        except ValueError:
+            raise CryptoDecryptError("invalid envelope stream metadata") from None
+        if envelope.format_version != "1.0":
+            raise CryptoDecryptError("unsupported envelope stream format")
+        if envelope.context_digest != self._context_digest(context):
+            raise CryptoDecryptError("encryption context mismatch")
+        state = self.store.load()
+        key = self._key(state, envelope.key_id, actor)
+        self._ensure_key_context(key, context)
+        version = self._version(key, envelope.key_version)
+        if key.status == KeyStatus.REVOKED or version.status == KeyVersionStatus.REVOKED:
+            raise CryptoDecryptError("key version is revoked")
+        backend = self._backend(key.backend_type)
+        plaintext = None
+        scratch = None
+        kek = dek = decryptor = None
+        try:
+            checkpoint()
+            kek = backend.get(version.backend_ref)
+            wrap_nonce = base64.b64decode(envelope.wrap_nonce_b64, validate=True)
+            wrapped = base64.b64decode(envelope.wrapped_data_key_b64, validate=True)
+            data_nonce = base64.b64decode(envelope.data_nonce_b64, validate=True)
+            dek = AESGCM(kek).decrypt(
+                wrap_nonce, wrapped, self._wrap_aad(context, key.id, version.version),
+            )
+            decryptor = Cipher(algorithms.AES(dek), modes.GCM(data_nonce)).decryptor()
+            decryptor.authenticate_additional_data(self._data_aad(context))
+            checkpoint()
+            plaintext = bytearray(ciphertext_size - 16)
+            # update_into needs one block of slack even for GCM; retain that
+            # slack in bounded scratch rather than enlarging the final buffer.
+            scratch = bytearray(chunk_bound + 15)
+            seen = written = 0
+            tail = b""
+            for chunk in ciphertext:
+                checkpoint()
+                if type(chunk) is not bytes or not 0 < len(chunk) <= chunk_bound:
+                    raise CryptoDecryptError("invalid ciphertext stream chunk")
+                seen += len(chunk)
+                if seen > ciphertext_size:
+                    raise CryptoDecryptError("ciphertext stream size mismatch")
+                pending = tail + chunk
+                body_size = max(0, len(pending) - 16)
+                if body_size:
+                    count = decryptor.update_into(memoryview(pending)[:body_size], scratch)
+                    if written + count > len(plaintext):
+                        raise CryptoDecryptError("plaintext stream size mismatch")
+                    plaintext[written:written + count] = memoryview(scratch)[:count]
+                    written += count
+                tail = pending[body_size:]
+            # Source completion may itself verify a second digest/stat binding.
+            # Exact byte count alone is never permission to stop consuming it.
+            checkpoint()
+            if seen != ciphertext_size or len(tail) != 16:
+                raise CryptoDecryptError("ciphertext stream size mismatch")
+            final = decryptor.finalize_with_tag(tail)
+            if final or written != len(plaintext):
+                raise CryptoDecryptError("plaintext stream size mismatch")
+            checkpoint()
+
+            def audit(current: CryptoKeyState) -> CryptoKeyState:
+                checkpoint()
+                persisted = self._key(current, key.id, actor)
+                live_version = self._version(persisted, version.version)
+                self._ensure_key_context(persisted, context)
+                if (persisted.status == KeyStatus.REVOKED
+                        or live_version.status == KeyVersionStatus.REVOKED
+                        or live_version.backend_ref != version.backend_ref
+                        or persisted.backend_type != key.backend_type):
+                    raise CryptoDecryptError("key changed before stream completion")
+                self._audit(current, actor=actor, operation="decrypt", outcome="success",
+                    key=persisted, version=version.version, context=context)
+                return current
+
+            self.store.update(audit)
+            result, plaintext = plaintext, None
+            return result
+        except TimeoutError:
+            raise
+        except Exception:
+            raise CryptoDecryptError("ciphertext or key material could not be authenticated") from None
+        finally:
+            # Best effort bounded clearing also covers iterator/checkpoint/audit
+            # failure, including cancellation (BaseException). No giant zero copy.
+            zeros = b"\0" * chunk_bound
+            for buffer in (plaintext, scratch):
+                if buffer is not None:
+                    for offset in range(0, len(buffer), chunk_bound):
+                        size = min(chunk_bound, len(buffer) - offset)
+                        buffer[offset:offset + size] = memoryview(zeros)[:size]
+            kek = dek = decryptor = None
 
     def reencrypt(
         self,

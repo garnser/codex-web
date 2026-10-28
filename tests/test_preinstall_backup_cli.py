@@ -220,3 +220,45 @@ class SourceCompatibleToolTests(unittest.TestCase):
                 setattr(options, field, value)
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     cli.source_compatible_tool_target(options)
+
+    def test_backport_requires_explicit_proof_pair_and_separate_target(self):
+        for proof, digest, target in ((Path('/private/proof'), None, 'b'*40),
+                (None, 'd'*64, 'b'*40), (Path('/private/proof'), 'd'*64, None)):
+            options = self.options(tool='c'*40, target=target)
+            options.source_compatible_tool_proof = proof
+            options.source_compatible_tool_proof_sha256 = digest
+            with self.subTest(proof=proof, digest=digest, target=target), self.assertRaisesRegex(ValueError, 'explicit compatible tool proof'):
+                cli.source_compatible_tool_target(options)
+
+    def test_explicit_backport_uses_exact_static_bindings_and_checks_all_imports(self):
+        from codex_web import recovery_tool_compatibility as compatibility
+        options = self.options(tool='c'*40, target='b'*40)
+        options.producer_checkout = Path('/private/complete-tool')
+        options.source_compatible_tool_proof = Path('/private/proof')
+        options.source_compatible_tool_proof_sha256 = 'd'*64
+        facts = object()
+        with patch.object(compatibility, 'validate_recovery_tool_proof', return_value=facts) as validate, \
+                patch.object(compatibility, 'validate_tool_imports') as imports:
+            self.assertEqual(cli.source_compatible_tool_target(options), 'b'*40)
+        validate.assert_called_once_with(options.source_compatible_tool_proof, 'd'*64,
+            base_revision='a'*40, tool_revision='c'*40, upgrade_target_revision='b'*40,
+            tool_checkout=options.producer_checkout)
+        self.assertIs(imports.call_args.args[0], facts)
+        self.assertTrue(imports.call_args.args[1])
+        self.assertTrue(all(module.__name__.split('.')[0] == 'codex_web'
+            for module in imports.call_args.args[1]))
+        self.assertEqual(options.expected_producer_revision, 'c'*40)
+        self.assertEqual(options.expected_runtime_revision, 'a'*40)
+
+    def test_canonical_qualification_rechecks_revocation_instead_of_caching(self):
+        facts = SimpleNamespace(proof_sha256='d'*64)
+        options, service, actor = self.options(), object(), object()
+        with patch.object(cli, 'source_compatible_tool_facts', return_value=facts) as pins, \
+                patch.object(cli, 'validate_source_compatible_tool_evidence',
+                    side_effect=[{'tool_revision': 'c'*40}, ValueError('qualification revoked')]) as canonical:
+            receipt = cli.qualify_source_compatible_tool(options, service, actor=actor, now=100)
+            self.assertEqual(receipt, {'tool_revision': 'c'*40, 'proof_sha256': 'd'*64})
+            with self.assertRaisesRegex(ValueError, 'revoked'):
+                cli.qualify_source_compatible_tool(options, service, actor=actor, now=101)
+        self.assertEqual(pins.call_count, 2)
+        self.assertEqual(canonical.call_count, 2)
