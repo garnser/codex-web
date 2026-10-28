@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSessionRequest
 from codex_web.agent_routing import AgentRoutingRequest
@@ -45,6 +46,7 @@ from codex_web.services.thread_execution_settings import ThreadExecutionSettings
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.services.thread_recovery import ThreadRecoveryService
 from codex_web.services.thread_resume import ThreadResumeService
+from codex_web.storage.agent_sessions import AgentSessionConflictError
 from codex_web.storage.thread_history import ThreadHistoryRepository
 from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.services.turn_execution_binding import (
@@ -413,14 +415,37 @@ class ThreadService:
         native_id = item.get("id") or item.get("threadId")
         if not native_id:
             return
-        existing = self.agent_sessions.find_by_native_id(
-            str(native_id),
-            self.control_actor,
-            provider_id="openai",
-            runtime_id="codex",
-        )
+        # Legacy visibility is not authority to replace an existing runtime's
+        # canonical custody. Inspect the complete bounded ownership index first;
+        # malformed or ambiguous aliases must never become legacy fallback.
+        try:
+            owner = self.agent_sessions.store.native_owner(str(native_id))
+            existing = self.agent_sessions.store.native_custody(str(native_id))
+        except (AgentSessionConflictError, ValidationError):
+            # Retained ambiguous history stays visible but cannot select custody
+            # or authorize another adoption. Unexpected storage failures surface.
+            return
+        if owner is not None and (
+            owner[:2] != (
+                self.control_actor.organization_id,
+                self.control_actor.workspace_id,
+            )
+            or (project_id is not None and owner[2] != project_id)
+        ):
+            return
         if existing is not None:
+            if (
+                (existing.organization_id, existing.workspace_id) != (
+                    self.control_actor.organization_id,
+                    self.control_actor.workspace_id,
+                )
+                or (project_id is not None and existing.project_id != project_id)
+            ):
+                return
             item["agentSessionId"] = existing.id
+            return
+        if owner is not None:
+            # Ownership disappearing between bounded reads is not fresh absence.
             return
 
         project = None
