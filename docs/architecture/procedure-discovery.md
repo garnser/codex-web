@@ -61,8 +61,18 @@ assets use existing bounded Skill composition. Supporting Memory retrieval uses 
 existing authorized/governed search, exact Project/relationship filtering, at most
 three results from 32 candidates and at most 1,000 context tokens. It adds source
 and retrieval-run references. Required instructions are never silently truncated.
-The complete input is bounded to 12,000 characters and wrapped as untrusted tool
-material. Retrieval failure blocks admission; it cannot erase a required procedure.
+The complete input is wrapped as untrusted tool material and bounded by canonical
+Configuration key `procedure_discovery.max_context_characters`: deployment scope,
+12,000 characters by default, strictly integer 1,000–48,000. The existing
+Configuration editor catalog exposes draft/validation/publication/reset and
+provenance; no separate policy or UI object is introduced. Each discovery resolves
+one fresh value and uses that snapshot for Skill composition, full declarative
+contracts, bounded supporting retrieval and the final trust wrapper. A published
+change affects the next discovery without restarting. Invalid/unavailable
+configuration fails closed. Raising capacity does not change selection, required
+Skills, security, authority, approval, model token limits or any other gate;
+operators must size it from measured complete guidance. The default remains
+unchanged and required instructions/contracts are never dropped or truncated. Retrieval failure blocks admission; it cannot erase a required procedure.
 
 ## Canonical mutation boundary
 

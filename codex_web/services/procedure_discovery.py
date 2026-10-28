@@ -21,6 +21,8 @@ from codex_web.services.skills import SkillNotFound, SkillResolutionFailure
 from codex_web.services.definitions import DefinitionCompatibilityError
 from codex_web.services.action_providers import ActionRequirementError
 from codex_web.skills import SKILL_DEFINITION_KIND, SkillDefinition
+from codex_web.configuration import ConfigurationScope, EffectiveConfiguration
+from codex_web.services.procedure_configuration import PROCEDURE_CONTEXT_CHARACTERS
 
 
 def checksum(value: Any) -> str:
@@ -64,7 +66,8 @@ class ProcedureAdmissionError(ActionRequirementError):
 
 class ProcedureDiscoveryService:
     def __init__(self, skills, resources, *, clock=None, max_candidates=256,
-                 max_context_characters=12000, supporting_context: Callable | None = None, projects=None, execution_capabilities=None):
+                 max_context_characters=12000, supporting_context: Callable | None = None, projects=None, execution_capabilities=None,
+                 context_capacity_resolver: Callable[[], EffectiveConfiguration] | None = None):
         self.skills = skills
         self.resources = resources
         self.projects = projects
@@ -72,6 +75,7 @@ class ProcedureDiscoveryService:
         self.clock = clock or skills.clock
         self.max_candidates = max_candidates
         self.max_context_characters = max_context_characters
+        self.context_capacity_resolver = context_capacity_resolver
         # An existing authorized bounded retrieval/composition service may be
         # injected. No ambient repository read, network fetch or second store.
         self.supporting_context = supporting_context
@@ -128,6 +132,17 @@ class ProcedureDiscoveryService:
             ), guidance
 
         try:
+            capacity = self.context_capacity_resolver() if self.context_capacity_resolver else None
+            if self.context_capacity_resolver is not None and (
+                not isinstance(capacity, EffectiveConfiguration)
+                or
+                capacity.key != PROCEDURE_CONTEXT_CHARACTERS.key
+                or capacity.scope_type not in {None, ConfigurationScope.DEPLOYMENT}
+                or capacity.scope_id is not None
+            ):
+                raise ValueError("Wrong procedure guidance capacity configuration scope/key")
+            max_context_characters = PROCEDURE_CONTEXT_CHARACTERS.validate_value(
+                capacity.value if capacity is not None else self.max_context_characters)
             if context.resolution_blockers:
                 outcome = "failed"
                 blockers.extend(context.resolution_blockers)
@@ -308,7 +323,7 @@ class ProcedureDiscoveryService:
             if selected:
                 outcome = "matched"
                 selection = self.skills.context_for_refs(tuple(selected), actor=actor, project_id=context.project_id,
-                    objective=context.operation or context.task or "", max_chars=self.max_context_characters)
+                    objective=context.operation or context.task or "", max_chars=max_context_characters)
                 # Consult the declarative contract as well as ordinary Skill
                 # instructions. The selected operation's dependencies remain
                 # descriptive data, never an implicit step execution plan.
@@ -316,19 +331,19 @@ class ProcedureDiscoveryService:
                     "reference": reference_for(r).model_dump(mode="json"),
                     "operational_procedure": p.model_dump(mode="json"),
                 } for r, p in eligible if reference_for(r) in selected}, sort_keys=True)
-                if selection.truncated or len(selection.text) + len(contracts) > self.max_context_characters:
+                if selection.truncated or len(selection.text) + len(contracts) > max_context_characters:
                     outcome = "inaccessible"
                     blockers.append("procedure_context_limit: required instructions cannot be truncated")
                     return result()
                 guidance = selection.text + contracts
                 sources = tuple(selection.definition_record_ids) + tuple(selection.included_assets)
                 if self.supporting_context is not None:
-                    support = self.supporting_context(context, tuple(selected), self.max_context_characters - 1024 - len(guidance))
+                    support = self.supporting_context(context, tuple(selected), max_context_characters - 1024 - len(guidance))
                     # Existing retrieval must return its canonical sources and
                     # a bounded authorized selection, never an unbounded corpus.
                     guidance += support.text
                     sources += tuple(support.source_refs)
-                if len(guidance) > self.max_context_characters:
+                if len(guidance) > max_context_characters:
                     guidance = ""
                     outcome = "failed"
                     blockers.append("procedure_context_limit")
@@ -345,7 +360,7 @@ class ProcedureDiscoveryService:
             if guidance:
                 from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_content
                 guidance = render_untrusted_content(envelope_untrusted(TrustZone.TOOL_OUTPUT, "canonical:procedure-discovery", guidance))
-                if len(guidance) > self.max_context_characters:
+                if len(guidance) > max_context_characters:
                     guidance = ""
                     outcome = "failed"
                     blockers.append("procedure_context_limit")
