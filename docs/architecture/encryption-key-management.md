@@ -20,6 +20,19 @@ For each encrypted value:
 
 Raw KEK/DEK material is never placed in SQLite, JSON mirrors, audit events, or ordinary API output.
 
+Recovery can consume the same single-envelope format through bounded streaming
+decryption. Metadata and ciphertext length are validated before allocation;
+fixed-size chunks are decrypted into a private exact-size plaintext buffer.
+The final 16 ciphertext bytes remain the original GCM tag. The service retains
+the same wrap/data AAD, key/version/backend and tenant/context checks, and
+rechecks current key status before committing its success audit. It returns no
+plaintext until the entire source iterator and authentication complete.
+Cancellation, malformed length, changed source, bad tag or audit failure cannot
+expose a partial result. Failure cleanup clears private buffers in bounded
+chunks on a best-effort basis; it does not claim secure erasure of Python or
+cryptographic-library internal allocations. No plaintext spool or new key
+storage boundary is introduced.
+
 The first backend is an owner-only local-file key backend. The service contract is backend-neutral so KMS/HSM implementations can supply the same create/get/delete/health behavior without changing domain encryption code.
 
 The Python `cryptography` package supplies authenticated encryption primitives; codex-web does not implement cryptography itself.

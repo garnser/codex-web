@@ -230,7 +230,8 @@ class _Unavailable:
 
 def compose_capture_runtime(state_store, *, operator_token, key_material_dir,
                             backup_dir, refresh, check_runtime, journal,
-                            source_revision, target_revision, service_instance_id):
+                            source_revision, target_revision, service_instance_id,
+                            qualify_tool=None):
     """Compose existing canonical services, without application startup.
 
     The token is an EXISTING credential supplied by the operator, never minted
@@ -252,7 +253,7 @@ def compose_capture_runtime(state_store, *, operator_token, key_material_dir,
         return actor
     # Authority comes before any destination/backend constructor which might
     # create a directory. The enclosing operator also verifies actual locks.
-    authenticate()
+    actor = authenticate()
     check_runtime()
     if not key_material_dir.is_dir() or not backup_dir.is_dir():
         raise UpgradeConflictError('Canonical key and backup directories must already exist')
@@ -292,6 +293,11 @@ def compose_capture_runtime(state_store, *, operator_token, key_material_dir,
         AutonomyAuditStore.namespace, AutonomyAuditStore.meta_key))
     unavailable = _Unavailable()
     evidence = ArtifactEvidenceService(ArtifactEvidenceStore(state_store))
+    # Optional recovery-only backports must qualify through current canonical
+    # records after existing authentication, before any key/destination backend
+    # constructor or Recovery writer. A callback never grants actor authority.
+    if qualify_tool is not None:
+        qualify_tool(evidence, actor)
     crypto = CryptoKeyService(CryptoKeyStore(state_store),
         {'local': LocalFileKeyBackend(key_material_dir)})
     recovery = RecoveryService(RecoveryStore(state_store), state_store=state_store,

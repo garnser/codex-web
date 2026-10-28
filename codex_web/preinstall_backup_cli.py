@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import resource
 import subprocess
+import sys
 import time
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -80,6 +81,10 @@ class OfflineHostGuard:
         self.initial = self.service()
         self.stopped = False
         self.start_time = None
+        self.tool_proof = (source_compatible_tool_facts(options)
+            if (getattr(options, 'source_compatible_tool_proof', None) is not None
+                or getattr(options, 'source_compatible_tool_proof_sha256', None) is not None)
+            else None)
 
     def service(self):
         values = subprocess.check_output(['systemctl', 'show', self.options.unit,
@@ -89,10 +94,19 @@ class OfflineHostGuard:
 
     def check(self):
         options = self.options
-        if getattr(options, 'expected_upgrade_target_revision', None) is not None:
+        if self.tool_proof is not None:
+            upgrade_target_revision(options)
+        elif getattr(options, 'expected_upgrade_target_revision', None) is not None:
             source_compatible_tool_target(options)
         else:
             upgrade_target_revision(options)
+        current_tool = (source_compatible_tool_facts(options)
+            if (self.tool_proof is not None
+                or getattr(options, 'source_compatible_tool_proof', None) is not None
+                or getattr(options, 'source_compatible_tool_proof_sha256', None) is not None)
+            else None)
+        if current_tool != self.tool_proof:
+            raise RuntimeError('Pinned compatible Recovery tool proof changed')
         fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_stat = os.fstat(self.lock_fd)
         path_stat = LOCAL_DEPLOY_LOCK.stat()
@@ -216,6 +230,145 @@ def upgrade_target_revision(options):
     return target
 
 
+def validate_source_compatible_tool_evidence(facts, evidence_service, *, actor, now):
+    """Read current canonical tool qualification; local pins grant no authority.
+
+    Compatibility and independent REVIEW bind every B/T/D/tree/archive/diff
+    fingerprint. They reference one current CI_CHECK for the exact executable
+    tool, not the upgrade target's CI. All reads repeat on every invocation.
+    """
+    import math
+    from codex_web.artifact_evidence import (
+        Artifact, ArtifactLifecycle, ArtifactType, Evidence, EvidenceLifecycle,
+        EvidenceResult, EvidenceType,
+    )
+    from codex_web.recovery_tool_compatibility import (
+        RecoveryToolCompatibilityError, ValidatedRecoveryTool,
+    )
+
+    def require(condition, reason):
+        if not condition:
+            raise RecoveryToolCompatibilityError(reason)
+
+    def text(value):
+        return type(value) is str and 0 < len(value.strip()) <= 2048
+
+    require(isinstance(facts, ValidatedRecoveryTool), 'validated tool facts required')
+    require(type(now) in (int, float) and math.isfinite(now), 'current qualification time required')
+    changed = [{'path': row.path, 'base_sha256': row.base_sha256,
+                'tool_sha256': row.tool_sha256}
+               for row in sorted(facts.changed_files, key=lambda item: item.path)]
+    diff_sha = hashlib.sha256(canonical_json_bytes(changed)).hexdigest()
+    fingerprints = {
+        'base_revision': facts.base_revision, 'tool_revision': facts.tool_revision,
+        'upgrade_target_revision': facts.upgrade_target_revision,
+        'base_tree_sha1': facts.base_tree_sha1, 'tool_tree_sha1': facts.tool_tree_sha1,
+        'tool_archive_sha256': facts.tool_archive_sha256, 'changed_files_sha256': diff_sha,
+    }
+    artifact = evidence_service.get_artifact(facts.tool_artifact_id, actor=actor)
+    require(isinstance(artifact, Artifact) and artifact.id == facts.tool_artifact_id,
+            'exact canonical tool Artifact required')
+
+    def scoped_current(record):
+        require((record.organization_id, record.workspace_id) ==
+                (actor.organization_id, actor.workspace_id), 'tool qualification tenant mismatch')
+        require(record.project_id == artifact.project_id, 'tool qualification Project mismatch')
+        require(record.invalidated_at is None and record.invalidation_reason is None,
+                'tool qualification invalidated')
+        expiry = record.retention_expires_at
+        require(expiry is None or (math.isfinite(expiry) and expiry > now),
+                'tool qualification expired')
+
+    scoped_current(artifact)
+    require(artifact.artifact_type in {ArtifactType.BUILD, ArtifactType.PACKAGE}
+            and artifact.lifecycle == ArtifactLifecycle.ACTIVE,
+            'active BUILD or PACKAGE tool Artifact required')
+    require(artifact.revision == facts.tool_revision and artifact.digest is not None
+            and artifact.digest.algorithm == 'sha256'
+            and artifact.digest.value == facts.tool_archive_sha256,
+            'tool Artifact revision or archive mismatch')
+    compatibility = evidence_service.get_evidence(facts.compatibility_evidence_id, actor=actor)
+    review = evidence_service.get_evidence(facts.review_evidence_id, actor=actor)
+
+    def current_evidence(record, expected_id, kinds):
+        require(isinstance(record, Evidence) and record.id == expected_id,
+                'exact canonical qualification Evidence required')
+        scoped_current(record)
+        require(record.evidence_type in kinds and record.lifecycle == EvidenceLifecycle.VALID
+                and record.result == EvidenceResult.PASS,
+                'current PASS qualification Evidence required')
+        require(facts.tool_artifact_id in record.artifact_ids,
+                'qualification Evidence tool Artifact link required')
+        require(all(text(value) for value in
+                    (record.provider, record.source, record.external_id, record.deep_link)),
+                'external qualification provenance required')
+
+    current_evidence(compatibility, facts.compatibility_evidence_id,
+                     {EvidenceType.TEST_RESULT, EvidenceType.POLICY_EVALUATION})
+    current_evidence(review, facts.review_evidence_id, {EvidenceType.REVIEW})
+    require(compatibility.id != review.id, 'distinct independent REVIEW required')
+    for record in (compatibility, review):
+        require(all(record.metadata.get(key) == value for key, value in fingerprints.items()),
+                'tool qualification fingerprint mismatch')
+    require(compatibility.metadata.get('review_evidence_id') == review.id
+            and review.metadata.get('compatibility_evidence_id') == compatibility.id,
+            'compatibility and independent REVIEW references required')
+    require(all(compatibility.metadata.get(key) is True for key in
+                ('downstream_checks_unchanged', 'measured_memory_qualification', 'contracts_unchanged')),
+            'measured memory and unchanged downstream contract qualification required')
+    ci_id = compatibility.metadata.get('ci_evidence_id')
+    require(type(ci_id) is str and re.fullmatch('evidence-(?:[0-9a-f]{32}|[0-9a-f]{64})', ci_id) is not None
+            and ci_id not in {compatibility.id, review.id}
+            and review.metadata.get('ci_evidence_id') == ci_id,
+            'distinct referenced canonical CI Evidence required')
+    ci = evidence_service.get_evidence(ci_id, actor=actor)
+    current_evidence(ci, ci_id, {EvidenceType.CI_CHECK})
+    require(all(ci.metadata.get(key) == fingerprints[key] for key in
+                ('tool_revision', 'tool_tree_sha1', 'tool_archive_sha256'))
+            and ci.metadata.get('all_applicable_checks_passed') is True
+            and text(ci.metadata.get('ci_run_id')),
+            'exact tool CI run and all applicable checks required')
+    require(text(review.metadata.get('reviewer_source'))
+            and review.metadata.get('reviewer_source') == review.source
+            and review.metadata.get('review_reference') == review.external_id
+            and review.external_id != ci.external_id,
+            'independent external REVIEW provenance required')
+    return {**fingerprints, 'tool_artifact_id': artifact.id,
+            'compatibility_evidence_id': compatibility.id, 'review_evidence_id': review.id,
+            'ci_evidence_id': ci.id, 'ci_run_id': ci.metadata['ci_run_id'],
+            'reviewer_source': review.source, 'review_reference': review.external_id}
+
+
+def source_compatible_tool_facts(options):
+    """Validate an explicit backport before credentials; never grant authority."""
+    target = upgrade_target_revision(options)
+    proof = getattr(options, 'source_compatible_tool_proof', None)
+    digest = getattr(options, 'source_compatible_tool_proof_sha256', None)
+    if proof is None and digest is None:
+        if options.expected_producer_revision != options.expected_runtime_revision:
+            raise ValueError('Pre-install verification writers must use the installed source revision')
+        return None
+    if proof is None or digest is None or getattr(options, 'expected_upgrade_target_revision', None) is None:
+        raise ValueError('An explicit compatible tool proof, SHA and separate upgrade target are required')
+    from codex_web.recovery_tool_compatibility import validate_recovery_tool_proof, validate_tool_imports
+    facts = validate_recovery_tool_proof(proof, digest,
+        base_revision=options.expected_runtime_revision,
+        tool_revision=options.expected_producer_revision,
+        upgrade_target_revision=target, tool_checkout=options.producer_checkout)
+    validate_tool_imports(facts, tuple(module for name, module in sys.modules.items()
+        if name == 'codex_web' or name.startswith('codex_web.')))
+    return facts
+
+
+def qualify_source_compatible_tool(options, evidence_service, *, actor, now):
+    """Repeat static pins and current canonical qualification at write guards."""
+    facts = source_compatible_tool_facts(options)
+    if facts is None:
+        return None
+    return {**validate_source_compatible_tool_evidence(facts, evidence_service, actor=actor, now=now),
+            'proof_sha256': facts.proof_sha256}
+
+
 def source_compatible_tool_target(options):
     """Require source code for a verifier that publishes before source restart.
 
@@ -224,8 +377,7 @@ def source_compatible_tool_target(options):
     permission for a verifier to publish Evidence through target-schema code.
     """
     target = upgrade_target_revision(options)
-    if options.expected_producer_revision != options.expected_runtime_revision:
-        raise ValueError('Pre-install verification writers must use the installed source revision')
+    source_compatible_tool_facts(options)
     return target
 
 
@@ -238,6 +390,10 @@ def parser():
         result.add_argument('--' + name, type=Path, required=True)
     result.add_argument('--expected-upgrade-target-revision',
         help='Exact plan/Release target, separate from source-compatible executable producer revision')
+    result.add_argument('--source-compatible-tool-proof', type=Path,
+        help='Explicit private recovery-only backport proof; requires its SHA and independent canonical qualification')
+    result.add_argument('--source-compatible-tool-proof-sha256',
+        help='Exact SHA256 of the explicit compatible-tool proof; never a grant or substitute for installed-source checks')
     result.add_argument('--unit', default='codex-web.service')
     result.add_argument('--api', default='http://127.0.0.1:8765')
     result.add_argument('--expected-runtime-pid', type=int, required=True)
@@ -252,7 +408,10 @@ def parser():
 def main(argv=None):
     options = parser().parse_args(argv)
     upgrade_target = (source_compatible_tool_target(options)
-        if options.expected_upgrade_target_revision is not None else upgrade_target_revision(options))
+        if (options.expected_upgrade_target_revision is not None
+            or options.source_compatible_tool_proof is not None
+            or options.source_compatible_tool_proof_sha256 is not None)
+        else upgrade_target_revision(options))
     if (not re.fullmatch(r'[A-Za-z0-9_.@-]+\.service', options.unit)
             or any(not re.fullmatch(r'[0-9a-f]{40}', value) for value in
                 (options.expected_runtime_revision, options.expected_producer_revision))
@@ -295,13 +454,19 @@ def main(argv=None):
             require_process_memory_limit(maximum_bytes=options.memory_budget_bytes, maximum_swap_bytes=0)
             if custody is not None and recovery_custody(store) != custody:
                 raise RuntimeError('Canonical Recovery custody changed')
+            if runtime is not None and options.source_compatible_tool_proof is not None:
+                qualify_source_compatible_tool(options, runtime.upgrades.evidence,
+                    actor=runtime.authenticate(), now=time.time())
+        def qualify_tool(evidence, actor):
+            return qualify_source_compatible_tool(options, evidence, actor=actor, now=time.time())
         runtime = compose_capture_runtime(store, operator_token=token,
             key_material_dir=options.key_material_directory, backup_dir=options.backup_directory,
             refresh=refresh, check_runtime=guard,
             journal=lambda kind, value: record(options.journal_directory, kind, value),
             source_revision=options.expected_runtime_revision,
             target_revision=upgrade_target,
-            service_instance_id=options.service_instance_id)
+            service_instance_id=options.service_instance_id,
+            qualify_tool=qualify_tool if options.source_compatible_tool_proof is not None else None)
         if local_api(options.api, token, 'GET', '/api/version')['gitRevision'] != options.expected_runtime_revision:
             raise RuntimeError('Installed API source changed')
         recovery_observation = local_api(options.api, token, 'GET', '/api/recovery/status')
@@ -324,6 +489,8 @@ def main(argv=None):
             'runtime_revision': options.expected_runtime_revision,
             'producer_revision': options.expected_producer_revision,
             'upgrade_target_revision': upgrade_target,
+            'source_compatible_tool': (qualify_tool(runtime.upgrades.evidence, runtime.authenticate())
+                if options.source_compatible_tool_proof is not None else None),
             'canonical_data_directory': str(host.data_root),
             'operator_must_restore_service': True})
         stage = 'waiting_for_operator_clean_stop'
