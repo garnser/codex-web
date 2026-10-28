@@ -4,7 +4,7 @@ import json
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import tempfile
 import time
 import unittest
@@ -31,6 +31,7 @@ from codex_web.identity import AuthenticationActor, AuthenticationAssurance, Pri
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.executive_management import (
     ExecutiveManagementService,
+    ExecutiveConsultationError,
     ExecutiveSelectionError,
 )
 from codex_web.services.executive_roles import install_executive_role_definitions
@@ -279,6 +280,89 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()
+
+    async def _consult_cpo_output(self, payload):
+        activation = self.service.create(
+            ExecutiveActivationCreate(
+                subject="Product outcome",
+                request="Assess the next product outcome.",
+                requested_role_ids=("cpo",),
+                budget=ExecutiveReasoningBudget(max_model_calls=1),
+            ),
+            actor=self.actor,
+        )
+        result = SimpleNamespace(
+            text=json.dumps(payload), invocation=SimpleNamespace(id="invocation-cpo")
+        )
+        with patch.object(self.gateway, "invoke", new_callable=AsyncMock,
+                          return_value=result) as invoke:
+            try:
+                completed = await self.service.consult(activation.id, actor=self.actor)
+            finally:
+                invoke.assert_awaited_once()
+                self.last_cpo_activation = self.service.get(activation.id, actor=self.actor)
+        return completed, invoke.call_args.args[0]
+
+    @staticmethod
+    def _cpo_output():
+        return dict(summary="Assess the product outcome.", recommendation="Gather evidence.",
+                    risks=[], assumptions=[], disagreement=[], context_refs=[], proposals=[])
+
+    async def test_cpo_consultation_receives_typed_output_instructions(self):
+        completed, request = await self._consult_cpo_output(self._cpo_output())
+        self.assertEqual(completed.status, ExecutiveActivationStatus.COMPLETED)
+        self.assertFalse(completed.synthesis.escalation_required)
+        self.assertEqual(completed.consultations[0].output.disagreement, ())
+        self.assertEqual(request.purpose, "executive-role:cpo")
+        for instruction in (
+            "summary and recommendation must be non-empty strings",
+            "risks, assumptions, disagreement, and context_refs must be non-null arrays of strings",
+            "Use [] for empty collections, never null",
+            "proposals must be a non-null array of objects",
+            "kind, title, and rationale must be non-empty strings",
+            "payload must be a JSON object",
+        ):
+            self.assertIn(instruction, request.system_prompt)
+
+    async def test_invalid_cpo_outputs_fail_without_retry_or_materialization(self):
+        invalid = [
+            (field, None, "schema validation")
+            for field in ("risks", "assumptions", "disagreement", "context_refs", "proposals")
+        ] + [
+            (field, [42], "schema validation")
+            for field in ("risks", "assumptions", "disagreement", "context_refs")
+        ] + [
+            ("proposals", [None], "schema validation"),
+        ]
+        invalid.extend(
+            ("proposals", [dict(kind="goal", title="Goal", rationale="Reason", payload=value)],
+             "schema validation") for value in (None, [], "invalid")
+        )
+        invalid.extend([
+            ("proposals", [dict(kind="work", title="Work", rationale="Reason", payload={})],
+             "disallowed kinds"),
+            ("context_refs", ["[fact:unavailable@v1]"], "unavailable canonical context"),
+        ])
+        for field, value, error in invalid:
+            with self.subTest(field=field, value=value):
+                payload = self._cpo_output()
+                payload[field] = value
+                with self.assertRaisesRegex(ExecutiveConsultationError, error):
+                    await self._consult_cpo_output(payload)
+                failed = self.last_cpo_activation
+                self.assertEqual(failed.status, ExecutiveActivationStatus.FAILED)
+                self.assertIsNone(failed.synthesis)
+                self.assertEqual(failed.proposals, ())
+                self.assertEqual(self.goals.created, [])
+                self.assertEqual(self.decisions.items, [])
+
+    async def test_cpo_disagreement_still_requires_escalation(self):
+        payload = self._cpo_output()
+        payload["disagreement"] = ["Product timing remains disputed."]
+        completed, _ = await self._consult_cpo_output(payload)
+        self.assertEqual(completed.status, ExecutiveActivationStatus.ESCALATED)
+        self.assertTrue(completed.synthesis.escalation_required)
+        self.assertEqual(completed.synthesis.disagreement, tuple(payload["disagreement"]))
 
     async def test_context_timeout_returns_retryable_error_without_persisting_activation(self):
         original_prepare = self.service.prepare
