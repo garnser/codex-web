@@ -2752,6 +2752,10 @@ app.include_router(
     )
 )
 executive_activation_store = ExecutiveActivationStore(state_store)
+from codex_web.services.executive_configuration import (
+    EXECUTIVE_INVOCATION_TIMEOUT, install_executive_configuration,
+)
+install_executive_configuration(configuration_service)
 executive_management_service = ExecutiveManagementService(
     executive_activation_store,
     executive_role_definition_service,
@@ -2767,6 +2771,8 @@ executive_management_service = ExecutiveManagementService(
     business_context_service,
     business_kpi_service,
     data_governance_service,
+    invocation_duration_resolver=lambda: configuration_service.resolve(
+        EXECUTIVE_INVOCATION_TIMEOUT.key),
 )
 app.state.executive_activation_store = executive_activation_store
 app.state.executive_management_service = executive_management_service
