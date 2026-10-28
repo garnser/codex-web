@@ -94,6 +94,41 @@ class RecoveryToolQualificationTests(unittest.TestCase):
         self.assertNotIn('deep_link', receipt)
         self.assertEqual({item.producer_identity_id for item in (self.compat, self.review, self.ci)}, {'operator'})
 
+    def test_real_canonical_idempotent_ids_include_ci_and_mutual_references(self):
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        old_ids = [self.artifact.id, self.compat.id, self.review.id, self.ci.id]
+        identifiers = [ArtifactEvidenceService._idempotent_evidence_id(self.actor, 'tool-fixture', key)
+                       for key in ('artifact', 'compatibility', 'review', 'ci')]
+        identifiers[0] = identifiers[0].replace('evidence-', 'artifact-', 1)
+        mapping = dict(zip(old_ids, identifiers))
+        self.facts = replace(self.facts, tool_artifact_id=identifiers[0],
+            compatibility_evidence_id=identifiers[1], review_evidence_id=identifiers[2])
+        self.artifact = self.artifact.model_copy(update={'id': identifiers[0]})
+        self.service.artifact = self.artifact
+        records = []
+        for original in (self.compat, self.review, self.ci):
+            metadata = {key: mapping.get(value, value) if isinstance(value, str) else value
+                        for key, value in original.metadata.items()}
+            records.append(original.model_copy(update={'id': mapping[original.id],
+                'artifact_ids': (identifiers[0],), 'metadata': metadata}))
+        self.service.records = {record.id: record for record in records}
+        receipt = self.validate()
+        self.assertEqual(receipt['tool_artifact_id'], identifiers[0])
+        self.assertEqual(receipt['compatibility_evidence_id'], identifiers[1])
+        self.assertEqual(receipt['review_evidence_id'], identifiers[2])
+        self.assertEqual(receipt['ci_evidence_id'], identifiers[3])
+
+    def test_noncanonical_ci_id_lengths_are_rejected_before_lookup(self):
+        for length in (0, 31, 33, 63, 65):
+            identifier = 'evidence-' + '1' * length
+            self.service.records[self.compat.id] = self.compat.model_copy(
+                update={'metadata': {**self.compat.metadata, 'ci_evidence_id': identifier}})
+            self.service.records[self.review.id] = self.review.model_copy(
+                update={'metadata': {**self.review.metadata, 'ci_evidence_id': identifier}})
+            self.service.calls.clear()
+            with self.assertRaises(RecoveryToolCompatibilityError): self.validate()
+            self.assertEqual(len(self.service.calls), 3)
+
     def test_artifact_type_revision_digest_and_lifecycle_each_rechecked(self):
         for changes in ({'artifact_type': ArtifactType.REPORT}, {'revision': '0' * 40},
                         {'digest': None}, {'digest': ArtifactDigest(value='0' * 64)},

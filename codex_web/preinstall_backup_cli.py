@@ -317,7 +317,7 @@ def validate_source_compatible_tool_evidence(facts, evidence_service, *, actor, 
                 ('downstream_checks_unchanged', 'measured_memory_qualification', 'contracts_unchanged')),
             'measured memory and unchanged downstream contract qualification required')
     ci_id = compatibility.metadata.get('ci_evidence_id')
-    require(type(ci_id) is str and re.fullmatch('evidence-[0-9a-f]{32}', ci_id) is not None
+    require(type(ci_id) is str and re.fullmatch('evidence-(?:[0-9a-f]{32}|[0-9a-f]{64})', ci_id) is not None
             and ci_id not in {compatibility.id, review.id}
             and review.metadata.get('ci_evidence_id') == ci_id,
             'distinct referenced canonical CI Evidence required')
