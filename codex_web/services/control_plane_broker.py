@@ -128,11 +128,13 @@ class ControlPlaneBrokerRequestError(ControlPlaneBrokerDeniedError):
         self, message: str, *, status_code: int = 400,
         code: str = "control_plane_broker_denied",
         history_readiness: dict | None = None,
+        mr_observation: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.history_readiness = history_readiness
+        self.mr_observation = mr_observation
 
 
 class ControlPlaneBrokerAuthorityDeniedError(ControlPlaneBrokerDeniedError):
@@ -3130,6 +3132,7 @@ class AssignmentBoundControlPlaneBroker:
         denial_code = "control_plane_broker_denied"
         outcome_unknown = False
         history_readiness = None
+        mr_observation = None
         procedure_discovery = None
         correlation_id = uuid.uuid4().hex
         causation_id = None
@@ -3261,6 +3264,7 @@ class AssignmentBoundControlPlaneBroker:
             denial_reason = str(exc)
         except ControlPlaneBrokerRequestError as exc:
             history_readiness = getattr(exc, "history_readiness", None)
+            mr_observation = exc.mr_observation
             status = exc.status_code
             denial_reason = str(exc)
             denial_code = getattr(exc, "code", denial_code)
@@ -3313,7 +3317,13 @@ class AssignmentBoundControlPlaneBroker:
                         authority_decision=authority_decision,
                         response_status=status,
                         denial_reason=(json.dumps({"message": denial_reason[:80],
-                            "history_readiness": history_readiness}) if history_readiness else denial_reason),
+                            "history_readiness": history_readiness}) if history_readiness else
+                            json.dumps({"code": denial_code, "mr_observation": {
+                                key: mr_observation[key] for key in (
+                                    "method", "source", "request_sha256",
+                                    "retryable", "reconcile_without_replay",
+                                )
+                            }}, separators=(",", ":")) if mr_observation else denial_reason),
                     ))
                 if not writer.is_closing():
                     with contextlib.suppress(Exception):
@@ -3326,6 +3336,7 @@ class AssignmentBoundControlPlaneBroker:
                                     **({"outcome": "unknown", "retryable": False} if outcome_unknown else {}),
                                     **({"procedure_discovery": procedure_discovery} if procedure_discovery is not None else {}),
                                     **({"history_readiness": history_readiness} if history_readiness else {}),
+                                    **({"mr_observation": mr_observation} if mr_observation else {}),
                                     "message": denial_reason[:500],
                                     "correlation_id": correlation_id,
                                 }

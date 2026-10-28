@@ -6,6 +6,18 @@ receipt nor this projection creates reviewer consent or merge authorization.
 from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
 
 
+class MRObservationConflict(ValueError):
+    """Closed protocol refusal, distinct from an unexpected storage ValueError."""
+
+    def __init__(self, code):
+        if code not in {"mr_observation_head_changed_or_expired",
+                        "mr_observation_timestamp_in_future",
+                        "mr_observation_check_head_mismatch"}:
+            raise ValueError("unsupported MR observation conflict code")
+        self.code = code
+        super().__init__(code)
+
+
 def dispositions(fact: CodeHostMergeRequirementsFact, *, expected_head: str, now: float):
     """Return only findings established by this exact, unexpired provider snapshot.
 
@@ -13,9 +25,9 @@ def dispositions(fact: CodeHostMergeRequirementsFact, *, expected_head: str, now
     review observation is not worker-verifier independence or a new QA approval.
     """
     if fact.head_revision != expected_head or fact.changed or now >= fact.expires_at:
-        raise ValueError("mr_observation_head_changed_or_expired")
+        raise MRObservationConflict("mr_observation_head_changed_or_expired")
     if now < fact.observed_at:
-        raise ValueError("mr_observation_timestamp_in_future")
+        raise MRObservationConflict("mr_observation_timestamp_in_future")
     sources = {x.source.value: x.availability.value for x in fact.sources}
     complete = lambda name: sources.get(name) == "complete"
     review = "warn"
@@ -28,7 +40,7 @@ def dispositions(fact: CodeHostMergeRequirementsFact, *, expected_head: str, now
     observed = fact.observed_checks
     if complete("checks") and observed:
         if any(x.revision != expected_head for x in observed):
-            raise ValueError("mr_observation_check_head_mismatch")
+            raise MRObservationConflict("mr_observation_check_head_mismatch")
         if any(x.state == "failure" for x in observed):
             checks = "fail"
         elif all(x.state == "success" for x in observed):

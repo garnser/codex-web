@@ -372,6 +372,22 @@ A unique original returns its Evidence and explicit `observation_fresh` value;
 absence is UNKNOWN, not permission to submit another request. An expired original
 is not refreshed or relabeled as a current passing assessment.
 
+Both this protocol and `code-host-mr-continuation-input.v1` return HTTP 409 for
+the closed observation conflicts `mr_observation_head_changed_or_expired`,
+`mr_observation_timestamp_in_future`, and `mr_observation_check_head_mismatch`.
+The real broker response retains the code in `error.code` and exact assignment,
+execution, fence, method, original source and request digest in
+`error.mr_observation`. Existing audit columns retain assignment, execution and
+fence; the bounded denial record retains the code, method, source, request digest
+and reconciliation flags as compact JSON.
+Reconcile that exact method/source through `verification.read` without a new
+provider read. Absence remains UNKNOWN and does not authorize replay. These
+refusals preserve the original freshness and transaction guards, including the
+final check after content attachment. Unreferenced managed content may remain;
+do not delete a shared digest or infer that no external read occurred. Unexpected
+storage or programming failures remain HTTP 500 with an unknown outcome, rather
+than being misclassified as one of these conflicts.
+
 The read-only readiness ActionIntent uses the distinct fixed
 `code-host-readiness-observation.v1` marker with the original observation expiry.
 Its Evidence retains the existing `provider_receipt` and `artifact_verification`
