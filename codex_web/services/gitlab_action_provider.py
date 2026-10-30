@@ -694,13 +694,16 @@ class GitLabActionProvider:
                 "metadata_sha256": hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
             summary = "Exact open GitLab merge request is ready for review; no approval or merge was performed."
         elif request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
-            from codex_web.services.code_host_readiness_observation import VERSION, observation_outputs, borrowed_credential_metadata
+            from codex_web.services.code_host_readiness_observation import VERSION, VERSION_V2, observation_outputs, borrowed_credential_metadata
+            from codex_web.services.code_host_readiness import current_observation_policy
             parameters = self.contract.pull_request_observe_readiness(request)
             async def checkpoint():
                 await readiness_checkpoint(request, binding.id)
             fact = await self._read_readiness_fact(binding, self.contract.resource(request),
                 project, parameters, credential, checkpoint)
-            output.update({**parameters, 'observation_version': VERSION,
+            policy = current_observation_policy(binding.id)
+            output.update({**parameters, 'observation_version': VERSION_V2 if policy else VERSION,
+                **({'observation_policy': policy.model_dump(mode='json')} if policy else {}),
                 'merge_requirements': fact.model_dump(mode='json'), 'provider_instance': self.provider_instance,
                 **borrowed_credential_metadata()})
             observation_outputs(output, binding_id=binding.id, resource_id=request.resource_ids[0],
@@ -821,8 +824,11 @@ class GitLabActionProvider:
         # or grant. API base belongs to this registered provider, never the caller.
         reader_binding = SimpleNamespace(id=binding.id, provider_instance=binding.provider_instance,
             base_url=self.api_base)
+        from codex_web.services.code_host_readiness import current_observation_policy
+        policy = current_observation_policy(binding.id)
         fact = await GitLabMergeRequirementsReader(self.client, reader_binding, resource,
-            project, credential, checkpoint=checkpoint).read(str(parameters['pull_request_number']))
+            project, credential, checkpoint=checkpoint,
+            observation_seconds=policy.seconds if policy else 30).read(str(parameters['pull_request_number']))
         if fact.head_revision != parameters['expected_head_sha'] or fact.changed:
             raise ActionRequirementError('Readiness observation exact head changed')
         return fact
@@ -858,6 +864,10 @@ class GitLabActionProvider:
                 provider_instance=self.provider_instance, parameters=parameters, observed_at=result.completed_at)
             if any(result.output.get(key) != value for key,value in borrowed_credential_metadata().items()):
                 raise ActionRequirementError('Readiness observation original credential version changed')
+            from codex_web.services.code_host_readiness import current_observation_policy
+            policy = current_observation_policy(binding.id)
+            if result.output.get('observation_policy') != (policy.model_dump(mode='json') if policy else None):
+                raise ActionRequirementError('Readiness observation original policy changed')
             async def checkpoint():
                 await readiness_verification_checkpoint(binding.id)
             fresh = await self._read_readiness_fact(binding, resource, project, parameters, credential, checkpoint)

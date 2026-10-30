@@ -259,7 +259,7 @@ class ArtifactEvidenceTests(unittest.TestCase):
         self.artifact_store.store.put(self.artifact_store.namespace, raw)
         restored = self.service.get_evidence(proof.id, actor=self.producer)
         self.assertEqual(restored.research_origin.value, "unknown")
-        self.assertEqual(self.artifact_store.load().schema_version, "1.4")
+        self.assertEqual(self.artifact_store.load().schema_version, "1.5")
         self.assertTrue(self.service.evaluate(self.work_item.ref, (
             EvidenceRequirement(id="engineering", evidence_type="test_result"),
         ), actor=self.producer).satisfied)

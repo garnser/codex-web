@@ -5,7 +5,8 @@ import uuid
 from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError, ControlPlaneBrokerRequestError
 
 
-async def read_merge_requirements(broker, assignment, worker_actor, resolved, validator, *, inspection_kind='worker'):
+async def read_merge_requirements(broker, assignment, worker_actor, resolved, validator, *, inspection_kind='worker',
+                                 observation_policy=None):
     operation = resolved.operation
     if validator is None or broker.execution_profiles is None:
         raise ControlPlaneBrokerDeniedError("Merge-requirement reads require live assignment and Definition validation")
@@ -20,6 +21,9 @@ async def read_merge_requirements(broker, assignment, worker_actor, resolved, va
     pinned_assignment = identity(assignment)
 
     def scope():
+        if observation_policy is not None:
+            from codex_web.mr_observation_policy import validate_policy
+            validate_policy(observation_policy, broker.mr_observation_configuration, now=broker._clock())
         current = validator()
         lease = current.lease
         now = broker._clock()
@@ -61,10 +65,12 @@ async def read_merge_requirements(broker, assignment, worker_actor, resolved, va
             'project_id': assignment.project_id, 'fence': assignment.fence,
             'requester_identity_id': original[2].identity_id, 'inspection_kind': inspection_kind,
             'read_id': read_id, 'external_id': resolved.target_ref,
-            'definition_record_id': assignment.execution_profile_definition.record_id})
+            'definition_record_id': assignment.execution_profile_definition.record_id},
+        observation_policy=observation_policy)
     await checkpoint()
     current, actor, requester = latest[0][:3]
     return {'item': item.model_dump(mode='json'), 'scope': {
+        **({'observation_policy': observation_policy.model_dump(mode='json')} if observation_policy else {}),
         'organization_id': current.organization_id, 'workspace_id': current.workspace_id,
         'project_id': current.project_id, 'repository_id': original[4],
         'assignment_id': current.id, 'execution_id': current.execution_id, 'fence': current.fence,

@@ -69,7 +69,11 @@ class GitHubMergeRequirementsReader:
 
     MAX_PROJECTION_BYTES = 128 * 1024
 
-    def __init__(self, client, binding, resource, repository, credential, *, clock=time.time, checkpoint=None):
+    def __init__(self, client, binding, resource, repository, credential, *, clock=time.time, checkpoint=None,
+                 observation_seconds=30):
+        if type(observation_seconds) is not int or not 1 <= observation_seconds <= 300:
+            raise ValueError('invalid observation validity')
+        self.observation_seconds = observation_seconds
         if not credential:
             raise CodeHostError("authenticated merge-requirement reads require a credential reference")
         if (not isinstance(repository, str) or len(repository.split('/')) != 2
@@ -538,7 +542,7 @@ class GitHubMergeRequirementsReader:
                 blockers.append(f"{source.value}:{self.sources[source].availability.value}")
         if self.changed:
             blockers.append("observation_changed")
-        if float(self.clock()) >= self.started + 30:
+        if float(self.clock()) >= self.started + self.observation_seconds:
             blockers.append("observation_stale")
         if float(self.clock()) < self.started:
             blockers.append("observation_clock_changed")
@@ -565,12 +569,12 @@ class GitHubMergeRequirementsReader:
                 blockers.append("required_checks_unmet_or_ambiguous")
         complete = (all(item.availability in known for item in self.sources.values())
                     and not self.changed and not policy.unsupported and approvals is not None and unresolved is not None
-                    and self.started <= float(self.clock()) < self.started + 30)
+                    and self.started <= float(self.clock()) < self.started + self.observation_seconds)
         return CodeHostMergeRequirementsFact(resource_id=self.resource.id, binding_id=self.binding.id,
             provider_type='github', provider_instance=self.binding.provider_instance, external_id=str(self.number),
             web_url=self.pr.get('web_url'),
             head_revision=self.pr['head'], base_revision=self.pr['base'], target_branch=self.pr['branch'],
-            observed_at=self.started, expires_at=self.started + 30,
+            observed_at=self.started, expires_at=self.started + self.observation_seconds,
             requirements_fingerprint=_digest({'legacy': self.legacy, 'legacy_graphql': self.initial_gate_rule,
                 'rules': sorted(self.rules, key=_digest)}) if policy_known else None,
             sources=tuple(self.sources[source] for source in Source), complete=complete, changed=self.changed,

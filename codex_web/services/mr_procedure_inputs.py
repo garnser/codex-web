@@ -10,9 +10,13 @@ from codex_web.code_host_mr_observation import dispositions
 from codex_web.data_governance import ContextFilterRequest
 from codex_web.mr_continuation_input import METHOD, INPUT_METHOD, encoded, input_values
 from codex_web.mr_observation_evidence import current_observation
+from codex_web.mr_observation_policy import INPUT_V2, CONTINUATION_V2, validate_policy, canonical, expiry_valid
 
 
-def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
+def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, *, protocol=INPUT_METHOD):
+    if protocol not in (INPUT_METHOD, INPUT_V2):
+        raise ValueError('mr_input_protocol_unknown')
+    method = CONTINUATION_V2 if protocol == INPUT_V2 else METHOD
     service = owner.evidence
     artifact = service.get_artifact(artifact_id, actor=actor)
     worker = owner._live(assignment)
@@ -24,7 +28,7 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
     except IdentityError as exc:
         raise ValueError('mr_input_context_requester_revoked') from exc
     meta = artifact.metadata
-    if (meta.get('input_method') != INPUT_METHOD or artifact.producer_identity_id != worker_actor.identity_id
+    if (meta.get('input_method') != protocol or artifact.producer_identity_id != worker_actor.identity_id
             or artifact.execution_id != assignment.execution_id
             or artifact.execution_workspace_id != assignment.execution_workspace_id
             or artifact.work_item_ref != assignment.work_item_ref
@@ -39,7 +43,7 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
     if len(records) != 1:
         raise ValueError('mr_input_verification_unavailable')
     record = records[0]
-    if (record.method != METHOD or record.result == 'invalidated' or len(record.evidence_ids) != 3
+    if (record.method != method or record.result == 'invalidated' or len(record.evidence_ids) != 3
             or record.verifier_identity_id != worker_actor.identity_id
             or record.execution_id != assignment.execution_id or record.source != artifact.source
             or sorted(record.evidence_ids) != json.loads(meta.get('source_evidence_ids', 'null'))):
@@ -48,7 +52,8 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
     snapshots = set()
     for proof in proofs:
         pm = proof.metadata
-        if (proof.lifecycle != 'valid' or not current_observation(proof, now=owner.clock())
+        if (proof.lifecycle != 'valid' or not current_observation(proof, now=owner.clock(),
+                configuration=getattr(owner, 'mr_observation_configuration', None))
                 or proof.retention_expires_at is not None and proof.retention_expires_at <= owner.clock()
                 or proof.producer_identity_id != worker_actor.identity_id
                 or proof.project_id != assignment.project_id or proof.work_item_ref != assignment.work_item_ref
@@ -56,7 +61,7 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
                 or proof.execution_workspace_id != assignment.execution_workspace_id
                 or proof.resource_ids != artifact.resource_ids or proof.source != artifact.source
                 or proof.external_id != artifact.external_id or not proof.governance_record_id
-                or pm.get('verification_method') != METHOD or pm.get('assignment_id') != assignment.id
+                or pm.get('verification_method') != method or pm.get('assignment_id') != assignment.id
                 or pm.get('assignment_fence') != assignment.fence
                 or pm.get('requester_identity_id') != context_requester_id
                 or pm.get('request_sha256') != meta.get('request_sha256')
@@ -72,6 +77,13 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
     observation = json.loads(snapshots.pop())
     fact = CodeHostMergeRequirementsFact.model_validate(observation['item'])
     scope = observation['scope']
+    if protocol == INPUT_V2:
+        policy = validate_policy(scope.get('observation_policy'), owner.mr_observation_configuration, now=owner.clock())
+        expected_policy = canonical(policy.model_dump(mode='json'))
+        if (not expiry_valid(policy, fact.observed_at, fact.expires_at)
+                or meta.get('observation_policy') != expected_policy
+                or any(p.metadata.get('observation_policy') != expected_policy for p in proofs)):
+            raise ValueError('mr_input_policy_provenance_changed')
     expected_scope = {'organization_id':assignment.organization_id, 'workspace_id':assignment.workspace_id,
         'project_id':assignment.project_id, 'repository_id':artifact.resource_ids[0],
         'assignment_id':assignment.id, 'execution_id':assignment.execution_id, 'fence':assignment.fence,
@@ -82,7 +94,7 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment):
             or fact.resource_id != artifact.resource_ids[0] or fact.external_id != artifact.external_id
             or fact.head_revision != artifact.revision):
         raise ValueError('mr_input_snapshot_scope')
-    values = input_values(fact, expected_head=artifact.revision)
+    values = input_values(fact, expected_head=artifact.revision, protocol=protocol)
     if encoded(values) != content or meta.get('observed_requirements_fingerprint') != values['observed_requirements_fingerprint']:
         raise ValueError('mr_input_content_not_derived')
     outcomes = dispositions(fact, expected_head=artifact.revision, now=owner.clock())

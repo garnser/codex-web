@@ -331,6 +331,7 @@ class ActionExecutionService:
         self.resources = resources
         self.secret_broker = secret_broker
         self.procedure_admission = None
+        self.observation_policy_resolver = None
 
     @staticmethod
     def _definition(provider: ActionProvider, action_id: str) -> ActionDefinition:
@@ -433,6 +434,8 @@ class ActionExecutionService:
         from codex_web.services.code_host_continuation import request_identity
         if self.procedure_admission is None:
             raise ActionRequirementError('Readiness observation requires canonical ActionIntent admission')
+        resolver = self.observation_policy_resolver
+        policy = resolver(binding, provider, definition, value, actor, phase) if resolver else None
         from codex_web.services.secrets import current_async_use_reference
         used_reference = current_async_use_reference()
         reference_id = value.credential_ref if isinstance(value, ActionRequest) else binding.credential_ref
@@ -444,6 +447,9 @@ class ActionExecutionService:
         provider_pin = tuple(getattr(provider, key, None) for key in
             ('provider_type','provider_instance','contract_version','api_base','web_base'))
         def current():
+            if policy is not None and resolver(binding, provider, definition, value, actor, phase,
+                    pinned=policy) != policy:
+                raise ActionRequirementError('Readiness observation policy changed')
             observed = self.registry.binding(binding.id, actor)
             active = self.registry.provider(observed.provider_type, observed.provider_instance, actor=actor)
             if (observed != binding or active is not provider
@@ -466,7 +472,8 @@ class ActionExecutionService:
                 raise
             except Exception as error:
                 raise ActionRequirementError('Readiness observation current canonical admission unavailable') from error
-        return ReadyExecution(binding.id, request_identity(value) if isinstance(value, ActionRequest) else '', checkpoint)
+        return ReadyExecution(binding.id, request_identity(value) if isinstance(value, ActionRequest) else '', checkpoint,
+            observation_policy=policy)
 
     async def execute(
         self,

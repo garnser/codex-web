@@ -2113,6 +2113,9 @@ from codex_web.services.procedure_configuration import (
     PROCEDURE_CONTEXT_CHARACTERS, install_procedure_configuration,
 )
 install_procedure_configuration(configuration_service)
+from codex_web.mr_observation_policy import OBSERVATION_WINDOW
+configuration_service.register_spec(OBSERVATION_WINDOW)
+artifact_evidence_service.mr_observation_configuration = configuration_service
 
 procedure_discovery_service = ProcedureDiscoveryService(skill_service, resource_catalog_service,
     context_capacity_resolver=lambda: configuration_service.resolve(PROCEDURE_CONTEXT_CHARACTERS.key),
@@ -2146,8 +2149,10 @@ procedure_execution_service = ProcedureExecutionService(
     intents=action_intent_service, evidence=artifact_evidence_service, identity=identity_service,
     authority=authority_role_service, approvals=approval_request_service, attention=attention_service,
     control_actor=identity_service.local_trusted_actor(), worker_runtime=local_execution_worker_runtime,
-    models=model_gateway_service, worker_actor=local_worker_actor)
+    models=model_gateway_service, worker_actor=local_worker_actor,
+    mr_observation_configuration=configuration_service)
 action_intent_service.procedure_execution = procedure_execution_service
+action_execution_service.observation_policy_resolver = procedure_execution_service.observation_policy_for_action
 app.state.procedure_execution_service = procedure_execution_service
 app.include_router(build_procedure_execution_router(procedure_execution_service))
 from codex_web.api.procedure_discovery import build_procedure_discovery_router
@@ -2564,6 +2569,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     service_instance_id=instance_id,
     execution_profiles=execution_profile_definition_service,
     execution_workers=execution_worker_service,
+    mr_observation_configuration=configuration_service,
 )
 from codex_web.services.procedure_discovery import BrokerProcedureAdmissionService
 control_plane_broker_service.procedure_admission = BrokerProcedureAdmissionService(

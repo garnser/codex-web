@@ -521,6 +521,7 @@ class ControlPlaneBrokerService:
         execution_profiles=None,
         execution_workers=None,
         work_graph=None,
+        mr_observation_configuration=None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
@@ -532,6 +533,7 @@ class ControlPlaneBrokerService:
         self.execution_profiles = execution_profiles
         self.execution_workers = execution_workers
         self.work_graph = work_graph
+        self.mr_observation_configuration = mr_observation_configuration
         self.operator = operator or WorkItemOperatorService(work_items)
         self.audit = audit
         self.action_intents = action_intents
@@ -568,6 +570,8 @@ class ControlPlaneBrokerService:
             "executive.activation.create": ExecutiveActivationCreate}.get(item.id)
         if reasoning_model is not None:
             result["request_body"] = reasoning_model.model_json_schema()
+            if item.id == 'procedure.start':
+                result['procedure_schema_versions'] = ['1.0', '1.1', '1.2', '1.3']
         if item.id == "procedure.advance":
             result["current_input_snapshot_id"] = "Optional explicit fresh canonical equal-content witness; preserves original run pin/history and refuses changed facts"
         if item.id.startswith(("procedure.", "executive.")):
@@ -624,20 +628,20 @@ class ControlPlaneBrokerService:
                     "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
-                from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD, MRObservationRequest
-                result["request_body"]["methods"].extend((METHOD, CONTINUATION_METHOD))
+                from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD, MR_METHODS, MRObservationRequest
+                result["request_body"]["methods"].extend(MR_METHODS)
                 result["request_body"]["MR_observation"] = {
                     "method": METHOD, "schema": MRObservationRequest.model_json_schema(),
                     "effect": "Fresh exact-head provider observations with derived Evidence; never a caller-stated result or merge permission"}
                 result["request_body"]["MR_continuation_input"] = {
                     "method": CONTINUATION_METHOD, "schema": MRObservationRequest.model_json_schema(),
                     "effect": "Current governed MR observation plus managed procedure_input Artifact; stable business fingerprint excludes delivery/time/proof IDs; no QA or merge consent",
-                    "continuation": "Use returned Artifact with a published1.2 required input_protocol. New same-head business facts may start a settled next run; equal-content fresh Artifact can explicitly witness advance. Reconcile original source after response loss; never blind replay."}
+                    "continuation": "Use v1 Artifact with published procedure1.2/input.v1; v2 requires procedure1.3/input.v2 and canonical server Configuration. Original policy snapshot is immutable; new same-head facts may start a settled next run. Reconcile exact original source after response loss; never blind replay."}
             if item.id == "verification.read":
                 result["required_query_parameters"] = ["work_item_ref", "source"]
-                from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD
+                from codex_web.services.worker_mr_verifications import METHOD, MR_METHODS
                 result["MR_observation_query"] = {"required": ["method", "source"],
-                    "method": METHOD, "methods": [METHOD, CONTINUATION_METHOD], "source": "sha256:<original assignment/request digest>",
+                    "method": METHOD, "methods": list(MR_METHODS), "source": "sha256:<original assignment/request digest>",
                     "effect": "Read the original historical records; expired observations are not refreshed or replayed"}
         if item.id.startswith("repository.read."):
             result["optional_query_parameters"] = ["repository_resource_id"]
@@ -2164,11 +2168,13 @@ class ControlPlaneBrokerService:
             if operation.id == 'verification.create':
                 if resolved.query:
                     raise ControlPlaneBrokerRequestError('Verification write does not accept query parameters')
-                from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD, WorkerMRVerificationAdapter
-                if payload.get('method') in (METHOD, CONTINUATION_METHOD):
+                from codex_web.services.worker_mr_verifications import MR_METHODS, WorkerMRVerificationAdapter
+                if payload.get('method') in MR_METHODS:
                     result = await WorkerMRVerificationAdapter(adapter).create(
                         assignment, worker_actor, resolved, payload, assignment_validator)
                 else:
+                    if str(payload.get('method', '')).startswith(('code-host-mr-', 'code-host-readiness-observation.')):
+                        raise ControlPlaneBrokerRequestError('Unsupported versioned MR verification method', status_code=409)
                     result = await asyncio.to_thread(adapter.create, assignment, worker_actor,
                         resolved, payload, assignment_validator)
             else:

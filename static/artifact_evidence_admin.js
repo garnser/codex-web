@@ -5,7 +5,7 @@
   const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
-  const { timeText, listText, safeLink, governanceHtml, researchLinks } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
+  const { timeText, listText, safeLink, governanceHtml, researchLinks, observationPolicyHtml } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
   let refreshGeneration = 0;
   let actor = null;
   let artifacts = [];
@@ -150,6 +150,7 @@
         <small>Research origin: ${escapeHtml(item.research_origin || 'unknown')} · Knowledge sources: ${researchLinks(item)} · origin metadata is not verification</small>
         <small>Retention: ${timeText(item.retention_expires_at)} · governance ID: ${escapeHtml(item.governance_record_id || "none")}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
+        ${observationPolicyHtml(item)}
         ${governanceHtml(governanceFor(item.id))}
         ${invalidateButton("evidence", item)}
       </details>`;

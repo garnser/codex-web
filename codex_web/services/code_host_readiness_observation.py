@@ -7,6 +7,7 @@ from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
 from codex_web.code_host_mr_observation import dispositions
 
 VERSION = '1.0'
+VERSION_V2 = '2.0'
 
 
 def borrowed_credential_metadata():
@@ -19,12 +20,19 @@ def borrowed_credential_metadata():
 
 
 def observation_outputs(raw, *, binding_id, resource_id, provider_instance, parameters, observed_at):
-    if raw.get('observation_version') != VERSION:
+    if raw.get('observation_version') not in (VERSION, VERSION_V2):
         raise ValueError('readiness_observation_version_invalid')
     if (re.fullmatch('[0-9a-f]{64}', str(raw.get('credential_metadata_sha256', ''))) is None
             or type(raw.get('credential_rotation')) is not int or raw['credential_rotation'] < 0):
         raise ValueError('readiness_observation_credential_metadata_required')
     fact = CodeHostMergeRequirementsFact.model_validate(raw.get('merge_requirements'))
+    if raw.get('observation_version') == VERSION_V2:
+        from codex_web.mr_observation_policy import ObservationPolicy, expiry_valid
+        policy = ObservationPolicy.model_validate(raw.get('observation_policy'))
+        if not expiry_valid(policy, fact.observed_at, fact.expires_at) or fact.observed_at < policy.resolved_at:
+            raise ValueError('readiness_observation_policy_mismatch')
+    elif not 0 < fact.expires_at - fact.observed_at <= 30:
+        raise ValueError('readiness_observation_legacy_window_invalid')
     if (len(fact.model_dump_json().encode()) > 128*1024
             or fact.binding_id != binding_id or fact.resource_id != resource_id
             or fact.provider_type != 'gitlab' or fact.provider_instance != provider_instance

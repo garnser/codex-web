@@ -47,7 +47,7 @@ def bounded_data(value, limit=16384):
 class ProcedureExecutionService:
     def __init__(self, *, workers, skills, discovery, intents, evidence, identity,
                  authority, approvals, attention, control_actor, worker_runtime=None,
-                 models=None, worker_actor=None, clock=None):
+                 models=None, worker_actor=None, clock=None, mr_observation_configuration=None):
         self.workers, self.skills, self.discovery = workers, skills, discovery
         self.intents, self.evidence, self.identity = intents, evidence, identity
         self.authority, self.approvals, self.attention = authority, approvals, attention
@@ -55,6 +55,7 @@ class ProcedureExecutionService:
         self.worker_actor = worker_actor
         self.clock = clock or time.time
         self.outcome_drafts = None
+        self.mr_observation_configuration = mr_observation_configuration
 
     def get(self, assignment_id, actor):
         item = self.workers.store.assignment(assignment_id)
@@ -205,7 +206,7 @@ class ProcedureExecutionService:
         from codex_web.api.authorization import ApiAuthorizationError
         from codex_web.services.identity import IdentityError
         try:
-            validate_mr_procedure_input(self, artifact_id, data, actor, assignment)
+            validate_mr_procedure_input(self, artifact_id, data, actor, assignment, protocol=procedure.input_protocol)
         except (ValueError, TypeError, KeyError, ApiAuthorizationError, IdentityError) as exc:
             raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
 
@@ -253,7 +254,7 @@ class ProcedureExecutionService:
         evidence = self.evidence.get_evidence(evidence_id, actor=actor)
         from codex_web.mr_observation_evidence import current_observation
         if (evidence.lifecycle != "valid" or evidence.result != "pass"
-            or not current_observation(evidence, now=self.clock())
+            or not current_observation(evidence, now=self.clock(), configuration=self.mr_observation_configuration)
             or evidence.project_id != assignment.project_id
             or (evidence.retention_expires_at is not None and evidence.retention_expires_at <= self.clock())
             or set(evidence.resource_ids) - set(assignment.resource_ids)):
@@ -412,6 +413,11 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_assignment_actor_mismatch")
         self.skills.validate_required_procedure(definition, actor=actor, project_id=assignment.project_id)
         procedure = SkillDefinition.model_validate(self.skills.definitions.get_record(definition.record_id).payload).operational_procedure
+        from codex_web.mr_observation_policy import INPUT_V2
+        if procedure.input_protocol == INPUT_V2 and (
+                self.mr_observation_configuration is None or
+                getattr(getattr(self.intents.execution, 'observation_policy_resolver', None), '__self__', None) is not self):
+            raise ProcedureExecutionError('procedure_observation_policy_owner_unavailable')
         data, digest = self._content(input_snapshot_id, actor, assignment)
         self._input_protocol(procedure, input_snapshot_id, data, actor, assignment)
         values = bounded_data(json.loads(data)); self._values(procedure.inputs, values, actor, assignment)
@@ -908,14 +914,28 @@ class ProcedureExecutionService:
         self._values(step.outputs, outputs, actor, assignment)
         observation_metadata = {}
         if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            from codex_web.mr_observation_policy import INPUT_V2, READINESS_V2, validate_policy, expiry_valid, canonical
             expiry = outputs.get("expires_at")
-            if (type(expiry) not in (int, float) or not math.isfinite(expiry)
-                or not result.completed_at < expiry <= result.completed_at + 30):
-                raise ProcedureExecutionError("procedure_provider_observation_expiry_invalid")
-            observation_metadata = {
-                "verification_method": "code-host-readiness-observation.v1",
-                "observation_expires_at": expiry,
-            }
+            if self._procedure(assignment, actor).input_protocol == INPUT_V2:
+                policy = validate_policy(result.output.get('observation_policy'),
+                    self.mr_observation_configuration, now=self.clock())
+                started = outputs.get('observed_at')
+                if (result.output.get('observation_version') != '2.0'
+                        or not expiry_valid(policy, started, expiry)
+                        or not policy.resolved_at <= started <= result.completed_at < expiry):
+                    raise ProcedureExecutionError('procedure_provider_observation_policy_invalid')
+                observation_metadata = {'verification_method': READINESS_V2,
+                    'observation_policy': canonical(policy.model_dump(mode='json')),
+                    'observation_started_at': started, 'observation_expires_at': expiry}
+            else:
+                if (result.output.get('observation_version') != '1.0'
+                    or type(expiry) not in (int, float) or not math.isfinite(expiry)
+                    or not result.completed_at < expiry <= result.completed_at + 30):
+                    raise ProcedureExecutionError("procedure_provider_observation_expiry_invalid")
+                observation_metadata = {
+                    "verification_method": "code-host-readiness-observation.v1",
+                    "observation_expires_at": expiry,
+                }
         proofs = {}
         for requirement in step.expected_evidence:
             if (requirement.name, requirement.kind) == ("receipt", "provider_receipt"):
@@ -1048,6 +1068,35 @@ class ProcedureExecutionService:
 
     async def provider_admission(self, intent, actor, phase):
         return self.provider_admission_current(intent, actor, phase)
+
+    def observation_policy_for_action(self, binding, provider, definition, value, actor, phase, *, pinned=None):
+        """Server-owned current intent/step selects v2, never request parameters."""
+        from codex_web.procedure_discovery import current_procedure_action_intent
+        from codex_web.mr_observation_policy import INPUT_V2, resolve_policy, validate_policy
+        if pinned is not None:
+            # The existing provider checkpoint independently reruns complete
+            # current intent/procedure admission before and after I/O. This
+            # internal branch only revalidates its server-created policy pin.
+            return validate_policy(pinned, self.mr_observation_configuration, now=self.clock())
+        intent_id = current_procedure_action_intent()
+        if intent_id is None:
+            raise ProcedureExecutionError('procedure_observation_intent_unavailable')
+        intent = self.intents._intent(intent_id, actor)
+        requester = self.identity.actor_for_identity(intent.requested_by, scope=actor.tenant)
+        if not self.provider_admission_current(intent, requester, phase):
+            return None
+        assignment = self.workers.assignment_for_execution(intent.execution_id, actor=requester)
+        procedure = self._procedure(assignment, requester)
+        if procedure.input_protocol != INPUT_V2:
+            if pinned is not None:
+                raise ProcedureExecutionError('procedure_observation_protocol_changed')
+            return None
+        if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID or binding.id != intent.binding_id:
+            raise ProcedureExecutionError('procedure_observation_action_mismatch')
+        if phase == 'verify':
+            return validate_policy(value.output.get('observation_policy'),
+                self.mr_observation_configuration, now=self.clock())
+        return resolve_policy(self.mr_observation_configuration, now=self.clock())
 
     def provider_admission_current(self, intent, actor, phase):
         """Read-only durable-step check, reusable under canonical writer locks."""

@@ -46,15 +46,18 @@ def semantic_facts(fact: CodeHostMergeRequirementsFact):
     return value
 
 
-def fact_fingerprint(fact: CodeHostMergeRequirementsFact):
-    return hashlib.sha256(encoded({'protocol': INPUT_METHOD, 'facts': semantic_facts(fact)})).hexdigest()
+def fact_fingerprint(fact: CodeHostMergeRequirementsFact, *, protocol=INPUT_METHOD):
+    return hashlib.sha256(encoded({'protocol': protocol, 'facts': semantic_facts(fact)})).hexdigest()
 
 
-def input_values(fact: CodeHostMergeRequirementsFact, *, expected_head):
+def input_values(fact: CodeHostMergeRequirementsFact, *, expected_head, protocol=INPUT_METHOD):
+    from codex_web.mr_observation_policy import INPUT_V2
+    if protocol not in (INPUT_METHOD, INPUT_V2):
+        raise ValueError('mr_continuation_protocol_unsupported')
     if fact.head_revision != expected_head or fact.changed:
         raise ValueError('mr_continuation_changed_head_or_observation')
     number = int(fact.external_id)
     if not 0 < number <= 2**31 - 1 or str(number) != fact.external_id:
         raise ValueError('mr_continuation_number_invalid')
     return {'pull_request_number': number, 'expected_head_sha': expected_head,
-        'observed_requirements_fingerprint': fact_fingerprint(fact)}
+        'observed_requirements_fingerprint': fact_fingerprint(fact, protocol=protocol)}
