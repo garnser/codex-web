@@ -116,6 +116,29 @@ Duplicate identity order, first-global-before-scope decisions and raw numeric
 values are retained. Unsupported identity types or oversized index keys, unknown/legacy envelope shapes,
 missing or stale projections use the original document reader.
 
+The optional array format version 2 extends this same derived projection to the
+complete original `artifacts`, `evidence` and `verifications` members of
+Artifact/Evidence state. The SQL table layout and its version-1 marker remain
+unchanged. The optional `document-array-projection-format=2` and
+`document-array-projection-v2:<namespace>=2` metadata plus a version-2 header
+identify the new encoding. Identity keys use the SQL JSON encoding of
+`[array_name, id]`; ordinal slots `original_ordinal * 4 + slot`, with slots 1, 2
+and 3 for the three arrays, distinguish members with the same ID and position in
+different arrays. Encoded key sizes and ordinal bounds must be checked before
+index writes. This is an evolution
+of derived SQL functions and row format, not a change to canonical domain models,
+Definition schemas or API/worker protocols. Canonical document TEXT remains the
+only truth; projected payloads do not confer authority or bypass current domain,
+policy, actor, resource or lifecycle validation.
+
+Version-2 reads retain the current whole-document SHA-256 comparison in the same
+statement snapshot, envelope/schema validation and complete original member
+TEXT. Artifact and Evidence point reads select the first matching scoped member;
+Verification reads retain all matching scoped duplicates so the owner can refuse
+ambiguity. Unsupported identities or shapes, oversized encoded keys, missing or
+stale projections and unknown optional formats use the canonical reader. No
+validated result is cached across provider I/O or subsequent admission checks.
+
 New writers prepare projection changes under the existing namespace lock, with
 the document row locked before derived metadata. A deferred foreign key permits
 initial document insertion in the same transaction. Unchanged raw rows are
@@ -137,13 +160,23 @@ is unchanged.
 Cold/read-only `initialize=False` compositions and constructors inside an owning
 callback never enable, rebuild or open another write transaction. Read callbacks
 reuse their existing connection and see their own canonical uncommitted changes.
-Older writers/readers can continue using the canonical documents; their changed
-writes invalidate the derived rows rather than leaving stale sensitive content.
+Older writers/readers can continue using the canonical documents: old
+initializers tolerate the additional optional format marker, and version-1
+readers decline version-2 headers. Their changed writes invalidate every derived
+array in the namespace rather than leaving stale sensitive content. The
+invalidation trigger is independent of array tags and removes all projected raw
+rows in the same transaction; canonical deletion still cascades. New writers
+must likewise remove superseded, redacted or deleted members across every
+projected array. A format transition cannot reuse rows encoded for the other
+format merely because an array digest is unchanged. These are ordinary MVCC
+erasure guarantees, not physical overwriting of historical database pages.
 The main document schema and domain schema versions do not change. Backup exports
 contain authoritative documents, and derived rows can be rebuilt after restore.
-Deploy with the existing drained backup and isolated-verification procedure;
-index construction takes startup time and adds database storage. It is not a
-new domain object or operator control, and introduces no UI flow.
+The selected canonical Upgrade plan governs any recovery requirements; this
+format-compatible derived projection does not introduce a routine backup or
+restore-rehearsal gate. Retain the plan's drain and admission safeguards. Index
+construction takes startup time and adds database storage. It is not a new
+domain object or operator control, and introduces no UI flow.
 
 Private PostgreSQL measurements use synthetic canonical model-shaped documents
 and genuine authority, policy, source checks and durable retrieval-audit writes.

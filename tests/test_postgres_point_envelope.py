@@ -166,3 +166,81 @@ class PostgresPointEnvelopeTests(PointEnvelopeContract,unittest.TestCase):
         self.assertEqual(len(actual['records']),1)
         self.assertLessEqual(sum(counts.values()),2,'Point predicates must share the materialized parse')
         self.assertEqual(counts,{'jsonb':1,'json':1})
+
+    def test_batch_policies_preserve_raw_values_and_original_document_order(self):
+        raw = r'''{"schema_version":"1.1","records":[
+            null, 17,
+            {"id":"selected","organization_id":"foreign","workspace_id":"default","value":"foreign-first"},
+            {"id":"other","organization_id":"local","workspace_id":"default","value":"other-first"},
+            {"id":"selected","organization_id":"local","workspace_id":"default",
+             "value":{"scientific":1e0,"signedzero":-0.0,"unicode":"\u96ea","duplicate":1,"duplicate":2}},
+            {"id":"selected","organization_id":"local","workspace_id":"default","value":"later"}],
+            "requests":[],"events":[]}'''
+        self.put_text(raw)
+        rows = json.loads(raw)['records']
+        scope = {'organization_id':'local','workspace_id':'default',
+                 'collection_names':('records','requests','events')}
+        for first, after, expected in ((False, False, [rows[3],rows[4],rows[5]]),
+                                       (True, False, [rows[3],rows[4]]),
+                                       (True, True, [rows[3]])):
+            with self.subTest(first_per_id=first,scope_after_first=after):
+                actual = self.backend.document_array_items_envelope('point-envelope','records',
+                    ('selected','missing','other','selected'),first_per_id=first,
+                    scope_after_first=after,**scope)
+                self.assertEqual(actual,{'schema_version':'1.1','records':expected})
+        value = self.backend.document_array_item_envelope('point-envelope','records','selected',**scope)['records'][0]['value']
+        self.assertIs(type(value['scientific']),float)
+        self.assertEqual(math.copysign(1,value['signedzero']),-1)
+        self.assertEqual(value['unicode'],'雪')
+        self.assertEqual(value['duplicate'],2)
+        self.assertEqual(self.backend.document_array_items_envelope('point-envelope','records',(),**scope),
+                         {'schema_version':'1.1','records':[]})
+
+    def test_batch_malformed_headers_keep_full_original_validation_input(self):
+        for raw in ('{"schema_version":1e0,"records":[],"events":[{"retained":true}]}',
+                    '{"schema_version":"1.1","records":{},"requests":[],"events":[]}',
+                    '{"schema_version":"1.1","records":[],"events":[],"unexpected":true}',
+                    '{"schema_version":"1.1","records":[],"requests":{},"events":[]}',
+                    '[{"records":[]}]'):
+            with self.subTest(raw=raw):
+                self.put_text(raw)
+                actual = self.backend.document_array_items_envelope('point-envelope','records',('selected',),
+                    organization_id='local',workspace_id='default',collection_names=('records','requests','events'))
+                self.assertEqual(actual,json.loads(raw))
+
+    def test_unrelated_large_members_do_not_enter_selected_materialization(self):
+        rows = [{'id':'unrelated-'+str(i),'organization_id':'local','workspace_id':'default',
+                 'padding':'synthetic metadata '*80} for i in range(128)]
+        selected = [{'id':'selected','organization_id':tenant,'workspace_id':'default','value':i}
+                    for i,tenant in enumerate(('foreign','local','local'))]
+        self.backend.put('point-envelope',{'schema_version':'1.1','records':rows+selected,
+                                         'requests':[],'events':[]})
+        for multi in (False,True):
+            captured=[]
+            with self.backend._connection() as connection:
+                class Cursor:
+                    def __init__(self,cursor):self.cursor=cursor
+                    def __enter__(self):self.cursor.__enter__();return self
+                    def __exit__(self,*args):return self.cursor.__exit__(*args)
+                    def __getattr__(self,name):return getattr(self.cursor,name)
+                    def execute(self,query,parameters):
+                        captured.append((query,parameters))
+                        return self.cursor.execute(query,parameters)
+                class Connection:
+                    def cursor(self,*args,**kwargs):return Cursor(connection.cursor(*args,**kwargs))
+                    def transaction(self):return connection.transaction()
+                @contextmanager
+                def tracing():yield Connection()
+                with patch.object(self.backend,'_read_connection',tracing):
+                    actual=(self.backend.document_array_items_envelope('point-envelope','records',('selected',),
+                        organization_id='local',workspace_id='default',collection_names=('records','requests','events'))
+                        if multi else self.point())
+                query,parameters=captured[-1]
+                plan=connection.execute('EXPLAIN (ANALYZE,FORMAT JSON) '+query,parameters).fetchone()[0]
+            self.assertEqual(actual['records'],selected[1:] if multi else selected[1:2])
+            def nodes(node):
+                yield node
+                for child in node.get('Plans',[]):yield from nodes(child)
+            producer=next(node for node in nodes(plan[0]['Plan']) if node.get('Subplan Name')=='CTE members')
+            self.assertEqual(producer['Actual Rows'],3,
+                'Only matching original members may enter the reusable materialized relation')

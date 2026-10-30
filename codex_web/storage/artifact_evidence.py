@@ -55,6 +55,9 @@ class ArtifactEvidenceStore:
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        enable = getattr(store, 'enable_document_array_projection', None)
+        if callable(enable):
+            enable(self.namespace, array_names=('artifacts', 'evidence', 'verifications'))
 
     def _decode(self, payload: Any) -> ArtifactEvidenceState:
         if payload is None:

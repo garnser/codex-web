@@ -172,3 +172,155 @@ def read(cursor, namespace, item_ids, organization_id, workspace_id, names,
                 WHERE header.field_types->>name IS NOT NULL AND header.field_types->>name!='array')'''
     cursor.execute(query, [namespace, *parameters, namespace, ['schema_version', *names], list(names)])
     return cursor.fetchone()
+
+
+# Array-format 2 shares the v1 table layout, not its row-key encoding. Keeping
+# the layout marker at 1 lets old initialized owners retain canonical fallback.
+ARRAY_FORMAT_KEY = 'document-array-projection-format'
+ARRAY_ENABLE_PREFIX = 'document-array-projection-v2:'
+ARRAY_NAMES = ('artifacts', 'evidence', 'verifications')
+
+
+def initialize_arrays(cursor):
+    """Install optional array helpers without enabling a namespace or format."""
+    cursor.execute('''CREATE OR REPLACE FUNCTION codex_prepare_document_arrays_v2(ns text, source text)
+        RETURNS void LANGUAGE plpgsql AS $$
+        DECLARE document jsonb; original json; records json; previous_records json;
+            previous_source text; previous_digest bytea; previous_source_digest bytea;
+            previous_version integer; array_digest bytea; selected_array text; slot integer;
+            record_count integer; index_key_budget integer; supported boolean;
+        BEGIN
+        IF NOT EXISTS (SELECT 1 FROM codex_state_metadata
+            WHERE key='document-record-projection-version' AND value='1') OR
+            NOT EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-array-projection-format' AND value='2') OR
+            NOT EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-array-projection-v2:' || ns AND value='2') THEN RETURN; END IF;
+        index_key_budget := current_setting('block_size')::integer / 4;
+        -- The canonical document lock precedes every derived header/row lock.
+        SELECT payload INTO previous_source FROM codex_state_documents WHERE namespace=ns FOR UPDATE;
+        document := source::jsonb;
+        original := source::json;
+        supported := jsonb_typeof(document)='object'
+            AND COALESCE(jsonb_typeof(document->'schema_version'),'null') IN ('string','null');
+        IF supported THEN
+            FOR selected_array,slot IN SELECT * FROM (VALUES
+                ('artifacts'::text,1),('evidence'::text,2),('verifications'::text,3)) AS arrays(name,number)
+            LOOP
+                IF COALESCE(jsonb_typeof(document->selected_array),'array')!='array' THEN
+                    supported := FALSE; EXIT;
+                END IF;
+                records := COALESCE(original->selected_array,'[]'::json);
+                IF json_array_length(records)::numeric*4+slot>9223372036854775807 OR EXISTS (
+                    SELECT 1 FROM json_array_elements(records) AS member(value)
+                    WHERE json_typeof(value)='object' AND (
+                        COALESCE(json_typeof(value->'id'),'null')!='string' OR
+                        COALESCE(json_typeof(value->'organization_id'),'null')!='string' OR
+                        COALESCE(json_typeof(value->'workspace_id'),'null')!='string' OR
+                        octet_length(ns)+octet_length(json_build_array(selected_array,value->>'id')::text)>index_key_budget)) THEN
+                    supported := FALSE; EXIT;
+                END IF;
+            END LOOP;
+        END IF;
+        IF NOT COALESCE(supported,FALSE) THEN
+            DELETE FROM codex_document_record_headers WHERE namespace=ns;
+            RETURN;
+        END IF;
+        -- Hash original array text, never a JSONB-normalized member payload.
+        array_digest := sha256(convert_to(json_build_array(
+            COALESCE(original->'artifacts','[]'::json),COALESCE(original->'evidence','[]'::json),
+            COALESCE(original->'verifications','[]'::json))::text,'UTF8'));
+        SELECT version,records_sha256,source_sha256 INTO previous_version,previous_digest,previous_source_digest
+            FROM codex_document_record_headers WHERE namespace=ns;
+        IF previous_version IS DISTINCT FROM 2 THEN
+            DELETE FROM codex_document_record_rows WHERE namespace=ns;
+            previous_source_digest := NULL;
+        END IF;
+        INSERT INTO codex_document_record_headers(namespace,version,source_sha256,records_sha256,
+            top_keys,field_types,schema_value,eligible)
+        SELECT ns,2,sha256(convert_to(source,'UTF8')),array_digest,
+            ARRAY(SELECT jsonb_object_keys(document)),
+            (SELECT jsonb_object_agg(key,jsonb_typeof(value)) FROM jsonb_each(document)),
+            document->'schema_version',TRUE
+        ON CONFLICT(namespace) DO UPDATE SET version=EXCLUDED.version,
+            source_sha256=EXCLUDED.source_sha256,records_sha256=EXCLUDED.records_sha256,
+            top_keys=EXCLUDED.top_keys,field_types=EXCLUDED.field_types,
+            schema_value=EXCLUDED.schema_value,eligible=EXCLUDED.eligible;
+        IF previous_version=2 AND previous_digest IS NOT DISTINCT FROM array_digest THEN RETURN; END IF;
+        FOR selected_array,slot IN SELECT * FROM (VALUES
+            ('artifacts'::text,1),('evidence'::text,2),('verifications'::text,3)) AS arrays(name,number)
+        LOOP
+            records := COALESCE(original->selected_array,'[]'::json);
+            record_count := json_array_length(records);
+            previous_records := '[]'::json;
+            IF previous_source_digest IS NOT NULL AND previous_source_digest=
+                sha256(convert_to(previous_source,'UTF8')) THEN
+                previous_records := COALESCE(previous_source::json->selected_array,'[]'::json);
+            END IF;
+            INSERT INTO codex_document_record_rows(namespace,ordinal,item_id,organization_id,workspace_id,payload)
+            SELECT ns,ordinality*4+slot,json_build_array(selected_array,value->>'id')::text,
+                value->>'organization_id',value->>'workspace_id',value::text
+                FROM ROWS FROM(json_array_elements(records),json_array_elements(previous_records))
+                    WITH ORDINALITY AS member(value,previous_value,ordinality)
+                WHERE json_typeof(value)='object' AND value::text IS DISTINCT FROM previous_value::text
+            ON CONFLICT(namespace,ordinal) DO UPDATE SET item_id=EXCLUDED.item_id,
+                organization_id=EXCLUDED.organization_id,workspace_id=EXCLUDED.workspace_id,payload=EXCLUDED.payload
+            WHERE (codex_document_record_rows.item_id,codex_document_record_rows.organization_id,
+                codex_document_record_rows.workspace_id,codex_document_record_rows.payload)
+                IS DISTINCT FROM (EXCLUDED.item_id,EXCLUDED.organization_id,EXCLUDED.workspace_id,EXCLUDED.payload);
+            DELETE FROM codex_document_record_rows WHERE namespace=ns AND mod(ordinal,4)=slot AND (
+                ordinal/4>record_count OR ordinal IN (
+                    SELECT ordinality*4+slot FROM json_array_elements(records) WITH ORDINALITY AS member(value,ordinality)
+                    WHERE json_typeof(value)!='object'));
+        END LOOP;
+        EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR untranslatable_character THEN
+            DELETE FROM codex_document_record_headers WHERE namespace=ns;
+        END $$''')
+
+
+def prepare_v2(cursor, namespace, serialized):
+    """An older initialized/cold backend may not have the optional helper."""
+    cursor.execute("SELECT to_regprocedure('codex_prepare_document_arrays_v2(text,text)')")
+    if cursor.fetchone()[0] is not None:
+        cursor.execute('SELECT codex_prepare_document_arrays_v2(%s,%s)', (namespace, serialized))
+
+
+def read_v2(cursor, namespace, array_name, item_ids, organization_id, workspace_id,
+            names, first_per_id, scope_after_first):
+    """Read tagged originals only when the current canonical TEXT hash agrees."""
+    if array_name not in ARRAY_NAMES:
+        return None
+    first = 'DISTINCT ON (item_id) ' if first_per_id else ''
+    order = ' ORDER BY item_id, ordinal' if first_per_id else ''
+    selection = f'''SELECT {first}ordinal,payload,organization_id,workspace_id
+        FROM codex_document_record_rows WHERE namespace=%s AND item_id IN (
+            SELECT json_build_array(%s::text,requested.id)::text FROM unnest(%s::text[]) AS requested(id))
+        {'' if scope_after_first else 'AND organization_id=%s AND workspace_id=%s'}{order}'''
+    parameters = [namespace, array_name, list(item_ids)]
+    if not scope_after_first:
+        parameters += [organization_id, workspace_id]
+    if scope_after_first:
+        selection = f'''SELECT * FROM ({selection}) AS first_global
+            WHERE organization_id=%s AND workspace_id=%s'''
+        parameters += [organization_id, workspace_id]
+    query = f'''WITH current_document AS MATERIALIZED (
+        SELECT sha256(convert_to(payload,'UTF8')) AS source_sha256
+        FROM codex_state_documents WHERE namespace=%s),
+        selected AS MATERIALIZED ({selection})
+        SELECT json_build_object('schema_version',COALESCE(header.schema_value,'"0.0"'::jsonb),
+            %s::text,COALESCE((SELECT json_agg(payload::json ORDER BY ordinal) FROM selected),'[]'::json))::text
+        FROM codex_document_record_headers AS header,current_document
+        WHERE header.namespace=%s AND header.version=2 AND header.eligible
+            AND EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-record-projection-version' AND value='1')
+            AND EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-array-projection-format' AND value='2')
+            AND EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key=%s AND value='2')
+            AND header.source_sha256=current_document.source_sha256
+            AND header.top_keys <@ %s::text[]
+            AND NOT EXISTS (SELECT 1 FROM unnest(%s::text[]) AS field(name)
+                WHERE header.field_types->>name IS NOT NULL AND header.field_types->>name!='array')'''
+    cursor.execute(query, [namespace, *parameters, array_name, namespace,
+        ARRAY_ENABLE_PREFIX+namespace, ['schema_version', *names], list(names)])
+    return cursor.fetchone()
