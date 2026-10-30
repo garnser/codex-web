@@ -38,11 +38,12 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, 
             or len(artifact.resource_ids) != 1 or not set(artifact.resource_ids).issubset(assignment.resource_ids)
             or not artifact.governance_record_id or service.governance is None):
         raise ValueError('mr_input_scope_or_producer')
-    records = [v for v in service.list_verifications(actor, work_item_ref=assignment.work_item_ref)
-        if v.id == meta.get('verification_id')]
-    if len(records) != 1:
-        raise ValueError('mr_input_verification_unavailable')
-    record = records[0]
+    from codex_web.services.artifact_evidence import VerificationNotFoundError
+    try:
+        record = service.get_verification(meta.get('verification_id'), actor=actor,
+            work_item_ref=assignment.work_item_ref)
+    except VerificationNotFoundError as exc:
+        raise ValueError('mr_input_verification_unavailable') from exc
     if (record.method != method or record.result == 'invalidated' or len(record.evidence_ids) != 3
             or record.verifier_identity_id != worker_actor.identity_id
             or record.execution_id != assignment.execution_id or record.source != artifact.source
@@ -115,8 +116,15 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, 
     sources = tuple(p.governance_record_id for p in proofs)
     if not set(sources).issubset(governed.source_record_ids):
         raise ValueError('mr_input_governed_derivation_missing')
-    for principal in (actor, context_requester, worker_actor):
-        if governance.filter_context(ContextFilterRequest(record_ids=(governed.id,*sources)), actor=principal).denied_record_ids:
+    principals = (actor, context_requester, worker_actor)
+    request = ContextFilterRequest(record_ids=(governed.id, *sources))
+    batch = getattr(governance, 'filter_context_for_actors', None)
+    decisions = (tuple(batch(request, actors=principals)) if callable(batch) else
+        tuple(governance.filter_context(request, actor=principal) for principal in principals))
+    if len(decisions) != len(principals):
+        raise ValueError('mr_input_current_governance_denied')
+    for principal, decision in zip(principals, decisions):
+        if decision.denied_record_ids:
             raise ValueError('mr_input_current_governance_denied')
         ApiAuthorizationService(owner.authority).authorize_operation('GET', '/api/verifications', principal)
         for capability in ('repository.pull-request.merge-requirements.read',):
