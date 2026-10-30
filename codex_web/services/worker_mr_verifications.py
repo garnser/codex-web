@@ -214,15 +214,24 @@ class WorkerMRVerificationAdapter:
             if prior is not None:
                 returned.append(prior)
                 return {}
-            changes = {}
+            # Decode the complete locked documents once for this transaction.
+            # Existing canonical creation updaters still validate every append;
+            # no model or snapshot survives this callback or grants authority.
+            state = service.store._decode(rows[service.store.namespace][None])
+            governance = (service.governance.store._decode(rows[service.governance.store.namespace][None])
+                          if service.governance is not None else None)
+            creation_domains = {service.store.namespace: (None,)}
+            if governance is not None:
+                creation_domains[service.governance.store.namespace] = (None,)
 
             def compose(creation):
-                if not set(creation.domains).issubset(domains):
+                nonlocal state
+                if (creation.service is not service or creation.domains != creation_domains
+                        or not set(creation.domains).issubset(domains)):
                     self.adapter.denied("MR observation governance transaction is incomplete")
-                update = creation.apply(rows)
-                for namespace, values in update.items():
-                    rows[namespace].update(values)
-                    changes.setdefault(namespace, {}).update(values)
+                if creation.catalog_guard is not None:
+                    self.adapter.denied("MR observation composition cannot replace a catalog guard")
+                state = creation.updater(state, governance)
 
             proofs = {}
             for name, (kind, outcome) in result.items():
@@ -242,15 +251,12 @@ class WorkerMRVerificationAdapter:
                         "observation_expires_at": fact.expires_at,
                         "provider_snapshot_sha256": hashlib.sha256(raw.encode()).hexdigest(),
                         "provider_snapshot_json": raw}), actor=worker,
-                    idempotency_key=source + ":" + name, _commit=compose)
+                    idempotency_key=source + ":" + name, _commit=compose, _state=state)
 
             def verification_commit(updater):
-                state = service.store._decode(rows[service.store.namespace][None])
-                updated = updater(state)
-                values = {None: updated.model_dump(mode="json")}
-                rows[service.store.namespace].update(values)
-                changes.setdefault(service.store.namespace, {}).update(values)
-                return updated
+                nonlocal state
+                state = updater(state)
+                return state
 
             outcomes = [x[1] for x in result.values()]
             verification = service.create_verification(VerificationCreate(
@@ -279,18 +285,31 @@ class WorkerMRVerificationAdapter:
                     actor=worker, source_evidence_ids=tuple(e.id for e in proofs.values()),
                     idempotency_key=source + ':input', _commit=compose)
                 continuation = service.attach_artifact_content(continuation.id, (content,), actor=worker,
-                    media_type='application/json', _state=service.store._decode(rows[service.store.namespace][None]),
+                    media_type='application/json', _state=state,
                     _commit=verification_commit)
-            self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
-            self.scope(assignment, request)
-            dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
-            returned.append({"item": verification.model_dump(mode="json"),
+            # Serialize each complete domain once, then check freshness. Expiry
+            # during domain composition/dumping aborts all canonical appends.
+            # Backend commit/transport can still take time; historical publication
+            # is never permission to bypass the procedure's live input checks.
+            changes = {service.store.namespace: {None: state.model_dump(mode="json")}}
+            if governance is not None:
+                changes[service.governance.store.namespace] = {None: governance.model_dump(mode="json")}
+            response = {"item": verification.model_dump(mode="json"),
                 **({"procedure_input": continuation.model_dump(mode="json")} if continuation is not None else {}),
                 "evidence": {k: e.model_dump(mode="json") for k, e in proofs.items()},
                 "attribution": {"producer_identity_id": worker.identity_id,
                     "authorizer_identity_id": requester.identity_id, "authority_decision_id": decision.id},
-                "no_merge_or_QA_authorization": True})
+                "no_merge_or_QA_authorization": True}
+            self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
+            self.scope(assignment, request)
+            dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
+            returned.append(response)
             return changes
 
         await run_settled(lambda: service.store.store.record_mutate_many(domains, persist))
+        # Commit/projection work can outlast the observation even after the
+        # callback's final guard. The original may now be durably published:
+        # retain it and use the existing exact-source reconciliation refusal,
+        # never report rollback or authorize a replacement provider read.
+        dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
         return returned[0]

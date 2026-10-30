@@ -770,11 +770,14 @@ class ArtifactEvidenceService:
 
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor,
                         idempotency_key: str | None = None,
-                        source_evidence_ids: tuple[str, ...] = (), _commit=None) -> Evidence:
+                        source_evidence_ids: tuple[str, ...] = (), _commit=None,
+                        _state: ArtifactEvidenceState | None = None) -> Evidence:
+        if _state is not None and (_commit is None or not isinstance(_state, ArtifactEvidenceState)):
+            raise ArtifactEvidenceConflictError("composed Evidence state requires its owning commit")
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
-        state = self.store.load()
+        state = _state if _state is not None else self.store.load()
         source_evidence = [self._evidence(state, evidence_id, actor) for evidence_id in source_evidence_ids]
         if any(item.project_id != payload.project_id for item in source_evidence):
             raise ArtifactEvidenceConflictError("derived Evidence sources must match its Project")
