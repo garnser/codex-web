@@ -452,3 +452,11 @@ schema. Local worker registration advertises execution transport contracts and
 capabilities, not a second procedure-schema version. Existing runtime capability
 revision and worker/lease checks remain enforced; a new published Skill revision
 cannot enlarge an existing assignment's sealed procedure custody.
+
+MR input admission evaluates the requester, context requester and executing worker
+against one fresh selected Governance record observation per validator call. Each
+principal retains its independent classification/lifecycle filter and current API
+and Role checks. The observation never crosses a provider/network checkpoint or
+request. Custom Governance filters and different tenants retain ordinary separate
+filter calls. This changes no stored format, authority or observation deadline;
+there is no additional operator UI setting.
