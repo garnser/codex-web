@@ -93,6 +93,7 @@ class PostgresStateStore:
         self._closed = False
         self._document_projection_write_owner = initialize
         self._document_projection_namespaces: set[str] = set()
+        self._document_array_projection_namespaces: set[str] = set()
         self._callback_reads = threading.local()
         if connect is None:
             try:
@@ -246,6 +247,9 @@ class PostgresStateStore:
         serialized = cls._serialized(payload)
         if isinstance(payload, dict) and isinstance(payload.get('records'), list):
             postgres_document_projection.prepare(cursor, namespace, serialized)
+        if isinstance(payload, dict) and any(isinstance(payload.get(name), list)
+                for name in postgres_document_projection.ARRAY_NAMES):
+            postgres_document_projection.prepare_v2(cursor, namespace, serialized)
         cursor.execute(
             """
             INSERT INTO codex_state_documents(namespace, payload, updated_at)
@@ -306,6 +310,7 @@ class PostgresStateStore:
                     )
 
                 postgres_document_projection.initialize(cursor)
+                postgres_document_projection.initialize_arrays(cursor)
 
     def enable_document_record_projection(self, namespace: str) -> bool:
         """Explicit initialized write owner seeds a rebuildable derived index.
@@ -342,14 +347,66 @@ class PostgresStateStore:
         self._document_projection_namespaces.add(namespace)
         return True
 
+    def enable_document_array_projection(self, namespace: str, *,
+            array_names: tuple[str, ...] = postgres_document_projection.ARRAY_NAMES) -> bool:
+        """Opt in the fixed Artifact/Evidence collections through a write owner.
+
+        Layout/version 1 and its records helper remain untouched. The optional
+        array format is separately negotiated; unknown formats keep canonical
+        reads/writes rather than being overwritten by a domain constructor.
+        """
+        if tuple(array_names) != postgres_document_projection.ARRAY_NAMES:
+            raise ValueError('unsupported document array projection collections')
+        if (not getattr(self, '_document_projection_write_owner', False)
+                or getattr(self._callback_reads, 'connection', None) is not None):
+            return False
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT octet_length(%s) <= current_setting('block_size')::integer / 8", (namespace,))
+                if not cursor.fetchone()[0]:
+                    return False
+                self._lock(cursor, namespace)
+                key = postgres_document_projection.ARRAY_ENABLE_PREFIX + namespace
+                cursor.execute('SELECT key,value FROM codex_state_metadata WHERE key=ANY(%s::text[]) FOR SHARE',
+                    ([postgres_document_projection.ARRAY_FORMAT_KEY, key],))
+                enabled = dict(cursor.fetchall())
+                if any(value != '2' for value in enabled.values()):
+                    return False
+                postgres_document_projection.enable_version(cursor)
+                for marker in (postgres_document_projection.ARRAY_FORMAT_KEY, key):
+                    cursor.execute("""INSERT INTO codex_state_metadata(key,value,updated_at) VALUES(%s,'2',%s)
+                        ON CONFLICT(key) DO NOTHING""", (marker, time.time()))
+                # A competing first enable may have installed a newer format
+                # while our absent-row observation held no metadata row lock.
+                cursor.execute('SELECT value FROM codex_state_metadata WHERE key=ANY(%s::text[]) FOR SHARE',
+                    ([postgres_document_projection.ARRAY_FORMAT_KEY, key],))
+                if any(row[0] != '2' for row in cursor.fetchall()):
+                    return False
+                if namespace in self._document_array_projection_namespaces and key in enabled:
+                    return True
+                cursor.execute('SELECT payload FROM codex_state_documents WHERE namespace=%s FOR UPDATE', (namespace,))
+                row = cursor.fetchone()
+                if row is not None:
+                    postgres_document_projection.prepare_v2(cursor, namespace, row[0])
+        self._document_array_projection_namespaces.add(namespace)
+        return True
+
     def _document_projection(self, namespace, array_name, item_ids, organization_id,
                              workspace_id, names, first_per_id=False, scope_after_first=False):
-        if array_name != 'records' or namespace not in getattr(self, '_document_projection_namespaces', ()):
+        arrays = (array_name in postgres_document_projection.ARRAY_NAMES
+            and namespace in getattr(self, '_document_array_projection_namespaces', ()))
+        records = (array_name == 'records'
+            and namespace in getattr(self, '_document_projection_namespaces', ()))
+        if not arrays and not records:
             return None
         with self._read_connection() as connection:
             with connection.cursor() as cursor:
-                row = postgres_document_projection.read(cursor, namespace, item_ids,
-                    organization_id, workspace_id, names, first_per_id, scope_after_first)
+                if arrays:
+                    row = postgres_document_projection.read_v2(cursor, namespace, array_name, item_ids,
+                        organization_id, workspace_id, names, first_per_id, scope_after_first)
+                else:
+                    row = postgres_document_projection.read(cursor, namespace, item_ids,
+                        organization_id, workspace_id, names, first_per_id, scope_after_first)
         return self._decode(row) if row is not None else None
 
     @staticmethod
@@ -1051,15 +1108,17 @@ class PostgresStateStore:
             return projected
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
         # Share the shape parse and materialize original JSON members once.
+        # Filter before materialization; retain original ordinals and JSON text
+        # so unrelated large members never enter the shared selected relation.
         # Original field comparisons preserve even legacy numeric identity text.
         query = f"""WITH parsed AS MATERIALIZED (
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
             members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
                 json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
-                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
+                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)
+                WHERE json_typeof(member.value) = 'object' AND member.value ->> 'id' = %s),
             selected AS MATERIALIZED (SELECT ordinality FROM members
-                WHERE json_typeof(value) = 'object' AND value ->> 'id' = %s
-                  AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s
+                WHERE value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s
                 ORDER BY ordinality LIMIT 1)
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
@@ -1107,11 +1166,12 @@ class PostgresStateStore:
         arrays = " OR ".join("COALESCE(jsonb_typeof(document -> %s), 'array') != 'array'" for _ in names)
         # Share the shape parse and original JSON members without normalizing
         # identity comparisons, numeric values, signed zero, or legacy decoding.
+        # Materialize only requested IDs; scope and first-match policies below
+        # still operate on their original document order and complete values.
         first = "DISTINCT ON (value ->> 'id') " if first_per_id else ""
         first_order = " ORDER BY value ->> 'id', ordinality" if first_per_id else ""
         selection = f"""SELECT {first}ordinality{', value' if scope_after_first else ''} FROM members
-                WHERE json_typeof(value) = 'object' AND value ->> 'id' = ANY(%s::text[])
-                  {'' if scope_after_first else "AND value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"}{first_order}"""
+                {'' if scope_after_first else "WHERE value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"}{first_order}"""
         if scope_after_first:
             selection = f"""SELECT ordinality FROM ({selection}) AS first_match
                 WHERE value ->> 'organization_id' = %s AND value ->> 'workspace_id' = %s"""
@@ -1119,7 +1179,8 @@ class PostgresStateStore:
             SELECT payload, payload::jsonb AS document FROM codex_state_documents WHERE namespace = %s),
             members AS MATERIALIZED (SELECT member.value, member.ordinality FROM parsed,
                 json_array_elements(CASE WHEN jsonb_typeof(document -> %s) = 'array'
-                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)),
+                    THEN payload::json -> %s ELSE '[]'::json END) WITH ORDINALITY AS member(value, ordinality)
+                WHERE json_typeof(member.value) = 'object' AND member.value ->> 'id' = ANY(%s::text[])),
             selected AS MATERIALIZED ({selection})
             SELECT CASE WHEN jsonb_typeof(document) != 'object' THEN payload
             WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key) WHERE NOT field.key = ANY(%s)) THEN payload
