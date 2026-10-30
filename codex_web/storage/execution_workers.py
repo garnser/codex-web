@@ -333,6 +333,21 @@ class ExecutionWorkerStore:
         return [ExecutionAssignment.model_validate(raw)
                 for raw in self.store.record_items(self.assignment_namespace).values()]
 
+    def assignments_for_execution(self, execution_id: str, *, organization_id: str,
+            workspace_id: str) -> list[ExecutionAssignment]:
+        """Validate one current selected-record observation, never cache it."""
+        reader = getattr(self.store, 'execution_assignment_rows', None)
+        if (type(self) is not ExecutionWorkerStore
+                or getattr(self.list_assignments, '__self__', None) is not self
+                or getattr(self.list_assignments, '__func__', None) is not _CANONICAL_ASSIGNMENT_LIST
+                or self.assignment_namespace != 'execution_workers.assignments'
+                or getattr(self.store, 'supports_execution_assignment_selection', False) is not True
+                or not callable(reader)):
+            return self.list_assignments()
+        self._ensure_records()
+        return [ExecutionAssignment.model_validate(raw) for raw in reader(self.assignment_namespace,
+            execution_id, organization_id=organization_id, workspace_id=workspace_id)]
+
     def list_events(self) -> list[WorkerEvent]:
         """Historical inspection must not block current lease transactions."""
         self._ensure_records()
@@ -558,3 +573,6 @@ class ExecutionWorkerStore:
                     deletes=tuple(set(previous) - set(items)),
                 )
             return state
+
+
+_CANONICAL_ASSIGNMENT_LIST = ExecutionWorkerStore.list_assignments

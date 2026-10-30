@@ -27,6 +27,7 @@ class SQLiteStateStore:
     """Small transactional document store for codex-web runtime state."""
 
     supports_document_array_scope_after_first = True
+    supports_execution_assignment_selection = True
 
     SCHEMA_VERSION = 1
 
@@ -345,6 +346,42 @@ class SQLiteStateStore:
             ).fetchone()
             payload = self._decode(row)
             return dict(payload) if isinstance(payload, dict) else {}
+
+    def execution_assignment_rows(self, namespace: str, execution_id: str, *,
+            organization_id: str, workspace_id: str) -> list[Any]:
+        """Select all scoped execution rows without hiding invalid headers."""
+        if namespace != 'execution_workers.assignments':
+            raise ValueError('unsupported execution assignment collection')
+        if (getattr(self.record_items, '__self__', None) is not self
+                or getattr(self.record_items, '__func__', None) is not _CANONICAL_RECORD_ITEMS
+                or any(type(value) is not str for value in (execution_id, organization_id, workspace_id))):
+            return list(self.record_items(namespace).values())
+        prefix = f'{state_record_prefix(namespace)}k/'
+        rows = None
+        try:
+            with self._connection() as connection:
+                if self._record_collection_exists_in_connection(connection, namespace):
+                    rows = connection.execute('''SELECT payload FROM state_documents
+                    WHERE substr(namespace,1,length(?))=? AND CASE
+                        WHEN NOT json_valid(payload) THEN 1
+                        WHEN json_type(payload)!='object' THEN 1
+                        WHEN EXISTS (SELECT 1 FROM json_each(payload)
+                            WHERE key IN ('id','organization_id','workspace_id','execution_id')
+                            GROUP BY key HAVING count(*)>1) THEN 1
+                        WHEN json_type(payload,'$.id') IS NOT 'text' THEN 1
+                        WHEN json_type(payload,'$.organization_id') IS NOT 'text' THEN 1
+                        WHEN json_type(payload,'$.workspace_id') IS NOT 'text' THEN 1
+                        WHEN json_type(payload,'$.execution_id') IS NOT 'text' THEN 1
+                        ELSE json_extract(payload,'$.organization_id')=?
+                            AND json_extract(payload,'$.workspace_id')=?
+                            AND json_extract(payload,'$.execution_id')=? END''',
+                        (prefix, prefix, organization_id, workspace_id, execution_id)).fetchall()
+        except sqlite3.OperationalError as error:
+            if not str(error).startswith('Could not decode to UTF-8 column'):
+                raise
+            return list(self.record_items(namespace).values())
+        return (list(self.record_items(namespace).values()) if rows is None else
+                [self._decode(row) for row in rows])
 
     def record_count(self, namespace: str) -> int:
         with self._connection() as connection:
@@ -1188,3 +1225,6 @@ class SQLiteStateStore:
             if namespace not in documents:
                 documents[namespace] = records.get(namespace, {})
         return documents
+
+
+_CANONICAL_RECORD_ITEMS = SQLiteStateStore.record_items

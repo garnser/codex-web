@@ -24,6 +24,9 @@ class SecretStateStore:
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        enable = getattr(store, 'enable_document_array_projection', None)
+        if callable(enable):
+            enable(self.namespace, array_names=('references',))
 
     def _decode(self, payload: Any) -> SecretState:
         if payload is None:
