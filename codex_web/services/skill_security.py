@@ -76,6 +76,22 @@ class SkillSecurityService:
             )
 
     @staticmethod
+    def _read_options(reader):
+        return {"_definitions": reader} if reader is not None else {}
+
+    def _definition_reader(self, reader):
+        if reader is None:
+            return self.definitions
+        self.definitions.require_read_observation(reader)
+        return reader
+
+    def can_observe_definition_reads(self, definitions):
+        return (type(self) is SkillSecurityService and self.definitions is definitions
+                and all(getattr(getattr(self, name), "__self__", None) is self
+                        and getattr(getattr(self, name), "__func__", None) is method
+                        for name, method in _CANONICAL_SECURITY_READS.items()))
+
+    @staticmethod
     def _require_admin(actor: AuthenticationActor) -> None:
         allowed = (
             "skills:admin" in actor.service_scopes
@@ -86,9 +102,10 @@ class SkillSecurityService:
             raise AuthorizationError("Skill security administrator required")
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
 
-    def policy(self, actor: AuthenticationActor) -> SkillSecurityPolicy:
+    def policy(self, actor: AuthenticationActor, *, _definitions=None) -> SkillSecurityPolicy:
+        definitions = self._definition_reader(_definitions)
         try:
-            record = self.definitions.resolve(
+            record = definitions.resolve(
                 definition_id=SKILL_SECURITY_POLICY_ID,
                 kind=SKILL_SECURITY_POLICY_KIND,
                 context=DefinitionContext(
@@ -179,8 +196,8 @@ class SkillSecurityService:
             )
         )
 
-    def required_mode(self, view, actor, policy=None):
-        policy = policy or self.policy(actor)
+    def required_mode(self, view, actor, policy=None, *, _definitions=None):
+        policy = policy or self.policy(actor, **self._read_options(_definitions))
         provenance = view["skill"].get("provenance", {})
         if not policy.semantic_for_untrusted_sources or provenance.get("origin") == SkillOrigin.LOCAL.value:
             return SkillScanMode.STATIC
@@ -304,8 +321,8 @@ class SkillSecurityService:
         ]
         return max(rows, key=lambda item: item.created_at) if rows else None
 
-    def decision(self, view: dict[str, Any], *, actor: AuthenticationActor, phase: str) -> dict[str, Any]:
-        policy = self.policy(actor)
+    def decision(self, view: dict[str, Any], *, actor: AuthenticationActor, phase: str, _definitions=None) -> dict[str, Any]:
+        policy = self.policy(actor, **self._read_options(_definitions))
         imported = view["skill"].get("provenance", {}).get("origin") != SkillOrigin.LOCAL.value
         required = imported or policy.scan_locally_authored
         if phase == "publish":
@@ -315,7 +332,7 @@ class SkillSecurityService:
         if not required:
             return {"allowed": True, "reason": "scan_not_required", "overridden": False}
         latest = self._latest(view, actor)
-        sufficient_mode = latest is not None and (self.required_mode(view, actor, policy) != SkillScanMode.SEMANTIC or latest.mode == SkillScanMode.SEMANTIC)
+        sufficient_mode = latest is not None and (self.required_mode(view, actor, policy, **self._read_options(_definitions)) != SkillScanMode.SEMANTIC or latest.mode == SkillScanMode.SEMANTIC)
         if latest is not None and sufficient_mode and latest.checksum == view["checksum"] and latest.provider_id == policy.provider_id and latest.policy_result.startswith("allowed"):
             return {"allowed": True, "reason": latest.policy_result, "overridden": False}
         override = self._active_override(view, actor)
@@ -325,8 +342,8 @@ class SkillSecurityService:
                   "semantic_scan_required" if not sufficient_mode else f"security_{latest.status.value}")
         return {"allowed": False, "reason": reason, "overridden": False}
 
-    def assert_allowed(self, view: dict[str, Any], *, actor: AuthenticationActor, phase: str) -> None:
-        decision = self.decision(view, actor=actor, phase=phase)
+    def assert_allowed(self, view: dict[str, Any], *, actor: AuthenticationActor, phase: str, _definitions=None) -> None:
+        decision = self.decision(view, actor=actor, phase=phase, **self._read_options(_definitions))
         if not decision["allowed"]:
             raise SkillSecurityBlocked(f"Skill security policy blocks {phase}: {decision['reason']}")
 
@@ -338,7 +355,7 @@ class SkillSecurityService:
             value.update(risk_score=None, severity=None, findings=[])
         return value
 
-    def summary(self, view: dict[str, Any], *, actor: AuthenticationActor) -> dict[str, Any]:
+    def summary(self, view: dict[str, Any], *, actor: AuthenticationActor, _definitions=None) -> dict[str, Any]:
         latest = self._latest(view, actor)
         any_skill_scan = next(
             (item for item in self.store.scans(actor.organization_id, actor.workspace_id) if item.skill_id == view["skillId"]),
@@ -348,17 +365,17 @@ class SkillSecurityService:
             status = SkillScanStatus.STALE if any_skill_scan is not None else SkillScanStatus.NOT_SCANNED
             return {
                 "status": status.value,
-                "requiredMode": self.required_mode(view, actor).value,
+                "requiredMode": self.required_mode(view, actor, **self._read_options(_definitions)).value,
                 "currentRevision": False,
                 "scan": None,
-                "assignmentDecision": self.decision(view, actor=actor, phase="assignment"),
+                "assignmentDecision": self.decision(view, actor=actor, phase="assignment", **self._read_options(_definitions)),
             }
         return {
             "status": latest.status.value,
-            "requiredMode": self.required_mode(view, actor).value,
+            "requiredMode": self.required_mode(view, actor, **self._read_options(_definitions)).value,
             "currentRevision": latest.checksum == view["checksum"],
             "scan": self._public_scan(latest),
-            "assignmentDecision": self.decision(view, actor=actor, phase="assignment"),
+            "assignmentDecision": self.decision(view, actor=actor, phase="assignment", **self._read_options(_definitions)),
         }
 
     def report(self, view: dict[str, Any], *, actor: AuthenticationActor) -> dict[str, Any]:
@@ -401,3 +418,7 @@ class SkillSecurityService:
         )
         self._event(view, actor, "skill_security_baseline_changed", {"baseline_id": item.id, "suppressed_count": len(item.finding_fingerprints), "reason": item.reason}, float(self.clock()))
         return item.model_dump(mode="json")
+
+
+_CANONICAL_SECURITY_READS = {name: getattr(SkillSecurityService, name) for name in (
+    "policy", "required_mode", "decision", "assert_allowed", "summary")}

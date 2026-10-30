@@ -272,8 +272,13 @@ class ProcedureExecutionService:
 
     def _procedure(self, assignment, actor):
         ref = assignment.procedure_checkpoint.definition
-        self.skills.validate_required_procedure(ref, actor=actor, project_id=assignment.project_id)
-        return SkillDefinition.model_validate(self.skills.definitions.get_record(ref.record_id).payload).operational_procedure
+        def read(reader):
+            options = {"_definitions": reader} if reader is not None else {}
+            self.skills.validate_required_procedure(ref, actor=actor, project_id=assignment.project_id, **options)
+            definitions = reader if reader is not None else self.skills.definitions
+            return SkillDefinition.model_validate(definitions.get_record(ref.record_id).payload).operational_procedure
+        observe = getattr(self.skills, "observe_definition_reads", None)
+        return observe((ref,), read) if callable(observe) else read(None)
 
     def _targets(self, procedure, assignment, actor):
         resources = [self.discovery.resources.get(r, actor) for r in assignment.resource_ids]
@@ -661,14 +666,24 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_canonical_provider_hook_unavailable")
 
     def validate_native_preparation(self, assignment, selected, actor, *, require_targets=True):
+        """One synchronous sealed-Skill observation; no provider/content I/O."""
+        observe = getattr(self.skills, "observe_definition_reads", None)
+        def read(reader):
+            return self._validate_native_preparation(assignment, selected, actor,
+                require_targets=require_targets, _definitions=reader)
+        return observe(selected, read) if callable(observe) else read(None)
+
+    def _validate_native_preparation(self, assignment, selected, actor, *, require_targets=True, _definitions=None):
         """Read-only provider contract proof, never a step or credential grant."""
+        definition_reader = _definitions if _definitions is not None else self.skills.definitions
+        options = {"_definitions": _definitions} if _definitions is not None else {}
         from codex_web.services.procedure_discovery import checksum
         self.validate_native_preparation_owner(assignment)
         if not selected:
             raise ProcedureExecutionError("procedure_preparation_pin_missing")
         for reference in selected:
-            self.skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
-            record = self.skills.definitions.get_record(reference.record_id)
+            self.skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id, **options)
+            record = definition_reader.get_record(reference.record_id)
             procedure = SkillDefinition.model_validate(record.payload).operational_procedure
             if procedure is None or any(step.worker for step in procedure.steps):
                 raise ProcedureExecutionError("procedure_native_worker_step_unsupported")

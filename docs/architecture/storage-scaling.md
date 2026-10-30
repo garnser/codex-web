@@ -789,3 +789,26 @@ reader paths. No identity, lease, fence, freshness, current authority, storage
 format, write owner, cache or execution deadline changes.
 Existing assignment inspection and operator UI use the same canonical records;
 this internal read optimization introduces no new public fields or UI controls.
+
+## Synchronous Definition read observations
+
+Canonical Skill and procedure validators can share one fresh Definition document
+observation within a synchronous validation call. The Definition owner supplies
+an explicit read-only view to that call and closes it when the call returns or
+raises. The view refuses use by another owner or thread and use after closure.
+Trusted callers must keep that synchronous scope clear of content and provider
+I/O and must not pass the view into a later validation call.
+
+Only the document read is shared. Each lookup still decodes its selected records
+and applies the existing schema, checksum, scope, lifecycle, effective-window,
+Skill security and authority checks. Selected members are copied before
+validation, so a returned payload cannot modify the observation. Exact-record
+lookups retain validation of every matching duplicate, and slot resolution
+retains all relevant revisions and its existing ambiguity rules. Observed
+resolution bypasses the ordinary resolved-record cache.
+
+The next validation call obtains a fresh observation. Unsupported legacy shapes
+and custom validation owners retain their ordinary read paths. This introduces
+no persisted format, SQL migration, permission, deadline, provider protocol or
+operator setting; existing Definition and procedure inspectors remain the
+operator surfaces.

@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 import hashlib
 import json
+import inspect
+import threading
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -150,6 +152,45 @@ class DefinitionRegistryService:
         self._usage_providers: list[DefinitionUsageProvider] = []
         self._cache: dict[tuple[str, str, str | None, str | None, str | None], DefinitionRecord] = {}
 
+    def can_observe_reads(self) -> bool:
+        store_check = getattr(self.store, "can_observe_reads", None)
+        return (type(self) is DefinitionRegistryService
+                and all(getattr(getattr(self, name), "__self__", None) is self
+                        and getattr(getattr(self, name), "__func__", None) is method
+                        for name, method in _CANONICAL_DEFINITION_READS.items())
+                and callable(store_check) and store_check())
+
+    def observe_reads(self, callback):
+        """Pass an explicit, expiring read-only view to one trusted sync owner."""
+        if not self.can_observe_reads():
+            return callback(None)
+
+        def read(raw):
+            if raw is None:
+                return callback(None)
+            view = _DefinitionReadObservation(self, raw)
+            try:
+                result = callback(view)
+                if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                    if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                        result.close()
+                    raise ValueError("Definition read observation callback must be synchronous")
+                return result
+            finally:
+                view.close()
+        return self.store.observe_reads(read)
+
+    def _read_records(self, observation, *, matches=None):
+        if observation is None:
+            return self.store.load_matching(**matches) if matches else self.store.load()
+        self.require_read_observation(observation)
+        return observation._raw.load(self.store, matches=matches)
+
+    def require_read_observation(self, observation):
+        if type(observation) is not _DefinitionReadObservation:
+            raise DefinitionError("Definition read observation was not produced by this owner")
+        observation.require_owner(self)
+
     def register_schema(self, schema: DefinitionKindSchema) -> None:
         self.schemas.register(schema)
         self._cache.clear()
@@ -258,8 +299,9 @@ class DefinitionRegistryService:
         definition_id: str | None = None,
         scope_type: DefinitionScope | None = None,
         scope_id: str | None = None,
+        _read_observation=None,
     ) -> list[DefinitionRecord]:
-        records = self.store.load()
+        records = self._read_records(_read_observation)
         if kind is not None:
             records = [record for record in records if record.kind == kind]
         if definition_id is not None:
@@ -282,8 +324,8 @@ class DefinitionRegistryService:
             ),
         )
 
-    def get_record(self, record_id: str) -> DefinitionRecord:
-        for record in self.store.load_matching(record_id=record_id):
+    def get_record(self, record_id: str, *, _read_observation=None) -> DefinitionRecord:
+        for record in self._read_records(_read_observation, matches={"record_id": record_id}):
             if record.record_id == record_id:
                 return record
         raise DefinitionNotFoundError(f"definition record not found: {record_id}")
@@ -777,7 +819,13 @@ class DefinitionRegistryService:
         kind: str,
         context: DefinitionContext | None = None,
         now: float | None = None,
+        _read_observation=None,
     ) -> DefinitionRecord:
+        if _read_observation is not None:
+            self.require_read_observation(_read_observation)
+            # Ordinary resolve caching is unchanged. An observed read always
+            # resolves the fresh document and reruns current-time validation.
+            now = time.time() if now is None else now
         context = context or DefinitionContext()
         cache_key = (
             kind,
@@ -791,7 +839,8 @@ class DefinitionRegistryService:
 
         candidates = [
             record
-            for record in self.store.load_matching(definition_id=definition_id, kind=kind)
+            for record in self._read_records(_read_observation,
+                matches={"definition_id": definition_id, "kind": kind})
             if record.definition_id == definition_id
             and record.kind == kind
             and definition_is_effective(record, now=now)
@@ -980,3 +1029,45 @@ class DefinitionRegistryService:
             "items": values,
             "count": len(values),
         }
+
+
+class _DefinitionReadObservation:
+    """Non-serializable read capability; it carries data, never permission."""
+    def __init__(self, owner, raw):
+        self._owner = owner
+        self._raw = raw
+        self._thread = threading.get_ident()
+        self._active = True
+
+    def require_owner(self, owner):
+        if not self._active or owner is not self._owner or threading.get_ident() != self._thread:
+            raise DefinitionError("Definition read observation is foreign, closed or on another thread")
+        self._raw.require_owner(owner.store)
+
+    def belongs_to(self, owner):
+        self.require_owner(owner)
+        return True
+
+    def get_record(self, record_id):
+        self.require_owner(self._owner)
+        return self._owner.get_record(record_id, _read_observation=self)
+
+    def list_records(self, **filters):
+        self.require_owner(self._owner)
+        return self._owner.list_records(**filters, _read_observation=self)
+
+    def resolve(self, **request):
+        self.require_owner(self._owner)
+        return self._owner.resolve(**request, _read_observation=self)
+
+    def validate_record_integrity(self, record):
+        self.require_owner(self._owner)
+        return self._owner.validate_record_integrity(record)
+
+    def close(self):
+        self._active = False
+        self._raw = None
+
+
+_CANONICAL_DEFINITION_READS = {name: getattr(DefinitionRegistryService, name)
+    for name in ("get_record", "list_records", "resolve", "validate_record_integrity")}
