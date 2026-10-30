@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import uuid
 from typing import Any
@@ -2045,7 +2046,7 @@ class ActionIntentService:
         return ReadyExecution(intent.binding_id, request_identity(intent.request), checkpoint,
             settlement_guard, lambda: admitted)
 
-    def _guarded_readonly_remaining(self, intent, actor):
+    def _guarded_readonly_remaining(self, intent, actor, *, observation=None):
         if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
             return intent.timeout_seconds
         if self.procedure_execution is None:
@@ -2053,9 +2054,33 @@ class ActionIntentService:
         requester = self._requester_actor(intent)
         deadline = self.procedure_execution.readonly_operation_deadline(intent, requester)
         remaining = min(intent.timeout_seconds, deadline - self.procedure_execution.clock())
+        if observation is not None:
+            # Ephemeral diagnostics only: retain already resolved data, never
+            # perform another canonical lookup while handling the exception.
+            observation.update(deadline=deadline, clock=self.procedure_execution.clock)
         if remaining <= 0:
             raise TimeoutError('Guarded observation deadline exhausted')
         return remaining
+
+    @staticmethod
+    def _readonly_timeout_details(phase, started, observation):
+        """Closed scalar observations; diagnostic failure cannot mask timeout."""
+        details = {"timeout_phase": phase, "phase_elapsed_seconds": None,
+            "guarded_deadline_at": None, "shared_remaining_at_phase_entry":
+                observation.get("phase_remaining"), "shared_remaining_at_timeout": None}
+        try:
+            elapsed = time.monotonic() - started
+            if math.isfinite(elapsed):
+                details["phase_elapsed_seconds"] = max(0.0, elapsed)
+            deadline = observation.get("deadline")
+            if type(deadline) in (int, float) and math.isfinite(deadline):
+                details["guarded_deadline_at"] = deadline
+                remaining = deadline - observation["clock"]()
+                if math.isfinite(remaining):
+                    details["shared_remaining_at_timeout"] = max(0.0, remaining)
+        except Exception:
+            pass
+        return details
 
     def _guarded_readonly_commit_guard(self, intent, actor):
         if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
@@ -2367,20 +2392,48 @@ class ActionIntentService:
             execution_id=intent.execution_id,
             action_intent_id=intent.id,
         ):
+            guarded_observation = intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+            timeout_observation = {}
+            timeout_phase = None
+            phase_started = None
+
+            def enter_phase(phase):
+                nonlocal timeout_phase, phase_started
+                timeout_phase, phase_started = phase, None
+                timeout_observation["phase_remaining"] = None
+                try:
+                    phase_started = time.monotonic()
+                    deadline = timeout_observation.get("deadline")
+                    if type(deadline) in (int, float) and math.isfinite(deadline):
+                        remaining = deadline - timeout_observation["clock"]()
+                        if math.isfinite(remaining):
+                            timeout_observation["phase_remaining"] = max(0.0, remaining)
+                except Exception:
+                    pass
+
             try:
-                remaining = self._guarded_readonly_remaining(intent, actor)
+                if guarded_observation:
+                    enter_phase("execute_admission")
+                    remaining = self._guarded_readonly_remaining(intent, actor, observation=timeout_observation)
+                    enter_phase("provider_execution")
+                else:
+                    remaining = self._guarded_readonly_remaining(intent, actor)
                 result = await asyncio.wait_for(
                     self._execute_provider(intent, actor=actor),
                     timeout=remaining,
                 )
                 if self.procedure_execution is not None:
                     if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
-                        remaining = self._guarded_readonly_remaining(intent, actor)
+                        enter_phase("result_admission_check")
+                        remaining = self._guarded_readonly_remaining(intent, actor, observation=timeout_observation)
+                        enter_phase("result_admission")
                         await asyncio.wait_for(asyncio.to_thread(self.procedure_execution.result_admission, intent, result),
                             timeout=remaining)
                     else:
                         await asyncio.to_thread(self.procedure_execution.result_admission, intent, result)
             except asyncio.TimeoutError:
+                timeout_details = (self._readonly_timeout_details(timeout_phase, phase_started, timeout_observation)
+                    if guarded_observation else {})
                 if self.capacity is not None:
                     await asyncio.to_thread(self.capacity.record_failure,
                         organization_id=intent.organization_id,
@@ -2395,7 +2448,7 @@ class ActionIntentService:
                     intent,
                     result=None,
                     outcome="unknown",
-                    details={"reason": "timeout"},
+                    details={"reason": "timeout", **timeout_details},
                 )
                 return await asyncio.to_thread(self._set_status,
                     intent.id,
@@ -2405,6 +2458,7 @@ class ActionIntentService:
                         intent,
                         FailureReason.ACTION_TIMEOUT_UNKNOWN_OUTCOME,
                         source_native_code="TimeoutError",
+                        details=timeout_details or None,
                     ),
                 )
             except asyncio.CancelledError:

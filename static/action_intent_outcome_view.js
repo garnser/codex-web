@@ -20,7 +20,16 @@ export function leaseHtml(lease) {
 
 export function failureHtml(failure) {
   if (!failure) return "";
-  return `<small>Canonical failure: ${escapeHtml(failure.reason_code || "unclassified")} · outcome ${escapeHtml(failure.outcome || "unknown")} · retry ${escapeHtml(failure.retryability || "unknown")} · remediation ${escapeHtml(failure.remediation_key || "failure.inspect")} · ${escapeHtml(failure.summary || "No summary recorded.")}</small>`;
+  const d = failure.details || {};
+  const phases = {execute_admission: 'Execution admission', provider_execution: 'Provider execution (including guards)', result_admission_check: 'Result admission check', result_admission: 'Result admission'};
+  let phase = '';
+  if (typeof d.timeout_phase === 'string' && Object.hasOwn(phases, d.timeout_phase)) {
+    const times = [['phase_elapsed_seconds', 'elapsed'], ['shared_remaining_at_phase_entry', 'remaining at entry'], ['shared_remaining_at_timeout', 'remaining at timeout']]
+      .filter(([key]) => Number.isFinite(d[key]) && d[key] >= 0)
+      .map(([key, label]) => `${label} ${escapeHtml(Number(d[key].toFixed(2)))}s`);
+    phase = `<small>Timeout phase: ${escapeHtml(phases[d.timeout_phase])}${times.length ? ' · ' + times.join(' · ') : ''}</small> `;
+  }
+  return `${phase}<small>Canonical failure: ${escapeHtml(failure.reason_code || "unclassified")} · outcome ${escapeHtml(failure.outcome || "unknown")} · retry ${escapeHtml(failure.retryability || "unknown")} · remediation ${escapeHtml(failure.remediation_key || "failure.inspect")} · ${escapeHtml(failure.summary || "No summary recorded.")}</small>`;
 }
 
 export function recoveryHtml(intent, retry) {
