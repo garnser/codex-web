@@ -388,6 +388,7 @@ class FrontendBoundaryTests(unittest.TestCase):
             "resource_catalog_presenters.js": 2_000,
             "resource_operational_context.js": 4_000,
             "execution_worker_presenters.js": 3_000,
+            "native_credential_custody_ui.js": 3_000,
             "artifact_evidence_presenters.js": 4_000,
             "procedure_discovery_guidance.js": 3_000,
             "skill_procedure_editor.js": 9_000,

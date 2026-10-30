@@ -14,6 +14,7 @@ from codex_web.execution_workspace_backend import ExecutionWorkspaceBackendError
 from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionAssignmentCreate,
+    NativeCredentialCustody,
     CodexExecutionAuthenticationMode,
     ExecutionRuntimeBinding,
     NetworkPolicy,
@@ -108,7 +109,7 @@ class TurnExecutionBinding:
     base_revision: str | None
     sandbox: SandboxMode
     approval_policy: ApprovalPolicy
-    secret_ref: str
+    secret_ref: str | None
     deadline_at: float | None
     runtime_binding: ExecutionRuntimeBinding | None = None
     execution_profile_id: str | None = None
@@ -829,10 +830,21 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "existing thread workspace no longer matches repository scope"
             )
-        if len(assignment.secret_refs) != 1:
-            raise TurnExecutionBindingError(
-                "existing thread assignment does not have exactly one credential reference"
-            )
+        authentication = self._authentication_preflight(project, subject, assignment.runtime_binding)
+        runtime_ref = authentication.secret_reference_id
+        custody = assignment.native_credential_custody
+        if custody is not None:
+            if runtime_ref != custody.runtime_secret_ref:
+                raise TurnExecutionBindingError("runtime authentication reference changed; fresh bootstrap required",
+                    code="authentication_custody_changed")
+        elif tuple(assignment.secret_refs) != ((runtime_ref,) if runtime_ref else ()):
+            # Historical assignments have no purpose pin. Never guess from the
+            # first item or substitute a provider credential for runtime auth.
+            raise TurnExecutionBindingError("existing runtime authentication custody is ambiguous",
+                code="authentication_custody_changed")
+        if runtime_ref is not None and runtime_ref not in assignment.secret_refs:
+            raise TurnExecutionBindingError("original runtime credential is not assigned",
+                code="authentication_custody_changed")
         return TurnExecutionBinding(
             thread_id=thread_id,
             execution_id=assignment.execution_id,
@@ -848,7 +860,7 @@ class TurnExecutionBindingService:
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
-            secret_ref=assignment.secret_refs[0],
+            secret_ref=runtime_ref,
             deadline_at=assignment.deadline_at,
             runtime_binding=assignment.runtime_binding,
             execution_profile_id=assignment.execution_profile_id,
@@ -1457,6 +1469,13 @@ class TurnExecutionBindingService:
         try:
             try:
                 self.validate_resource_context(resource_context,project,agent_profile)
+                def initialize_native_custody(state, item):
+                    if assignment_admission is not None:
+                        assignment_admission(state, item)
+                    if (item.subject.kind == ExecutionSubjectKind.THREAD_BOOTSTRAP
+                            and execution_contract_version.startswith("thread-bootstrap/")):
+                        item.native_credential_custody = NativeCredentialCustody(runtime_secret_ref=secret_ref)
+
                 assignment = self.workers.create_assignment(
                     ExecutionAssignmentCreate(
                         subject=subject,
@@ -1491,7 +1510,7 @@ class TurnExecutionBindingService:
                         },
                     ),
                     actor=self.control_actor,
-                    **({"assignment_admission": assignment_admission} if assignment_admission is not None else {}),
+                    assignment_admission=initialize_native_custody,
                 )
             except Exception:
                 # Preparation has reserved a workspace but has no assignment to

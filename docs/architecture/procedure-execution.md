@@ -52,6 +52,51 @@ Artifacts are capped at 64 KiB and cryptographically checked on every use.
 Secret values never enter parameters, checkpoints, model context or output:
 only assigned, currently usable SecretReferences cross the credential boundary.
 
+New native thread bootstraps can receive one server-owned credential-custody
+admission after the actual worker is claimed and before initial native input.
+The bootstrap builder alone creates the pending `native_credential_custody`
+marker; public AssignmentCreate cannot supply it. Canonical native preparation
+selects effective published procedures and requires the exact current execution
+Profile's procedure operations. It derives only the selected procedures' unique,
+enabled provider bindings within the assignment's Project/Resources, using the
+same selector as procedure execution. The canonical action requester remains
+`assignment.created_by`; an authorized web/Slack input actor is checked separately
+by native input/discovery admission and does not acquire provider SecretUse.
+Both that action requester and the actual authenticated worker must currently
+be allowed to use every admitted credential reference.
+
+A canonical transaction rechecks the live worker, lease/fence, workspace,
+selected Definitions, bindings, security and policy before sealing the finite
+reference union and its provenance once. Only an unused pending bootstrap may
+transition; historical assignments are never retrofitted. Later preparation and
+the guarded native-input path validate the immutable pins without adding refs.
+New publications, changed bindings, revoked Use or changed custody refuse rather
+than enlarge the old scope. Existing discovery/audit records still retain denied
+admissions. A normal same-token/worker/fence lease renewal is allowed, while
+scope, token, worker, fence and assignment deadline remain fixed CAS predicates.
+An initial no-match seals an empty procedure scope as well.
+
+Runtime authentication stays separate: the original runtime credential reference
+(or explicit `None` for agent-owned local sign-in) is pinned at bootstrap. Reuse
+must resolve to that same reference and authentication mode; a mutable config
+change cannot substitute a provider credential. Purpose-specific runtime
+delegation remains unchanged. Provider values are borrowed only by the existing
+ActionExecution/SecretBroker boundary, never sent to native prompts, environment,
+shell or a generic secret-delivery API. Procedure `_secret` keeps its explicit
+assignment-membership guard and checks current native custody/Use at execution.
+Unmarked generic/legacy procedures retain their prior requester-use contract.
+
+This is worker **state** contract 1.14, distinct from the unchanged thread-turn/
+bootstrap execution-contract versions. Its 1.13→1.14 domain migration grants
+nothing: historical assignments remain unmarked and serialize byte-for-byte
+without the optional field. There is no SQL schema migration. Marked assignment
+rows are not readable by the prior 5936 `extra=forbid` model, including direct
+keyed reads; rolling back to that binary after new custody records are written
+is unsupported without explicit compatible-state recovery. This compatibility
+limit does not itself impose a backup gate. Existing authenticated worker
+inspection exposes reference-only pending/admitted/legacy status and provenance;
+recorded custody is not a claim of current authority.
+
 `POST /api/execution-workers/assignments/{id}/procedure/start` binds an admitted
 Definition and input Artifact to a live assignment. `/advance` processes at most
 one step per request/event. After rollover, `/advance` and `/deviate` require

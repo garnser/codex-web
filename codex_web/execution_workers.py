@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from codex_web.resource_context import ResourceContextModel, ReadOnlyResourceContext
@@ -23,8 +24,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.13",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13"),
+    "1.14",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -390,6 +391,25 @@ class AssignmentLease(BaseModel):
     renewed_at: float | None = None
 
 
+class NativeCredentialCustody(BaseModel):
+    """Versioned initial native admission; references only, never secret material.
+
+    Only the canonical bootstrap builder creates the pending marker. Legacy
+    assignments have no marker and cannot acquire new references on reuse.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    runtime_secret_ref: str | None = None
+    admitted_at: float | None = None
+    requester_identity_id: str | None = None
+    worker_identity_id: str | None = None
+    fence: int | None = None
+    procedures: tuple[DefinitionReference, ...] = Field(default=(), max_length=32)
+    provider_bindings: dict[str, str] = Field(default_factory=dict, max_length=32)
+    procedure_secret_refs: tuple[str, ...] = Field(default=(), max_length=32)
+
+
 class ExecutionAssignment(ResourceContextModel):
     resource_context: ReadOnlyResourceContext | None = None
     model_config = ConfigDict(extra="forbid")
@@ -422,6 +442,7 @@ class ExecutionAssignment(ResourceContextModel):
     agent_profile: AgentProfileExecutionBinding | None = None
     skill_refs: tuple[DefinitionReference, ...] = ()
     skill_assignment_sources: dict[str, str] = Field(default_factory=dict)
+    native_credential_custody: NativeCredentialCustody | None = None
     procedure_discoveries: tuple[ProcedureDiscovery, ...] = ()
     procedure_checkpoint: ProcedureCheckpoint | None = None
     # Retained terminal runs, never evicted or reused as the current writer.
@@ -440,6 +461,13 @@ class ExecutionAssignment(ResourceContextModel):
     failure: FailureRecord | None = None
     artifact_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def serialize_custody(self, handler):
+        result = self.serialize_resource_context(handler)
+        if self.native_credential_custody is None:
+            result.pop("native_credential_custody", None)
+        return result
 
     @model_validator(mode="after")
     def procedure_runs(self) -> "ExecutionAssignment":
