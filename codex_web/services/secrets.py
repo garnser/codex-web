@@ -185,7 +185,17 @@ class SecretBroker:
         actor: AuthenticationActor,
         require_use: bool = False,
     ) -> SecretReference:
-        reference = self._reference(secret_id)
+        lookup = self._reference
+        if (type(secret_id) is str and type(self.store) is SecretStateStore
+                and getattr(lookup, '__self__', None) is self
+                and getattr(lookup, '__func__', None) is _CANONICAL_SECRET_REFERENCE):
+            state = self.store.reference_state(secret_id,
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+            reference = next((item for item in state.references if item.id == secret_id), None)
+            if reference is None:
+                raise SecretNotFoundError("secret reference not found")
+        else:
+            reference = lookup(secret_id)
         self._scope(actor, reference)
         if require_use and not self._can_use(actor, reference):
             raise SecretUseDeniedError("secret use authority denied")
@@ -441,3 +451,6 @@ class SecretBroker:
             if item.organization_id == actor.organization_id
             and item.workspace_id == actor.workspace_id
         ]
+
+
+_CANONICAL_SECRET_REFERENCE = SecretBroker._reference
