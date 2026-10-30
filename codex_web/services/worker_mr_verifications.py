@@ -19,12 +19,19 @@ from codex_web.mr_observation_evidence import METHOD, current_observation
 from codex_web.mr_continuation_input import METHOD as CONTINUATION_METHOD, INPUT_METHOD, input_values, encoded
 from codex_web.data_governance import ContextFilterRequest
 from codex_web.services.async_operations import run_settled
+from codex_web.mr_observation_policy import (
+    OBSERVATION_V2, CONTINUATION_V2, INPUT_V2, resolve_policy, validate_policy,
+    canonical, expiry_valid, ObservationPolicyError,
+)
+
+MR_METHODS = (METHOD, CONTINUATION_METHOD, OBSERVATION_V2, CONTINUATION_V2)
 
 
 class MRObservationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    method: Literal["code-host-mr-observation.v1", "code-host-mr-continuation-input.v1"]
+    method: Literal["code-host-mr-observation.v1", "code-host-mr-continuation-input.v1",
+                    "code-host-mr-observation.v2", "code-host-mr-continuation-input.v2"]
     repository_resource_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,200}$")
     pull_request_number: StrictInt = Field(ge=1, le=2**31 - 1)
     expected_head_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -109,8 +116,9 @@ class WorkerMRVerificationAdapter:
         result = {"item": record.model_dump(mode="json"),
             "evidence": {e.metadata["observation_kind"]: e.model_dump(mode="json") for e in evidence},
             "deduplicated": True, "no_merge_or_QA_authorization": True,
-            "observation_fresh": all(current_observation(e, now=self.broker._clock()) for e in evidence)}
-        if method == CONTINUATION_METHOD:
+            "observation_fresh": all(current_observation(e, now=self.broker._clock(),
+                configuration=self.broker.mr_observation_configuration) for e in evidence)}
+        if method in (CONTINUATION_METHOD, CONTINUATION_V2):
             ids = {e.metadata.get('continuation_input_artifact_id') for e in evidence}
             if len(ids) != 1 or None in ids:
                 self.adapter.denied('Original MR continuation input association changed')
@@ -138,7 +146,7 @@ class WorkerMRVerificationAdapter:
         import re
         query = resolved.query
         if (set(query) != {"method", "source"} or any(len(v) != 1 for v in query.values())
-                or query["method"] not in ([METHOD], [CONTINUATION_METHOD])
+                or query["method"][0] not in MR_METHODS
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", query["source"][0])):
             self.adapter.denied("Exact MR method and original request digest required")
         worker, _, _ = self.adapter.principals(assignment, worker_actor, resolved, validator, {})
@@ -151,7 +159,7 @@ class WorkerMRVerificationAdapter:
         request = self.request(payload)
         try:
             return await self._create(assignment, worker_actor, resolved, payload, validator, request)
-        except MRObservationConflict as exc:
+        except (MRObservationConflict, ObservationPolicyError) as exc:
             from codex_web.services.control_plane_broker import ControlPlaneBrokerRequestError
             raise ControlPlaneBrokerRequestError(
                 "Original MR observation refused; reconcile exact source without replay",
@@ -171,6 +179,10 @@ class WorkerMRVerificationAdapter:
         original = await asyncio.to_thread(self.existing, assignment, worker, source, request_digest, request.method)
         if original is not None:
             return original
+        policy = (await asyncio.to_thread(resolve_policy, self.broker.mr_observation_configuration, now=self.broker._clock())
+                  if request.method in (OBSERVATION_V2, CONTINUATION_V2) else None)
+        continuation_method = request.method in (CONTINUATION_METHOD, CONTINUATION_V2)
+        input_method = INPUT_V2 if request.method == CONTINUATION_V2 else INPUT_METHOD
 
         # Reuse the complete current requester/worker/Profile/credential/provider
         # read boundary. A previous broker audit or caller JSON is never a fact.
@@ -178,11 +190,13 @@ class WorkerMRVerificationAdapter:
         read = self.broker._resolve_operation("GET", "/api/repository-facts/pull-requests/"
             + str(request.pull_request_number) + "/merge-requirements?repository_resource_id="
             + request.repository_resource_id)
-        observation = await read_merge_requirements(self.broker, assignment, worker_actor, read, validator)
+        observation = await read_merge_requirements(self.broker, assignment, worker_actor, read, validator,
+            observation_policy=policy)
         fact = CodeHostMergeRequirementsFact.model_validate(observation["item"])
         if (fact.resource_id != request.repository_resource_id
                 or fact.external_id != str(request.pull_request_number)
-                or not 0 < fact.expires_at - fact.observed_at <= 30):
+                or (not expiry_valid(policy, fact.observed_at, fact.expires_at) if policy is not None
+                    else not 0 < fact.expires_at - fact.observed_at <= 30)):
             self.adapter.denied("MR observation returned a different repository or request")
         raw = json.dumps(observation, sort_keys=True, separators=(",", ":"))
         if len(raw.encode()) > 262144:
@@ -198,9 +212,16 @@ class WorkerMRVerificationAdapter:
         if registry.store is not service.store.store:
             self.adapter.denied("MR observation provider registry must share the canonical transaction")
         domains[registry.namespace] = (None,)
+        if policy is not None:
+            config_store = self.broker.mr_observation_configuration.store
+            if config_store.store is not service.store.store:
+                self.adapter.denied('Observation policy must share canonical transaction')
+            domains[config_store.namespace] = (None,)
         returned = []
 
         def persist(rows):
+            if policy is not None:
+                validate_policy(policy, self.broker.mr_observation_configuration, now=self.broker._clock())
             current_worker, current_requester, decision = self.adapter.principals(
                 assignment, worker_actor, resolved, validator, payload)
             self.scope(assignment, request)
@@ -243,7 +264,9 @@ class WorkerMRVerificationAdapter:
                     observed_at=fact.observed_at,
                     summary="Canonical exact-head MR observation; not merge permission or new reviewer consent",
                     metadata={"verification_method": request.method, "observation_kind": name,
-                        **({"continuation_input_artifact_id": service._idempotent_evidence_id(worker, source, source + ":input").replace("evidence-", "artifact-", 1)} if request.method == CONTINUATION_METHOD else {}),
+                        **({"continuation_input_artifact_id": service._idempotent_evidence_id(worker, source, source + ":input").replace("evidence-", "artifact-", 1)} if continuation_method else {}),
+                        **({'observation_policy': canonical(policy.model_dump(mode='json')),
+                            'observation_started_at': fact.observed_at} if policy else {}),
                         "assignment_id": assignment.id, "assignment_fence": assignment.fence,
                         "requester_identity_id": requester.identity_id,
                         "head_sha": fact.head_revision, "request_sha256": request_digest,
@@ -266,8 +289,8 @@ class WorkerMRVerificationAdapter:
                 findings=("Original provider observations; verifier independence is computed, not asserted.",)),
                 actor=worker, _commit=verification_commit)
             continuation = None
-            if request.method == CONTINUATION_METHOD:
-                values = input_values(fact, expected_head=request.expected_head_sha)
+            if continuation_method:
+                values = input_values(fact, expected_head=request.expected_head_sha, protocol=input_method)
                 content = encoded(values)
                 continuation = service.create_artifact(ArtifactCreate(
                     project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
@@ -276,7 +299,8 @@ class WorkerMRVerificationAdapter:
                     name='Governed MR continuation input', provider=fact.provider_type, source=source,
                     external_id=str(request.pull_request_number), revision=fact.head_revision,
                     digest=sha256_digest(content),
-                    metadata={'input_method': INPUT_METHOD, 'verification_id': verification.id,
+                    metadata={'input_method': input_method, 'verification_id': verification.id,
+                        **({'observation_policy': canonical(policy.model_dump(mode='json'))} if policy else {}),
                         'assignment_id': assignment.id, 'assignment_fence': assignment.fence,
                         'requester_identity_id': requester.identity_id, 'request_sha256': request_digest,
                         'source_evidence_ids': json.dumps(sorted(e.id for e in proofs.values()), separators=(',', ':')),
@@ -302,6 +326,8 @@ class WorkerMRVerificationAdapter:
                 "no_merge_or_QA_authorization": True}
             self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
             self.scope(assignment, request)
+            if policy is not None:
+                validate_policy(policy, self.broker.mr_observation_configuration, now=self.broker._clock())
             dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
             returned.append(response)
             return changes
@@ -312,4 +338,6 @@ class WorkerMRVerificationAdapter:
         # retain it and use the existing exact-source reconciliation refusal,
         # never report rollback or authorize a replacement provider read.
         dispositions(fact, expected_head=request.expected_head_sha, now=self.broker._clock())
+        if policy is not None:
+            await asyncio.to_thread(validate_policy, policy, self.broker.mr_observation_configuration, now=self.broker._clock())
         return returned[0]

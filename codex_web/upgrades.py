@@ -3,8 +3,14 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+
+from codex_web.compatibility import ContractSpec
+from codex_web.models import HomeOperatorBinding
+
+UPGRADE_STATE_CONTRACT = ContractSpec("upgrade-state", "1.1", ("1.0", "1.1"))
 
 
 class UpgradeDeploymentMode(StrEnum):
@@ -244,6 +250,32 @@ class UpgradePlanCreate(BaseModel):
         return self
 
 
+class HomeCheckpointDisposition(BaseModel):
+    """Diagnostic only; never Home readiness, drain or native-input authority."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    outcome: Literal["pending_unknown", "recorded", "deferred_unknown", "blocked", "not_applicable"]
+    operation: Literal["checkpoint", "dormant_preservation", "unresolved"] = "unresolved"
+    observed_at: float = Field(default_factory=time.time, allow_inf_nan=False)
+    selection: HomeOperatorBinding | None = None
+    checkpoint_artifact_id: str | None = Field(default=None, pattern=r"^artifact-[0-9a-f]{64}$")
+    preservation_artifact_id: str | None = Field(default=None, pattern=r"^artifact-[0-9a-f]{64}$")
+    recorded_artifact_id: str | None = Field(default=None, min_length=1, max_length=200)
+    reason_code: str | None = Field(default=None, pattern=r"^home_[a-z0-9_]{1,120}$")
+    phase: str | None = Field(default=None, pattern=r"^[a-z_]{1,60}$")
+    exception_type: Literal["TimeoutError", "QueryCanceled"] | None = None
+    continuation_authorized: Literal[False] = False
+
+    @model_validator(mode="after")
+    def diagnostic_shape(self):
+        if (self.outcome == "recorded") != (self.recorded_artifact_id is not None):
+            raise ValueError("Only a returned Artifact may be recorded")
+        if self.outcome in {"deferred_unknown", "blocked"} and self.reason_code is None:
+            raise ValueError("Unavailable Home checkpoint requires a closed reason")
+        return self
+
+
 class UpgradePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -280,6 +312,14 @@ class UpgradePlan(BaseModel):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     completed_at: float | None = None
+    home_checkpoint_disposition: HomeCheckpointDisposition | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_home_disposition(self, handler):
+        result = handler(self)
+        if self.home_checkpoint_disposition is None:
+            result.pop("home_checkpoint_disposition", None)
+        return result
 
 
 class UpgradeStepExecute(BaseModel):
@@ -321,5 +361,5 @@ class UpgradeUnexecutedCancellationRequest(BaseModel):
 class UpgradeState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     plans: dict[str, UpgradePlan] = Field(default_factory=dict)

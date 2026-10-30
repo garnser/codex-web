@@ -435,8 +435,8 @@ class WorkerVerificationAdapter:
         worker, requester, _ = self.principals(assignment, worker_actor, resolved, validator, {})
         service = self.service()
         if resolved.operation.id == 'verification.read':
-            from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD, WorkerMRVerificationAdapter
-            if resolved.query.get('method') in ([METHOD], [CONTINUATION_METHOD]):
+            from codex_web.services.worker_mr_verifications import MR_METHODS, WorkerMRVerificationAdapter
+            if resolved.query.get('method') in tuple([method] for method in MR_METHODS):
                 return WorkerMRVerificationAdapter(self).lookup(assignment, worker_actor, resolved, validator)
             query = resolved.query
             if set(query) - {'work_item_ref', 'source'} or any(len(v) != 1 for v in query.values()):

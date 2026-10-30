@@ -9,10 +9,13 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 ARTIFACT_EVIDENCE_CONTRACT = ContractSpec(
     "artifact-evidence-state",
-    "1.4",
-    ("1.0", "1.1", "1.2", "1.3", "1.4"),
+    "1.5",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
 )
 ARTIFACT_EVIDENCE_MIGRATIONS = MigrationRegistry("artifact-evidence-state")
+ARTIFACT_EVIDENCE_MIGRATIONS.register(
+    "1.4", "1.5", lambda payload: {**payload, "schema_version": "1.5"},
+)
 ARTIFACT_EVIDENCE_MIGRATIONS.register(
     "1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"},
 )

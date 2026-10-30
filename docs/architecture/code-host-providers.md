@@ -391,3 +391,14 @@ observation expiry; the ArtifactEvidence 1.4 current-use contract rejects an
 expired observation while retaining its historical bytes. A subsequent
 verification does not extend the original observation lifetime or turn the
 receipt into review, CI or policy acceptance.
+
+### MR observation validity versus transport timeouts
+
+The v1 observation and continuation methods retain their fixed 30-second validity.
+Explicit v2 methods resolve the canonical deployment Configuration
+`code_host.mr_observation_window_seconds` once (default 30, finite 1..300) and pin
+its exact provenance in the observation. Only registered GitLab/GitHub readers
+receive this server-owned value; it is not a provider request parameter. Their
+existing 30-second HTTP operation bounds, request/response limits and exact-head
+checks remain unchanged. Longer validity does not waive fresh provider reads at
+an action boundary or grant a merge, credential, lease or execution permission.

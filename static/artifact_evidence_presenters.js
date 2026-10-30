@@ -49,3 +49,17 @@ export function researchLinks(item) {
       return `<a href="${route}?knowledge_id=${encodeURIComponent(id)}">${escapeHtml(label)}</a>`;
     }).join(', ') || 'none';
   }
+
+export function observationPolicyHtml(item) {
+  const metadata = item.metadata || {};
+  if (!metadata.observation_policy) return '';
+  try {
+    const policy = JSON.parse(metadata.observation_policy);
+    if (policy.version !== '2.0' || !Number.isInteger(policy.seconds) || policy.seconds < 1 || policy.seconds > 300) throw new Error('invalid policy');
+    const origin = policy.source === 'default' ? 'code default' : `${policy.record_id} r${policy.revision}`;
+    return `<small>Observation v2: ${escapeHtml(policy.seconds)}s · Configuration ${escapeHtml(policy.key)} · ${escapeHtml(origin)} · resolved ${timeText(policy.resolved_at)} · digest ${escapeHtml(policy.record_sha256 || 'default')}</small>
+      <small>Observation expiry ${metadata.observation_expires_at ? timeText(metadata.observation_expires_at) : 'see linked Evidence'}. Historical provenance only; current use and revocation are revalidated by the server.</small>`;
+  } catch (_) {
+    return '<small>Observation policy provenance is invalid; server validation is required.</small>';
+  }
+}

@@ -9,7 +9,12 @@ from codex_web.secrets import SecretStatus
 from codex_web.services.secrets import SecretUseDeniedError
 
 
-async def read_merge_requirements(service, binding_id, resource_id, external_id, *, actor, checkpoint=None, audit_context=None):
+async def read_merge_requirements(service, binding_id, resource_id, external_id, *, actor, checkpoint=None,
+                                 audit_context=None, observation_policy=None):
+    if observation_policy is not None:
+        from codex_web.mr_observation_policy import ObservationPolicy
+        if not isinstance(observation_policy, ObservationPolicy):
+            raise CodeHostError('Canonical observation policy required')
     context = dict(audit_context or {})
     if (set(context) - {'assignment_id', 'execution_id', 'project_id', 'fence', 'requester_identity_id',
                         'inspection_kind', 'read_id', 'external_id', 'definition_record_id'}
@@ -50,8 +55,11 @@ async def read_merge_requirements(service, binding_id, resource_id, external_id,
 
     async def consume(credential):
         await check()
+        options = ({'observation_seconds': observation_policy.seconds} if observation_policy is not None else {})
+        if options and provider.provider_type not in {'gitlab', 'github'}:
+            raise CodeHostUnsupportedCapabilityError('Versioned observation policy unsupported by provider')
         result = await provider.merge_requirements(binding, resource, external_id,
-                                                    credential=credential, checkpoint=check)
+                                                    credential=credential, checkpoint=check, **options)
         await check()
         return result
 

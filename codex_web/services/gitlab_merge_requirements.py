@@ -65,9 +65,13 @@ class _GuardRejected(Exception):
 
 
 class GitLabMergeRequirementsReader:
-    """One 30s observation, at most eight GETs and 128KiB of projected facts."""
+    """Bounded 30s provider read, finite validity, at most eight GETs/128KiB."""
 
-    def __init__(self, client, binding, resource, project, credential, *, checkpoint=None, clock=time.time):
+    def __init__(self, client, binding, resource, project, credential, *, checkpoint=None, clock=time.time,
+                 observation_seconds=30):
+        if type(observation_seconds) is not int or not 1 <= observation_seconds <= 300:
+            raise ValueError('invalid observation validity')
+        self.observation_seconds = observation_seconds
         if not credential:
             raise CodeHostError('Authenticated GitLab merge-requirement read required')
         if not isinstance(project, str) or not project or len(project) > 1024:
@@ -236,7 +240,7 @@ class GitLabMergeRequirementsReader:
                     if s.availability != Availability.COMPLETE]
         if self.changed:
             blockers.append('observation_changed')
-        if not self.started <= float(self.clock()) < self.started + 30:
+        if not self.started <= float(self.clock()) < self.started + self.observation_seconds:
             blockers.append('observation_stale')
         if self.pr['state'] != 'opened' or self.pr['draft']:
             blockers.append('pull_request_not_open_ready')
@@ -251,7 +255,7 @@ class GitLabMergeRequirementsReader:
         result = CodeHostMergeRequirementsFact(resource_id=self.resource.id, binding_id=self.binding.id,
             provider_type='gitlab', provider_instance=self.binding.provider_instance, external_id=str(self.number),
             head_revision=self.pr['head'], base_revision=self.base, target_branch=self.pr['branch'],
-            observed_at=self.started, expires_at=self.started + 30, sources=tuple(self.sources.values()),
+            observed_at=self.started, expires_at=self.started + self.observation_seconds, sources=tuple(self.sources.values()),
             complete=False, changed=self.changed, pull_request_state=self.pr['state'].upper(), draft=self.pr['draft'],
             mergeable='MERGEABLE' if self.pr['gate'] == 'mergeable' else 'UNKNOWN', merge_state=self.pr['gate'],
             review_decision=None if approval is None else 'APPROVED' if approval['approved'] else

@@ -328,7 +328,7 @@ class EvidenceEvaluationRequest(BaseModel):
 class ArtifactEvidenceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.4"
+    schema_version: str = "1.5"
     artifacts: list[Artifact] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     verifications: list[Verification] = Field(default_factory=list)

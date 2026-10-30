@@ -32,17 +32,17 @@ class HomePreservationFailureDiagnosticTests(UnownedHomeUpgradeTests):
                           'source_revision': 'a' * 40, 'target_revision': 'b' * 40})
 
     def incomplete(self, response, phase, exception_type):
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 200)
         self.assertIn('application/json', response.headers.get('content-type', ''))
-        detail = response.json()['detail']
-        self.assertEqual(detail['code'], 'home_upgrade_preservation_incomplete')
+        detail = response.json()['item']['home_checkpoint_disposition']
+        self.assertEqual(detail['reason_code'], 'home_upgrade_preservation_incomplete')
         self.assertEqual((detail['phase'], detail['exception_type']), (phase, exception_type))
-        self.assertEqual(detail['preservation_outcome'], 'unknown')
-        self.assertIs(detail['retryable'], False)
+        self.assertEqual(detail['outcome'], 'deferred_unknown')
+        self.assertIs(detail['continuation_authorized'], False)
         self.assertNotIn('PRIVATE_SECRET', response.text)
         current = self.upgrades.get(self.plan.id, actor=self.operator)
-        self.assertFalse(current.maintenance_mode)
-        self.assertEqual(current.admission_epoch, 0)
+        self.assertTrue(current.maintenance_mode)
+        self.assertEqual(current.admission_epoch, 1)
         self.assertEqual(self.effects, 0)
 
     async def test_real_inner_budget_expiry_is_typed_at_the_original_api(self):
@@ -86,7 +86,7 @@ class HomePreservationFailureDiagnosticTests(UnownedHomeUpgradeTests):
         self.incomplete(response, 'final_snapshot', 'TimeoutError')
         self.assertEqual(len(created), 1)
         self.assertEqual(self.planned._dormant_artifact(self.plan.id, self.actor).id, created[0])
-        self.assertNotIn('artifact_absent', response.json()['detail'])
+        self.assertNotIn('artifact_absent', response.json()['item']['home_checkpoint_disposition'])
 
     async def test_unrelated_programming_error_is_not_classified(self):
         self.lose()

@@ -68,10 +68,12 @@ class GitLabCodeHostProvider:
             CodeHostCapability.CHECKS_READ, CodeHostCapability.JOB_LOGS_READ, CodeHostCapability.ARTIFACTS_READ,
             CodeHostCapability.RELEASE_READ, CodeHostCapability.COMPARE_READ, CodeHostCapability.WEBHOOK_NORMALIZE})
 
-    async def merge_requirements(self, binding, resource, external_id, *, credential, checkpoint=None):
+    async def merge_requirements(self, binding, resource, external_id, *, credential, checkpoint=None,
+                                 observation_seconds=30):
         from codex_web.services.gitlab_merge_requirements import GitLabMergeRequirementsReader
         return await GitLabMergeRequirementsReader(self.client, binding, resource,
-            _project_name(resource), credential, checkpoint=checkpoint).read(external_id)
+            _project_name(resource), credential, checkpoint=checkpoint,
+            observation_seconds=observation_seconds).read(external_id)
 
     @staticmethod
     def _classify(exc: Exception) -> CodeHostError:

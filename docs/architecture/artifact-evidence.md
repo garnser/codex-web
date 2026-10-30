@@ -412,3 +412,20 @@ existing operation catalog and Evidence/Verification inspectors expose the new
 method, typed request, source/producer/provenance and honest result; there is no
 new UI object or evidence engine. This source capability is not live Executive
 or operational-procedure migration qualification.
+
+### Observation-policy reader boundary (ArtifactEvidence 1.5)
+
+ArtifactEvidence `1.5` preserves every existing record and adds the reader boundary
+for version-2 MR observation / continuation and read-only readiness Evidence.
+Publication stores the immutable canonical Configuration policy alongside the
+original observation start/expiry. Current-use evaluation checks that pin and any
+subsequent reset, as well as the normal Evidence lifecycle, authority and resource
+requirements. Unknown future MR observation methods fail closed. Data retention
+never refreshes an observation.
+
+The `1.4 -> 1.5` migration changes only the domain envelope version; there is no SQL
+or destructive migration. All writers must drain and switch together. An old 1.4
+reader rejects 1.5, rather than misinterpreting an unknown v2 method as generic
+Evidence. Once a 1.5 envelope has been written, rollback to an old binary is not a
+supported plan. This boundary needs a truthful forward state-migration Release;
+it is not a code-only rollback-compatible deployment.

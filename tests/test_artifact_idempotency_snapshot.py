@@ -198,8 +198,21 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
                     side_effect=AssertionError('checkpoint must refuse before governance')), \
                 patch('codex_web.artifact_evidence.ArtifactEvidenceState.model_dump',
                     side_effect=AssertionError('checkpoint must refuse before catalog export')):
-            with self.assertRaises(ExecutionPrestartRefusal): f.drain()
+            # The canonical Home owner still refuses; global Upgrade merely
+            # records this independent diagnostic rather than granting readiness.
+            with self.assertRaises(ExecutionPrestartRefusal) as refused: f.strict_checkpoint()
         self.assertEqual(snapshots.call_count, 2)
+        self.assertEqual(refused.exception.detail['code'], 'home_upgrade_preservation_ambiguous')
+        with patch.object(f.artifacts.governance, 'register_domain_record',
+                side_effect=AssertionError('blocked optional Home must not register governance')), \
+                patch('codex_web.artifact_evidence.ArtifactEvidenceState.model_dump',
+                    side_effect=AssertionError('blocked optional Home must not export catalog')):
+            drained = f.drain()
+        self.assertTrue(drained.maintenance_mode)
+        self.assertEqual(drained.home_checkpoint_disposition.outcome, 'blocked')
+        self.assertEqual(drained.home_checkpoint_disposition.reason_code, refused.exception.detail['code'])
+        self.assertFalse(drained.home_checkpoint_disposition.continuation_authorized)
+        self.assertIsNone(f.planned._dormant_artifact(f.plan.id, f.actor))
         self.assertEqual(f.preserved(), before)
         self.assertEqual(f.effects, 0)
 
@@ -207,22 +220,23 @@ class HomeArtifactSnapshotTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.runtime.execution import ExecutionPrestartRefusal
         f = self.fixture
         f.lose(); before = f.preserved()
-        self.assertTrue(f.drain().maintenance_mode)
-        saved = f.planned._dormant_artifact(f.plan.id, f.actor)
-        f.put_plan(f.plan)  # The SAME original draft, without changing Home custody.
+        saved = f.strict_checkpoint()
+        self.assertEqual(f.planned._dormant_artifact(f.plan.id, f.actor), saved)
         with patch.object(f.artifacts, '_commit_creation', wraps=f.artifacts._commit_creation) as commit:
-            self.assertTrue(f.drain().maintenance_mode)
+            self.assertEqual(f.strict_checkpoint(), saved)
         self.assertEqual(commit.call_count, 1)
         self.assertEqual(f.planned._dormant_artifact(f.plan.id, f.actor), saved)
-        f.put_plan(f.plan)
         def invalidate(state):
             state.artifacts = [a.model_copy(update={'lifecycle': 'invalidated'})
                 if a.id == saved.id else a for a in state.artifacts]
             return state
         f.artifacts.store.update(invalidate)
         with patch.object(f.artifacts, '_commit_creation', wraps=f.artifacts._commit_creation) as commit:
-            with self.assertRaises(ExecutionPrestartRefusal): f.drain()
+            with self.assertRaises(ExecutionPrestartRefusal) as refused: f.strict_checkpoint()
         self.assertEqual(commit.call_count, 1)
+        self.assertEqual(refused.exception.detail['code'], 'home_upgrade_dormant_preservation_changed')
+        self.assertEqual(f.planned._dormant_artifact(f.plan.id, f.actor).lifecycle, 'invalidated')
+        self.assertFalse(f.upgrades.get(f.plan.id, actor=f.operator).maintenance_mode)
         self.assertEqual(f.preserved(), before)
         self.assertEqual(f.effects, 0)
 

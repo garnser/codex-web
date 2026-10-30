@@ -39,7 +39,7 @@ class ColdVerificationSchemaTests(unittest.TestCase):
         self.assertFalse(result.side_effects_enabled)
         self.assertIsNotNone(result.evidence_id)
         after = self.state.get(ArtifactEvidenceStore.namespace)
-        self.assertEqual(after['schema_version'], '1.4')
+        self.assertEqual(after['schema_version'], '1.5')
         self.assertEqual(after['evidence'][0], original['evidence'][0])
         source = ContractSpec('artifact-evidence-state', '1.3', ('1.0','1.1','1.2','1.3'))
         with self.assertRaises(ContractCompatibilityError):

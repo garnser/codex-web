@@ -134,6 +134,7 @@ class ArtifactEvidenceService:
         content: ArtifactContentService | None = None,
         content_backend_resolver: Callable[[AuthenticationActor, str | None], str] | None = None,
         organizational_memory: Any | None = None,
+        mr_observation_configuration=None,
     ) -> None:
         self.store = store
         self.resources = resources
@@ -142,6 +143,7 @@ class ArtifactEvidenceService:
         self.content = content
         self.content_backend_resolver = content_backend_resolver
         self.organizational_memory = organizational_memory
+        self.mr_observation_configuration = mr_observation_configuration
 
     def _commit_creation(self, updater, composed_commit, *, catalog_guard=None):
         if catalog_guard is not None and composed_commit is not None:
@@ -1354,7 +1356,7 @@ class ArtifactEvidenceService:
             verification_ids: set[str] = set()
             for item in valid_evidence:
                 from codex_web.mr_observation_evidence import current_observation
-                if not current_observation(item, now=current_time):
+                if not current_observation(item, now=current_time, configuration=self.mr_observation_configuration):
                     continue
                 if item.evidence_type != requirement.evidence_type:
                     continue

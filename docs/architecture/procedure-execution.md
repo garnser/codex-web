@@ -401,3 +401,54 @@ a separately reviewed canonical Definition publication. Deployment does not
 rewrite existing catalog data or assignment pins. These reads grant no mutation,
 provider, verification-publication or procedure-execution rights. Repository-free
 Orchestrator coordination remains separate from a repository worker's WRITE lease.
+
+### Versioned MR observation validity
+
+Procedure schema `1.3` adds the explicit `code-host-mr-procedure-input.v2`
+protocol. It consumes only a broker-published v2 continuation Artifact and its
+original Evidence, exact provider/head/provenance and canonical governance links.
+Schema `1.2` / input v1 keeps its fixed 30-second window. A v2 input cannot be
+passed through generic Verification assertions or silently consumed by a v1 Skill.
+The procedure-schema API and broker catalog advertise the new versions. Existing
+published Skill revisions and assignment admission pins remain unchanged; adopting
+v2 requires a separately reviewed, scanned and published Skill revision.
+
+The canonical deployment Configuration key
+`code_host.mr_observation_window_seconds` has default `30` and inclusive bounds
+`1..300`. The existing Configuration editor supports draft, validation,
+publication, effective-value inspection and revision history for this key. Changing
+it affects newly resolved v2 observations only. Each observation records the exact
+value, resolution time, Configuration record/revision and immutable payload digest;
+default resolution has explicit default provenance. A later value never extends an
+old expiry. Resetting the override revokes observations pinned before that reset,
+even if another override is subsequently published.
+
+The registered read-only readiness action uses the same v2 policy mechanism for
+its ActionResult and derived provider-receipt/Verification Evidence. Verification
+of that ActionResult reuses its original pin, not a newly enlarged window. Current
+principal, published Skill, lease/fence, credential version, binding, provider and
+exact-head checks still run before and after the fresh provider read. Configuration
+does not extend HTTP timeouts, procedure deadlines, leases, retries or mutation
+permissions. The result remains an observation: pending review/QA cannot become
+merge approval. Evidence metadata exposes the pinned policy and absolute expiry
+through existing Evidence/procedure inspectors; historical records are distinct
+from currently usable observations.
+
+Observation validity is separate from operation budgets. The existing registered
+read-only action/ActionIntent execution budget remains 30 seconds, including its
+canonical execution checkpoints; provider HTTP I/O remains separately bounded at
+30 seconds. Provider verification and canonical result projection retain their
+existing ownership/budgets (including the joined five-second projection owner),
+and the published procedure's overall deadline and assignment lease still apply.
+A larger observation window promises none of those operations additional time.
+An execution timeout remains UNKNOWN until its exact original intent/receipt is
+reconciled; it does not authorize another request, new nonce or provider replay.
+The controlled private 47-second input-to-start case is not a live host-capacity
+or network-delivery guarantee.
+
+Procedure schema support is owned by the central interpreter and advertised in
+the broker's `procedure_schema_versions` plus the generated Skill procedure
+schema. Local worker registration advertises execution transport contracts and
+capabilities, not a second procedure-schema version. Existing runtime capability
+revision and worker/lease checks remain enforced; a new published Skill revision
+cannot enlarge an existing assignment's sealed procedure custody.

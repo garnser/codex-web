@@ -17,7 +17,7 @@ from codex_web.authority import AuthorityApprovalRequirement, AuthorityEnvironme
 from codex_web.execution_workers import WorkerCapability
 from codex_web.resources import ResourceType
 
-PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.2", ("1.0", "1.1", "1.2"))
+PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.3", ("1.0", "1.1", "1.2", "1.3"))
 PROCEDURE_SCHEMA_VERSION = "1.0"
 PROCEDURE_MAX_BYTES = 64 * 1024
 Identifier = Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")]
@@ -197,8 +197,8 @@ class ProcedureStep(ProcedureData):
 
 
 class OperationalProcedure(ProcedureData):
-    schema_version: Literal["1.0", "1.1", "1.2"] = PROCEDURE_SCHEMA_VERSION
-    input_protocol: Literal["code-host-mr-procedure-input.v1"] | None = None
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = PROCEDURE_SCHEMA_VERSION
+    input_protocol: Literal["code-host-mr-procedure-input.v1", "code-host-mr-procedure-input.v2"] | None = None
     owner_identity_id: Identifier
     task_triggers: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
     operation_triggers: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
@@ -226,7 +226,9 @@ class OperationalProcedure(ProcedureData):
 
     @model_validator(mode="after")
     def bounded_contract(self):
-        if self.input_protocol is not None and self.schema_version != "1.2":
+        if self.input_protocol == 'code-host-mr-procedure-input.v2' and self.schema_version != '1.3':
+            raise ValueError('versioned observation input requires procedure schema 1.3')
+        if self.input_protocol == 'code-host-mr-procedure-input.v1' and self.schema_version != "1.2":
             raise ValueError("governed input protocol requires procedure schema 1.2")
         if self.schema_version == "1.0" and any(s.judgment or s.recovery for s in self.steps):
             raise ValueError("judgment/provider rollback requires procedure schema 1.1")

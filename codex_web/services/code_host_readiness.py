@@ -25,9 +25,17 @@ class ReadyExecution:
     checkpoint: Callable[[], Awaitable[None]]
     settlement_guard: Callable[[object], dict] | None = None
     admitted_intent: Callable[[], object] | None = None
+    observation_policy: object | None = None
 
 
 _current: ContextVar[ReadyExecution | None] = ContextVar("code_host_ready_execution", default=None)
+
+
+def current_observation_policy(binding_id):
+    context = _current.get()
+    if context is None or context.binding_id != binding_id:
+        raise ActionRequirementError('Readiness observation canonical context unavailable')
+    return context.observation_policy
 
 
 @contextmanager

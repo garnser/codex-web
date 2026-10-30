@@ -216,9 +216,17 @@ function accRender(card, data) {
         " · source " + (item.deployment_source_revision || "unbound") +
         " · target " + (item.deployment_target_revision || "unbound")
       : " · tenant scope";
+    const home = item.home_checkpoint_disposition;
+    const homeDiagnostic = home
+      ? " · Home checkpoint " + home.outcome + (home.reason_code ? " (" + home.reason_code + ")" : "") +
+        " · diagnostic only; no Home continuation authorized · old-binary rollback unavailable (Upgrade state 1.1)"
+      : "";
+    const homeRefs = home ? [...new Set([home.recorded_artifact_id, home.checkpoint_artifact_id,
+      home.preservation_artifact_id].filter(Boolean))].map((id) =>
+      " " + accLink("/api/artifacts/" + encodeURIComponent(id), "Inspect original Home Artifact " + id)).join("") : "";
     return accRow(item.current_app_version + " → " + item.target_app_version + " · " + item.status,
-      preflight + " · maintenance " + item.maintenance_mode + coverage + " · rollback " + item.rollback_available + " · irreversible " + item.irreversible_boundary_crossed,
-      accLink("/api/upgrades/" + encodeURIComponent(item.id), "Open " + item.id) +
+      preflight + " · maintenance " + item.maintenance_mode + coverage + " · rollback " + item.rollback_available + " · irreversible " + item.irreversible_boundary_crossed + homeDiagnostic,
+      accLink("/api/upgrades/" + encodeURIComponent(item.id), "Open " + item.id) + homeRefs +
       ' <button type="button" class="ghost-button" data-acc-installation="' + accEsc(item.id) + '" aria-expanded="false">Inspect local installation</button>' +
       '<div data-acc-installation-result="' + accEsc(item.id) + '" role="region" aria-label="Local installation details" hidden></div>');
   }).join("") : accEmpty("No active upgrade plans.");
