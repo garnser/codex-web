@@ -90,7 +90,8 @@ class ProcedureDiscoveryService:
             or record.scope_type == DefinitionScope.PROJECT and record.scope_id == context.project_id
         )
 
-    def discover(self, context: OperationContext, *, previous: ProcedureDiscovery | None = None):
+    def discover(self, context: OperationContext, *, previous: ProcedureDiscovery | None = None,
+                 _include_supporting_context: bool = True):
         """Return metadata plus bounded untrusted input; never throw lookup as no-match."""
         actor = context.actor
         now = float(self.clock())
@@ -337,7 +338,7 @@ class ProcedureDiscoveryService:
                     return result()
                 guidance = selection.text + contracts
                 sources = tuple(selection.definition_record_ids) + tuple(selection.included_assets)
-                if self.supporting_context is not None:
+                if _include_supporting_context and self.supporting_context is not None:
                     support = self.supporting_context(context, tuple(selected), max_context_characters - 1024 - len(guidance))
                     # Existing retrieval must return its canonical sources and
                     # a bounded authorized selection, never an unbounded corpus.
@@ -522,7 +523,8 @@ class NativeProcedureAdmissionService:
             raise ValueError("native preparation capabilities unavailable")
         return context
 
-    def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected, *, validate_credentials=True):
+    def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected, *, validate_credentials=True,
+                               _include_supporting_context=True):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
         if self.native_session_attestor is None or self.procedure_execution is None:
@@ -544,7 +546,8 @@ class NativeProcedureAdmissionService:
             capability_sources=(*context.capability_sources, source))
         proof = NativeProviderPreparation(tuple(selected), source, validate, context=context)
         with native_provider_preparation(proof):
-            discovery, text = self.discovery.discover(context)
+            discovery, text = self.discovery.discover(context,
+                _include_supporting_context=_include_supporting_context)
         if not discovery.admitted or tuple(discovery.selected) != tuple(selected):
             raise ProcedureAdmissionError(discovery)
         return discovery, text
@@ -555,8 +558,12 @@ class NativeProcedureAdmissionService:
         expected, _ = self._preparation_discovery(assignment, actor, project, sandbox,
             request_checksum, selected, validate_credentials=False)
         def validate(current):
+            # Supporting Memory retrieval appends a canonical audit. Recheck all
+            # selection/authority/attestation guards here, never start a nested
+            # writer from the credential transaction. Guidance is retrieved
+            # through the ordinary path again after the credential CAS.
             fresh, _ = self._preparation_discovery(current, actor, project, sandbox,
-                request_checksum, selected, validate_credentials=False)
+                request_checksum, selected, validate_credentials=False, _include_supporting_context=False)
             if fresh.context_checksum != expected.context_checksum:
                 raise ValueError("initial native credential preparation changed")
         return self.procedure_execution.admit_initial_native_credentials(
@@ -637,7 +644,8 @@ class NativeProcedureAdmissionService:
                     context = self._reasoning_context(current, actor, project, sandbox, request_checksum)
                     fresh, _ = self.discovery.discover(context)
                 elif discovery.selected:
-                    fresh, _ = self._preparation_discovery(current, actor, project, sandbox, request_checksum, discovery.selected)
+                    fresh, _ = self._preparation_discovery(current, actor, project, sandbox, request_checksum, discovery.selected,
+                        _include_supporting_context=False)
                 else:
                     fresh, _ = self._empty_preparation_discovery(current, actor, project, sandbox, request_checksum,
                         tuple(candidate.reference for candidate in discovery.candidates))
@@ -752,7 +760,7 @@ class NativeProcedureAdmissionService:
             def seal_empty():
                 def validate(current):
                     fresh_context = self.discovery.assignment_context(context, current, actor=actor)
-                    fresh, _ = self.discovery.discover(fresh_context)
+                    fresh, _ = self.discovery.discover(fresh_context, _include_supporting_context=False)
                     if not fresh.admitted or fresh.selected or fresh.context_checksum != discovery.context_checksum:
                         raise ValueError("initial empty native preparation changed")
                 return self.procedure_execution.admit_initial_native_credentials(assignment, (), actor, validate)
