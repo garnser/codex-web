@@ -154,6 +154,37 @@ The local runtime exposes:
 
 These endpoints are operational projections, not authority/state mutation APIs. The platform administration UI can consume them without creating dashboard-local health truth.
 
+## Guarded read-only verification stages
+
+Verification of `code-host.pull-request.observe-readiness.v2` emits the fixed
+`guarded_readonly.verify.stage` event through the existing `operation_stage`
+logger. Its request-local scope binds the exact canonical ActionIntent,
+execution, correlation, tenant, workspace and optional Work reference, including
+an absent Work reference. The scope follows ordinary `asyncio.to_thread`
+propagation and resets on return, refusal or cancellation. Execute, legacy
+readiness and unrelated operations do not enable this scope.
+
+The fixed stages are `verification`, `provider_verification`, `admission`,
+`inputs`, `custody` and `http`. Durations are inclusive wall time; nested durations
+must not be added together. A completed stage means its body returned normally,
+not that the canonical verification passed. Refused stages include exceptions
+and cancellation, including partial time inside the interrupted operation. The
+HTTP stage surrounds the existing reader-budget request boundary, including its
+budget checks; it is not proof that a wire request started. Actual client time
+continues to be charged by the unchanged cumulative network budget. Logging runs
+after that charge and never supplies authority, changes deadlines or replaces
+the original result or exception.
+
+Operators can filter the existing tenant-scoped `GET /api/logs/recent` by
+`event=guarded_readonly.verify.stage` and the exact `action_intent_id`, with
+`limit=100`. The process-local buffer retains at most 500 entries for one hour;
+queries and response sizes remain bounded by the existing API. These are partial
+operational observations, not durable audit evidence: eviction, another process
+or an unavailable log cannot establish that a stage or HTTP request never ran.
+No provider URL, request/response content, raw exception, SQL, secret or native
+output is added. Known execution receipts and canonical verification outcomes
+remain the source of truth even when telemetry is unavailable.
+
 ## Extension requirements
 
 New runtime/provider/model/worker/action code should:

@@ -4,6 +4,8 @@ import inspect
 import math
 import time
 
+from codex_web.guarded_verification_telemetry import verification_stage
+
 
 class ReadExecutionBudget:
     """One reader's cumulative HTTP time under its owner's absolute deadline.
@@ -36,30 +38,31 @@ class ReadExecutionBudget:
 
     async def request(self, awaitable):
         """Charge only the bounded actual client await, including failed I/O."""
-        try:
-            seconds = min(self.remaining_seconds(), self.NETWORK_SECONDS - self.network_seconds_used)
-            started = float(self.monotonic())
-            if not math.isfinite(started):
-                raise TimeoutError('read execution clock unavailable')
-        except BaseException:
-            # Readers supply an unstarted client coroutine. Refusal must not
-            # launch it or leave an unawaited coroutine retaining credentials.
-            if inspect.iscoroutine(awaitable):
-                awaitable.close()
-            raise
-        try:
-            async with asyncio.timeout(seconds):
-                result = await awaitable
-        except TimeoutError:
-            self._network_exhausted = True
-            raise
-        finally:
-            elapsed = float(self.monotonic()) - started
-            if not math.isfinite(elapsed) or elapsed < 0:
+        with verification_stage('http'):
+            try:
+                seconds = min(self.remaining_seconds(), self.NETWORK_SECONDS - self.network_seconds_used)
+                started = float(self.monotonic())
+                if not math.isfinite(started):
+                    raise TimeoutError('read execution clock unavailable')
+            except BaseException:
+                # Readers supply an unstarted client coroutine. Refusal must not
+                # launch it or leave an unawaited coroutine retaining credentials.
+                if inspect.iscoroutine(awaitable):
+                    awaitable.close()
+                raise
+            try:
+                async with asyncio.timeout(seconds):
+                    result = await awaitable
+            except TimeoutError:
                 self._network_exhausted = True
-            else:
-                self.network_seconds_used += elapsed
-                if self.network_seconds_used >= self.NETWORK_SECONDS:
+                raise
+            finally:
+                elapsed = float(self.monotonic()) - started
+                if not math.isfinite(elapsed) or elapsed < 0:
                     self._network_exhausted = True
-        self.require_current()
-        return result
+                else:
+                    self.network_seconds_used += elapsed
+                    if self.network_seconds_used >= self.NETWORK_SECONDS:
+                        self._network_exhausted = True
+            self.require_current()
+            return result
