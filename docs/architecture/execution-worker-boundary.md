@@ -855,7 +855,23 @@ heartbeat or renewal. Old work completion alone cannot authorize continued
 execution after revocation. This is reconciliation of bounded supervision work,
 not replay or reconciliation of native/provider outcomes.
 
-A still-running, cancelled, failed or over-budget future continues to fail
+A settled PostgreSQL advisory-lock acquisition cancellation has a separate,
+internal `StorageLockUnavailable` classification only when a cooperative storage
+budget applies. Cancellation in an updater, a read, commit or a disconnected
+connection retains its original error. During renewal only, the same terminal
+future may instead establish that the failing lock owner's updater did not run.
+An earlier worker heartbeat may already have committed and is not replayed.
+One bounded authority gate may retain the unchanged current claim if the original
+worker, execution, workspace, token and fence still match and the predecessor's
+hard lease/deadline remain live throughout the gate. This is not successful
+renewal: it changes no expiry, repeats no mutation and grants no new authority.
+Only the next ordinary watchdog cycle can attempt renewal. Publication retains
+all its transactional custody guards. A failed, delayed or contended authority
+gate cannot reconcile itself again. The existing typed runner failure projection
+continues to describe terminal failures; no new operator action or UI state is
+introduced.
+
+A still-running, cancelled, otherwise failed or over-budget future continues to fail
 closed and stops the owned process through existing cleanup. Its cooperative
 budget is cancelled and its executor custody remains until the actual thread
 exits; cancelling an asyncio waiter does not assert thread termination. No
