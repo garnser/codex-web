@@ -372,6 +372,17 @@ A unique original returns its Evidence and explicit `observation_fresh` value;
 absence is UNKNOWN, not permission to submit another request. An expired original
 is not refreshed or relabeled as a current passing assessment.
 
+MR publication composes its existing Evidence, Verification and optional input
+Artifact updaters against one complete validated Artifact/Governance model pair
+inside the owning transaction. It exports each domain once, then rechecks current
+principals, scope and the unchanged observation deadline. No model is cached
+across transactions. Expiry during composition aborts the canonical append; expiry
+during backend commit can occur after a durable append, so a post-commit check
+returns the same typed reconciliation refusal instead of an already-expired 200.
+That refusal does not claim rollback: exact-source lookup retains the original
+with `observation_fresh=false`, and never repeats the provider read. Procedure
+start still independently requires fresh, governed, exact-scope input.
+
 Both this protocol and `code-host-mr-continuation-input.v1` return HTTP 409 for
 the closed observation conflicts `mr_observation_head_changed_or_expired`,
 `mr_observation_timestamp_in_future`, and `mr_observation_check_head_mismatch`.
