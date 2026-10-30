@@ -140,6 +140,48 @@ class SkillService:
             publication_guard=self._procedure_definition_publication_gate,
         )
 
+    @staticmethod
+    def _read_options(reader):
+        return {"_definitions": reader} if reader is not None else {}
+
+    def _definition_reader(self, reader):
+        if reader is None:
+            return self.definitions
+        self.definitions.require_read_observation(reader)
+        return reader
+
+    def can_observe_definition_reads(self):
+        definition_check = getattr(self.definitions, "can_observe_reads", None)
+        security_check = getattr(self.security, "can_observe_definition_reads", None)
+        return (type(self) is SkillService
+                and all(getattr(getattr(self, name), "__self__", None) is self
+                        and getattr(getattr(self, name), "__func__", None) is method
+                        for name, method in _CANONICAL_SKILL_READS.items())
+                and callable(definition_check) and definition_check()
+                and (self.security is None or callable(security_check) and security_check(self.definitions)))
+
+    def observe_definition_reads(self, references, callback):
+        if not self.can_observe_definition_reads():
+            return callback(None)
+        fallback = object()
+
+        def observe(reader):
+            if reader is None:
+                return fallback
+            try:
+                records = [reader.get_record(ref.record_id) for ref in references]
+            except (DefinitionNotFoundError, ValueError):
+                return fallback  # Ordinary owner preserves its typed refusal.
+            if any(r.derived_from_record_id or not isinstance(r.payload.get("provenance", {}), dict)
+                   or r.payload.get("provenance", {}).get("source_type") == "procedure_outcome"
+                   for r in records):
+                return fallback  # Source-governance may perform managed content I/O.
+            return callback(reader)
+
+        result = self.definitions.observe_reads(observe)
+        # Close the view before legacy validation can enter source content I/O.
+        return callback(None) if result is fallback else result
+
     def bind_procedure_contracts(self, *, actions, resources, scope_actor) -> None:
         """Bind trusted metadata readers, not execution or credential transports."""
         self.procedure_actions = actions
@@ -181,12 +223,13 @@ class SkillService:
     def _procedure_definition_publication_gate(self, record: DefinitionRecord, publisher: str) -> None:
         self._procedure_definition_gate(record, "publication", self._procedure_publication_guard, publisher)
 
-    def _validate_procedure_references(self, record: DefinitionRecord) -> None:
+    def _validate_procedure_references(self, record: DefinitionRecord, *, _definitions=None) -> None:
+        definitions = self._definition_reader(_definitions)
         skill = SkillDefinition.model_validate(record.payload)
         if skill.lifecycle == SkillLifecycle.ARCHIVED:
             return
         if record.derived_from_record_id:
-            self._outcome_guard(self.definitions.get_record(record.derived_from_record_id))
+            self._outcome_guard(definitions.get_record(record.derived_from_record_id), **self._read_options(_definitions))
         procedure = skill.operational_procedure
         if procedure is None or skill.lifecycle == SkillLifecycle.ARCHIVED:
             return
@@ -273,12 +316,13 @@ class SkillService:
         if now >= min(procedure.review_due_at, procedure.expires_at):
             raise SkillResolutionFailure("procedure_expired", "procedure has expired or requires freshness review")
 
-    def _assert_procedure_usable(self, record: DefinitionRecord, *, actor=None) -> None:
-        self._outcome_guard(record, actor=actor, phase="assignment")
+    def _assert_procedure_usable(self, record: DefinitionRecord, *, actor=None, _definitions=None) -> None:
+        definitions = self._definition_reader(_definitions)
+        self._outcome_guard(record, actor=actor, phase="assignment", **self._read_options(_definitions))
         skill = SkillDefinition.model_validate(record.payload)
         self._assert_procedure_fresh(skill)
         if skill.operational_procedure is not None:
-            history = [r for r in self.definitions.list_records(kind=record.kind, definition_id=record.definition_id)
+            history = [r for r in definitions.list_records(kind=record.kind, definition_id=record.definition_id)
                        if r.scope_type == record.scope_type and r.scope_id == record.scope_id
                        and (r.published_at is not None or r.lifecycle in {DefinitionLifecycle.DISABLED, DefinitionLifecycle.QUARANTINED})]
             latest = max(history, key=lambda r: r.revision, default=record)
@@ -288,26 +332,33 @@ class SkillService:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
             if SkillDefinition.model_validate(latest.payload).lifecycle == SkillLifecycle.ARCHIVED:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is archived")
-            self._validate_procedure_references(record)
+            self._validate_procedure_references(record, **self._read_options(_definitions))
 
-    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None) -> DefinitionReference:
+    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None, _definitions=None) -> DefinitionReference:
+        if _definitions is None:
+            return self.observe_definition_reads((reference,), lambda reader:
+                self._validate_required_procedure(reference, actor=actor, project_id=project_id, _definitions=reader))
+        return self._validate_required_procedure(reference, actor=actor, project_id=project_id, _definitions=_definitions)
+
+    def _validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None, _definitions=None) -> DefinitionReference:
         """Required-procedure facet of ordinary exact Skill reference validation.
 
         No discovery, policy admission, planning, step dispatch or model calls.
         """
+        definitions = self._definition_reader(_definitions)
         from codex_web.services.action_providers import ActionProviderError
         from codex_web.services.resources import ResourceNotFoundError
         from codex_web.services.skill_security import SkillSecurityBlocked
 
         try:
-            record = self.definitions.get_record(reference.record_id)
+            record = definitions.get_record(reference.record_id)
             self._assert_visible_scope(record, organization_id=actor.organization_id,
                                        workspace_id=actor.workspace_id, project_id=project_id)
             if record.lifecycle == DefinitionLifecycle.QUARANTINED:
                 raise SkillResolutionFailure("procedure_quarantined", "required operational procedure is quarantined")
             if record.lifecycle == DefinitionLifecycle.DISABLED:
                 raise SkillResolutionFailure("procedure_disabled", "required operational procedure is disabled")
-            slot_history = [r for r in self._records(record.definition_id, actor=actor)
+            slot_history = [r for r in self._records(record.definition_id, actor=actor, **self._read_options(_definitions))
                             if r.scope_type == record.scope_type and r.scope_id == record.scope_id
                             and (r.published_at is not None or r.lifecycle in {DefinitionLifecycle.DISABLED, DefinitionLifecycle.QUARANTINED})]
             latest = max(slot_history, key=lambda r: r.revision, default=record)
@@ -317,8 +368,8 @@ class SkillService:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
             if latest.effective_until is not None and float(self.clock()) >= latest.effective_until:
                 raise SkillResolutionFailure("procedure_expired", "current operational procedure effective window expired")
-            valid = self.validate_reference(reference, actor=actor, project_id=project_id)
-            record = self.definitions.get_record(valid.record_id)
+            valid = self.validate_reference(reference, actor=actor, project_id=project_id, **self._read_options(_definitions))
+            record = definitions.get_record(valid.record_id)
             if SkillDefinition.model_validate(record.payload).operational_procedure is None:
                 raise SkillResolutionFailure("procedure_missing", "required operational procedure is absent")
             return valid
@@ -359,7 +410,8 @@ class SkillService:
     def bind_security(self, security: Any) -> None:
         self.security = security
 
-    def _outcome_guard(self, record, *, publication=False, actor=None, phase=None):
+    def _outcome_guard(self, record, *, publication=False, actor=None, phase=None, _definitions=None):
+        definitions = self._definition_reader(_definitions)
         # Follow immutable ancestry so removing visible provenance in a local
         # revision or rollback cannot shed source governance/publication gates.
         current = record
@@ -377,16 +429,16 @@ class SkillService:
                 self.outcome_drafts.assert_source(current, candidate=record if publication else None, actor=actor)
             if not current.derived_from_record_id:
                 break
-            current = self.definitions.get_record(current.derived_from_record_id)
+            current = definitions.get_record(current.derived_from_record_id)
         if derived_outcome and (publication or phase):
             if self.security is None:
                 raise SkillConflict("outcome Skill security service is unavailable")
             actor = actor or (self.procedure_scope_actor(record) if self.procedure_scope_actor else None)
             if actor is None:
                 raise SkillConflict("outcome security tenant scope is unavailable")
-            view = self._view(record)
+            view = self._view(record, **self._read_options(_definitions))
             view["skill"]["provenance"]["origin"] = SkillOrigin.IMPORTED.value
-            self.security.assert_allowed(view, actor=actor, phase="publish" if publication else phase)
+            self.security.assert_allowed(view, actor=actor, phase="publish" if publication else phase, **self._read_options(_definitions))
 
     def bind_thread_settings(
         self,
@@ -497,10 +549,12 @@ class SkillService:
         *,
         actor: AuthenticationActor,
         project_id: str | None = None,
+        _definitions=None,
     ) -> list[DefinitionRecord]:
+        definitions = self._definition_reader(_definitions)
         if project_id is not None:
             self._project(project_id, actor.organization_id, actor.workspace_id)
-        records = self.definitions.list_records(
+        records = definitions.list_records(
             kind=SKILL_DEFINITION_KIND,
             definition_id=skill_id,
         )
@@ -591,7 +645,9 @@ class SkillService:
         record: DefinitionRecord,
         *,
         actor: AuthenticationActor | None = None,
+        _definitions=None,
     ) -> dict[str, Any]:
+        self._definition_reader(_definitions)
         skill = SkillDefinition.model_validate(record.payload)
         result = {
             "skillId": record.definition_id,
@@ -612,7 +668,7 @@ class SkillService:
             "skill": skill.model_dump(mode="json"),
         }
         if self.security is not None and actor is not None:
-            result["security"] = self.security.summary(result, actor=actor)
+            result["security"] = self.security.summary(result, actor=actor, **self._read_options(_definitions))
         return result
 
     def list(
@@ -939,8 +995,10 @@ class SkillService:
         *,
         actor: AuthenticationActor,
         project_id: str | None = None,
+        _definitions=None,
     ) -> DefinitionReference:
-        record = self.definitions.get_record(reference.record_id)
+        definitions = self._definition_reader(_definitions)
+        record = definitions.get_record(reference.record_id)
         self._assert_visible_scope(record, organization_id=actor.organization_id,
                                    workspace_id=actor.workspace_id, project_id=project_id)
         actual = reference_for(record)
@@ -966,7 +1024,7 @@ class SkillService:
             and now >= record.effective_until
         ):
             raise SkillConflict("skill definition revision is outside its effective window")
-        current = self.definitions.resolve(
+        current = definitions.resolve(
             definition_id=record.definition_id,
             kind=SKILL_DEFINITION_KIND,
             context=self._context(actor, project_id),
@@ -977,11 +1035,12 @@ class SkillService:
             raise SkillConflict("archived skill cannot be used for new execution")
         if self.security is not None:
             self.security.assert_allowed(
-                self._view(record, actor=actor),
+                self._view(record, actor=actor, **self._read_options(_definitions)),
                 actor=actor,
                 phase="assignment",
+                **self._read_options(_definitions),
             )
-        self._assert_procedure_usable(record, actor=actor)
+        self._assert_procedure_usable(record, actor=actor, **self._read_options(_definitions))
         return actual
 
     def validate_reference_for_scope(
@@ -1460,3 +1519,8 @@ class SkillService:
             ),
             actor=actor,
         )
+
+
+_CANONICAL_SKILL_READS = {name: getattr(SkillService, name) for name in (
+    "validate_required_procedure", "_validate_required_procedure", "validate_reference", "_assert_procedure_usable",
+    "_outcome_guard", "_records", "_view", "_validate_procedure_references")}
