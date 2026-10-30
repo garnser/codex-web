@@ -183,6 +183,78 @@ class SkillObservationTests(unittest.TestCase):
         with patch.object(definition_module._DefinitionReadObservation, 'close', closed):
             self.assertEqual(self.skills.observe_definition_reads((ref,), fallback), 'legacy')
 
+    def test_normal_updated_skill_ancestry_keeps_one_fresh_read(self):
+        from codex_web.skills import SkillPublish, SkillUpdate
+        ref = self.reference()
+        for label in ('first', 'second'):
+            draft = self.skills.update(ref.definition_id, SkillUpdate(instructions='Updated '+label,
+                reason='Private normal local ancestry'), actor=self.admin)
+            published = self.skills.publish(draft['skillId'], draft['recordId'], SkillPublish(), actor=self.admin)
+            ref = DefinitionReference.model_validate(published['definitionReference'])
+        self.assertTrue(self.definitions.get_record(ref.record_id).derived_from_record_id)
+        original = self.state.get
+        reads = []
+        def get(namespace):
+            if namespace == self.definitions.store.namespace:
+                reads.append(namespace)
+            return original(namespace)
+        with patch.object(self.state, 'get', get):
+            self.assertEqual(self.skills.validate_required_procedure(ref, actor=self.admin), ref)
+        self.assertEqual(len(reads), 1)
+
+    def test_outcome_ancestor_cannot_be_hidden_by_clean_child(self):
+        from codex_web.definitions import definition_checksum
+        from codex_web.skills import SkillPublish, SkillUpdate
+        parent = self.reference()
+        draft = self.skills.update(parent.definition_id, SkillUpdate(instructions='Clean local child',
+            reason='Private ancestry fallback'), actor=self.admin)
+        child = DefinitionReference.model_validate(self.skills.publish(draft['skillId'], draft['recordId'],
+            SkillPublish(), actor=self.admin)['definitionReference'])
+        raw = self.state.get(self.definitions.store.namespace)
+        record = next(r for r in raw['records'] if r['record_id'] == parent.record_id)
+        record['payload']['provenance']['source_type'] = 'procedure_outcome'
+        record['checksum'] = definition_checksum(definition_id=record['definition_id'], kind=record['kind'],
+            definition_schema_version=record['definition_schema_version'], payload=record['payload'])
+        self.state.put(self.definitions.store.namespace, raw)
+        self.assert_legacy_callback_after_close(child)
+        with self.assertRaises(SkillResolutionFailure):
+            self.skills.validate_required_procedure(child, actor=self.admin)
+
+    def assert_legacy_callback_after_close(self, ref):
+        from codex_web.services import definitions as definition_module
+        closed = []
+        original = definition_module._DefinitionReadObservation.close
+        def close(view):
+            closed.append(view)
+            return original(view)
+        def callback(reader):
+            self.assertIsNone(reader)
+            self.assertEqual(len(closed), 1)
+            with self.assertRaises(ValueError):
+                closed[0].get_record(ref.record_id)
+            return 'legacy'
+        with patch.object(definition_module._DefinitionReadObservation, 'close', close):
+            self.assertEqual(self.skills.observe_definition_reads((ref,), callback), 'legacy')
+
+    def test_missing_and_cyclic_ancestors_use_closed_legacy_fallback(self):
+        ref = self.reference()
+        original = self.state.get(self.definitions.store.namespace)
+        import copy
+        for ancestor in ('missing-ancestor', ref.record_id):
+            with self.subTest(ancestor=ancestor):
+                raw = copy.deepcopy(original)
+                next(r for r in raw['records'] if r['record_id'] == ref.record_id)['derived_from_record_id'] = ancestor
+                self.state.put(self.definitions.store.namespace, raw)
+                self.assert_legacy_callback_after_close(ref)
+                if ancestor == 'missing-ancestor':
+                    with self.assertRaises(SkillResolutionFailure):
+                        self.skills.validate_required_procedure(ref, actor=self.admin)
+                else:
+                    # The original cycle guard terminates on a repeated ID;
+                    # conservative observation fallback must not invent a denial.
+                    ordinary = self.skills._validate_required_procedure(ref, actor=self.admin)
+                    self.assertEqual(self.skills.validate_required_procedure(ref, actor=self.admin), ordinary)
+
     def test_custom_security_and_definition_owners_keep_legacy_signatures(self):
         ref = self.reference()
         original = self.security.assert_allowed

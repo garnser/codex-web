@@ -169,13 +169,22 @@ class SkillService:
             if reader is None:
                 return fallback
             try:
-                records = [reader.get_record(ref.record_id) for ref in references]
+                for reference in references:
+                    current = reader.get_record(reference.record_id)
+                    visited = set()
+                    while True:
+                        if (current.record_id in visited or current.kind != SKILL_DEFINITION_KIND
+                                or current.definition_schema_version != SKILL_DEFINITION_SCHEMA_VERSION):
+                            return fallback
+                        visited.add(current.record_id)
+                        provenance = current.payload.get("provenance", {})
+                        if not isinstance(provenance, dict) or provenance.get("source_type") == "procedure_outcome":
+                            return fallback  # Source-governance may perform managed content I/O.
+                        if not current.derived_from_record_id:
+                            break
+                        current = reader.get_record(current.derived_from_record_id)
             except (DefinitionNotFoundError, ValueError):
                 return fallback  # Ordinary owner preserves its typed refusal.
-            if any(r.derived_from_record_id or not isinstance(r.payload.get("provenance", {}), dict)
-                   or r.payload.get("provenance", {}).get("source_type") == "procedure_outcome"
-                   for r in records):
-                return fallback  # Source-governance may perform managed content I/O.
             return callback(reader)
 
         result = self.definitions.observe_reads(observe)
