@@ -31,6 +31,7 @@ from codex_web.services.code_host_action_contract import (
 )
 from codex_web.services.execution_workers import AssignmentNotFoundError, WorkerConflictError
 from codex_web.services.procedure_discovery import OperationContext, ProcedureAdmissionError, checksum
+from codex_web.services.skills import SkillService
 from codex_web.skills import SkillDefinition, _contains_secret_material
 
 
@@ -620,28 +621,58 @@ class ProcedureExecutionService:
 
     def _native_credential_projection(self, assignment, selected, actor):
         """Resolve references through the same owners as native preparation/start."""
-        from codex_web.execution_workers import NativeCredentialCustody
-        from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
         worker = self._live(assignment)
         if (actor.organization_id, actor.workspace_id) != (assignment.organization_id, assignment.workspace_id):
             raise ProcedureExecutionError("procedure_credential_requester_changed")
+        # Keep original custody/principal refusals ahead of any Definition read.
+        owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant)
+        observe = getattr(self.skills, "observe_definition_reads", None)
+        canonical_observer = (
+            getattr(observe, "__self__", None) is self.skills
+            and getattr(observe, "__func__", None) is _CANONICAL_SKILL_OBSERVER
+        )
+        canonical_preparation = all(
+            getattr(getattr(self, name), "__self__", None) is self
+            and getattr(getattr(self, name), "__func__", None) is method
+            for name, method in _CANONICAL_CUSTODY_PREPARATION_READS.items()
+        )
+        def read(reader):
+            return self._read_native_credential_projection(
+                assignment, selected, actor, worker=worker, owner=owner,
+                _definitions=reader)
+        # A custom validator retains the entire original call and signature.
+        # The existing Skill owner closes unsupported observations before
+        # entering its legacy callback, including outcome-derived content.
+        return observe(selected, read) if canonical_preparation and canonical_observer else read(None)
+
+    def _read_native_credential_projection(self, assignment, selected, actor, *, worker, owner, _definitions=None):
+        """Share Definition data only; every custody judgment still runs."""
+        from codex_web.execution_workers import NativeCredentialCustody
+        from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
+        definitions = self.skills.definitions
+        if _definitions is not None:
+            definitions.require_read_observation(_definitions)
+            definitions = _definitions
         # Provider actions run for the canonical assignment owner. The native
         # ingress actor has independent input/discovery authorization; it is not
         # another provider credential principal and never grants SecretUse.
-        owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant)
-        profile, definition = ExecutionProfileDefinitionService(self.skills.definitions).resolve(
+        profile, definition = ExecutionProfileDefinitionService(definitions).resolve(
             assignment.execution_profile_id, organization_id=assignment.organization_id,
             workspace_id=assignment.workspace_id, project_id=assignment.project_id)
         if (definition != assignment.execution_profile_definition
                 or selected and not {"procedure.read", "procedure.start", "procedure.advance"}.issubset(profile.control_plane_operations)):
             raise ProcedureExecutionError("procedure_credential_declaration_changed")
         if selected:
-            self.validate_native_preparation(assignment, selected, actor)
+            if _definitions is None:
+                self.validate_native_preparation(assignment, selected, actor)
+            else:
+                self._validate_native_preparation(assignment, selected, actor,
+                    _definitions=_definitions)
         worker_actor = None
         refs, bindings = set(), {}
         for reference in selected:
             procedure = SkillDefinition.model_validate(
-                self.skills.definitions.get_record(reference.record_id).payload).operational_procedure
+                definitions.get_record(reference.record_id).payload).operational_procedure
             for step in procedure.steps:
                 if step.action is None:
                     continue
@@ -1636,3 +1667,6 @@ class ProcedureExecutionService:
         return self._save(assignment, checkpoint)
 
 _CANONICAL_INPUT_CONTENT_READS={name:getattr(ProcedureExecutionService,name) for name in ('_content','_content_artifact','_input_protocol')}
+_CANONICAL_CUSTODY_PREPARATION_READS = {name: getattr(ProcedureExecutionService, name)
+    for name in ('validate_native_preparation', '_validate_native_preparation')}
+_CANONICAL_SKILL_OBSERVER = SkillService.observe_definition_reads

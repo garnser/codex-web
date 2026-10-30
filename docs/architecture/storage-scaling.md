@@ -812,3 +812,11 @@ and custom validation owners retain their ordinary read paths. This introduces
 no persisted format, SQL migration, permission, deadline, provider protocol or
 operator setting; existing Definition and procedure inspectors remain the
 operator surfaces.
+
+Native credential-custody projection shares this observation across execution
+profile resolution, sealed-Skill preparation and the selected procedure reads.
+That scope is synchronous metadata validation only. Every live lease, identity,
+resource, provider binding and SecretUse check still runs independently; the
+result of a custody judgment is never cached. Custom preparation validators keep
+their original complete path and signatures. No observation is carried into
+managed content reads, provider I/O or a subsequent admission checkpoint.
