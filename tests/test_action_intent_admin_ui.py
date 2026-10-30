@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -8,6 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ActionIntentAdminUiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node is required for UI contract tests")
+    def test_failure_phase_view_node_contracts(self) -> None:
+        result = subprocess.run(
+            [shutil.which("node"), "--test", "tests/js/action_intent_outcome_view.test.mjs"],
+            cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_action_intent_timeline_uses_durable_history_without_dumping_provider_payloads(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (ROOT / "static" / "action_intent_admin.js").read_text(
