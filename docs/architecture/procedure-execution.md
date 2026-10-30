@@ -65,6 +65,12 @@ by native input/discovery admission and does not acquire provider SecretUse.
 Both that action requester and the actual authenticated worker must currently
 be allowed to use every admitted credential reference.
 
+Supporting Memory retrieval appends its normal canonical retrieval audit outside
+the credential transaction. Locked credential revalidation and the selected-procedure
+native input guard repeat the same current procedure selection, security, instruction-capacity
+and attestation checks without that optional retrieval. Ordinary preparation
+still retrieves bounded supporting context; it grants no credential authority.
+
 A canonical transaction rechecks the live worker, lease/fence, workspace,
 selected Definitions, bindings, security and policy before sealing the finite
 reference union and its provenance once. Only an unused pending bootstrap may

@@ -143,6 +143,81 @@ class NativeProcedureCredentialCustodyTests(unittest.IsolatedAsyncioTestCase):
         f.artifacts.attach_artifact_content(artifact.id,(raw,),actor=f.actor)
         return artifact
 
+    async def test_real_supporting_memory_retrieval_stays_outside_admission_transaction(self):
+        from contextlib import ExitStack
+        import threading
+        from codex_web.services.organizational_memory import OrganizationalMemoryService
+        from codex_web.services.procedure_discovery import ProcedureSupportingContextService
+        from codex_web.storage.organizational_memory import OrganizationalMemoryStore
+
+        f = self.f
+        from codex_web.services.data_governance import DataGovernanceService
+        from codex_web.storage.data_governance import DataGovernanceStore
+        governance = DataGovernanceService(DataGovernanceStore(f.sqlite))
+        memory = OrganizationalMemoryService(OrganizationalMemoryStore(f.sqlite),
+            governance, f.authority)
+        self.admission.discovery.supporting_context = ProcedureSupportingContextService(memory)
+        self.bootstrap()
+        artifact = self.input_artifact()
+        callback = threading.local()
+        nested_attempts = []
+        writes = []
+        mutate = f.sqlite.record_mutate_many
+        update = f.sqlite.update
+
+        def guarded_mutate(selected, updater):
+            def inside(rows):
+                callback.active = True
+                try:
+                    return updater(rows)
+                finally:
+                    callback.active = False
+            return mutate(selected, inside)
+
+        def guarded_update(namespace, *args, **kwargs):
+            # Match PostgresStateStore._connection's actual callback rule,
+            # while retaining the real SQLite owning transaction and writes.
+            if getattr(callback, "active", False):
+                nested_attempts.append(namespace)
+                raise RuntimeError("nested mutation inside a canonical state callback is unsupported")
+            writes.append(namespace)
+            return update(namespace, *args, **kwargs)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(f.sqlite, "record_mutate_many", side_effect=guarded_mutate))
+            stack.enter_context(patch.object(f.sqlite, "update", side_effect=guarded_update))
+            stack.enter_context(patch.object(self.secrets, "use", side_effect=AssertionError("material forbidden")))
+            try:
+                discovery, text = await self.admit()
+            except ExecutionPrestartRefusal as exc:
+                self.assertEqual(self.current().secret_refs, ())
+                self.assertIsNone(self.current().native_credential_custody.admitted_at)
+                self.fail(f"Real supporting Memory blocked native admission: {exc.detail}; nested={nested_attempts}")
+            self.assertTrue(discovery.admitted)
+            self.assertEqual(nested_attempts, [])
+            self.assertIn(memory.store.namespace, writes)
+            retrieval_ids = [ref.split(":", 1)[1] for ref in discovery.supporting_sources
+                             if ref.startswith("memory-retrieval:")]
+            self.assertTrue(retrieval_ids)
+            for identifier in retrieval_ids:
+                self.assertEqual(memory.retrieval_run(identifier, actor=f.actor).filters["project_ids"], [f.project.id])
+            self.assertEqual(self.current().secret_refs, (self.provider_secret.id,))
+            self.assertIsNotNone(self.current().native_credential_custody.admitted_at)
+            before_guard = self.current().model_dump(mode="json")
+            retrievals_before_guard = memory.store.load().retrieval_runs
+            writes_before_guard = list(writes)
+            guard = self.admission.preparation_input_guard(discovery, project=f.project, actor=f.actor,
+                execution_id=self.assignment.execution_id, assignment_id=self.assignment.id,
+                sandbox=self.assignment.sandbox, request_checksum="a" * 64)
+            guard()
+            self.assertEqual(writes, writes_before_guard)
+            self.assertEqual(memory.store.load().retrieval_runs, retrievals_before_guard)
+            self.assertEqual(self.current().model_dump(mode="json"), before_guard)
+            started = self.owner.start(self.assignment.id, definition=self.fixture.reference,
+                input_snapshot_id=artifact.id, actor=f.actor)
+            self.assertIsNotNone(started.procedure_checkpoint)
+        self.assertEqual(f.ops.calls, [])
+
     async def test_real_zero_auth_bootstrap_admits_provider_and_starts_procedure_without_material(self):
         bound=self.bootstrap()
         self.assertEqual(self.assignment.secret_refs, ())
