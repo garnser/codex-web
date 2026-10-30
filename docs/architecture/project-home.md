@@ -497,7 +497,7 @@ intact. Ordinary canonical `1.4` writes and serialization stay unchanged.
 
 An explicitly configured Home operator can use the existing whole-service Upgrade
 supervisor. `UpgradeService.start_service_drain` has an optional before-maintenance
-checkpoint callback; `verify_post_upgrade` has an optional observer AFTER canonical
+diagnostic checkpoint callback; `verify_post_upgrade` has an optional observer AFTER canonical
 PASS evidence and COMPLETED status are committed. The application supplies the
 already configured `LocalExecutionWorkerRuntime`, never constructs an alternate
 worker identity. Both API operations must run through the existing owned, joined,
@@ -755,12 +755,53 @@ successful component query or cost-sensitivity fixture remains insufficient for
 live acceptance of the whole selected-Home hook.
 
 
-A storage timeout or PostgreSQL query cancellation inside dormant Upgrade
-preservation retains HTTP 500 and reports only a fixed message, a closed Home
-phase, and `TimeoutError` or `QueryCanceled`. The existing API/UI marks
-`preservation_outcome=unknown` and `retryable=false`: a final observation can fail
-after the real Artifact commit, so this does not prove no write or grant another
-attempt. Other programming errors and existing authority refusals retain their
-original behavior. The five-second shared budget, joined API owner, canonical
-authority, and source/target/Artifact guards remain unchanged; raw exception
-messages, SQL, parameters and tracebacks are not diagnostic response fields.
+The direct Home checkpoint owner remains strict: a storage timeout or PostgreSQL
+query cancellation reports only the fixed incomplete-preservation refusal, closed
+phase, and `TimeoutError` or `QueryCanceled`. Its historical outcome is UNKNOWN;
+a final observation can fail after the Artifact commit. No absence or retry
+permission follows from that refusal.
+
+The whole-service Upgrade integrates that independent owner through
+`checkpoint_for_service_drain`. Home preservation is a bounded best-effort
+**diagnostic, never a global Upgrade gate**. Before optional Home I/O, a short
+canonical plan mutation reserves `home_checkpoint_disposition=pending_unknown`.
+A further short plan mutation pins the observed selection and actor-scoped Artifact
+IDs before Artifact I/O. These are observed references, not proof an Artifact was
+attempted: a changed selection blocks only the optional writer. An unknown pin
+write also suppresses Artifact I/O. The existing drain coordinator serializes the
+synchronous attempt; no canonical database callback encloses Home I/O. A settled typed Home eligibility refusal is
+recorded as `blocked`; known budget/query refusal is `deferred_unknown`; a returned
+Artifact is `recorded`. Unconfigured Home is `not_applicable`. No outcome grants
+Home input or continuation. Mandatory Upgrade authority, immutable Release/instance
+checks, global drain admission fences, and active-work preflight remain unchanged.
+Unrecognized programming failures still propagate rather than becoming a warning.
+
+A repeated same-plan drain reuses the disposition and never invokes another Home
+Artifact writer. If the reservation or final plan write returned an unknown result,
+the original reservation/Artifact IDs remain diagnostic references; an existing
+pending reservation suppresses optional work while the ordinary global drain may
+proceed under its own controls. UNKNOWN is not proof that the Artifact is absent.
+The original synchronous operation must settle through the existing joined owner;
+this adds no process-zero inference or background retry. A completed Upgrade with
+pending, deferred or blocked Home diagnostic skips Home continuation **before**
+Artifact lookup, so a late committed optional Artifact cannot acquire authority.
+The shared Home completion validator also refuses these diagnostics for direct
+checkpoint resume and previously queued proof validation; neither path can
+promote the original Artifact or erase the retained queue.
+Navigation, selection, queue, Goals, Profiles and historical native outcomes are
+not changed. Separate Home continuation guards still apply to actual recorded
+checkpoints. The Autonomy Control Center displays the canonical diagnostic and
+original Artifact links without rendering it as a successful Home handoff.
+
+Upgrade state format `1.1` adds the server-owned, versioned diagnostic to the
+existing plan. Migration from `1.0` does not invent an attempt or authority; absent
+diagnostics are omitted when serializing legacy plans, preserving their old bytes.
+The public plan-creation DTO cannot inject a diagnostic. This is a forward durable
+format change, with no SQL schema migration. Actual older strict UpgradePlan readers
+reject populated diagnostics, so old-binary rollback after new writes is unsupported;
+deploy writers/readers together or use an explicitly compatible reader. Persisting
+a diagnostic uses the existing service-contract boundary to conservatively disable
+binary rollback on retained and subsequently created plans; a previous compatible
+rollout advertisement cannot override the new durable format. Historical outcomes
+and evidence remain unchanged. This fact
+does not impose a new blanket backup/restore deployment requirement.

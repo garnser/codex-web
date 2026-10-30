@@ -189,7 +189,7 @@ class HomeUpgradeCheckpointTests(HomeRestartRecoveryTests):
             service_instance_id='fixture-service',source_revision='source-build',target_revision='target-build')
 
     async def test_existing_upgrade_hooks_checkpoint_before_drain_and_enqueue_after_pass(self):
-        self.upgrades.home_checkpoint_before_drain=lambda plan_id,actor:self.planned.checkpoint_current(
+        self.upgrades.home_checkpoint_before_drain=lambda plan_id,actor:self.planned.checkpoint_for_service_drain(
             plan_id,worker_runtime=self.runtime,operator_actor=actor)
         self.upgrades.home_resume_after_upgrade=lambda plan_id,actor:self.planned.resume_completed(plan_id,operator_actor=actor)
         drained=self.drain()
@@ -212,6 +212,10 @@ class HomeUpgradeCheckpointTests(HomeRestartRecoveryTests):
         self.upgrades.home_checkpoint_before_drain=refused
         with self.assertRaises(RuntimeError):self.drain()
         self.assertFalse(self.upgrades.get(self.plan.id,actor=self.operator).maintenance_mode)
+        # Use a fresh plan for the separate post-completion observer contract;
+        # the first plan keeps its pending original outcome and cannot resume.
+        self.plan=self.plan.model_copy(update={'id':'upgrade-after-observer-failure'})
+        self.put_plan(self.plan)
         self.upgrades.home_checkpoint_before_drain=None
         self.upgrades.home_resume_after_upgrade=refused
         self.drain()
@@ -250,6 +254,54 @@ class HomeUpgradeCheckpointTests(HomeRestartRecoveryTests):
         with self.assertRaises(ExecutionPrestartRefusal):
             self.restart.input_context(changed,attempt_id=attempt,claim_id=claim)
         self.assertEqual(self.effects,0)
+
+
+
+    async def test_late_committed_active_checkpoint_unknown_cannot_resume(self):
+        from unittest.mock import patch
+        create = self.artifacts.create_artifact
+        committed = []
+        def commit_then_unknown(*args, **kwargs):
+            artifact = create(*args, **kwargs)
+            committed.append(artifact.id)
+            raise TimeoutError('Private response lost after actual checkpoint commit')
+        self.upgrades.home_checkpoint_before_drain = lambda plan, actor: self.planned.checkpoint_for_service_drain(
+            plan, worker_runtime=self.runtime, operator_actor=actor)
+        with patch.object(self.artifacts, 'create_artifact', side_effect=commit_then_unknown):
+            drained = self.drain()
+        diagnostic = drained.home_checkpoint_disposition
+        self.assertEqual(diagnostic.outcome, 'deferred_unknown')
+        self.assertEqual(committed, [diagnostic.checkpoint_artifact_id])
+        self.assertIsNone(diagnostic.recorded_artifact_id)
+        self.plan = drained
+        self.completed()
+        before = [row.model_dump(mode='json') for row in self.queue.get('operator-thread')]
+        with self.assertRaises(ExecutionPrestartRefusal) as refused:
+            self.planned.resume(committed[0], operator_actor=self.operator)
+        self.assertEqual(refused.exception.detail['code'], 'home_upgrade_checkpoint_diagnostic_unavailable')
+        self.assertEqual([row.model_dump(mode='json') for row in self.queue.get('operator-thread')], before)
+        self.assertEqual(self.effects, 0)
+
+    async def test_existing_queued_checkpoint_proof_cannot_bypass_unknown_diagnostic(self):
+        from codex_web.upgrades import HomeCheckpointDisposition
+        artifact = self.checkpoint()
+        self.completed()
+        self.assignment = self.heal_same_thread()
+        queued = self.planned.resume(artifact.id, operator_actor=self.operator)
+        attempt, claim = self.claim(queued)
+        before = [row.model_dump(mode='json') for row in self.queue.get('operator-thread')]
+        for outcome in ('pending_unknown', 'deferred_unknown', 'blocked'):
+            with self.subTest(outcome=outcome):
+                diagnostic = HomeCheckpointDisposition(outcome=outcome,
+                    reason_code=None if outcome == 'pending_unknown' else 'home_checkpoint_original_outcome_unknown',
+                    checkpoint_artifact_id=artifact.id)
+                self.upgrades._update(self.plan.id, self.operator, lambda current: current.model_copy(
+                    update={'home_checkpoint_disposition': diagnostic}))
+                with self.assertRaises(ExecutionPrestartRefusal) as refused:
+                    self.restart.input_context(queued, attempt_id=attempt, claim_id=claim)
+                self.assertEqual(refused.exception.detail['code'], 'home_upgrade_checkpoint_diagnostic_unavailable')
+                self.assertEqual([row.model_dump(mode='json') for row in self.queue.get('operator-thread')], before)
+        self.assertEqual(self.effects, 0)
 
 
 def load_tests(loader,tests,pattern):

@@ -37,9 +37,14 @@ class DormantHomeUpgradeTests(Fixture):
         self.planned.sessions=self.sessions.store
         self.planned.goal_inspection=HomeOperatorGoalInspection(navigation,self.goal_bindings,self.sessions)
         self.planned.runner_observer=self.observe
-        self.upgrades.home_checkpoint_before_drain=lambda plan_id,actor:self.planned.checkpoint_current(
+        self.upgrades.home_checkpoint_before_drain=lambda plan_id,actor:self.planned.checkpoint_for_service_drain(
             plan_id,worker_runtime=self.runtime,operator_actor=actor)
         self.upgrades.home_resume_after_upgrade=lambda plan_id,actor:self.planned.resume_completed(plan_id,operator_actor=actor)
+
+    def strict_checkpoint(self):
+        # Home readiness remains strict, independently of global Upgrade drain.
+        return self.planned.checkpoint_current(self.plan.id, worker_runtime=self.runtime,
+            operator_actor=self.operator)
 
     def observe(self,thread_id):
         self.assertEqual(thread_id,'operator-thread')
@@ -82,23 +87,23 @@ class DormantHomeUpgradeTests(Fixture):
                 {'processRunning':False,'pendingExecutorWork':False},
                 {'processRunning':False,'pendingExecutorWork':0,'assignmentId':'foreign-assignment'}]:
             self.observation=observation
-            with self.subTest(observation=observation),self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            with self.subTest(observation=observation),self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
             self.assertFalse(self.upgrades.get(self.plan.id,actor=self.operator).maintenance_mode)
 
     async def test_retained_active_native_or_queued_human_blocks(self):
         self.lose();self.active_store.put('operator-thread',self.interrupted)
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.active_store.delete('operator-thread')
         import asyncio
         pending=asyncio.get_running_loop().create_future()
         self.execution.thread_completion_tasks['operator-thread']=pending
         try:
-            with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         finally:
             self.execution.thread_completion_tasks.pop('operator-thread');pending.cancel()
         self.execution.enqueue_turn(thread_id='operator-thread',project_id='home',message='Retained real human context',source='web')
         before=self.preserved()
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertEqual(self.preserved(),before)
 
     async def test_actual_goal_binding_is_not_dormant(self):
@@ -113,7 +118,7 @@ class DormantHomeUpgradeTests(Fixture):
             provider_id='openai',runtime_id='codex',agent_session_id=session.id,thread_id='operator-thread',
             execution_owner_id=self.actor.identity_id,reason='Explicit retained mission'),scope=self.actor.tenant,actor_id=self.actor.identity_id)
         self.lose()
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertEqual(self.goals.get(g.id,scope=self.actor.tenant).status,'active');self.assertEqual(self.effects,0)
 
     async def test_actual_uncertain_original_is_held_without_replay(self):
@@ -121,7 +126,7 @@ class DormantHomeUpgradeTests(Fixture):
         intent=self.create();await self.execute(intent)
         current=self.intents.get(intent.id,self.actor);self.assertEqual(current.status,'uncertain');self.assertEqual(current.attempt,1)
         self.lose()
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertEqual(self.intents.get(intent.id,self.actor).model_dump(mode='json'),current.model_dump(mode='json'))
         self.assertEqual(self.effects,1)
 
@@ -135,14 +140,14 @@ class DormantHomeUpgradeTests(Fixture):
                 binding=current.model_copy(update={'revision':current.revision+1}))
             return value
         with patch.object(self.planned,'_dormant_snapshot',side_effect=drift):
-            with self.assertRaises((ExecutionPrestartRefusal,ControlPlaneBrokerDeniedError)):self.drain()
+            with self.assertRaises((ExecutionPrestartRefusal,ControlPlaneBrokerDeniedError)):self.strict_checkpoint()
         self.assertFalse(self.upgrades.get(self.plan.id,actor=self.operator).maintenance_mode)
 
     async def test_current_profile_revision_drift_refuses(self):
         from codex_web.agent_profiles import AgentProfileUpdate
         self.lose()
         self.profiles.update('home-operator',AgentProfileUpdate(name='Changed current Profile',reason='Private current revision drift negative'),actor=self.actor)
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertFalse(self.upgrades.get(self.plan.id,actor=self.operator).maintenance_mode)
         self.assertIsNone(self.planned._dormant_artifact(self.plan.id,self.actor))
 
@@ -150,12 +155,12 @@ class DormantHomeUpgradeTests(Fixture):
         self.lose()
         session=self.sessions.store.find_unique_by_native_id('operator-thread',provider_id='openai',runtime_id='codex')
         self.sessions.store.upsert(session.model_copy(update={'assignment_id':'foreign-assignment'}))
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertFalse(self.upgrades.get(self.plan.id,actor=self.operator).maintenance_mode)
 
     async def test_real_checkpoint_and_dormant_disposition_cannot_coexist(self):
         checkpoint=self.checkpoint();self.lose()
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertIsNone(self.planned._dormant_artifact(self.plan.id,self.actor))
         self.assertEqual(self.artifacts.get_artifact(checkpoint.id,actor=self.actor).lifecycle,'active')
 

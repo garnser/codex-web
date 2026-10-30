@@ -83,7 +83,7 @@ class UnownedHomeUpgradeTests(DormantHomeUpgradeTests):
             with self.subTest(binding=binding):
                 self.manager.runtime_binding=binding
                 self.assertIsNone(self.manager.unowned_lost_observation(a))
-                with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+                with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.manager.runtime_binding=a.runtime_binding
         self.assertIsNone(self.manager.unowned_lost_observation(
             a.model_copy(update={'runtime_binding':None})))
@@ -92,21 +92,21 @@ class UnownedHomeUpgradeTests(DormantHomeUpgradeTests):
         self.lose()
         with patch.object(self.manager,'get',side_effect=RuntimeError('private unavailable lookup')):
             self.assertNotIn('processOwnershipObservation',self.observe('operator-thread'))
-            with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertFalse(self.upgrades.get(self.plan.id,actor=self.operator).maintenance_mode)
 
     async def test_runtime_worker_and_snapshot_mismatch_refuse(self):
         self.lose();a=self.current()
         self.manager.runtime_binding=ExecutionRuntimeBinding(provider_id='other',runtime_id='codex',capability_revision=1)
         self.assertIsNone(self.manager.unowned_lost_observation(a))
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.manager.runtime_binding=a.runtime_binding
         stale=a.model_copy(update={'fence':a.fence+1})
         self.assertIsNone(self.manager.unowned_lost_observation(stale))
         worker=self.runtime.worker;self.runtime.worker=worker.model_copy(update={'id':'worker-unrelated'})
         try:
             self.assertIsNone(self.manager.unowned_lost_observation(a))
-            with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         finally:self.runtime.worker=worker
 
     async def test_inflight_or_registered_owner_refuses(self):
@@ -114,13 +114,13 @@ class UnownedHomeUpgradeTests(DormantHomeUpgradeTests):
         await lock.acquire()
         try:
             self.assertIsNone(self.manager.unowned_lost_observation(self.current()))
-            with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         finally:lock.release()
         a=self.current()
         self.manager.sessions[a.id]=NS(status=lambda:NS(fence=a.fence,worker_id=a.assigned_worker_id,
             running=True,pending_executor_work=0))
         self.assertIsNone(self.manager.unowned_lost_observation(a))
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
 
     async def test_current_lease_or_same_incarnation_is_not_unowned_restart(self):
         live=self.current()
@@ -129,16 +129,16 @@ class UnownedHomeUpgradeTests(DormantHomeUpgradeTests):
         self.assertIsNone(manager.unowned_lost_observation(live))
         self.lose();self.manager.started_at=self.current().updated_at
         self.assertIsNone(self.manager.unowned_lost_observation(self.current()))
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
 
     async def test_unowned_retains_active_and_queued_input_refusals(self):
         self.lose();self.active_store.put('operator-thread',self.interrupted)
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.active_store.delete('operator-thread')
         self.execution.enqueue_turn(thread_id='operator-thread',project_id='home',
             message='Existing human context',source='web')
         before=self.preserved()
-        with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+        with self.assertRaises(ExecutionPrestartRefusal):self.strict_checkpoint()
         self.assertEqual(self.preserved(),before);self.assertEqual(self.effects,0)
 
     async def test_unowned_goal_binding_still_blocks(self):

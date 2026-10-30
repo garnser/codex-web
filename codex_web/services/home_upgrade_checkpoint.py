@@ -30,6 +30,9 @@ def sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+_UNOBSERVED_SELECTION = object()
+
+
 class HomeUpgradeCheckpoint(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
     schema_version: str = Field(default='1.0', pattern=r'^1\.0$')
@@ -119,8 +122,10 @@ class HomeUpgradeCheckpointService:
             metadata={'checkpoint':raw}), actor=requester,
             idempotency_key=plan.id)
 
-    def _selected_host(self, operator_actor):
+    def _selected_host(self, operator_actor, *, _expected_selection=_UNOBSERVED_SELECTION):
         binding = self.home.projects.get('home', operator_actor.tenant).home_operator
+        if _expected_selection is not _UNOBSERVED_SELECTION and binding != _expected_selection:
+            self.refused('home_upgrade_selected_navigation_changed')
         if binding is None or not binding.thread_id or not binding.agent_profile_id:
             return None
         requester = self.home.broker.identity.actor_for_identity(binding.selected_by, scope=operator_actor.tenant)
@@ -393,25 +398,87 @@ class HomeUpgradeCheckpointService:
                     self.refused('home_upgrade_dormant_preservation_changed')
             return artifact
 
-    def checkpoint_current(self, plan_id, *, worker_runtime, operator_actor):
+    def checkpoint_for_service_drain(self, plan_id, *, worker_runtime, operator_actor):
+        """Best-effort independent Home metadata; never global drain authority.
+
+        Only the synchronous owner may classify its settled typed refusal. No
+        second Artifact attempt, recovery input or readiness grant follows it.
+        """
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        from codex_web.storage.home_intent_query import recovery_query_budget
+        from codex_web.upgrades import HomeCheckpointDisposition
+        # Upgrade authority is mandatory and is not an optional Home refusal.
+        self._operator(operator_actor)
+        observed = {}
+        try:
+            with recovery_query_budget():
+                binding = self.home.projects.get('home', operator_actor.tenant).home_operator
+                if binding is not None:
+                    observed['selection'] = binding
+                    # Hash-only diagnostic identity, not an authenticated actor or grant.
+                    # The existing checkpoint owner performs live selected-owner checks.
+                    requester = operator_actor.model_copy(update={'identity_id': binding.selected_by})
+                    for source, field in (("home-upgrade-checkpoint", "checkpoint_artifact_id"),
+                            ("home-upgrade-dormant-preservation", "preservation_artifact_id")):
+                        observed[field] = self.artifacts._idempotent_evidence_id(
+                            requester, source, plan_id).replace('evidence-', 'artifact-', 1)
+                    if not self.upgrades._pin_home_checkpoint_observation(plan_id, operator_actor, observed):
+                        return HomeCheckpointDisposition(outcome="deferred_unknown",
+                            reason_code="home_checkpoint_original_outcome_unknown", **observed)
+                artifact = self.checkpoint_current(plan_id, worker_runtime=worker_runtime,
+                    operator_actor=operator_actor, _expected_selection=binding)
+                if artifact is None:
+                    return HomeCheckpointDisposition(outcome="not_applicable", **observed)
+                return HomeCheckpointDisposition(outcome="recorded",
+                    operation="dormant_preservation" if artifact.source == "home-upgrade-dormant-preservation" else "checkpoint",
+                    recorded_artifact_id=artifact.id, **observed)
+        except ExecutionPrestartRefusal as error:
+            detail = error.detail
+            code = detail.get('code') if isinstance(detail, dict) else None
+            if (not isinstance(code, str) or not code.startswith(('home_upgrade_', 'home_restart_'))
+                    or not code.replace('_', '').isalnum() or len(code) > 125):
+                raise
+            unknown = code == 'home_upgrade_preservation_incomplete'
+            fields = {}
+            if unknown:
+                # Closed fields originate in this owner's preservation wrapper;
+                # neither exception prose nor an arbitrary HTTP500 is consumed.
+                fields = {'phase': detail['phase'], 'exception_type': detail['exception_type']}
+            return HomeCheckpointDisposition(outcome="deferred_unknown" if unknown else "blocked",
+                reason_code=code, operation="dormant_preservation" if unknown else "unresolved",
+                **fields, **observed)
+        except TimeoutError:
+            return HomeCheckpointDisposition(outcome="deferred_unknown",
+                reason_code="home_upgrade_checkpoint_budget_incomplete",
+                phase="checkpoint_current", exception_type="TimeoutError", **observed)
+        except _HomeQueryCanceled:
+            return HomeCheckpointDisposition(outcome="deferred_unknown",
+                reason_code="home_upgrade_checkpoint_query_incomplete",
+                phase="checkpoint_current", exception_type="QueryCanceled", **observed)
+
+    def checkpoint_current(self, plan_id, *, worker_runtime, operator_actor,
+                           _expected_selection=_UNOBSERVED_SELECTION):
         with checkpoint_timings(operator_actor), checkpoint_stage('checkpoint_current'):
             return self._checkpoint_current_observed(plan_id, worker_runtime=worker_runtime,
-                operator_actor=operator_actor)
+                operator_actor=operator_actor, _expected_selection=_expected_selection)
 
-    def _checkpoint_current_observed(self, plan_id, *, worker_runtime, operator_actor):
+    def _checkpoint_current_observed(self, plan_id, *, worker_runtime, operator_actor,
+                                     _expected_selection=_UNOBSERVED_SELECTION):
         """Existing supervisor boundary: typed denial, never a lease bypass."""
         from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError
         from codex_web.services.agent_profiles import AgentProfileError
         from codex_web.services.identity import IdentityError
         self._operator(operator_actor)
         try:
-            return self._checkpoint_current(plan_id, worker_runtime=worker_runtime, operator_actor=operator_actor)
+            return self._checkpoint_current(plan_id, worker_runtime=worker_runtime, operator_actor=operator_actor,
+                _expected_selection=_expected_selection)
         except (ControlPlaneBrokerDeniedError, AgentProfileError, IdentityError):
             self.refused('home_upgrade_current_authority_unavailable')
 
-    def _checkpoint_current(self, plan_id, *, worker_runtime, operator_actor):
+    def _checkpoint_current(self, plan_id, *, worker_runtime, operator_actor,
+                            _expected_selection=_UNOBSERVED_SELECTION):
         """Unconfigured Home is a no-op; live Host authority stays canonical."""
-        selected = self._selected_host(operator_actor)
+        selected = self._selected_host(operator_actor, _expected_selection=_expected_selection)
         if selected is None:
             return None
         binding,requester = selected
@@ -431,6 +498,13 @@ class HomeUpgradeCheckpointService:
 
     def resume_completed(self, plan_id, *, operator_actor):
         self._operator(operator_actor)
+        plan = self.upgrades.get(plan_id, actor=operator_actor)
+        disposition = plan.home_checkpoint_disposition
+        if disposition is not None and disposition.outcome in {"pending_unknown", "deferred_unknown", "blocked"}:
+            # Even a late committed optional Artifact is not continuation proof.
+            # Preserve the independent warning; never retry, fetch-and-promote,
+            # clear navigation or enqueue Home from this diagnostic.
+            return None
         selected = self._selected_host(operator_actor)
         if selected is None:
             return None
@@ -484,6 +558,9 @@ class HomeUpgradeCheckpointService:
 
     def _completed(self, checkpoint, actor):
         plan = self.upgrades.get(checkpoint.plan_id, actor=actor)
+        diagnostic = plan.home_checkpoint_disposition
+        if diagnostic is not None and diagnostic.outcome in {'pending_unknown', 'deferred_unknown', 'blocked'}:
+            self.refused('home_upgrade_checkpoint_diagnostic_unavailable')
         if (plan.created_at != checkpoint.plan_created_at or plan.release_id != checkpoint.release_id
                 or plan.target_app_version != checkpoint.target_version or plan.status != 'completed'
                 or plan.maintenance_mode or plan.completed_at is None

@@ -60,6 +60,7 @@ from codex_web.storage.state_store import StateStore
 from codex_web.storage.upgrades import UpgradeNotFoundError, UpgradeStore
 from codex_web.upgrades import (
     DefinitionMigrationRecord,
+    HomeCheckpointDisposition,
     UpgradeDefinitionBaseline,
     UpgradeDefinitionMigrationCreate,
     UpgradeHostedScope,
@@ -243,7 +244,8 @@ class UpgradeService:
 
     @classmethod
     def _service_contract_boundary(cls, plan):
-        return cls._skill_scan_boundary(plan) or cls._publication_event_boundary(plan)
+        return (cls._skill_scan_boundary(plan) or cls._publication_event_boundary(plan)
+                or plan.home_checkpoint_disposition is not None)
 
     def _enable_publication_event_contract(self, plan, step, actor):
         from codex_web.upgrades import UpgradeDeploymentMode
@@ -365,8 +367,9 @@ class UpgradeService:
                 raise UpgradeConflictError("cancelled upgrade is terminal; create a new plan")
             updated = updater(current)
             if updated.status == UpgradeStatus.ROLLED_BACK and any(self._service_contract_boundary(p) for p in state.plans.values()):
-                raise UpgradeConflictError("rollback is unavailable after the service scanner contract boundary")
+                raise UpgradeConflictError("rollback is unavailable after a persisted service contract boundary")
             if self._service_contract_boundary(updated):
+                updated.rollback_available = False
                 # One local database is shared by hosted scopes. Invalidate older
                 # plans atomically too, so no stale plan advertises binary rollback.
                 for previous in state.plans.values():
@@ -662,6 +665,11 @@ class UpgradeService:
         profile = plan.compatibility
         blockers: list[str] = []
         warnings: list[str] = []
+        home = plan.home_checkpoint_disposition
+        if home is not None and home.outcome in {"pending_unknown", "deferred_unknown", "blocked"}:
+            warnings.append("home_checkpoint_" + home.outcome)
+        if home is not None:
+            warnings.append("binary_rollback_unavailable:upgrade_state_1.1_home_diagnostic")
 
         state_status = self.state_store.status()
         state_schema = int(state_status.get("schemaVersion") or 0)
@@ -982,7 +990,14 @@ class UpgradeService:
             )
         )
 
-    def start_service_drain(
+    def start_service_drain(self, plan_id: str, *, actor: AuthenticationActor,
+                            service_instance_id: str, source_revision: str,
+                            target_revision: str) -> UpgradePlan:
+        return self.admission.mutate_drain(lambda: self._start_service_drain(
+            plan_id, actor=actor, service_instance_id=service_instance_id,
+            source_revision=source_revision, target_revision=target_revision))
+
+    def _start_service_drain(
         self,
         plan_id: str,
         *,
@@ -1006,33 +1021,109 @@ class UpgradeService:
             raise UpgradeConflictError(
                 "target revision does not match the immutable Release"
             )
+        disposition = plan.home_checkpoint_disposition
         if not plan.maintenance_mode and self.home_checkpoint_before_drain is not None:
-            self.home_checkpoint_before_drain(plan.id, actor)
+            disposition = self._optional_home_checkpoint(plan, actor)
+        # Home's independent diagnostic cannot substitute for current global
+        # Upgrade authority, maintenance/admission or active-work checks.
+        self._require_service_drain_authority(actor)
         scopes = self._hosted_scopes()
         fingerprint = self._scope_fingerprint(scopes)
         now = float(self.clock())
-        return self.admission.mutate_drain(
-            lambda: self._update(
-                plan.id,
-                actor,
-                lambda current: current.model_copy(
-                    update={
-                        "maintenance_mode": True,
-                        "maintenance_scope": UpgradeMaintenanceScope.SERVICE,
-                        "drain_started_at": current.drain_started_at or now,
-                        "service_instance_id": service_instance_id,
-                        "covered_scopes": scopes,
-                        "hosted_scope_fingerprint": fingerprint,
-                        "admission_epoch": current.admission_epoch + 1,
-                        "deployment_source_revision": source_revision,
-                        "deployment_target_revision": target_revision,
-                        "preflight": None,
-                        "status": UpgradeStatus.DRAINING,
-                        "updated_at": now,
-                    }
-                ),
-            )
+        return self._update(
+            plan.id,
+            actor,
+            lambda current: current.model_copy(
+                update={
+                    "maintenance_mode": True,
+                    "home_checkpoint_disposition": current.home_checkpoint_disposition
+                        if current.home_checkpoint_disposition is not None
+                        and current.home_checkpoint_disposition.outcome != "pending_unknown"
+                        else disposition,
+                    "maintenance_scope": UpgradeMaintenanceScope.SERVICE,
+                    "drain_started_at": current.drain_started_at or now,
+                    "service_instance_id": service_instance_id,
+                    "covered_scopes": scopes,
+                    "hosted_scope_fingerprint": fingerprint,
+                    "admission_epoch": current.admission_epoch + 1,
+                    "deployment_source_revision": source_revision,
+                    "deployment_target_revision": target_revision,
+                    "preflight": None,
+                    "status": UpgradeStatus.DRAINING,
+                    "updated_at": now,
+                }
+            ),
         )
+
+    def _pin_home_checkpoint_observation(self, plan_id, actor, observed):
+        """Pin diagnostic references before optional Artifact I/O, not readiness.
+
+        Only this plan's unobserved pending reservation may be enriched. A
+        competing/finalized observation suppresses another optional writer.
+        """
+        pinned = False
+        def pin(current):
+            nonlocal pinned
+            previous = current.home_checkpoint_disposition
+            if (previous is None or previous.outcome != "pending_unknown"
+                    or previous.selection is not None):
+                return current
+            diagnostic = HomeCheckpointDisposition.model_validate({
+                **previous.model_dump(mode="python"), **observed})
+            pinned = True
+            return current.model_copy(update={"home_checkpoint_disposition": diagnostic})
+        self._update(plan_id, actor, pin)
+        return pinned
+
+    def _optional_home_checkpoint(self, plan, actor):
+        """One independent optional writer; UNKNOWN never becomes a retry grant.
+
+        The existing admission coordinator serializes this synchronous method.
+        All Home I/O is outside the short canonical Upgrade mutations.
+        """
+        existing = plan.home_checkpoint_disposition
+        if existing is not None:
+            if existing.outcome == "pending_unknown":
+                return existing.model_copy(update={"outcome": "deferred_unknown",
+                    "reason_code": "home_checkpoint_original_outcome_unknown"})
+            return existing
+        reservation = HomeCheckpointDisposition(outcome="pending_unknown",
+            observed_at=float(self.clock()))
+        reserved = False
+        def reserve(current):
+            nonlocal reserved
+            if current.home_checkpoint_disposition is None:
+                reserved = True
+                return current.model_copy(update={"home_checkpoint_disposition": reservation})
+            return current
+        try:
+            observed = self._update(plan.id, actor, reserve)
+        except Exception as error:
+            from codex_web.services.home_upgrade_checkpoint import _HomeQueryCanceled
+            if not isinstance(error, TimeoutError) and not isinstance(error, _HomeQueryCanceled):
+                raise
+            # No Home writer was invoked. Do not repeat an unknown reservation;
+            # only the ordinary mandatory global drain mutation may now proceed.
+            return reservation.model_copy(update={"outcome": "deferred_unknown",
+                "reason_code": "home_checkpoint_reservation_unknown",
+                "phase": "reservation_write", "exception_type": "TimeoutError" if isinstance(error, TimeoutError) else "QueryCanceled"})
+        if not reserved:
+            existing = observed.home_checkpoint_disposition
+            return existing.model_copy(update={"outcome": "deferred_unknown",
+                "reason_code": "home_checkpoint_original_outcome_unknown"}) if existing.outcome == "pending_unknown" else existing
+        result = self.home_checkpoint_before_drain(plan.id, actor)
+        if result is None:
+            return HomeCheckpointDisposition(outcome="not_applicable")
+        if isinstance(result, HomeCheckpointDisposition):
+            return result
+        # Legacy internal compositions returned the actual checkpoint Artifact.
+        from codex_web.artifact_evidence import Artifact
+        if isinstance(result, Artifact) and result.source in {
+                "home-upgrade-checkpoint", "home-upgrade-dormant-preservation"}:
+            return HomeCheckpointDisposition(outcome="recorded",
+                operation="dormant_preservation" if result.source == "home-upgrade-dormant-preservation" else "checkpoint",
+                recorded_artifact_id=result.id)
+        raise UpgradeConflictError("Home checkpoint owner returned an unsupported diagnostic")
 
     def _maintenance_plan(
         self,
@@ -2012,7 +2103,10 @@ class UpgradeService:
             ),
         )
 
-        if self.home_resume_after_upgrade is not None:
+        if (self.home_resume_after_upgrade is not None and not (
+                completed.home_checkpoint_disposition is not None
+                and completed.home_checkpoint_disposition.outcome in {
+                    "pending_unknown", "deferred_unknown", "blocked"})):
             try:
                 self.home_resume_after_upgrade(completed.id, actor)
             except Exception as error:

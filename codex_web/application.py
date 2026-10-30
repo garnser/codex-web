@@ -4973,7 +4973,7 @@ home_upgrade_checkpoint_service = HomeUpgradeCheckpointService(
     goal_inspection=HomeOperatorGoalInspection(home_operator_service, goal_execution_binding_service, agent_session_service),
     sessions=agent_session_store)
 home_restart_recovery_service.planned_restart = home_upgrade_checkpoint_service
-upgrade_service.home_checkpoint_before_drain = lambda plan_id, actor: home_upgrade_checkpoint_service.checkpoint_current(
+upgrade_service.home_checkpoint_before_drain = lambda plan_id, actor: home_upgrade_checkpoint_service.checkpoint_for_service_drain(
     plan_id, worker_runtime=local_execution_worker_runtime, operator_actor=actor)
 upgrade_service.home_resume_after_upgrade = lambda plan_id, actor: home_upgrade_checkpoint_service.resume_completed(
     plan_id, operator_actor=actor)
