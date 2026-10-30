@@ -12,8 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class ExecutionWorkerAdminUiTests(unittest.TestCase):
     def test_native_custody_rendering_distinguishes_records_and_escapes_references(self):
         javascript = (ROOT / "static" / "execution_worker_admin.js").read_text(encoding="utf-8")
-        helper = javascript.split("  function nativeCredentialCustodyHtml(item) {", 1)[1].split("\n  function renderAssignments()", 1)[0]
-        helper = "function nativeCredentialCustodyHtml(item) {" + helper
+        presenter = (ROOT / "static" / "native_credential_custody_ui.js").read_text(encoding="utf-8")
+        helper = "function nativeCredentialCustodyHtml(item) {" + presenter.split(
+            "export function nativeCredentialCustodyHtml(item) {", 1)[1]
+        self.assertIn("/static/native_credential_custody_ui.js", javascript)
+        self.assertNotIn("function nativeCredentialCustodyHtml", javascript)
         check = r'''
 const assert = require('node:assert/strict');
 const escapeHtml = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
