@@ -162,7 +162,7 @@ class ProcedureRunTests(PremergeReadinessProcedureTests):
         old_state['schema_version']='1.12'
         for item in old_state['assignments']:item.pop('procedure_history',None)
         migrated=self.workers.store._decode(old_state)
-        self.assertEqual(migrated.schema_version,'1.13')
+        self.assertEqual(migrated.schema_version,'1.14')
         self.assertEqual(migrated.assignments[0].procedure_checkpoint.model_dump(mode='json'),raw)
         self.assertEqual(migrated.assignments[0].procedure_history,())
         from codex_web.compatibility import ContractSpec, ContractCompatibilityError

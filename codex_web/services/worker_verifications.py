@@ -228,7 +228,11 @@ class WorkerVerificationAdapter:
         secrets = b.action_intents.execution.secret_broker
         if secrets is not None:
             repositories.append(secrets.store)
-            if assignment.secret_refs:
+            runtime_refs = ((assignment.native_credential_custody.runtime_secret_ref,)
+                if assignment.native_credential_custody is not None
+                    and assignment.native_credential_custody.runtime_secret_ref is not None
+                else () if assignment.native_credential_custody is not None else assignment.secret_refs)
+            if runtime_refs:
                 # The broker's trusted callback is the actual native session
                 # validator, not request metadata. Refuse opaque/foreign-store
                 # delegation composition instead of locking a convenient but

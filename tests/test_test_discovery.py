@@ -20,6 +20,8 @@ class TestDiscoveryOwnershipTests(unittest.TestCase):
             'test_skill_scanner_completion_preparation': 'SkillScannerCompletionPreparationTests',
             'test_paused_queued_preflight_retention': 'PausedQueuedPreflightRetentionTests',
             'test_thread_legacy_native_custody': 'ThreadLegacyNativeCustodyTests',
+            'test_native_procedure_credential_custody': 'NativeProcedureCredentialCustodyTests',
+            'test_native_credential_custody_compatibility': 'NativeCredentialCustodyCompatibilityTests',
         }
         loader = unittest.TestLoader()
         for name, owner in consumers.items():

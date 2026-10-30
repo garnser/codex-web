@@ -522,7 +522,7 @@ class NativeProcedureAdmissionService:
             raise ValueError("native preparation capabilities unavailable")
         return context
 
-    def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected):
+    def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected, *, validate_credentials=True):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
         if self.native_session_attestor is None or self.procedure_execution is None:
@@ -532,6 +532,8 @@ class NativeProcedureAdmissionService:
         def validate():
             self.native_session_attestor(assignment, self.procedure_execution)
             self.procedure_execution.validate_native_preparation(assignment, selected, actor)
+            if validate_credentials:
+                self.procedure_execution.validate_native_credential_custody(assignment, selected, actor)
             if self._preparation_context(assignment, actor, project, sandbox, request_checksum) != expected_context:
                 raise ValueError("native preparation context changed")
         validate()
@@ -546,6 +548,19 @@ class NativeProcedureAdmissionService:
         if not discovery.admitted or tuple(discovery.selected) != tuple(selected):
             raise ProcedureAdmissionError(discovery)
         return discovery, text
+
+    def _admit_initial_native_credentials(self, assignment, selected, actor, project, sandbox, request_checksum):
+        # An explicit writer on the initial path only. Shared preparation and
+        # guarded input remain read-only, including on resumed native sessions.
+        expected, _ = self._preparation_discovery(assignment, actor, project, sandbox,
+            request_checksum, selected, validate_credentials=False)
+        def validate(current):
+            fresh, _ = self._preparation_discovery(current, actor, project, sandbox,
+                request_checksum, selected, validate_credentials=False)
+            if fresh.context_checksum != expected.context_checksum:
+                raise ValueError("initial native credential preparation changed")
+        return self.procedure_execution.admit_initial_native_credentials(
+            assignment, selected, actor, validate)
 
     def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references):
         from dataclasses import replace
@@ -714,12 +729,34 @@ class NativeProcedureAdmissionService:
                 and context.enforcement in {"bounded_read_only", "isolated_preparation"}
                 and self.native_session_attestor is not None and self.procedure_execution is not None):
             try:
+                custody = assignment.native_credential_custody
+                if custody is not None and custody.admitted_at is None:
+                    assignment = await asyncio.to_thread(self._admit_initial_native_credentials,
+                        assignment, discovery.selected, actor, project, sandbox, request_checksum)
                 discovery, text = await asyncio.to_thread(self._preparation_discovery,
                     assignment, actor, project, sandbox, request_checksum, discovery.selected)
-            except Exception:
+            except Exception as exc:
+                from codex_web.services.procedure_execution import ProcedureExecutionError
+                if isinstance(exc, ProcedureExecutionError) and exc.code.startswith("procedure_credential_"):
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                        "code": exc.code, "message": "Native procedure credential custody requires a fresh authorized bootstrap",
+                        "retryable": False, "remediation_route": "/api/execution-workers/assignments"}) from exc
                 # Preserve the genuine unsupported refusal; no weaker no-match
                 # or preparation claim when any live proof is unavailable.
                 pass
+        if (not is_reasoning and assignment is not None and discovery.admitted
+                and self.procedure_execution is not None and not discovery.selected and assignment.native_credential_custody is not None
+                and assignment.native_credential_custody.admitted_at is None):
+            # A first no-match still seals an empty procedure scope. A later
+            # publication cannot turn an already used bootstrap into a grant.
+            def seal_empty():
+                def validate(current):
+                    fresh_context = self.discovery.assignment_context(context, current, actor=actor)
+                    fresh, _ = self.discovery.discover(fresh_context)
+                    if not fresh.admitted or fresh.selected or fresh.context_checksum != discovery.context_checksum:
+                        raise ValueError("initial empty native preparation changed")
+                return self.procedure_execution.admit_initial_native_credentials(assignment, (), actor, validate)
+            assignment = await asyncio.to_thread(seal_empty)
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
         if assignment is not None:
             from codex_web.services.execution_workers import ProcedureHistoryExhaustedError

@@ -234,6 +234,17 @@ class ProcedureExecutionService:
         broker = self.intents.execution.secret_broker
         if ref not in assignment.secret_refs or broker is None:
             raise ProcedureExecutionError("procedure_secret_reference_not_assigned")
+        custody = assignment.native_credential_custody
+        if custody is not None:
+            if custody.admitted_at is None:
+                raise ProcedureExecutionError("procedure_credential_initial_admission_required")
+            worker = self._live(assignment)
+            worker_actor = self._credential_worker_actor(assignment, worker)
+            self.validate_native_credential_custody(assignment, custody.procedures, actor)
+            if broker.metadata(ref, actor=worker_actor, require_use=True).status(self.clock()) != "active":
+                raise ProcedureExecutionError("procedure_secret_reference_revoked")
+        # Unmarked historical/generic assignments retain their original
+        # membership + action-requester Use contract, without new grants.
         metadata = broker.metadata(ref, actor=actor, require_use=True)
         if metadata.status(self.clock()) != "active":
             raise ProcedureExecutionError("procedure_secret_reference_revoked")
@@ -344,6 +355,12 @@ class ProcedureExecutionService:
 
     def _request(self, step, assignment, actor, procedure, values):
         binding = self._binding(step, assignment, actor)
+        custody = assignment.native_credential_custody
+        if custody is not None:
+            if custody.admitted_at is None:
+                raise ProcedureExecutionError("procedure_credential_initial_admission_required")
+            if custody.provider_bindings.get(binding.id) != checksum(binding.model_dump(mode="json")):
+                raise ProcedureExecutionError("procedure_credential_binding_not_admitted")
         targets = self._targets(procedure, assignment, actor)[step.action.resource_selector]
         credential = binding.credential_ref
         secrets = [values[c.name] for c in step.inputs if c.type == "secret_reference" and c.name in values]
@@ -377,6 +394,13 @@ class ProcedureExecutionService:
         actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
         assignment = self.get(assignment_id, actor)
         self._live(assignment)
+        custody = assignment.native_credential_custody
+        if custody is not None:
+            if custody.admitted_at is None:
+                raise ProcedureExecutionError("procedure_credential_initial_admission_required")
+            if definition not in custody.procedures:
+                raise ProcedureExecutionError("procedure_credential_procedure_not_admitted")
+            self.validate_native_credential_custody(assignment, custody.procedures, actor)
         previous = assignment.procedure_checkpoint
         if previous and previous.definition == definition and previous.input_snapshot_id == input_snapshot_id:
             return assignment
@@ -471,6 +495,147 @@ class ProcedureExecutionService:
             return state
         return self.workers.store.transition_assignment(assignment.assigned_worker_id, assignment.id, apply,
             guard_rows={self.intents.store.records_namespace: ()}).assignments[0]
+
+    def _credential_worker_actor(self, assignment, worker):
+        # Use the authenticated canonical worker owner, never synthesize token
+        # scopes from an identity lookup or stored membership/credential IDs.
+        worker_actor = self.worker_actor
+        if (worker_actor is None or worker_actor.identity_id != worker.service_identity_id
+                or (worker_actor.organization_id, worker_actor.workspace_id) !=
+                    (assignment.organization_id, assignment.workspace_id)):
+            raise ProcedureExecutionError("procedure_credential_worker_unavailable")
+        self.workers._require_worker_actor(worker, worker_actor)
+        return worker_actor
+
+    def _native_credential_projection(self, assignment, selected, actor):
+        """Resolve references through the same owners as native preparation/start."""
+        from codex_web.execution_workers import NativeCredentialCustody
+        from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
+        worker = self._live(assignment)
+        if (actor.organization_id, actor.workspace_id) != (assignment.organization_id, assignment.workspace_id):
+            raise ProcedureExecutionError("procedure_credential_requester_changed")
+        # Provider actions run for the canonical assignment owner. The native
+        # ingress actor has independent input/discovery authorization; it is not
+        # another provider credential principal and never grants SecretUse.
+        owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant)
+        profile, definition = ExecutionProfileDefinitionService(self.skills.definitions).resolve(
+            assignment.execution_profile_id, organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id, project_id=assignment.project_id)
+        if (definition != assignment.execution_profile_definition
+                or selected and not {"procedure.read", "procedure.start", "procedure.advance"}.issubset(profile.control_plane_operations)):
+            raise ProcedureExecutionError("procedure_credential_declaration_changed")
+        if selected:
+            self.validate_native_preparation(assignment, selected, actor)
+        worker_actor = None
+        refs, bindings = set(), {}
+        for reference in selected:
+            procedure = SkillDefinition.model_validate(
+                self.skills.definitions.get_record(reference.record_id).payload).operational_procedure
+            for step in procedure.steps:
+                if step.action is None:
+                    continue
+                binding = self._binding(step, assignment, owner)
+                bindings[binding.id] = checksum(binding.model_dump(mode="json"))
+                if binding.credential_ref:
+                    broker = self.intents.execution.secret_broker
+                    if broker is None:
+                        raise ProcedureExecutionError("procedure_secret_broker_unavailable")
+                    worker_actor = self._credential_worker_actor(assignment, worker)
+                    from codex_web.services.secrets import SecretBrokerError, SecretUseDeniedError
+                    try:
+                        for principal in (owner, worker_actor):
+                            if broker.metadata(binding.credential_ref, actor=principal, require_use=True).status(self.clock()) != "active":
+                                raise ProcedureExecutionError("procedure_credential_reference_revoked")
+                    except (SecretBrokerError, SecretUseDeniedError) as exc:
+                        raise ProcedureExecutionError("procedure_credential_secret_use_denied") from exc
+                    refs.add(binding.credential_ref)
+        custody = assignment.native_credential_custody
+        return NativeCredentialCustody(runtime_secret_ref=custody.runtime_secret_ref if custody else None,
+            requester_identity_id=owner.identity_id, worker_identity_id=worker.service_identity_id,
+            fence=assignment.fence, procedures=tuple(selected), provider_bindings=bindings,
+            procedure_secret_refs=tuple(sorted(refs)))
+
+    def validate_native_credential_custody(self, assignment, selected, actor):
+        """Read-only: ordinary preparation/current use can never enlarge custody."""
+        custody = assignment.native_credential_custody
+        if custody is None:
+            # Preserve existing manually admitted contracts without retrofitting
+            # historical native assignments that lack a trusted pending marker.
+            expected = self._native_credential_projection(assignment, selected, actor)
+            if not set(expected.procedure_secret_refs).issubset(assignment.secret_refs):
+                raise ProcedureExecutionError("procedure_credential_initial_admission_required")
+            return
+        if custody.admitted_at is None:
+            raise ProcedureExecutionError("procedure_credential_initial_admission_required")
+        expected = self._native_credential_projection(assignment, selected, actor)
+        if custody.model_dump(exclude={"admitted_at"}) != expected.model_dump(exclude={"admitted_at"}):
+            raise ProcedureExecutionError("procedure_credential_custody_changed")
+        allowed = set(custody.procedure_secret_refs)
+        if custody.runtime_secret_ref:
+            allowed.add(custody.runtime_secret_ref)
+        if set(assignment.secret_refs) != allowed:
+            raise ProcedureExecutionError("procedure_credential_custody_changed")
+
+    def admit_initial_native_credentials(self, assignment, selected, actor, validate):
+        """Seal one NEW bootstrap's pending reference custody under canonical locks.
+
+        Called only by initial native admission, never by the shared read guard
+        or procedure.start. The callback rechecks native owner, selection and
+        policy after the writer lock is acquired. No credential is resolved.
+        """
+        from codex_web.execution_subjects import ExecutionSubjectKind
+        custody = assignment.native_credential_custody
+        if custody is None or custody.admitted_at is not None:
+            self.validate_native_credential_custody(assignment, selected, actor)
+            return assignment
+        if (assignment.subject.kind != ExecutionSubjectKind.THREAD_BOOTSTRAP
+                or not assignment.execution_contract_version.startswith("thread-bootstrap/")
+                or assignment.procedure_discoveries or assignment.procedure_checkpoint or assignment.procedure_history):
+            raise ProcedureExecutionError("procedure_credential_initial_admission_closed")
+        if assignment.secret_refs != ((custody.runtime_secret_ref,) if custody.runtime_secret_ref else ()):
+            raise ProcedureExecutionError("procedure_credential_pending_custody_changed")
+        expected = self._native_credential_projection(assignment, selected, actor)
+        store = self.workers.store.store
+        repositories = [self.identity.store, self.authority.registry.store,
+            self.skills.definitions.store, self.discovery.resources.store,
+            self.intents.execution.registry.store]
+        broker = self.intents.execution.secret_broker
+        if broker is not None:
+            repositories.append(broker.store)
+        if any(repository.store is not store for repository in repositories):
+            raise ProcedureExecutionError("procedure_credential_transaction_unavailable")
+        guards = {repository.namespace: (None,) for repository in repositories}
+        workspace = self.workers.workspaces.store.workspace(assignment.execution_workspace_id)
+        workspaces = self.workers.workspaces.store
+        if workspaces.store is not store or workspace is None:
+            raise ProcedureExecutionError("procedure_credential_transaction_unavailable")
+        guards.update({workspaces.workspace_namespace: (workspace.id,),
+            workspaces.lease_namespace: (workspace.lease_id,)})
+        security = self.skills.security
+        if security is not None:
+            if security.store.state is not store:
+                raise ProcedureExecutionError("procedure_credential_transaction_unavailable")
+            guards.update({name: () for name in
+                (security.store.SCANS, security.store.OVERRIDES, security.store.BASELINES)})
+
+        def apply(state):
+            current = state.assignments[0]
+            # A normal same-owner renewal is not new custody. Everything else,
+            # including token, acquired_at, worker/fence and original deadline,
+            # remains an exact CAS predicate; live checks use the renewed lease.
+            excluded = {"updated_at": True, "lease": {"expires_at", "renewed_at"}}
+            if (current.model_dump(mode="json", exclude=excluded) != assignment.model_dump(mode="json", exclude=excluded)
+                    or state.workers[0].id != assignment.assigned_worker_id):
+                raise ProcedureExecutionError("procedure_credential_assignment_changed")
+            validate(current)
+            fresh = self._native_credential_projection(current, selected, actor)
+            if fresh != expected:
+                raise ProcedureExecutionError("procedure_credential_custody_changed")
+            current.secret_refs = tuple(dict.fromkeys((*current.secret_refs, *fresh.procedure_secret_refs)))
+            current.native_credential_custody = fresh.model_copy(update={"admitted_at": self.clock()})
+            return state
+        return self.workers.store.transition_assignment(assignment.assigned_worker_id,
+            assignment.id, apply, guard_rows=guards).assignments[0]
 
     def validate_native_preparation_owner(self, assignment):
         self._live(assignment)

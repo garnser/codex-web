@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import json
+import subprocess
 from pathlib import Path
 
 
@@ -8,6 +10,46 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ExecutionWorkerAdminUiTests(unittest.TestCase):
+    def test_native_custody_rendering_distinguishes_records_and_escapes_references(self):
+        javascript = (ROOT / "static" / "execution_worker_admin.js").read_text(encoding="utf-8")
+        helper = javascript.split("  function nativeCredentialCustodyHtml(item) {", 1)[1].split("\n  function renderAssignments()", 1)[0]
+        helper = "function nativeCredentialCustodyHtml(item) {" + helper
+        check = r'''
+const assert = require('node:assert/strict');
+const escapeHtml = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+const referenceLink = (kind, id, options = {}) => id ? escapeHtml(options.label ?? id) : '—';
+const timeText = value => `time:${value}`;
+eval(HELPER);
+assert.match(nativeCredentialCustodyHtml({}), /legacy unknown/);
+assert.match(nativeCredentialCustodyHtml({native_credential_custody: null}), /legacy unknown/);
+const pending = nativeCredentialCustodyHtml({native_credential_custody: {schema_version:'1.0', admitted_at:null}});
+assert.match(pending, /custody: pending/);
+assert.match(pending, /no credential grant inferred/);
+assert.match(pending, /Admission: not established/);
+const html = nativeCredentialCustodyHtml({native_credential_custody: {
+ schema_version:'1.0', admitted_at:123, runtime_secret_ref:'runtime<&',
+ procedure_secret_refs:['procedure<&'], requester_identity_id:'requester<&', worker_identity_id:'worker<&', fence:7,
+ procedures:[{record_id:'record', definition_id:'skill<&', kind:'agent.skill', revision:3, definition_schema_version:'1.2', checksum:'hash<&'}],
+ provider_bindings:{'binding<&':'pin<&'}, secret_value:'NEVER-RENDER', lease_token:'NEVER-RENDER'
+}});
+assert.match(html, /admitted \(recorded\)/);
+assert.match(html, /Runtime authentication reference: runtime&lt;&amp;/);
+assert.match(html, /Procedure credential references: procedure&lt;&amp;/);
+assert.match(html, /requester&lt;&amp;/); assert.match(html, /worker&lt;&amp;/);
+assert.match(html, /fence: 7/); assert.match(html, /skill&lt;&amp;/);
+assert.match(html, /revision 3/); assert.match(html, /schema 1.2/);
+assert.match(html, /hash&lt;&amp;/); assert.match(html, /binding&lt;&amp;/); assert.match(html, /pin&lt;&amp;/);
+assert.match(html, /does not grant current authority/);
+assert.doesNotMatch(html, /NEVER-RENDER|<script|runtime<&|skill<&/);
+for (const custody of [{schema_version:'future', admitted_at:123}, {schema_version:'1.0', admitted_at:'123'}]) {
+ const unknown = nativeCredentialCustodyHtml({native_credential_custody:custody});
+ assert.match(unknown, /custody: unknown/); assert.match(unknown, /Admission: not established/);
+}
+'''
+        subprocess.run(["node", "-e", check.replace("HELPER", json.dumps(helper))],
+                       check=True, timeout=10, capture_output=True, text=True)
+        self.assertIn("${nativeCredentialCustodyHtml(item)}", javascript)
+
     def test_worker_browser_exposes_control_execution_split_and_redacted_leases(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (ROOT / "static" / "execution_worker_admin.js").read_text(

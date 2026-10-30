@@ -133,6 +133,32 @@
     return `<small>Lease worker: ${escapeHtml(item.lease.worker_id)} · fence: ${escapeHtml(item.lease.fence)} · acquired: ${timeText(item.lease.acquired_at)} · renewed: ${timeText(item.lease.renewed_at)} · expires: ${timeText(item.lease.expires_at)} · lease credential: ${credentialState}</small>`;
   }
 
+  function nativeCredentialCustodyHtml(item) {
+    const custody = item.native_credential_custody;
+    if (custody == null) {
+      return '<section aria-label="Native credential custody"><small>Native credential custody: legacy unknown. No admission record is retained.</small></section>';
+    }
+    const admitted = custody.schema_version === "1.0"
+      && typeof custody.admitted_at === "number"
+      && Number.isFinite(custody.admitted_at) && custody.admitted_at > 0;
+    const pending = custody.schema_version === "1.0" && custody.admitted_at == null;
+    const state = admitted ? "admitted (recorded)" : pending ? "pending" : "unknown";
+    const procedures = (custody.procedures || []).map(ref => (
+      `${referenceLink("definition", ref.record_id, { label: ref.definition_id })} · kind ${escapeHtml(ref.kind)} · revision ${escapeHtml(ref.revision)} · schema ${escapeHtml(ref.definition_schema_version)} · checksum ${escapeHtml(ref.checksum)}`
+    )).join("; ") || "none recorded";
+    const bindings = Object.entries(custody.provider_bindings || {}).map(([id, checksum]) => (
+      `${escapeHtml(id)} · checksum ${escapeHtml(checksum)}`
+    )).join("; ") || "none recorded";
+    return `<section aria-label="Native credential custody">
+      <small>Native credential custody: ${state} · schema ${escapeHtml(custody.schema_version)}. This record does not grant current authority.</small>
+      <small>Runtime authentication reference: ${custody.runtime_secret_ref ? referenceLink("secret", custody.runtime_secret_ref) : "none recorded; no credential grant inferred"}</small>
+      <small>Procedure credential references: ${(custody.procedure_secret_refs || []).map(id => referenceLink("secret", id)).join(", ") || "none recorded"}</small>
+      <small>Admission: ${admitted ? timeText(custody.admitted_at) : "not established"} · requester: ${referenceLink("identity", custody.requester_identity_id)} · worker identity: ${referenceLink("identity", custody.worker_identity_id)} · fence: ${escapeHtml(custody.fence ?? "not recorded")}</small>
+      <small>Admitted procedures: ${procedures}</small>
+      <small>Provider binding pins: ${bindings}</small>
+    </section>`;
+  }
+
   function renderAssignments() {
     const host = document.getElementById("execution-assignment-list");
     if (!host) return;
@@ -152,6 +178,7 @@
         <small>Network: ${network.enabled ? "enabled" : "disabled"} · allowlist: ${listText(network.allowed_hosts)} · deadline: ${timeText(item.deadline_at)}</small>
         <small>Limits: CPU ${escapeHtml(limits.cpu_seconds)}s · wall ${escapeHtml(limits.wall_seconds)}s · memory ${bytes(limits.memory_bytes)} · disk ${bytes(limits.disk_bytes)} · processes ${escapeHtml(limits.process_count)}</small>
         <small>Secret references: ${(item.secret_refs || []).map(id => referenceLink("secret", id)).join(", ") || "none"}. Raw secret material is never present in an assignment.</small>
+        ${nativeCredentialCustodyHtml(item)}
         ${leaseHtml(item)}
         <small>Created by: ${escapeHtml(item.created_by)} · created: ${timeText(item.created_at)} · started: ${timeText(item.started_at)} · completed: ${timeText(item.completed_at)} · fence: ${escapeHtml(item.fence)}</small>
         ${item.failure_code || item.failure_message ? `<small>Failure: ${escapeHtml(item.failure_code || "unknown")} · ${escapeHtml(item.failure_message || "no detail")}</small>` : ""}

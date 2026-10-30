@@ -152,7 +152,14 @@ class CodexAuthDelegationService:
         now: float,
     ) -> SecretReference:
         matches: list[SecretReference] = []
-        for secret_id in assignment.secret_refs:
+        references = assignment.secret_refs
+        custody = assignment.native_credential_custody
+        if custody is not None:
+            # Provider-use references never become native runtime credentials,
+            # even if their provider/purpose metadata happens to match.
+            runtime_ref = custody.runtime_secret_ref
+            references = (runtime_ref,) if runtime_ref is not None and runtime_ref in references else ()
+        for secret_id in references:
             try:
                 reference = self.broker.metadata(
                     secret_id,
