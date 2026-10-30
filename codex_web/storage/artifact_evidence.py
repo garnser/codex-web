@@ -152,6 +152,32 @@ class ArtifactEvidenceStore:
             organization_id=organization_id, workspace_id=workspace_id,
             collection_names=("artifacts", "evidence", "verifications"), first_per_id=False))
 
+    def input_records_state(
+        self,
+        artifact_id: str,
+        verification_id: str,
+        evidence_ids: tuple[str, ...],
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> ArtifactEvidenceState:
+        reader = getattr(self.store, "artifact_input_envelope", None)
+        if (
+            not callable(reader)
+            or getattr(self.store, "supports_artifact_input_envelope", False) is not True
+        ):
+            return self.load()
+        return self._decode(
+            reader(
+                self.namespace,
+                artifact_id,
+                verification_id,
+                evidence_ids,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+        )
+
     def load(self) -> ArtifactEvidenceState:
         return self._decode(self.store.get(self.namespace))
 

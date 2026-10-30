@@ -50,6 +50,119 @@ class PostgresArtifactProjectionTests(unittest.TestCase):
                 'FROM codex_document_record_rows WHERE namespace=%s ORDER BY ordinal',
                 (namespace,)).fetchall()
 
+    def input_records(self, *, artifact='selected', verification='selected',
+                      evidence=('selected',), namespace='array-test'):
+        return self.backend.artifact_input_envelope(namespace, artifact, verification, evidence,
+            organization_id='local', workspace_id='default')
+
+    def input_records_oracle(self, *, artifact='selected', verification='selected',
+                             evidence=('selected',), namespace='array-test'):
+        # Independently retain the released three-reader policies: the first
+        # scoped Artifact/Evidence, but every scoped Verification duplicate.
+        selected = self.backend.document_array_item_envelope(namespace, 'artifacts', artifact,
+            organization_id='local', workspace_id='default', collection_names=ARRAYS)
+        proofs = self.read('evidence', evidence, first=True, namespace=namespace)
+        records = self.read('verifications', (verification,), namespace=namespace)
+        return {'schema_version': selected['schema_version'],
+                'artifacts': selected.get('artifacts', []),
+                'evidence': proofs.get('evidence', []),
+                'verifications': records.get('verifications', [])}
+
+    def test_input_envelope_indexed_and_unindexed_match_each_array_duplicate_policy(self):
+        rows = {name: [self.row(organization='foreign', value=name+'-foreign'),
+                       self.row(value=name+'-first'), self.row(value=name+'-later')]
+                for name in ARRAYS}
+        self.backend.put('array-test', self.document(**rows))
+        expected = self.input_records_oracle(evidence=('missing', 'selected', 'selected'))
+        self.assertEqual(expected['artifacts'], rows['artifacts'][1:2])
+        self.assertEqual(expected['evidence'], rows['evidence'][1:2])
+        self.assertEqual(expected['verifications'], rows['verifications'][1:])
+        self.assertEqual(self.input_records(evidence=('missing', 'selected', 'selected')), expected)
+        self.assertTrue(self.enable())
+        original = projection.read_artifact_input_v2
+        observed = []
+
+        def indexed(*args, **kwargs):
+            row = original(*args, **kwargs)
+            observed.append(row is not None)
+            return row
+
+        with patch.object(projection, 'read_artifact_input_v2', indexed):
+            self.assertEqual(self.input_records(evidence=('missing', 'selected', 'selected')), expected)
+        self.assertEqual(observed, [True])
+        self.assertEqual(self.input_records(artifact='missing', verification='missing', evidence=()),
+                         self.document())
+
+    def test_input_envelope_preserves_original_json_numbers_and_raw_member_order(self):
+        raw = r'''{"schema_version":"1.5","artifacts":[null,
+            {"id":"selected","organization_id":"local","workspace_id":"default",
+             "value":{"scientific":1e0,"zero":-0.0,"large":9007199254740993,"same":1,"same":2}}],
+            "evidence":[{"id":"proof-b","organization_id":"local","workspace_id":"default","value":-0.0},
+                {"id":"proof-a","organization_id":"local","workspace_id":"default","value":1e0}],
+            "verifications":[{"id":"selected","organization_id":"local","workspace_id":"default","value":1e0},
+                {"id":"selected","organization_id":"local","workspace_id":"default","value":-0.0}]}'''
+        self.raw('array-test', raw)
+        expected = self.input_records_oracle(evidence=('proof-a', 'proof-b'))
+        self.assertEqual(self.input_records(evidence=('proof-a', 'proof-b')), expected)
+        self.assertTrue(self.enable())
+        actual = self.input_records(evidence=('proof-a', 'proof-b'))
+        self.assertEqual(actual, expected)
+        value = actual['artifacts'][0]['value']
+        self.assertIs(type(value['scientific']), float)
+        self.assertEqual(math.copysign(1, value['zero']), -1)
+        self.assertEqual(value['large'], 9007199254740993)
+        self.assertEqual(value['same'], 2)
+        self.assertEqual([row['id'] for row in actual['evidence']], ['proof-b', 'proof-a'])
+        self.assertEqual(math.copysign(1, actual['verifications'][1]['value']), -1)
+
+    def test_input_envelope_legacy_headers_keep_complete_canonical_fallback(self):
+        self.enable()
+        for document in (self.document(unexpected={'retained': True}),
+                         self.document(evidence={}),
+                         {**self.document(), 'schema_version': 1.5},
+                         {'schema_version': '1.0', 'artifacts': [], 'legacy': 'retained'}):
+            with self.subTest(document=document):
+                self.backend.put('array-test', document)
+                self.assertEqual(self.input_records(), document)
+        self.raw('array-test', 'NaN')
+        self.assertTrue(math.isnan(self.input_records()))
+
+    def test_input_envelope_stale_projection_hash_refuses_poisoned_derived_rows(self):
+        self.enable()
+        original = self.document(**{name: [self.row(value='canonical-'+name)] for name in ARRAYS})
+        self.backend.put('array-test', original)
+        with self.backend._connection() as connection:
+            connection.execute('UPDATE codex_document_record_rows SET payload=%s WHERE namespace=%s',
+                (json.dumps(self.row(value='poisoned-derived-row')), 'array-test'))
+            connection.execute("UPDATE codex_document_record_headers SET source_sha256=sha256('wrong'::bytea) "
+                               'WHERE namespace=%s', ('array-test',))
+        read = projection.read_artifact_input_v2
+        observations = []
+
+        def checked(*args, **kwargs):
+            row = read(*args, **kwargs)
+            observations.append(row is None)
+            return row
+
+        with patch.object(projection, 'read_artifact_input_v2', checked):
+            self.assertEqual(self.input_records(), original)
+        self.assertEqual(observations, [True])
+        changed = self.document(**{name: [self.row(value='current-'+name)] for name in ARRAYS})
+        self.backend.put('array-test', changed)
+        self.assertEqual(self.input_records(), changed)
+
+    def test_input_envelope_selected_models_and_unknown_schema_still_fail_closed(self):
+        from pydantic import ValidationError
+        store = ArtifactEvidenceStore(self.backend)
+        self.backend.put(store.namespace, self.document(artifacts=[self.row()]))
+        with self.assertRaises(ValidationError):
+            store.input_records_state('selected', 'selected', (),
+                organization_id='local', workspace_id='default')
+        self.backend.put(store.namespace, {**self.document(), 'schema_version': '999.0'})
+        with self.assertRaises(ValueError):
+            store.input_records_state('selected', 'selected', (),
+                organization_id='local', workspace_id='default')
+
     def raw(self, namespace, serialized):
         # Deliberately model the pre-index writer. Enabling afterwards must seed
         # from these exact canonical bytes, not reconstructed Python numbers.

@@ -327,6 +327,62 @@ def read_v2(cursor, namespace, array_name, item_ids, organization_id, workspace_
     return cursor.fetchone()
 
 
+def read_artifact_input_v2(
+    cursor,
+    namespace,
+    artifact_id,
+    verification_id,
+    evidence_ids,
+    organization_id,
+    workspace_id,
+):
+    """One current-hash observation, with each array's ordinary duplicate policy."""
+    query = """WITH current_document AS MATERIALIZED (
+        SELECT sha256(convert_to(payload,'UTF8')) AS source_sha256
+        FROM codex_state_documents WHERE namespace=%s),
+        requested(array_name,id,first_only) AS MATERIALIZED (
+            SELECT 'artifacts'::text,%s::text,true UNION ALL
+            SELECT 'verifications'::text,%s::text,false UNION ALL
+            SELECT 'evidence'::text,unnest(%s::text[]),true),
+        selected AS MATERIALIZED (
+            SELECT requested.array_name,member.ordinal,member.payload,requested.first_only,
+                row_number() OVER(PARTITION BY requested.array_name,member.item_id ORDER BY member.ordinal) AS occurrence
+            FROM codex_document_record_rows AS member JOIN requested
+                ON member.item_id=json_build_array(requested.array_name,requested.id)::text
+            WHERE member.namespace=%s AND member.organization_id=%s AND member.workspace_id=%s)
+        SELECT json_build_object('schema_version',COALESCE(header.schema_value,'"0.0"'::jsonb),
+            'artifacts',COALESCE((SELECT json_agg(payload::json ORDER BY ordinal) FROM selected
+                WHERE array_name='artifacts' AND occurrence=1),'[]'::json),
+            'verifications',COALESCE((SELECT json_agg(payload::json ORDER BY ordinal) FROM selected
+                WHERE array_name='verifications'),'[]'::json),
+            'evidence',COALESCE((SELECT json_agg(payload::json ORDER BY ordinal) FROM selected
+                WHERE array_name='evidence' AND occurrence=1),'[]'::json))::text
+        FROM codex_document_record_headers AS header,current_document
+        WHERE header.namespace=%s AND header.version=2 AND header.eligible
+            AND EXISTS(SELECT 1 FROM codex_state_metadata WHERE key='document-record-projection-version' AND value='1')
+            AND EXISTS(SELECT 1 FROM codex_state_metadata WHERE key='document-array-projection-format' AND value='2')
+            AND EXISTS(SELECT 1 FROM codex_state_metadata WHERE key=%s AND value='2')
+            AND header.source_sha256=current_document.source_sha256
+            AND header.top_keys <@ ARRAY['schema_version','artifacts','evidence','verifications']::text[]
+            AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['artifacts','evidence','verifications']) AS field(name)
+                WHERE header.field_types->>name IS NOT NULL AND header.field_types->>name!='array')"""
+    cursor.execute(
+        query,
+        (
+            namespace,
+            artifact_id,
+            verification_id,
+            list(dict.fromkeys(evidence_ids)),
+            namespace,
+            organization_id,
+            workspace_id,
+            namespace,
+            ARRAY_ENABLE_PREFIX + namespace,
+        ),
+    )
+    return cursor.fetchone()
+
+
 REFERENCE_NAMES = ('references',)
 REFERENCE_ENABLE_PREFIX = 'document-reference-projection-v2:'
 

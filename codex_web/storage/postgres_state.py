@@ -1261,6 +1261,91 @@ class PostgresStateStore:
                 raise
             return self.get(namespace)
 
+    supports_artifact_input_envelope = True
+
+    def artifact_input_envelope(
+        self,
+        namespace: str,
+        artifact_id: str,
+        verification_id: str,
+        evidence_ids: tuple[str, ...],
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> Any | None:
+        """Fresh mixed-array selection; this is data, never admission authority."""
+        if namespace in getattr(self, "_document_array_projection_namespaces", ()):
+            with self._read_connection() as connection:
+                with connection.cursor() as cursor:
+                    row = postgres_document_projection.read_artifact_input_v2(
+                        cursor,
+                        namespace,
+                        artifact_id,
+                        verification_id,
+                        evidence_ids,
+                        organization_id,
+                        workspace_id,
+                    )
+            if row is not None:
+                return self._decode(row)
+        # Keep the same complete canonical fallback and original JSON values as
+        # the ordinary POINT/MULTI readers, in one statement/snapshot.
+        members = []
+        parameters = [namespace]
+        for array, ids in (
+            ("artifacts", (artifact_id,)),
+            ("verifications", (verification_id,)),
+            ("evidence", evidence_ids),
+        ):
+            members.append("""SELECT %s::text AS array_name,member.value,member.ordinality
+                FROM parsed,json_array_elements(CASE WHEN jsonb_typeof(document->%s)='array'
+                    THEN payload::json->%s ELSE '[]'::json END) WITH ORDINALITY AS member(value,ordinality)
+                WHERE json_typeof(member.value)='object' AND member.value->>'id'=ANY(%s::text[])
+                    AND member.value->>'organization_id'=%s AND member.value->>'workspace_id'=%s""")
+            parameters.extend(
+                (
+                    array,
+                    array,
+                    array,
+                    list(dict.fromkeys(ids)),
+                    organization_id,
+                    workspace_id,
+                )
+            )
+        query = (
+            """WITH parsed AS MATERIALIZED (SELECT payload,payload::jsonb AS document
+                FROM codex_state_documents WHERE namespace=%s),
+            members AS MATERIALIZED ("""
+            + " UNION ALL ".join(members)
+            + """),
+            selected AS MATERIALIZED (SELECT *,row_number() OVER(
+                PARTITION BY array_name,value->>'id' ORDER BY ordinality) AS occurrence FROM members)
+            SELECT CASE WHEN jsonb_typeof(document)!='object' THEN payload
+                WHEN EXISTS(SELECT 1 FROM jsonb_object_keys(document) AS field(key)
+                    WHERE NOT field.key=ANY(ARRAY['schema_version','artifacts','evidence','verifications'])) THEN payload
+                WHEN COALESCE(jsonb_typeof(document->'schema_version'),'string') NOT IN ('string','null') THEN payload
+                WHEN EXISTS(SELECT 1 FROM unnest(ARRAY['artifacts','evidence','verifications']) AS field(name)
+                    WHERE COALESCE(jsonb_typeof(document->name),'array')!='array') THEN payload
+                ELSE json_build_object('schema_version',COALESCE(document->'schema_version','"0.0"'::jsonb),
+                    'artifacts',COALESCE((SELECT json_agg(value ORDER BY ordinality) FROM selected
+                        WHERE array_name='artifacts' AND occurrence=1),'[]'::json),
+                    'verifications',COALESCE((SELECT json_agg(value ORDER BY ordinality) FROM selected
+                        WHERE array_name='verifications'),'[]'::json),
+                    'evidence',COALESCE((SELECT json_agg(value ORDER BY ordinality) FROM selected
+                        WHERE array_name='evidence' AND occurrence=1),'[]'::json))::text END FROM parsed"""
+        )
+        try:
+            with self._read_connection() as connection:
+                with connection.transaction():
+                    with connection.cursor() as cursor:
+                        cursor.execute(query, parameters)
+                        row = cursor.fetchone()
+            return self._decode(row) if row is not None else self.get(namespace)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) not in {"22P02", "22003", "22P05"}:
+                raise
+            return self.get(namespace)
+
     def get(self, namespace: str) -> Any | None:
         with self._read_connection() as connection:
             with connection.cursor() as cursor:

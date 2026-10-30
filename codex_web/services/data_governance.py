@@ -42,6 +42,10 @@ class GovernanceConflictError(DataGovernanceError):
     pass
 
 
+class GovernanceDerivationMismatchError(GovernanceConflictError):
+    """Selected sources are not parents of the current governed root."""
+
+
 ActionHandler = Callable[[GovernedDataRecord, GovernanceAction], str | None]
 
 
@@ -681,6 +685,58 @@ class DataGovernanceService:
             organization_id=actors[0].organization_id, workspace_id=actors[0].workspace_id)
         return tuple(self._filter_context_state(payload, state, actor=actor) for actor in actors)
 
+    def can_filter_derived_context_for_actors(self) -> bool:
+        return (
+            type(self) is DataGovernanceService
+            and type(self.store) is DataGovernanceStore
+            and getattr(self.get_record, "__self__", None) is self
+            and getattr(self.get_record, "__func__", None)
+            is _CANONICAL_CONTEXT_RECORD_READER
+            and getattr(self.filter_context, "__self__", None) is self
+            and getattr(self.filter_context, "__func__", None) is _CANONICAL_CONTEXT_FILTER
+            and getattr(self.filter_context_for_actors, "__self__", None) is self
+            and getattr(self.filter_context_for_actors, "__func__", None)
+            is _CANONICAL_CONTEXT_ACTOR_FILTER
+            and all(
+                getattr(getattr(self.store, name), "__self__", None) is self.store
+                and getattr(getattr(self.store, name), "__func__", None) is method
+                for name, method in _CANONICAL_DERIVED_CONTEXT_STORE_READS.items()
+            )
+            and getattr(self._filter_context_state, "__self__", None) is self
+            and getattr(self._filter_context_state, "__func__", None)
+            is _CANONICAL_CONTEXT_STATE_FILTER
+        )
+
+    def filter_derived_context_for_actors(
+        self,
+        root_id: str,
+        source_ids: tuple[str, ...],
+        *,
+        actors: tuple[AuthenticationActor, ...],
+    ) -> tuple[GovernedDataRecord, tuple[ContextFilterResult, ...]]:
+        """Current derivation root and independent principal decisions, one read."""
+        if not actors:
+            raise ValueError("derived context requires principals")
+        request = ContextFilterRequest(record_ids=(root_id, *source_ids))
+        if not self.can_filter_derived_context_for_actors() or any(
+            actor.tenant != actors[0].tenant for actor in actors
+        ):
+            root = self.get_record(root_id, actors[0], context_only=True)
+            if not set(source_ids).issubset(root.source_record_ids):
+                raise GovernanceDerivationMismatchError("required source records are not in the derivation")
+            return root, self.filter_context_for_actors(request, actors=actors)
+        state = self.store.context_state(
+            request.record_ids,
+            organization_id=actors[0].organization_id,
+            workspace_id=actors[0].workspace_id,
+        )
+        root = self._record_from_state(state, root_id, actors[0])
+        if not set(source_ids).issubset(root.source_record_ids):
+            raise GovernanceDerivationMismatchError("required source records are not in the derivation")
+        return root, tuple(
+            self._filter_context_state(request, state, actor=actor) for actor in actors
+        )
+
     def filter_leaf_context(
         self,
         payload: ContextFilterRequest,
@@ -853,3 +909,8 @@ class DataGovernanceService:
 # Capture the originals once; later class or instance overrides must fall back.
 _CANONICAL_CONTEXT_FILTER = DataGovernanceService.filter_context
 _CANONICAL_CONTEXT_RECORD_READER = DataGovernanceService.get_record
+
+_CANONICAL_CONTEXT_STATE_FILTER=DataGovernanceService._filter_context_state
+
+_CANONICAL_CONTEXT_ACTOR_FILTER=DataGovernanceService.filter_context_for_actors
+_CANONICAL_DERIVED_CONTEXT_STORE_READS={name:getattr(DataGovernanceStore,name) for name in ('context_state','_decode')}

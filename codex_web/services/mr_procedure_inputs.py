@@ -13,12 +13,52 @@ from codex_web.mr_observation_evidence import current_observation
 from codex_web.mr_observation_policy import INPUT_V2, CONTINUATION_V2, validate_policy, canonical, expiry_valid
 
 
-def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, *, protocol=INPUT_METHOD):
+def validate_mr_procedure_input(
+    owner,
+    artifact_id,
+    content,
+    actor,
+    assignment,
+    *,
+    protocol=INPUT_METHOD,
+    _metadata_hint=None,
+):
     if protocol not in (INPUT_METHOD, INPUT_V2):
         raise ValueError('mr_input_protocol_unknown')
     method = CONTINUATION_V2 if protocol == INPUT_V2 else METHOD
     service = owner.evidence
-    artifact = service.get_artifact(artifact_id, actor=actor)
+    from codex_web.services.artifact_evidence import VerificationNotFoundError
+
+    records = None
+    if _metadata_hint is not None:
+        # Content-open metadata selects IDs only. The current records below are
+        # freshly read AFTER managed content I/O; the hint grants no authority.
+        hint_meta = _metadata_hint.metadata
+        evidence_ids = json.loads(hint_meta.get("source_evidence_ids", "null"))
+        verification_id = hint_meta.get("verification_id")
+        if (
+            not isinstance(verification_id, str)
+            or not verification_id
+            or not isinstance(evidence_ids, list)
+            or len(evidence_ids) != 3
+            or any(not isinstance(item, str) or not item for item in evidence_ids)
+        ):
+            raise ValueError("mr_input_metadata_hints_invalid")
+        try:
+            records = service.get_mr_input_records(
+                artifact_id,
+                verification_id,
+                tuple(evidence_ids),
+                actor=actor,
+                work_item_ref=assignment.work_item_ref,
+            )
+        except VerificationNotFoundError as exc:
+            raise ValueError('mr_input_verification_unavailable') from exc
+        artifact = records[0]
+        if artifact.model_dump(mode="json") != _metadata_hint.model_dump(mode="json"):
+            raise ValueError("mr_input_artifact_changed_during_content")
+    else:
+        artifact = service.get_artifact(artifact_id, actor=actor)
     worker = owner._live(assignment)
     worker_actor = owner.identity.actor_for_identity(worker.service_identity_id, scope=actor.tenant)
     context_requester_id = (assignment.resource_context.requester_identity_id
@@ -38,10 +78,16 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, 
             or len(artifact.resource_ids) != 1 or not set(artifact.resource_ids).issubset(assignment.resource_ids)
             or not artifact.governance_record_id or service.governance is None):
         raise ValueError('mr_input_scope_or_producer')
-    from codex_web.services.artifact_evidence import VerificationNotFoundError
     try:
-        record = service.get_verification(meta.get('verification_id'), actor=actor,
-            work_item_ref=assignment.work_item_ref)
+        record = (
+            records[1]
+            if records is not None
+            else service.get_verification(
+                meta.get("verification_id"),
+                actor=actor,
+                work_item_ref=assignment.work_item_ref,
+            )
+        )
     except VerificationNotFoundError as exc:
         raise ValueError('mr_input_verification_unavailable') from exc
     if (record.method != method or record.result == 'invalidated' or len(record.evidence_ids) != 3
@@ -50,8 +96,13 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, 
             or sorted(record.evidence_ids) != json.loads(meta.get('source_evidence_ids', 'null'))):
         raise ValueError('mr_input_verification_identity')
     evidence_batch = getattr(service, 'get_evidence_batch', None)
-    proofs = (tuple(evidence_batch(record.evidence_ids, actor=actor)) if callable(evidence_batch) else
-        tuple(service.get_evidence(i, actor=actor) for i in record.evidence_ids))
+    proofs = (
+        records[2]
+        if records is not None
+        else tuple(evidence_batch(record.evidence_ids, actor=actor))
+        if callable(evidence_batch)
+        else tuple(service.get_evidence(i, actor=actor) for i in record.evidence_ids)
+    )
     if tuple(proof.id for proof in proofs) != record.evidence_ids:
         raise ValueError('mr_input_evidence_identity_or_expired')
     snapshots = set()
@@ -116,15 +167,26 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, 
     if actual_binding != meta.get('provider_binding_sha256'):
         raise ValueError('mr_input_current_provider_binding_changed')
     governance = service.governance
-    governed = governance.get_record(artifact.governance_record_id, actor, context_only=True)
     sources = tuple(p.governance_record_id for p in proofs)
+    principals = (actor, context_requester, worker_actor)
+    if records is not None:
+        from codex_web.services.data_governance import GovernanceDerivationMismatchError
+        try:
+            governed, decisions = governance.filter_derived_context_for_actors(
+                artifact.governance_record_id, sources, actors=principals
+            )
+        except GovernanceDerivationMismatchError as exc:
+            raise ValueError('mr_input_governed_derivation_missing') from exc
+    else:
+        governed = governance.get_record(artifact.governance_record_id, actor, context_only=True)
+        if not set(sources).issubset(governed.source_record_ids):
+            raise ValueError('mr_input_governed_derivation_missing')
+        request = ContextFilterRequest(record_ids=(governed.id, *sources))
+        batch = getattr(governance, 'filter_context_for_actors', None)
+        decisions = (tuple(batch(request, actors=principals)) if callable(batch) else
+            tuple(governance.filter_context(request, actor=principal) for principal in principals))
     if not set(sources).issubset(governed.source_record_ids):
         raise ValueError('mr_input_governed_derivation_missing')
-    principals = (actor, context_requester, worker_actor)
-    request = ContextFilterRequest(record_ids=(governed.id, *sources))
-    batch = getattr(governance, 'filter_context_for_actors', None)
-    decisions = (tuple(batch(request, actors=principals)) if callable(batch) else
-        tuple(governance.filter_context(request, actor=principal) for principal in principals))
     if len(decisions) != len(principals):
         raise ValueError('mr_input_current_governance_denied')
     for principal, decision in zip(principals, decisions):

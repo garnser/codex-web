@@ -162,13 +162,38 @@ class ProcedureExecutionService:
             return state
         return self.workers.store.update_assignment(assignment.assigned_worker_id, assignment.id, apply).assignments[0]
 
-    def _content(self, artifact_id, actor, assignment, digest=None, limit=65536):
-        artifact = self.evidence.get_artifact(artifact_id, actor=actor)
-        if (artifact.lifecycle != "active" or artifact.project_id != assignment.project_id
-            or (artifact.retention_expires_at is not None and artifact.retention_expires_at <= self.clock())
-            or set(artifact.resource_ids) - set(assignment.resource_ids)):
+    def _content_artifact(self, artifact, assignment):
+        if (
+            artifact.lifecycle != "active"
+            or artifact.project_id != assignment.project_id
+            or (
+                artifact.retention_expires_at is not None
+                and artifact.retention_expires_at <= self.clock()
+            )
+            or set(artifact.resource_ids) - set(assignment.resource_ids)
+        ):
             raise ProcedureExecutionError("procedure_artifact_scope_or_lifecycle")
-        pointer, stream = self.evidence.open_artifact_content(artifact_id, actor=actor)
+
+    def _content(
+        self,
+        artifact_id,
+        actor,
+        assignment,
+        digest=None,
+        limit=65536,
+        *,
+        _with_metadata=False,
+    ):
+        if _with_metadata:
+            artifact, pointer, stream = self.evidence.open_artifact_content_with_metadata(
+                artifact_id,
+                actor=actor,
+                _admit=lambda current: self._content_artifact(current, assignment),
+            )
+        else:
+            artifact = self.evidence.get_artifact(artifact_id, actor=actor)
+            self._content_artifact(artifact, assignment)
+            pointer, stream = self.evidence.open_artifact_content(artifact_id, actor=actor)
         if pointer.size_bytes > limit:
             raise ProcedureExecutionError("procedure_artifact_size_limit")
         data = bytearray()
@@ -179,40 +204,106 @@ class ProcedureExecutionService:
         actual = hashlib.sha256(data).hexdigest()
         if digest is not None and actual != digest:
             raise ProcedureExecutionError("procedure_artifact_checksum_changed")
-        return bytes(data), actual
+        return (bytes(data), actual, artifact) if _with_metadata else (bytes(data), actual)
 
     def _inputs(self, assignment, actor, procedure):
         pin = assignment.procedure_checkpoint
-        data, _ = self._content(pin.input_snapshot_id, actor, assignment, pin.input_snapshot_checksum)
         witness = _current_input_witness.get()
+        capability = getattr(self.evidence, "can_batch_mr_input_reads", None)
+        batched = (
+            procedure.input_protocol == "code-host-mr-procedure-input.v2"
+            and all(
+                getattr(getattr(self, name), "__self__", None) is self
+                and getattr(getattr(self, name), "__func__", None) is method
+                for name, method in _CANONICAL_INPUT_CONTENT_READS.items()
+            )
+            and callable(capability)
+            and capability()
+        )
+        hint = None
+        if batched:
+            data, _, hint = self._content(
+                pin.input_snapshot_id,
+                actor,
+                assignment,
+                pin.input_snapshot_checksum,
+                _with_metadata=True,
+            )
+        else:
+            data, _ = self._content(
+                pin.input_snapshot_id, actor, assignment, pin.input_snapshot_checksum
+            )
         if witness is not None:
             assignment_id, run_id, artifact_id = witness
-            if (procedure.input_protocol is None or assignment_id != assignment.id
-                    or run_id != self.run_id(pin)):
+            if (
+                procedure.input_protocol is None
+                or assignment_id != assignment.id
+                or run_id != self.run_id(pin)
+            ):
                 raise ProcedureExecutionError("procedure_current_input_witness_scope")
-            fresh, _ = self._content(artifact_id, actor, assignment, pin.input_snapshot_checksum)
+            if batched:
+                fresh, _, hint = self._content(
+                    artifact_id,
+                    actor,
+                    assignment,
+                    pin.input_snapshot_checksum,
+                    _with_metadata=True,
+                )
+            else:
+                fresh, _ = self._content(
+                    artifact_id, actor, assignment, pin.input_snapshot_checksum
+                )
             # The witness authenticates current use only. Original immutable
             # snapshot/history/run identity and typed values never change.
             if fresh != data:
                 raise ProcedureExecutionError("procedure_current_input_witness_changed")
-            self._input_protocol(procedure, artifact_id, fresh, actor, assignment)
+            options = {"_metadata_hint": hint} if hint is not None else {}
+            self._input_protocol(
+                procedure, artifact_id, fresh, actor, assignment, **options
+            )
         else:
-            self._input_protocol(procedure, pin.input_snapshot_id, data, actor, assignment)
+            options = {"_metadata_hint": hint} if hint is not None else {}
+            self._input_protocol(
+                procedure, pin.input_snapshot_id, data, actor, assignment, **options
+            )
         values = bounded_data(json.loads(data))
         self._values(procedure.inputs, values, actor, assignment)
-        if pin.canonical_input_checksum is not None and checksum(values) != pin.canonical_input_checksum:
+        if (
+            pin.canonical_input_checksum is not None
+            and checksum(values) != pin.canonical_input_checksum
+        ):
             raise ProcedureExecutionError("procedure_input_identity_changed")
         return values
 
-    def _input_protocol(self, procedure, artifact_id, data, actor, assignment):
+    def _input_protocol(
+        self, procedure, artifact_id, data, actor, assignment, *, _metadata_hint=None
+    ):
         if procedure.input_protocol is None:
             return
         from codex_web.services.mr_procedure_inputs import validate_mr_procedure_input
         from codex_web.api.authorization import ApiAuthorizationError
         from codex_web.services.identity import IdentityError
+
         try:
-            validate_mr_procedure_input(self, artifact_id, data, actor, assignment, protocol=procedure.input_protocol)
-        except (ValueError, TypeError, KeyError, ApiAuthorizationError, IdentityError) as exc:
+            options = (
+                {"_metadata_hint": _metadata_hint} if _metadata_hint is not None else {}
+            )
+            validate_mr_procedure_input(
+                self,
+                artifact_id,
+                data,
+                actor,
+                assignment,
+                protocol=procedure.input_protocol,
+                **options,
+            )
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            ApiAuthorizationError,
+            IdentityError,
+        ) as exc:
             raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
 
     def _values(self, contracts, values, actor, assignment):
@@ -1543,3 +1634,5 @@ class ProcedureExecutionService:
             authority_definition=decision.definition_ref, actor_identity_id=actor.identity_id),)
         checkpoint.steps[step_id].status = "skipped"
         return self._save(assignment, checkpoint)
+
+_CANONICAL_INPUT_CONTENT_READS={name:getattr(ProcedureExecutionService,name) for name in ('_content','_content_artifact','_input_protocol')}

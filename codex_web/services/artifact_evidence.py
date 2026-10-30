@@ -357,6 +357,77 @@ class ArtifactEvidenceService:
             raise VerificationNotFoundError("verification unavailable or ambiguous")
         return rows[0]
 
+    def can_batch_mr_input_reads(self) -> bool:
+        """Only canonical owners may combine these internal read boundaries."""
+        backend = getattr(self.store, 'store', None)
+        governance_check = getattr(
+            self.governance, "can_filter_derived_context_for_actors", None
+        )
+        return (
+            type(self) is ArtifactEvidenceService
+            and all(
+                getattr(getattr(self, name), "__self__", None) is self
+                and getattr(getattr(self, name), "__func__", None) is method
+                for name, method in _CANONICAL_MR_INPUT_READS.items()
+            )
+            and type(self.store) is ArtifactEvidenceStore
+            and all(
+                getattr(getattr(self.store, name), "__self__", None) is self.store
+                and getattr(getattr(self.store, name), "__func__", None) is method
+                for name, method in _CANONICAL_MR_STORE_READS.items()
+            )
+            and getattr(backend, "supports_artifact_input_envelope", False) is True
+            and callable(getattr(backend, "artifact_input_envelope", None))
+            and callable(governance_check)
+            and governance_check()
+        )
+
+    def get_mr_input_records(
+        self,
+        artifact_id: str,
+        verification_id: str,
+        evidence_ids: tuple[str, ...],
+        *,
+        actor: AuthenticationActor,
+        work_item_ref: str | None = None,
+    ) -> tuple[Artifact, Verification, tuple[Evidence, ...]]:
+        """Fresh post-content records; supplied IDs are selection hints only."""
+        if not self.can_batch_mr_input_reads():
+            artifact = self.get_artifact(artifact_id, actor=actor)
+            record = self.get_verification(
+                verification_id, actor=actor, work_item_ref=work_item_ref
+            )
+            return (
+                artifact,
+                record,
+                self.get_evidence_batch(record.evidence_ids, actor=actor),
+            )
+        state = self.store.input_records_state(
+            artifact_id,
+            verification_id,
+            evidence_ids,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        artifact = self.get_artifact(artifact_id, actor=actor, state=state)
+        rows = [
+            row
+            for row in state.verifications
+            if row.id == verification_id
+            and self._same_scope(row, actor)
+            and (work_item_ref is None or row.work_item_ref == work_item_ref)
+        ]
+        if len(rows) != 1:
+            raise VerificationNotFoundError("verification unavailable or ambiguous")
+        record = rows[0]
+        if sorted(record.evidence_ids) != sorted(evidence_ids):
+            raise ValueError("mr_input_evidence_identity_or_expired")
+        proofs = tuple(
+            self.get_evidence(item_id, actor=actor, state=state)
+            for item_id in record.evidence_ids
+        )
+        return artifact, record, proofs
+
     def list_artifacts(
         self,
         actor: AuthenticationActor,
@@ -528,6 +599,30 @@ class ArtifactEvidenceService:
         verify: bool = True,
     ) -> tuple[ArtifactContentPointer, Iterator[bytes]]:
         artifact = self.get_artifact(artifact_id, actor=actor)
+        return self._open_artifact_content_record(
+            artifact, byte_range=byte_range, chunk_size=chunk_size, verify=verify
+        )
+
+    def open_artifact_content_with_metadata(
+        self,
+        artifact_id,
+        *,
+        actor,
+        byte_range=None,
+        chunk_size=65536,
+        verify=True,
+        _admit=None,
+    ):
+        """Content-open's current header is a hint, not post-I/O authority."""
+        artifact = self.get_artifact(artifact_id, actor=actor)
+        if _admit is not None:
+            _admit(artifact)
+        pointer, stream = self._open_artifact_content_record(
+            artifact, byte_range=byte_range, chunk_size=chunk_size, verify=verify
+        )
+        return artifact, pointer, stream
+
+    def _open_artifact_content_record(self, artifact, *, byte_range, chunk_size, verify):
         pointer = artifact.content
         if pointer is None:
             raise ArtifactEvidenceError("artifact has no managed content")
@@ -1536,3 +1631,9 @@ class ArtifactEvidenceService:
 
 # Preserve the original owner boundary even when a class-level getter is replaced.
 _CANONICAL_EVIDENCE_GETTER = ArtifactEvidenceService.get_evidence
+
+_CANONICAL_MR_INPUT_READS={name:getattr(ArtifactEvidenceService,name) for name in (
+    'get_artifact','get_evidence','get_evidence_batch','get_verification','open_artifact_content',
+    '_artifact','_evidence','_verify_content_pointer')}
+_CANONICAL_MR_STORE_READS={name:getattr(ArtifactEvidenceStore,name) for name in (
+    '_decode','artifact_state','evidence_state','evidence_states','verification_state','input_records_state')}

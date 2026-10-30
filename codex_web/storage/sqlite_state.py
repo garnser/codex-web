@@ -916,6 +916,72 @@ class SQLiteStateStore:
                 raise
             return self.get(namespace)
 
+    supports_artifact_input_envelope = True
+
+    def artifact_input_envelope(
+        self,
+        namespace: str,
+        artifact_id: str,
+        verification_id: str,
+        evidence_ids: tuple[str, ...],
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> Any | None:
+        """One fresh document; first scoped Artifact/Evidence, all Verification."""
+        arrays = ("artifacts", "evidence", "verifications")
+        selections = []
+        parameters = ["schema_version", *arrays, *(f"$.{name}" for name in arrays)]
+        for array, ids in (
+            ("artifacts", (artifact_id,)),
+            ("evidence", evidence_ids),
+            ("verifications", (verification_id,)),
+        ):
+            selection = """SELECT item.value,CAST(item.key AS INTEGER) AS ordinal,
+                row_number() OVER(PARTITION BY json_extract(item.value,'$.id') ORDER BY CAST(item.key AS INTEGER)) AS occurrence
+                FROM json_each(payload,?) AS item WHERE item.type='object'
+                    AND json_extract(item.value,'$.id') IN(SELECT value FROM json_each(?))
+                    AND json_extract(item.value,'$.organization_id')=?
+                    AND json_extract(item.value,'$.workspace_id')=?"""
+            if array != "verifications":
+                selection = (
+                    "SELECT value,ordinal FROM (" + selection + ") WHERE occurrence=1"
+                )
+            selections.append(
+                "?,json(COALESCE((SELECT json_group_array(json(value)) FROM ("
+                + selection
+                + " ORDER BY ordinal)),'[]'))"
+            )
+            parameters.extend(
+                (
+                    array,
+                    "$." + array,
+                    json.dumps(tuple(dict.fromkeys(ids))),
+                    organization_id,
+                    workspace_id,
+                )
+            )
+        query = (
+            """SELECT CASE WHEN json_valid(payload)=0 THEN payload
+            WHEN json_type(payload)!='object' THEN payload
+            WHEN EXISTS(SELECT 1 FROM json_each(payload) AS field WHERE field.key NOT IN(?,?,?,?)) THEN payload
+            WHEN COALESCE(json_type(payload,?),'array')!='array'
+                OR COALESCE(json_type(payload,?),'array')!='array' OR COALESCE(json_type(payload,?),'array')!='array' THEN payload
+            ELSE json_object('schema_version',COALESCE(json_extract(payload,'$.schema_version'),'0.0'),"""
+            + ",".join(selections)
+            + """) END
+            FROM state_documents WHERE namespace=?"""
+        )
+        parameters.append(namespace)
+        try:
+            with self._connection() as connection:
+                row = connection.execute(query, parameters).fetchone()
+            return self._decode(row) if row is not None else self.get(namespace)
+        except sqlite3.OperationalError as exc:
+            if not str(exc).startswith("Could not decode to UTF-8 column"):
+                raise
+            return self.get(namespace)
+
     def document_array_item(
         self,
         namespace: str,
