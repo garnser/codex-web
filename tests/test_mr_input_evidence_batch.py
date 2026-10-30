@@ -138,3 +138,41 @@ class EvidenceBatchOwnerTests(unittest.TestCase):
         raw['artifacts'] = [{'invalid': True}]
         self.f.backend.put('artifact_evidence', raw)
         with self.assertRaises(ValueError): self.get(ids)
+
+    def test_getter_rebound_from_another_owner_keeps_that_owners_fresh_store(self):
+        other = fixtures.VerificationPointEnvelopeTests(
+            methodName='test_scoped_duplicates_and_work_filter_match_existing_list_semantics')
+        other.setUp()
+        self.addCleanup(other.doCleanups)
+        self.put()
+        theirs = tuple(record.model_copy(update={'producer_identity_id': 'other-owner'})
+                       for record in self.records)
+        other.backend.put('artifact_evidence', {'schema_version': '1.5',
+            'artifacts': [], 'verifications': [],
+            'evidence': [record.model_dump(mode='json') for record in theirs]})
+        ids = tuple(record.id for record in self.records)
+        with patch.object(self.f.service, 'get_evidence', new=other.service.get_evidence):
+            self.assertEqual(self.get(ids), theirs)
+        # The custom owner's next canonical mutation must be read on next call.
+        theirs = tuple(record.model_copy(update={'producer_identity_id': 'changed-owner'})
+                       for record in theirs)
+        other.backend.put('artifact_evidence', {'schema_version': '1.5',
+            'artifacts': [], 'verifications': [],
+            'evidence': [record.model_dump(mode='json') for record in theirs]})
+        with patch.object(self.f.service, 'get_evidence', new=other.service.get_evidence):
+            self.assertEqual(self.get(ids), theirs)
+
+    def test_class_override_retains_ordinary_getter_checks_without_internal_state(self):
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        self.put()
+        original = ArtifactEvidenceService.get_evidence
+        supplied_states = []
+        def custom(owner, evidence_id, *, actor, state=None):
+            supplied_states.append(state)
+            return original(owner, evidence_id, actor=actor, state=state)
+        ids = tuple(record.id for record in self.records)
+        with patch.object(ArtifactEvidenceService, 'get_evidence', new=custom):
+            self.assertEqual(self.get(ids), self.records)
+        self.assertEqual(len(supplied_states), len(ids))
+        self.assertTrue(all(state is None for state in supplied_states),
+                        'Class override received an internal optimized snapshot')

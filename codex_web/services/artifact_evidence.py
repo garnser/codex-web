@@ -330,7 +330,8 @@ class ArtifactEvidenceService:
             return ()
         # A custom getter may enforce additional checks. Keep its actual owner
         # instead of routing around it through the canonical optimization.
-        if getattr(self.get_evidence, "__func__", None) is not ArtifactEvidenceService.get_evidence:
+        if (getattr(self.get_evidence, "__self__", None) is not self
+                or getattr(self.get_evidence, "__func__", None) is not _CANONICAL_EVIDENCE_GETTER):
             return tuple(self.get_evidence(item_id, actor=actor) for item_id in evidence_ids)
         states = self.store.evidence_states(evidence_ids,
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
@@ -1531,3 +1532,7 @@ class ArtifactEvidenceService:
                 )
             )
         return tuple(normalized)
+
+
+# Preserve the original owner boundary even when a class-level getter is replaced.
+_CANONICAL_EVIDENCE_GETTER = ArtifactEvidenceService.get_evidence
