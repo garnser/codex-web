@@ -49,7 +49,11 @@ def validate_mr_procedure_input(owner, artifact_id, content, actor, assignment, 
             or record.execution_id != assignment.execution_id or record.source != artifact.source
             or sorted(record.evidence_ids) != json.loads(meta.get('source_evidence_ids', 'null'))):
         raise ValueError('mr_input_verification_identity')
-    proofs = [service.get_evidence(i, actor=actor) for i in record.evidence_ids]
+    evidence_batch = getattr(service, 'get_evidence_batch', None)
+    proofs = (tuple(evidence_batch(record.evidence_ids, actor=actor)) if callable(evidence_batch) else
+        tuple(service.get_evidence(i, actor=actor) for i in record.evidence_ids))
+    if tuple(proof.id for proof in proofs) != record.evidence_ids:
+        raise ValueError('mr_input_evidence_identity_or_expired')
     snapshots = set()
     for proof in proofs:
         pm = proof.metadata

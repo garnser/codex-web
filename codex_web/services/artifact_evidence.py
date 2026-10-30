@@ -319,6 +319,24 @@ class ArtifactEvidenceService:
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         return self._evidence(current, evidence_id, actor)
 
+    def get_evidence_batch(
+        self,
+        evidence_ids: tuple[str, ...],
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[Evidence, ...]:
+        """Fresh scoped point semantics, in request order including repeats."""
+        if not evidence_ids:
+            return ()
+        # A custom getter may enforce additional checks. Keep its actual owner
+        # instead of routing around it through the canonical optimization.
+        if getattr(self.get_evidence, "__func__", None) is not ArtifactEvidenceService.get_evidence:
+            return tuple(self.get_evidence(item_id, actor=actor) for item_id in evidence_ids)
+        states = self.store.evidence_states(evidence_ids,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        return tuple(self.get_evidence(item_id, actor=actor, state=states[item_id])
+                     for item_id in evidence_ids)
+
     def get_verification(
         self,
         verification_id: str,

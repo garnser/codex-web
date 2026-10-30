@@ -46,7 +46,8 @@ class MRInputVerificationPointReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(f.server.calls), before, 'validation must not reread provider')
         self.assertEqual(full.call_count, 0, f'Known ID decoded whole catalog; decoded sizes={decoded}')
         self.assertTrue(decoded)
-        self.assertTrue(all(sum(size) == 1 for size in decoded), decoded)
+        self.assertTrue(all(artifacts <= 1 and evidence <= 3 and verifications <= 1
+            for artifacts, evidence, verifications in decoded), decoded)
 
     async def test_each_validation_rechecks_verification_and_original_evidence(self):
         f = self.f

@@ -302,6 +302,13 @@ principals within that check; each principal retains its normal current filters
 and authority checks. Custom/legacy owners retain their individual filter calls,
 and no snapshot survives into a later checkpoint.
 
+A governed-input callback reads its three known source Evidence IDs from one
+fresh scoped envelope. Each ID retains the same first-scoped-member selection
+before decoding, request order and repeated-ID behavior as individual reads;
+missing members still refuse. Custom getters and unsupported backend projections
+retain their existing owner/fallback validation. Every later callback reads again,
+then performs all original provenance, freshness, governance and authority checks.
+
 ### Home preservation atomic catalog guard
 
 Dormant Home preservation computes actor/tenant/source/key identities and checks
