@@ -230,7 +230,8 @@ class WorkerMRVerificationTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.artifact_evidence import EvidenceRequirement
         ci = proofs["exact_head_ci"]
         self.assertEqual(ci["result"], "pass")
-        current = SimpleNamespace(evidence=self.evidence, clock=lambda: ci["observed_at"] + 1)
+        current = SimpleNamespace(evidence=self.evidence, clock=lambda: ci["observed_at"] + 1,
+            mr_observation_configuration=None)
         ProcedureExecutionService._evidence(current, ci["id"], self.admin, self.assignment)
         current.clock = lambda: expiry + 1
         with self.assertRaisesRegex(ProcedureExecutionError, "procedure_evidence_invalid"):

@@ -379,11 +379,11 @@ class OutcomeMetricTests(unittest.TestCase):
         raw["schema_version"] = "1.2"
         self.sqlite.put(store.namespace, raw)
         migrated = store.load()
-        self.assertEqual(migrated.schema_version, "1.4")
+        self.assertEqual(migrated.schema_version, "1.5")
         self.assertEqual(migrated.evidence[0].model_dump(mode="json"), old.model_dump(mode="json"))
         feedback = self.feedback(self.usage())
         self.assertEqual(feedback.evidence_type, EvidenceType.USER_OUTCOME)
-        self.assertEqual(self.sqlite.get(store.namespace)["schema_version"], "1.4")
+        self.assertEqual(self.sqlite.get(store.namespace)["schema_version"], "1.5")
         old_reader = ContractSpec("artifact-evidence-state", "1.2", ("1.0", "1.1", "1.2"))
         with self.assertRaises(ContractCompatibilityError):
             old_reader.require("1.3")
