@@ -61,6 +61,8 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
 )
 from codex_web.services.code_host_action_contract import (
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
+    READINESS_OBSERVATION_ACTION_IDS,
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
@@ -594,7 +596,7 @@ class ActionIntentService:
         if not repository_ids:
             return
         read_only_observation = False
-        if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and binding_id is not None:
+        if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS} and binding_id is not None:
             # This is a metadata scope predicate, not credential use by the
             # requester. The ordinary provider boundary independently resolves
             # the current worker's existing credential before either GET.
@@ -607,7 +609,7 @@ class ActionIntentService:
                 and definition.capabilities.read and definition.required_authority_level == "read"
                 and definition.required_authority == ("repository.read.metadata",)
                 and definition.filesystem_access == "none" and not definition.process_access)
-        if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and not read_only_observation:
+        if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS} and not read_only_observation:
             raise ActionIntentConflictError("merge observation provider contract is unavailable")
         if self.execution_workers is None:
             raise ActionIntentConflictError(
@@ -936,7 +938,7 @@ class ActionIntentService:
         if phase == "execute" and request_or_result != intent.request:
             raise ActionRequirementError("procedure_scope_changed: request differs from canonical intent")
         requester = await asyncio.to_thread(self._requester_actor, intent)
-        if intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID}:
+        if intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS}:
             await asyncio.to_thread(self._validate_execution_repository_scope,
                 intent.execution_id,intent.request,requester,binding_id=intent.binding_id)
         authority = await asyncio.to_thread(self._canonical_authority_snapshot,
@@ -955,7 +957,8 @@ class ActionIntentService:
         if self.procedure_execution is not None:
             mediated = await self.procedure_execution.provider_admission(intent, requester, phase)
             if mediated:
-                return
+                return (mediated if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                    else None)
         previous = intent.procedure_discoveries[-1] if intent.procedure_discoveries else None
         discovery, _ = await asyncio.to_thread(self.procedure_discovery.discover, context, previous=previous)
         await asyncio.to_thread(self._record_procedure_discovery, intent.id, discovery)
@@ -1010,7 +1013,10 @@ class ActionIntentService:
         ):
             raise ActionIntentConflictError("invalid separate admission idempotency key")
         request = payload.request
-        if (request.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID}
+        if (request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                and payload.work_item_success is not None):
+            raise ActionRequirementError('Read-only observation cannot declare Work success')
+        if (request.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS}
                 and payload.verification_required is False):
             raise ActionIntentConflictError("Readiness requires independent provider verification")
         recovery_admission = capture_scope(self.execution_workers, request, payload.execution_id, actor, assignment_id)
@@ -1146,6 +1152,9 @@ class ActionIntentService:
                 "verification-required intent needs a verification-capable action"
             )
         timeout_seconds = payload.timeout_seconds or definition.timeout_seconds
+        if (request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                and timeout_seconds > definition.timeout_seconds):
+            raise ActionRequirementError('Guarded observation exceeds its registered execution limit')
         retry_policy = payload.retry_policy.model_copy(
             update={
                 "max_attempts": min(
@@ -1155,12 +1164,15 @@ class ActionIntentService:
             }
         )
         discovery = None
+        pinned = None
         if self.procedure_discovery is not None:
             context = self._procedure_context(actor=actor, request=request,
                 definition=definition, provider=provider, policy_source=payload.policy_decision.source,
                 policy_allows=payload.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=payload.execution_id, assignment_id=assignment_id)
             pinned = self.procedure_execution.creation_discovery(payload, actor) if self.procedure_execution is not None else None
             discovery, _ = (pinned, "") if pinned is not None else self.procedure_discovery.discover(context)
+        if request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID and pinned is None:
+            raise ActionRequirementError('Guarded observation requires an exact current published procedure step')
         denied = (
             (discovery is not None and not discovery.admitted)
             or
@@ -2033,6 +2045,28 @@ class ActionIntentService:
         return ReadyExecution(intent.binding_id, request_identity(intent.request), checkpoint,
             settlement_guard, lambda: admitted)
 
+    def _guarded_readonly_remaining(self, intent, actor):
+        if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            return intent.timeout_seconds
+        if self.procedure_execution is None:
+            raise ActionRequirementError('Guarded observation requires its canonical procedure owner')
+        requester = self._requester_actor(intent)
+        deadline = self.procedure_execution.readonly_operation_deadline(intent, requester)
+        remaining = min(intent.timeout_seconds, deadline - self.procedure_execution.clock())
+        if remaining <= 0:
+            raise TimeoutError('Guarded observation deadline exhausted')
+        return remaining
+
+    def _guarded_readonly_commit_guard(self, intent, actor):
+        if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            return None
+        requester = self._requester_actor(intent)
+        deadline = self.procedure_execution.readonly_operation_deadline(intent, requester)
+        def guard(_documents):
+            if self.procedure_execution.clock() >= deadline:
+                raise ActionRequirementError('Guarded observation deadline exhausted before settlement')
+        return {'guard_rows': {}, 'guard': guard}
+
     async def _verify_completion(
         self,
         intent: ActionIntent,
@@ -2046,13 +2080,19 @@ class ActionIntentService:
         provider_ok = True
         # Readiness success is never caller-optional, including legacy or
         # previously persisted records with verification_required=False.
-        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
+        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
             try:
                 ready_context = (await self._ready_verification_context(intent, result, actor)
                                  if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)
                 from codex_web.procedure_discovery import procedure_action_intent
                 with procedure_action_intent(intent.id), readiness_execution(ready_context):
-                    provider_verification = await self.execution.verify(intent.binding_id, result, actor=actor)
+                    if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                        remaining = self._guarded_readonly_remaining(intent, actor)
+                        provider_verification = await asyncio.wait_for(
+                            self.execution.verify(intent.binding_id, result, actor=actor),
+                            timeout=remaining)
+                    else:
+                        provider_verification = await self.execution.verify(intent.binding_id, result, actor=actor)
                 provider_ok = bool(provider_verification.verified)
                 findings.extend(provider_verification.findings)
             except Exception as exc:
@@ -2091,6 +2131,13 @@ class ActionIntentService:
             except Exception as exc:
                 verified = False
                 findings.append(f"readiness settlement denied: {type(exc).__name__}: {exc}")
+        if verified and intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            try:
+                self._guarded_readonly_remaining(intent, actor)
+                guarded = self._guarded_readonly_commit_guard(intent, actor)
+            except Exception:
+                verified = False
+                findings.append('guarded observation deadline/current scope refused verification settlement')
         try:
             receipt = await asyncio.to_thread(self._append_verification, intent,
                 provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
@@ -2103,6 +2150,13 @@ class ActionIntentService:
             await asyncio.to_thread(self._append_verification, intent,
                 provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
                 verified=False, findings=tuple(findings))
+        if verified and intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            try:
+                self._guarded_readonly_remaining(intent, actor)
+            except Exception:
+                # The real earlier receipt remains immutable; no completed
+                # current intent can be claimed after a slow canonical append.
+                verified = False
         return ((receipt, ready_context.admitted_intent())
                 if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else verified)
 
@@ -2314,12 +2368,18 @@ class ActionIntentService:
             action_intent_id=intent.id,
         ):
             try:
+                remaining = self._guarded_readonly_remaining(intent, actor)
                 result = await asyncio.wait_for(
                     self._execute_provider(intent, actor=actor),
-                    timeout=intent.timeout_seconds,
+                    timeout=remaining,
                 )
                 if self.procedure_execution is not None:
-                    await asyncio.to_thread(self.procedure_execution.result_admission, intent, result)
+                    if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                        remaining = self._guarded_readonly_remaining(intent, actor)
+                        await asyncio.wait_for(asyncio.to_thread(self.procedure_execution.result_admission, intent, result),
+                            timeout=remaining)
+                    else:
+                        await asyncio.to_thread(self.procedure_execution.result_admission, intent, result)
             except asyncio.TimeoutError:
                 if self.capacity is not None:
                     await asyncio.to_thread(self.capacity.record_failure,
@@ -2470,7 +2530,13 @@ class ActionIntentService:
             return await self._finish_ready(current, result, actor, verified)
         current = await asyncio.to_thread(self._intent, intent.id, actor)
         try:
+            if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                self._guarded_readonly_remaining(intent, actor)
             await asyncio.to_thread(self._advance_work_item, current)
+            if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                self._guarded_readonly_remaining(intent, actor)
+                return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED,
+                    guarded=self._guarded_readonly_commit_guard(intent, actor))
         except Exception as exc:
             return await asyncio.to_thread(self._set_status,
                 intent.id,

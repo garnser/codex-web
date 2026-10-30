@@ -398,7 +398,37 @@ The v1 observation and continuation methods retain their fixed 30-second validit
 Explicit v2 methods resolve the canonical deployment Configuration
 `code_host.mr_observation_window_seconds` once (default 30, finite 1..300) and pin
 its exact provenance in the observation. Only registered GitLab/GitHub readers
-receive this server-owned value; it is not a provider request parameter. Their
-existing 30-second HTTP operation bounds, request/response limits and exact-head
-checks remain unchanged. Longer validity does not waive fresh provider reads at
+receive this server-owned value; it is not a provider request parameter. Legacy
+whole-operation 30-second bounds, request/response limits and exact-head checks
+remain unchanged. Longer validity does not waive fresh provider reads at
 an action boundary or grant a merge, credential, lease or execution permission.
+
+### Guarded readiness execution
+
+The additive GitLab operation `code-host.pull-request.observe-readiness.v2`
+separates canonical admission work from cumulative provider I/O. Its registered
+ActionDefinition permits at most 120 seconds, one attempt and the same read-only
+repository scope as the original operation. It requires an exact current published
+procedure using schema `1.3` and `code-host-mr-procedure-input.v2`; an arbitrary
+ActionIntent cannot opt into the longer bound. The provider-wide contract remains
+`1.2`. Existing operation IDs and persisted definitions retain their prior bounds.
+An older binary rejects the unknown new operation before provider execution.
+
+Execution, fresh verification and procedure completion share one absolute deadline:
+the earliest of the procedure deadline, the step start plus its declared timeout,
+and the assignment deadline when present. Verification does not receive a new
+120-second window. Each reader separately aggregates at most 30 seconds of actual
+provider client awaits across all requests and pages. Canonical checks run before
+and after those awaits within the shared deadline, without consuming the network
+counter. Current lease, fence, authority, binding, credential and input checks still
+apply; an ordinary valid same-fence lease renewal is not an execution extension.
+
+Trusted v2 broker publication reads use the same separation of guarded wall time
+and cumulative network time, bounded by the current assignment. Legacy reads keep
+their whole-operation 30-second bound. These budgets are internal execution context,
+never caller-supplied request fields. Observation validity remains a separate,
+immutable policy pin; neither execution nor verification extends an existing expiry.
+Known execution receipts survive a later verification or projection refusal, and
+such a refusal cannot establish successful procedure completion or authorize replay.
+The existing action and intent inspectors expose the operation ID and registered
+timeout; adoption requires a separately reviewed, scanned and published Skill.

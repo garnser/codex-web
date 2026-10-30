@@ -26,6 +26,8 @@ class ReadyExecution:
     settlement_guard: Callable[[object], dict] | None = None
     admitted_intent: Callable[[], object] | None = None
     observation_policy: object | None = None
+    guarded_deadline_at: float | None = None
+    deadline_clock: Callable[[], float] | None = None
 
 
 _current: ContextVar[ReadyExecution | None] = ContextVar("code_host_ready_execution", default=None)
@@ -36,6 +38,16 @@ def current_observation_policy(binding_id):
     if context is None or context.binding_id != binding_id:
         raise ActionRequirementError('Readiness observation canonical context unavailable')
     return context.observation_policy
+
+
+def current_observation_execution_budget(binding_id):
+    context = _current.get()
+    if context is None or context.binding_id != binding_id:
+        raise ActionRequirementError('Readiness observation canonical context unavailable')
+    if context.guarded_deadline_at is None:
+        return None
+    from codex_web.code_host_read_budget import ReadExecutionBudget
+    return ReadExecutionBudget(context.guarded_deadline_at, clock=context.deadline_clock)
 
 
 @contextmanager

@@ -10,11 +10,16 @@ from codex_web.services.secrets import SecretUseDeniedError
 
 
 async def read_merge_requirements(service, binding_id, resource_id, external_id, *, actor, checkpoint=None,
-                                 audit_context=None, observation_policy=None):
+                                 audit_context=None, observation_policy=None, execution_budget=None):
     if observation_policy is not None:
         from codex_web.mr_observation_policy import ObservationPolicy
         if not isinstance(observation_policy, ObservationPolicy):
             raise CodeHostError('Canonical observation policy required')
+    if execution_budget is not None:
+        from codex_web.code_host_read_budget import ReadExecutionBudget
+        if observation_policy is None or not isinstance(execution_budget, ReadExecutionBudget):
+            raise CodeHostError('Guarded observation requires its canonical versioned context')
+        execution_budget.require_current()
     context = dict(audit_context or {})
     if (set(context) - {'assignment_id', 'execution_id', 'project_id', 'fence', 'requester_identity_id',
                         'inspection_kind', 'read_id', 'external_id', 'definition_record_id'}
@@ -46,16 +51,22 @@ async def read_merge_requirements(service, binding_id, resource_id, external_id,
     pinned = tuple(item.model_dump(mode='json') for item in (binding, resource, reference))
 
     async def check():
+        if execution_budget is not None:
+            execution_budget.require_current()
         if checkpoint is not None:
             await checkpoint()
         current = await asyncio.to_thread(scope)
         if (current[1] is not provider or tuple(item.model_dump(mode='json')
                 for item in (current[0], current[2], current[3])) != pinned):
             raise CodeHostError("Code-host read binding, Resource or credential changed")
+        if execution_budget is not None:
+            execution_budget.require_current()
 
     async def consume(credential):
         await check()
         options = ({'observation_seconds': observation_policy.seconds} if observation_policy is not None else {})
+        if execution_budget is not None:
+            options['execution_budget'] = execution_budget
         if options and provider.provider_type not in {'gitlab', 'github'}:
             raise CodeHostUnsupportedCapabilityError('Versioned observation policy unsupported by provider')
         result = await provider.merge_requirements(binding, resource, external_id,

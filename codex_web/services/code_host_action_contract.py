@@ -32,6 +32,12 @@ CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION
 CODE_HOST_BRANCH_PUBLISH_ACTION_ID = "code-host.branch.publish"
 CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID = "code-host.pull-request.merge"
 CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID = "code-host.pull-request.observe-readiness"
+CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID = "code-host.pull-request.observe-readiness.v2"
+READINESS_OBSERVATION_ACTION_IDS = (
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
+)
+GUARDED_OBSERVATION_SECONDS = 120
 CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE = "code-host-pull-request-readiness-observation"
 CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID = "code-host.pull-request.verify-merge"
 CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE = "code-host-pull-request-merge-observation"
@@ -201,6 +207,19 @@ class CodeHostActionContract:
                 expected_evidence=(CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,),
                 timeout_seconds=30.0,retry_max_attempts=1,network_access=True,
             ),) if self.provider_type == "gitlab" else ()),
+            *((ActionDefinition(
+                action_id=CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
+                title="Observe exact premerge readiness with guarded budget",
+                description="Procedure 1.3 guarded read: at most 120s total guarded execution and verification within the parent deadline; cumulative provider I/O 30s per fresh observation. Pending is not approval or merge permission.",
+                capabilities=ActionCapability(read=True,prepare=True,execute=True,
+                    idempotency=True,verification=True,evidence=True),
+                risk_class=ActionRiskClass.LOW,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.read.metadata",),required_authority_level="read",
+                credential_required=True,credential_purpose=self.credential_purpose,
+                expected_evidence=(CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,),
+                timeout_seconds=float(GUARDED_OBSERVATION_SECONDS),retry_max_attempts=1,network_access=True,
+            ),) if self.provider_type == "gitlab" else ()),
             # Readiness is additive and implemented by the declared code-host adapters.
             # Registration never grants an execution profile this capability.
             *((ActionDefinition(
@@ -251,6 +270,7 @@ class CodeHostActionContract:
             CODE_HOST_PULL_REQUEST_READY_ACTION_ID: CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
             CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID: CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
             CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID: CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
+            CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID: CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
             CODE_HOST_JOB_RERUN_ACTION_ID: CODE_HOST_JOB_RERUN_EVIDENCE,
         }
         try:

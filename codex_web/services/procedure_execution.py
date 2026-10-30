@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import time
 import uuid
 from dataclasses import replace
@@ -24,6 +25,8 @@ from codex_web.identity import TenantScope
 from codex_web.procedure_execution import ProcedureCheckpoint, ProcedureStepCheckpoint, ProcedureDeviation
 from codex_web.services.action_providers import ActionRequirementError
 from codex_web.services.code_host_action_contract import (
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
+    READINESS_OBSERVATION_ACTION_IDS,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
 )
 from codex_web.services.execution_workers import AssignmentNotFoundError, WorkerConflictError
@@ -141,7 +144,7 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_resource_lease_expired_or_revoked")
         return worker
 
-    def _save(self, assignment, checkpoint):
+    def _save(self, assignment, checkpoint, *, positive_deadline=None):
         """CAS the assignment facet; a competing advance cannot duplicate work."""
         expected = assignment.procedure_checkpoint.revision if assignment.procedure_checkpoint else 0
         def apply(state):
@@ -151,6 +154,8 @@ class ProcedureExecutionService:
             actual_id = self.run_id(current.procedure_checkpoint) if current.procedure_checkpoint else None
             if current.fence != assignment.fence or actual != expected or actual_id != expected_id:
                 raise ProcedureExecutionError("procedure_checkpoint_conflict")
+            if positive_deadline is not None and self.clock() >= positive_deadline:
+                raise ProcedureExecutionError('procedure_guarded_observation_budget_exhausted')
             checkpoint.revision = expected + 1
             current.procedure_checkpoint = checkpoint
             current.updated_at = self.clock()
@@ -371,6 +376,10 @@ class ProcedureExecutionService:
             credential = secrets[0]
         if credential:
             self._secret(credential, actor, assignment)
+        if step.action.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            from codex_web.mr_observation_policy import INPUT_V2
+            if procedure.input_protocol != INPUT_V2 or procedure.schema_version != '1.3':
+                raise ProcedureExecutionError('procedure_guarded_observation_protocol_required')
         key = self._step_origin(assignment, step.id, intent=True)
         request = ActionRequest(action_id=step.action.action_id, organization_id=actor.organization_id,
             workspace_id=actor.workspace_id, project_id=assignment.project_id, resource_ids=targets,
@@ -913,7 +922,7 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_provider_result_projection_invalid") from exc
         self._values(step.outputs, outputs, actor, assignment)
         observation_metadata = {}
-        if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+        if intent.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from codex_web.mr_observation_policy import INPUT_V2, READINESS_V2, validate_policy, expiry_valid, canonical
             expiry = outputs.get("expires_at")
             if self._procedure(assignment, actor).input_protocol == INPUT_V2:
@@ -973,10 +982,15 @@ class ProcedureExecutionService:
         # release the procedure's caller. Existing cooperative store budgets
         # bound the operation and prevent a cancelled owner making later commits.
         from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        deadline = self.readonly_operation_deadline(intent, actor)
         async def operation():
-            return await asyncio.to_thread(self._provider_result,
+            self.readonly_operation_deadline(intent, actor)
+            result = await asyncio.to_thread(self._provider_result,
                 assignment, step, intent, receipt, history, actor)
-        return await PostTurnReadinessService._run_owned(operation, seconds=5.,
+            self.readonly_operation_deadline(intent, actor)
+            return result
+        return await PostTurnReadinessService._run_owned(operation,
+            seconds=deadline - self.clock() if deadline is not None else 5.,
             name="procedure-provider-result-" + intent.id)
 
     def creation_discovery(self, payload, actor):
@@ -1069,6 +1083,46 @@ class ProcedureExecutionService:
     async def provider_admission(self, intent, actor, phase):
         return self.provider_admission_current(intent, actor, phase)
 
+    def _guarded_readonly_deadline(self, assignment, procedure, step):
+        if not step.action or step.action.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            return None
+        from codex_web.mr_observation_policy import INPUT_V2
+        if procedure.input_protocol != INPUT_V2 or procedure.schema_version != '1.3':
+            raise ProcedureExecutionError('procedure_guarded_observation_protocol_required')
+        state = assignment.procedure_checkpoint.steps[step.id]
+        if state.started_at is None:
+            raise ProcedureExecutionError('procedure_guarded_observation_not_started')
+        deadline = min(assignment.procedure_checkpoint.deadline_at,
+            state.started_at + step.timeout_seconds,
+            assignment.deadline_at if assignment.deadline_at is not None else float('inf'))
+        if not math.isfinite(deadline) or self.clock() >= deadline:
+            raise ProcedureExecutionError('procedure_guarded_observation_budget_exhausted')
+        return deadline
+
+    def readonly_operation_deadline(self, intent, actor):
+        """Current canonical metadata bounds, never a cached admission decision."""
+        if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            return None
+        assignment = self.workers.assignment_for_execution(intent.execution_id, actor=actor)
+        self._live(assignment)  # Fresh same-fence lease; ordinary renewal remains valid.
+        checkpoint = assignment.procedure_checkpoint
+        if checkpoint is None or checkpoint.status != 'running':
+            raise ProcedureExecutionError('procedure_guarded_observation_not_current')
+        procedure = self._procedure(assignment, actor)
+        step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None)
+        if (step is None or not step.action or step.action.action_id != intent.action_id
+                or checkpoint.steps[step.id].action_intent_id != intent.id):
+            raise ProcedureExecutionError('procedure_guarded_observation_not_current')
+        return self._guarded_readonly_deadline(assignment, procedure, step)
+
+    def observation_deadline_for_action(self, binding, provider, definition, value, actor, phase):
+        from codex_web.procedure_discovery import current_procedure_action_intent
+        intent = self.intents._intent(current_procedure_action_intent(), actor)
+        if binding.id != intent.binding_id or definition.action_id != intent.action_id:
+            raise ProcedureExecutionError('procedure_observation_action_mismatch')
+        requester = self.identity.actor_for_identity(intent.requested_by, scope=actor.tenant)
+        return self.readonly_operation_deadline(intent, requester), self.clock
+
     def observation_policy_for_action(self, binding, provider, definition, value, actor, phase, *, pinned=None):
         """Server-owned current intent/step selects v2, never request parameters."""
         from codex_web.procedure_discovery import current_procedure_action_intent
@@ -1091,7 +1145,7 @@ class ProcedureExecutionService:
             if pinned is not None:
                 raise ProcedureExecutionError('procedure_observation_protocol_changed')
             return None
-        if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID or binding.id != intent.binding_id:
+        if intent.action_id not in READINESS_OBSERVATION_ACTION_IDS or binding.id != intent.binding_id:
             raise ProcedureExecutionError('procedure_observation_action_mismatch')
         if phase == 'verify':
             return validate_policy(value.output.get('observation_policy'),
@@ -1110,6 +1164,7 @@ class ProcedureExecutionService:
         step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None)
         if step is None or not step.action:
             raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
+        self._guarded_readonly_deadline(assignment, procedure, step)
         if phase == "rollback":
             if not step.recovery or step.recovery.mode != "provider_rollback":
                 raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
@@ -1124,7 +1179,7 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_rollback_origin_not_current")
             return True
         if (phase != "execute" and not (phase == "verify"
-                and intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID})) or step.recovery:
+                and intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS})) or step.recovery:
             raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
         state = checkpoint.steps[step.id]
         if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":
@@ -1135,7 +1190,11 @@ class ProcedureExecutionService:
             self._step_inputs(step, checkpoint, inputs, actor, assignment))
         if binding.id != intent.binding_id or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(intent.request):
             raise ProcedureExecutionError("procedure_action_request_changed")
-        return True
+        deadline = self._guarded_readonly_deadline(assignment, procedure, step)
+        # Return the current bound computed from the very same fully admitted
+        # assignment/procedure. The facade compares its original bound without
+        # duplicating canonical reads around this complete current admission.
+        return deadline if deadline is not None else True
 
     def _require_current_run(self, assignment, run_id):
         pin = assignment.procedure_checkpoint
@@ -1237,8 +1296,11 @@ class ProcedureExecutionService:
                         raise ProcedureExecutionError("procedure_verification_incomplete")
                 if any(s.status in {"failed", "verification_failed"} for s in checkpoint.steps.values()) and not checkpoint.recovery_step_id:
                     raise ProcedureExecutionError("procedure_failed_steps")
+                deadlines = [self._guarded_readonly_deadline(assignment, procedure, declared)
+                    for declared in procedure.steps if checkpoint.steps[declared.id].started_at is not None]
+                positive_deadline = min((d for d in deadlines if d is not None), default=None)
                 checkpoint.status = "recovered" if checkpoint.recovery_step_id else "completed"
-                completed = self._save(assignment, checkpoint)
+                completed = self._save(assignment, checkpoint, positive_deadline=positive_deadline)
                 if checkpoint.attention_id:
                     await self.attention.resolve(checkpoint.attention_id, actor=actor,
                         reason="Declared procedure verification Evidence is satisfied; inspect the exact pinned checkpoint.")
@@ -1337,8 +1399,9 @@ class ProcedureExecutionService:
             state.evidence = result["evidence"]
             self._record_outputs(assignment, step, state, result.get("outputs", {}), actor)
             self._proof(assignment, step, state, actor)
+            positive_deadline = self._guarded_readonly_deadline(assignment, procedure, step)
             state.status = "succeeded"; checkpoint.status = "ready"; state.not_before = None
-            return self._save(assignment, checkpoint)
+            return self._save(assignment, checkpoint, positive_deadline=positive_deadline)
         except (ProcedureExecutionError, ProcedureAdmissionError) as exc:
             if exc.code == "procedure_checkpoint_conflict":
                 raise
