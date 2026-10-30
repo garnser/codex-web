@@ -452,3 +452,33 @@ reader rejects 1.5, rather than misinterpreting an unknown v2 method as generic
 Evidence. Once a 1.5 envelope has been written, rollback to an old binary is not a
 supported plan. This boundary needs a truthful forward state-migration Release;
 it is not a code-only rollback-compatible deployment.
+
+
+## Synchronous governed procedure input reads
+
+The canonical v2 MR procedure validator combines selected metadata reads within
+one current input validation. Content-open supplies its current Artifact header
+alongside the verified pointer and stream. This header is only a selection hint:
+after managed content I/O and the existing size/digest checks, a fresh canonical
+read selects that Artifact, its Verification, and the three source Evidence
+records. The fresh Artifact must equal the content-open header; a changed pointer,
+scope, metadata identity or lifecycle refuses validation. The original protocol,
+provenance, current policy, binding, identity and authority checks still run.
+
+The mixed read retains the first scoped Artifact and Evidence members and every
+scoped Verification match. Verification ambiguity, Work scope, original evidence
+order/repeats, canonical schema envelopes and legacy full-decoder fallbacks remain
+unchanged. PostgreSQL may use the existing optional array projection only when
+its version markers and current canonical TEXT hash agree. No format, table,
+index, schema or initialization change is required.
+
+Governance evaluates the derivation root and all three principals against one
+fresh synchronous selected-record observation. Each principal retains its own
+classification, lifecycle and context-denial decision and subsequent Role/API
+checks. No metadata view or decision survives into another provider checkpoint.
+A current-input witness uses its own post-content metadata bundle, while the
+immutable original content checksum, input identity and run attribution remain
+unchanged. Custom readers, content-open owners, decoders and governance filters
+retain the ordinary complete validation path. This internal read optimization
+adds no operator control or public state; existing canonical inspection surfaces
+remain sufficient.

@@ -173,3 +173,11 @@ This foundation is intentionally domain-neutral. Existing domains should adopt i
 6. expose governance status and action blockers in the platform administration UI.
 
 A domain is not allowed to claim governed deletion is complete until its source payload handler has actually succeeded.
+
+
+The governed MR input validator can read its derivation root and selected sources
+once for a synchronous validation, using the same record observation to evaluate
+each requesting principal independently. This is a read optimization, not a shared
+authorization result. Custom record/filter/batch owners and custom store readers
+retain their ordinary paths; no observation crosses managed-content or provider
+I/O, and the next checkpoint reads current canonical state again.
