@@ -70,6 +70,7 @@ class PostgresStateStore:
     """
 
     supports_document_array_scope_after_first = True
+    supports_execution_assignment_selection = True
 
     SCHEMA_VERSION = 1
 
@@ -250,6 +251,8 @@ class PostgresStateStore:
         if isinstance(payload, dict) and any(isinstance(payload.get(name), list)
                 for name in postgres_document_projection.ARRAY_NAMES):
             postgres_document_projection.prepare_v2(cursor, namespace, serialized)
+        if isinstance(payload, dict) and isinstance(payload.get('references'), list):
+            postgres_document_projection.prepare_references_v2(cursor, namespace, serialized)
         cursor.execute(
             """
             INSERT INTO codex_state_documents(namespace, payload, updated_at)
@@ -311,6 +314,7 @@ class PostgresStateStore:
 
                 postgres_document_projection.initialize(cursor)
                 postgres_document_projection.initialize_arrays(cursor)
+                postgres_document_projection.initialize_references(cursor)
 
     def enable_document_record_projection(self, namespace: str) -> bool:
         """Explicit initialized write owner seeds a rebuildable derived index.
@@ -355,8 +359,13 @@ class PostgresStateStore:
         array format is separately negotiated; unknown formats keep canonical
         reads/writes rather than being overwritten by a domain constructor.
         """
-        if tuple(array_names) != postgres_document_projection.ARRAY_NAMES:
+        references = tuple(array_names) == postgres_document_projection.REFERENCE_NAMES
+        if not references and tuple(array_names) != postgres_document_projection.ARRAY_NAMES:
             raise ValueError('unsupported document array projection collections')
+        prefix = (postgres_document_projection.REFERENCE_ENABLE_PREFIX if references
+            else postgres_document_projection.ARRAY_ENABLE_PREFIX)
+        other_prefix = (postgres_document_projection.ARRAY_ENABLE_PREFIX if references
+            else postgres_document_projection.REFERENCE_ENABLE_PREFIX)
         if (not getattr(self, '_document_projection_write_owner', False)
                 or getattr(self._callback_reads, 'connection', None) is not None):
             return False
@@ -366,7 +375,11 @@ class PostgresStateStore:
                 if not cursor.fetchone()[0]:
                     return False
                 self._lock(cursor, namespace)
-                key = postgres_document_projection.ARRAY_ENABLE_PREFIX + namespace
+                key = prefix + namespace
+                cursor.execute('SELECT value FROM codex_state_metadata WHERE key=%s FOR SHARE',
+                    (other_prefix + namespace,))
+                if cursor.fetchone() is not None:
+                    return False
                 cursor.execute('SELECT key,value FROM codex_state_metadata WHERE key=ANY(%s::text[]) FOR SHARE',
                     ([postgres_document_projection.ARRAY_FORMAT_KEY, key],))
                 enabled = dict(cursor.fetchall())
@@ -387,13 +400,15 @@ class PostgresStateStore:
                 cursor.execute('SELECT payload FROM codex_state_documents WHERE namespace=%s FOR UPDATE', (namespace,))
                 row = cursor.fetchone()
                 if row is not None:
-                    postgres_document_projection.prepare_v2(cursor, namespace, row[0])
+                    prepare = (postgres_document_projection.prepare_references_v2 if references
+                        else postgres_document_projection.prepare_v2)
+                    prepare(cursor, namespace, row[0])
         self._document_array_projection_namespaces.add(namespace)
         return True
 
     def _document_projection(self, namespace, array_name, item_ids, organization_id,
                              workspace_id, names, first_per_id=False, scope_after_first=False):
-        arrays = (array_name in postgres_document_projection.ARRAY_NAMES
+        arrays = (array_name in (*postgres_document_projection.ARRAY_NAMES, 'references')
             and namespace in getattr(self, '_document_array_projection_namespaces', ()))
         records = (array_name == 'records'
             and namespace in getattr(self, '_document_projection_namespaces', ()))
@@ -620,6 +635,47 @@ class PostgresStateStore:
                 )
                 payload = self._decode(cursor.fetchone())
                 return dict(payload) if isinstance(payload, dict) else {}
+
+    def execution_assignment_rows(self, namespace: str, execution_id: str, *,
+            organization_id: str, workspace_id: str) -> list[Any]:
+        """Fresh complete execution matches, plus invalid selector headers.
+
+        This fixed internal selector never chooses a newest/status/Project row.
+        The domain owner still validates and resolves every returned candidate.
+        """
+        if namespace != 'execution_workers.assignments':
+            raise ValueError('unsupported execution assignment collection')
+        if (getattr(self.record_items, '__self__', None) is not self
+                or getattr(self.record_items, '__func__', None) is not _CANONICAL_RECORD_ITEMS
+                or any(type(value) is not str for value in (execution_id, organization_id, workspace_id))):
+            return list(self.record_items(namespace).values())
+        prefix = f'{state_record_prefix(namespace)}k/'
+        rows = None
+        try:
+            with self._read_connection() as connection:
+                # Keep legacy TEXT conversion refusal inside the owning
+                # transaction's savepoint, just like other scoped projections.
+                with connection.transaction(), connection.cursor() as cursor:
+                    if self._record_collection_exists_in_cursor(cursor, namespace):
+                        cursor.execute('''WITH parsed AS MATERIALIZED (
+                        SELECT payload,payload::jsonb AS document FROM codex_state_documents
+                        WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s)
+                        SELECT payload FROM parsed WHERE
+                            jsonb_typeof(document) IS DISTINCT FROM 'object'
+                            OR jsonb_typeof(document->'id') IS DISTINCT FROM 'string'
+                            OR jsonb_typeof(document->'organization_id') IS DISTINCT FROM 'string'
+                            OR jsonb_typeof(document->'workspace_id') IS DISTINCT FROM 'string'
+                            OR jsonb_typeof(document->'execution_id') IS DISTINCT FROM 'string'
+                            OR (document->>'organization_id'=%s AND document->>'workspace_id'=%s
+                                AND document->>'execution_id'=%s)''',
+                            (prefix, prefix+'\uffff', organization_id, workspace_id, execution_id))
+                        rows = cursor.fetchall()
+        except Exception as error:
+            if getattr(error, 'sqlstate', None) not in {'22P02', '22003', '22P05'}:
+                raise
+            return list(self.record_items(namespace).values())
+        return (list(self.record_items(namespace).values()) if rows is None else
+                [self._decode(row) for row in rows])
 
     def record_count(self, namespace: str) -> int:
         with self._read_connection() as connection:
@@ -1526,3 +1582,6 @@ class PostgresStateStore:
                 documents[namespace] = records.get(namespace, {})
         check_operation_budget()
         return documents
+
+
+_CANONICAL_RECORD_ITEMS = PostgresStateStore.record_items

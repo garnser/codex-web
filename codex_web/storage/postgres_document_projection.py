@@ -288,7 +288,7 @@ def prepare_v2(cursor, namespace, serialized):
 def read_v2(cursor, namespace, array_name, item_ids, organization_id, workspace_id,
             names, first_per_id, scope_after_first):
     """Read tagged originals only when the current canonical TEXT hash agrees."""
-    if array_name not in ARRAY_NAMES:
+    if array_name not in (*ARRAY_NAMES, 'references'):
         return None
     first = 'DISTINCT ON (item_id) ' if first_per_id else ''
     order = ' ORDER BY item_id, ordinal' if first_per_id else ''
@@ -322,5 +322,104 @@ def read_v2(cursor, namespace, array_name, item_ids, organization_id, workspace_
             AND NOT EXISTS (SELECT 1 FROM unnest(%s::text[]) AS field(name)
                 WHERE header.field_types->>name IS NOT NULL AND header.field_types->>name!='array')'''
     cursor.execute(query, [namespace, *parameters, array_name, namespace,
-        ARRAY_ENABLE_PREFIX+namespace, ['schema_version', *names], list(names)])
+        (REFERENCE_ENABLE_PREFIX if array_name == 'references' else ARRAY_ENABLE_PREFIX)+namespace,
+        ['schema_version', *names], list(names)])
     return cursor.fetchone()
+
+
+REFERENCE_NAMES = ('references',)
+REFERENCE_ENABLE_PREFIX = 'document-reference-projection-v2:'
+
+
+def initialize_references(cursor):
+    """A distinct helper survives an older array-only initializer unchanged."""
+    cursor.execute('''CREATE OR REPLACE FUNCTION codex_prepare_document_references_v2(ns text, source text)
+        RETURNS void LANGUAGE plpgsql AS $$
+        DECLARE document jsonb; original json; records json; previous_records json;
+            previous_source text; previous_digest bytea; previous_source_digest bytea;
+            previous_version integer; previous_types jsonb; reference_digest bytea;
+            record_count integer; index_key_budget integer; supported boolean;
+        BEGIN
+        IF NOT EXISTS (SELECT 1 FROM codex_state_metadata
+            WHERE key='document-record-projection-version' AND value='1') OR
+            NOT EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-array-projection-format' AND value='2') OR
+            NOT EXISTS (SELECT 1 FROM codex_state_metadata
+                WHERE key='document-reference-projection-v2:' || ns AND value='2') THEN RETURN; END IF;
+        index_key_budget := current_setting('block_size')::integer / 4;
+        SELECT payload INTO previous_source FROM codex_state_documents WHERE namespace=ns FOR UPDATE;
+        document := source::jsonb;
+        original := source::json;
+        supported := jsonb_typeof(document)='object'
+            AND COALESCE(jsonb_typeof(document->'references'),'array')='array'
+            AND COALESCE(jsonb_typeof(document->'schema_version'),'null') IN ('string','null');
+        IF supported THEN
+            records := COALESCE(original->'references','[]'::json);
+            supported := json_array_length(records)::numeric*4<=9223372036854775807
+                AND NOT EXISTS (SELECT 1 FROM json_array_elements(records) AS member(value)
+                    WHERE json_typeof(value)='object' AND (
+                        COALESCE(json_typeof(value->'id'),'null')!='string' OR
+                        COALESCE(json_typeof(value->'organization_id'),'null')!='string' OR
+                        COALESCE(json_typeof(value->'workspace_id'),'null')!='string' OR
+                        octet_length(ns)+octet_length(json_build_array('references'::text,value->>'id')::text)>index_key_budget));
+        END IF;
+        IF NOT COALESCE(supported,FALSE) THEN
+            DELETE FROM codex_document_record_headers WHERE namespace=ns;
+            RETURN;
+        END IF;
+        reference_digest := sha256(convert_to(records::text,'UTF8'));
+        SELECT version,records_sha256,source_sha256,field_types
+            INTO previous_version,previous_digest,previous_source_digest,previous_types
+            FROM codex_document_record_headers WHERE namespace=ns;
+        -- Version 2 also serves the distinct Artifact group. Never interpret
+        -- its digest or ordinal slots as an earlier reference projection.
+        IF previous_version IS DISTINCT FROM 2 OR
+            COALESCE(previous_types ?| ARRAY['artifacts','evidence','verifications'],FALSE) THEN
+            DELETE FROM codex_document_record_rows WHERE namespace=ns;
+            previous_source_digest := NULL;
+            previous_digest := NULL;
+        END IF;
+        INSERT INTO codex_document_record_headers(namespace,version,source_sha256,records_sha256,
+            top_keys,field_types,schema_value,eligible)
+        SELECT ns,2,sha256(convert_to(source,'UTF8')),reference_digest,
+            ARRAY(SELECT jsonb_object_keys(document)),
+            (SELECT jsonb_object_agg(key,jsonb_typeof(value)) FROM jsonb_each(document)),
+            document->'schema_version',TRUE
+        ON CONFLICT(namespace) DO UPDATE SET version=EXCLUDED.version,
+            source_sha256=EXCLUDED.source_sha256,records_sha256=EXCLUDED.records_sha256,
+            top_keys=EXCLUDED.top_keys,field_types=EXCLUDED.field_types,
+            schema_value=EXCLUDED.schema_value,eligible=EXCLUDED.eligible;
+        -- Audit appends update the canonical source hash but never copy audit
+        -- members or rewrite unchanged reference payloads.
+        IF previous_version=2 AND previous_digest IS NOT DISTINCT FROM reference_digest THEN RETURN; END IF;
+        previous_records := '[]'::json;
+        IF previous_source_digest IS NOT NULL AND previous_source_digest=
+            sha256(convert_to(previous_source,'UTF8')) THEN
+            previous_records := COALESCE(previous_source::json->'references','[]'::json);
+        END IF;
+        record_count := json_array_length(records);
+        INSERT INTO codex_document_record_rows(namespace,ordinal,item_id,organization_id,workspace_id,payload)
+        SELECT ns,ordinality*4,json_build_array('references'::text,value->>'id')::text,
+            value->>'organization_id',value->>'workspace_id',value::text
+            FROM ROWS FROM(json_array_elements(records),json_array_elements(previous_records))
+                WITH ORDINALITY AS member(value,previous_value,ordinality)
+            WHERE json_typeof(value)='object' AND value::text IS DISTINCT FROM previous_value::text
+        ON CONFLICT(namespace,ordinal) DO UPDATE SET item_id=EXCLUDED.item_id,
+            organization_id=EXCLUDED.organization_id,workspace_id=EXCLUDED.workspace_id,payload=EXCLUDED.payload
+        WHERE (codex_document_record_rows.item_id,codex_document_record_rows.organization_id,
+            codex_document_record_rows.workspace_id,codex_document_record_rows.payload)
+            IS DISTINCT FROM (EXCLUDED.item_id,EXCLUDED.organization_id,EXCLUDED.workspace_id,EXCLUDED.payload);
+        DELETE FROM codex_document_record_rows WHERE namespace=ns AND (
+            ordinal/4>record_count OR ordinal IN (
+                SELECT ordinality*4 FROM json_array_elements(records) WITH ORDINALITY AS member(value,ordinality)
+                WHERE json_typeof(value)!='object'));
+        EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR untranslatable_character THEN
+            DELETE FROM codex_document_record_headers WHERE namespace=ns;
+        END $$''')
+
+
+def prepare_references_v2(cursor, namespace, serialized):
+    """Never dispatch Secret writes through an older Artifact-only helper."""
+    cursor.execute("SELECT to_regprocedure('codex_prepare_document_references_v2(text,text)')")
+    if cursor.fetchone()[0] is not None:
+        cursor.execute('SELECT codex_prepare_document_references_v2(%s,%s)', (namespace, serialized))

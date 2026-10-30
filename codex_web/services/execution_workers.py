@@ -39,7 +39,7 @@ from codex_web.services.execution_workspaces import (
     ExecutionWorkspaceRelease,
     ExecutionWorkspaceService,
 )
-from codex_web.storage.execution_workers import ExecutionWorkerStore
+from codex_web.storage.execution_workers import ExecutionWorkerStore, _CANONICAL_ASSIGNMENT_LIST
 
 
 class ExecutionWorkerError(RuntimeError):
@@ -429,9 +429,16 @@ class ExecutionWorkerService:
                     or actor.identity_id not in {recovery.requester_identity_id,worker.service_identity_id}):
                 raise WorkerConflictError('read-only reconciliation originating assignment changed')
             return item
+        selected = getattr(self.store, 'assignments_for_execution', None)
+        current = (selected(execution_id, organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id)
+            if (type(self.store) is ExecutionWorkerStore and callable(selected)
+                and getattr(self.store.list_assignments, '__self__', None) is self.store
+                and getattr(self.store.list_assignments, '__func__', None) is _CANONICAL_ASSIGNMENT_LIST)
+            else self.store.list_assignments())
         matches = [
             item
-            for item in self.store.list_assignments()
+            for item in current
             if self._same_scope(item, actor)
             and item.execution_id == execution_id
         ]

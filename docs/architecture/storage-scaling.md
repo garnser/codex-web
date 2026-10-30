@@ -131,6 +131,29 @@ Definition schemas or API/worker protocols. Canonical document TEXT remains the
 only truth; projected payloads do not confer authority or bypass current domain,
 policy, actor, resource or lifecycle validation.
 
+The same optional format also supports the fixed Secret `references` group,
+using the previously unused ordinal slot 0 (`original_ordinal * 4`). Its separate
+`document-reference-projection-v2:<namespace>=2` opt-in retains the same global
+format-2 marker, table-layout marker 1 and header version 2. The two namespace
+opt-in groups cannot be enabled over one another. Only complete reference
+metadata is copied: credential material remains behind its existing backend and
+`audit` members are never projected. Reference reads preserve first-global-ID
+selection before tenant filtering; a foreign first duplicate or missing ID still
+uses the original Secret owner to retain its denial/not-found behavior. Existing
+custom-owner fallbacks, current ACL, service scope, lifecycle and rotation checks
+are unchanged on every metadata/Use request.
+
+Secret writers use the distinct `codex_prepare_document_references_v2` helper.
+An older initialized binary may replace its three-array helper without replacing
+this reference-aware helper; a new Secret write must never refresh a header hash
+through a helper that cannot maintain slot 0. The reference-only digest lets an
+audit append update the current source fingerprint without rewriting unchanged
+reference rows. Old Secret writes bypass the new helper and the existing
+hash-invalidation trigger erases every projected reference in that transaction.
+Unknown reference opt-in markers retain canonical fallback without being
+rewritten by initialization. This is optional backend metadata and SQL-helper
+evolution; canonical Secret-state and API/worker schema versions do not change.
+
 Version-2 reads retain the current whole-document SHA-256 comparison in the same
 statement snapshot, envelope/schema validation and complete original member
 TEXT. Artifact and Evidence point reads select the first matching scoped member;
@@ -746,3 +769,23 @@ boundaries; canonical admission, authority, lease/fence and supervision budgets
 remain unchanged. Context eligibility remains an observation, not an admission.
 Collection-list inspection remains a distinct snapshot operation; the exact lookup
 does not make a full list an indexed point read.
+
+## Current execution assignment selection
+
+The canonical worker owner may read complete assignment records for one exact
+execution, organization and workspace using the optional PostgreSQL/SQLite
+selector. Every matching status and Project remains visible; the existing
+newest `(created_at, id)` ordering and agreement across **all** repository scopes
+and targets remain the authority-resolution rules. This is not a single-row or
+active-assignment shortcut, and callers cannot supply an assignment ID hint.
+
+Each call makes a fresh database observation. Selected records receive complete
+domain validation; malformed selector headers remain fail-closed, and unsupported
+legacy JSON conversion retains the full canonical reader. Well-typed unrelated
+execution/tenant headers do not require validation of their unrelated record
+bodies: this is a selected-record boundary, not a catalog-wide integrity scan.
+Legacy-state migration and custom list/backend owners retain their original
+reader paths. No identity, lease, fence, freshness, current authority, storage
+format, write owner, cache or execution deadline changes.
+Existing assignment inspection and operator UI use the same canonical records;
+this internal read optimization introduces no new public fields or UI controls.
