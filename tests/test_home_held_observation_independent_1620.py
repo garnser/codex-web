@@ -67,9 +67,12 @@ class HeldObservationIndependentTests(fixture.UnownedHomeUpgradeTests):
             self.intents.store.update(mutate,intent_ids=(intent.id,))
             return artifact
         with patch.object(self.f.sqlite,'home_intent_recovery_rows',wraps=rows) as reader,patch.object(self.artifacts,'create_artifact',side_effect=atomic):
-            with self.assertRaises(ExecutionPrestartRefusal):self.drain()
+            # This asserts the strict preservation owner, not the independent
+            # diagnostic consumed by whole-service Upgrade drain.
+            with self.assertRaises(ExecutionPrestartRefusal):self.checkpoint()
             self.assertEqual(reader.call_count,2)
         self.assertEqual(len(created),1);self.assertEqual(self.effects,0)
+        self.assertEqual(self.intents.get(intent.id,self.actor).status,'uncertain')
         current=self.upgrades.get(self.plan.id,actor=self.operator)
         self.assertFalse(current.maintenance_mode);self.assertEqual(current.admission_epoch,0)
         self.assertEqual(self.planned._dormant_artifact(self.plan.id,self.actor).id,created[0])
