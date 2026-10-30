@@ -319,6 +319,44 @@ class ArtifactEvidenceService:
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         return self._evidence(current, evidence_id, actor)
 
+    def get_evidence_batch(
+        self,
+        evidence_ids: tuple[str, ...],
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[Evidence, ...]:
+        """Fresh scoped point semantics, in request order including repeats."""
+        if not evidence_ids:
+            return ()
+        # A custom getter may enforce additional checks. Keep its actual owner
+        # instead of routing around it through the canonical optimization.
+        if (getattr(self.get_evidence, "__self__", None) is not self
+                or getattr(self.get_evidence, "__func__", None) is not _CANONICAL_EVIDENCE_GETTER):
+            return tuple(self.get_evidence(item_id, actor=actor) for item_id in evidence_ids)
+        states = self.store.evidence_states(evidence_ids,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        return tuple(self.get_evidence(item_id, actor=actor, state=states[item_id])
+                     for item_id in evidence_ids)
+
+    def get_verification(
+        self,
+        verification_id: str,
+        *,
+        actor: AuthenticationActor,
+        work_item_ref: str | None = None,
+    ) -> Verification:
+        """Read a known canonical ID, refusing absent or ambiguous scoped rows."""
+        if not isinstance(verification_id, str) or not verification_id:
+            raise VerificationNotFoundError("verification not found")
+        state = self.store.verification_state(verification_id,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id)
+        rows = [item for item in state.verifications
+                if item.id == verification_id and self._same_scope(item, actor)
+                and (work_item_ref is None or item.work_item_ref == work_item_ref)]
+        if len(rows) != 1:
+            raise VerificationNotFoundError("verification unavailable or ambiguous")
+        return rows[0]
+
     def list_artifacts(
         self,
         actor: AuthenticationActor,
@@ -489,7 +527,7 @@ class ArtifactEvidenceService:
         chunk_size: int = 65536,
         verify: bool = True,
     ) -> tuple[ArtifactContentPointer, Iterator[bytes]]:
-        artifact = self._artifact(self.store.load(), artifact_id, actor)
+        artifact = self.get_artifact(artifact_id, actor=actor)
         pointer = artifact.content
         if pointer is None:
             raise ArtifactEvidenceError("artifact has no managed content")
@@ -1494,3 +1532,7 @@ class ArtifactEvidenceService:
                 )
             )
         return tuple(normalized)
+
+
+# Preserve the original owner boundary even when a class-level getter is replaced.
+_CANONICAL_EVIDENCE_GETTER = ArtifactEvidenceService.get_evidence

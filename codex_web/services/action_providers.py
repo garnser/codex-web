@@ -24,6 +24,8 @@ from codex_web.identity import (
 from codex_web.resources import ResourceType
 from codex_web.services.action_provider_conformance import ActionProviderConformanceSuite
 from codex_web.services.code_host_action_contract import (
+    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
+    READINESS_OBSERVATION_ACTION_IDS,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
 )
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
@@ -332,6 +334,7 @@ class ActionExecutionService:
         self.secret_broker = secret_broker
         self.procedure_admission = None
         self.observation_policy_resolver = None
+        self.observation_deadline_resolver = None
 
     @staticmethod
     def _definition(provider: ActionProvider, action_id: str) -> ActionDefinition:
@@ -436,6 +439,12 @@ class ActionExecutionService:
             raise ActionRequirementError('Readiness observation requires canonical ActionIntent admission')
         resolver = self.observation_policy_resolver
         policy = resolver(binding, provider, definition, value, actor, phase) if resolver else None
+        deadline = None
+        deadline_clock = None
+        if value.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            if self.observation_deadline_resolver is None or policy is None:
+                raise ActionRequirementError('Guarded observation requires canonical v2 deadline admission')
+            deadline, deadline_clock = self.observation_deadline_resolver(binding, provider, definition, value, actor, phase)
         from codex_web.services.secrets import current_async_use_reference
         used_reference = current_async_use_reference()
         reference_id = value.credential_ref if isinstance(value, ActionRequest) else binding.credential_ref
@@ -447,6 +456,8 @@ class ActionExecutionService:
         provider_pin = tuple(getattr(provider, key, None) for key in
             ('provider_type','provider_instance','contract_version','api_base','web_base'))
         def current():
+            if deadline is not None and deadline_clock() >= deadline:
+                raise ActionRequirementError('Guarded observation deadline changed or expired')
             if policy is not None and resolver(binding, provider, definition, value, actor, phase,
                     pinned=policy) != policy:
                 raise ActionRequirementError('Readiness observation policy changed')
@@ -466,14 +477,17 @@ class ActionExecutionService:
         async def checkpoint():
             try:
                 current()
-                await self.procedure_admission(binding, provider, definition, value, actor, phase)
+                admitted = await self.procedure_admission(binding, provider, definition, value, actor, phase)
+                if deadline is not None and admitted != deadline:
+                    raise ActionRequirementError('Guarded observation deadline changed')
                 current()
             except ActionRequirementError:
                 raise
             except Exception as error:
                 raise ActionRequirementError('Readiness observation current canonical admission unavailable') from error
         return ReadyExecution(binding.id, request_identity(value) if isinstance(value, ActionRequest) else '', checkpoint,
-            observation_policy=policy)
+            observation_policy=policy, guarded_deadline_at=deadline,
+            deadline_clock=deadline_clock)
 
     async def execute(
         self,
@@ -488,13 +502,13 @@ class ActionExecutionService:
             await self.procedure_admission(binding, provider, definition, request, actor, "execute")
 
         async def invoke(credential: str | None) -> ActionResult:
-            if request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            if request.action_id in READINESS_OBSERVATION_ACTION_IDS:
                 from codex_web.services.code_host_readiness import readiness_execution
                 with readiness_execution(self._observation_context(binding, provider, definition, request, actor, 'execute')):
                     result = await provider.execute(request, binding=binding, credential=credential)
             else:
                 result = await provider.execute(request, binding=binding, credential=credential)
-            if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and self.procedure_admission is not None:
+            if request.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS} and self.procedure_admission is not None:
                 await self.procedure_admission(binding,provider,definition,result,actor,"verify")
             return _credential_safe_output(result, credential)
 
@@ -528,17 +542,17 @@ class ActionExecutionService:
         )
         definition = self._definition(provider, result.action_id)
         definition.capabilities.require("verification")
-        if result.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and self.procedure_admission is not None:
+        if result.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS} and self.procedure_admission is not None:
             await self.procedure_admission(binding,provider,definition,result,actor,"verify")
 
         async def invoke(credential: str | None) -> ActionVerification:
-            if result.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+            if result.action_id in READINESS_OBSERVATION_ACTION_IDS:
                 from codex_web.services.code_host_readiness import readiness_execution
                 with readiness_execution(self._observation_context(binding, provider, definition, result, actor, 'verify')):
                     verification = await provider.verify(result, binding=binding, credential=credential)
             else:
                 verification = await provider.verify(result, binding=binding, credential=credential)
-            if result.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID} and self.procedure_admission is not None:
+            if result.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS} and self.procedure_admission is not None:
                 await self.procedure_admission(binding,provider,definition,result,actor,"verify")
             return _credential_safe_output(verification, credential)
 

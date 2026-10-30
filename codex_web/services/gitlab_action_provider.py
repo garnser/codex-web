@@ -24,6 +24,7 @@ from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.services.code_host_readiness import readiness_checkpoint, readiness_verification_checkpoint
 from codex_web.services.code_host_continuation import continuation_for
 from codex_web.services.code_host_action_contract import (
+    READINESS_OBSERVATION_ACTION_IDS,
     CODE_HOST_BRANCH_EVIDENCE,
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_CHANGE_REQUEST_EVIDENCE,
@@ -262,7 +263,7 @@ class GitLabActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         project = self.contract.locator(request)
-        if request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+        if request.action_id in READINESS_OBSERVATION_ACTION_IDS:
             if not binding.credential_ref or request.credential_ref != binding.credential_ref:
                 raise ValueError('Readiness observation requires its configured provider credential reference')
             return {"operation":"pull-request-readiness-observation", "repository":project,
@@ -693,7 +694,7 @@ class GitLabActionProvider:
                 "provider_mutation_performed": mutated,
                 "metadata_sha256": hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
             summary = "Exact open GitLab merge request is ready for review; no approval or merge was performed."
-        elif request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+        elif request.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from codex_web.services.code_host_readiness_observation import VERSION, VERSION_V2, observation_outputs, borrowed_credential_metadata
             from codex_web.services.code_host_readiness import current_observation_policy
             parameters = self.contract.pull_request_observe_readiness(request)
@@ -824,11 +825,12 @@ class GitLabActionProvider:
         # or grant. API base belongs to this registered provider, never the caller.
         reader_binding = SimpleNamespace(id=binding.id, provider_instance=binding.provider_instance,
             base_url=self.api_base)
-        from codex_web.services.code_host_readiness import current_observation_policy
+        from codex_web.services.code_host_readiness import current_observation_policy, current_observation_execution_budget
         policy = current_observation_policy(binding.id)
+        execution_budget = current_observation_execution_budget(binding.id)
         fact = await GitLabMergeRequirementsReader(self.client, reader_binding, resource,
             project, credential, checkpoint=checkpoint,
-            observation_seconds=policy.seconds if policy else 30).read(str(parameters['pull_request_number']))
+            observation_seconds=policy.seconds if policy else 30, execution_budget=execution_budget).read(str(parameters['pull_request_number']))
         if fact.head_revision != parameters['expected_head_sha'] or fact.changed:
             raise ActionRequirementError('Readiness observation exact head changed')
         return fact
@@ -852,7 +854,7 @@ class GitLabActionProvider:
             raise ValueError("GitLab result binding does not match verification binding")
         project = self.contract.locator_for_result(result, binding)
         verified = False
-        if result.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID:
+        if result.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from types import SimpleNamespace
             from codex_web.services.code_host_readiness_observation import observation_outputs, borrowed_credential_metadata
             parameters = self.contract.pull_request_observe_readiness(SimpleNamespace(parameters={

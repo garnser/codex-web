@@ -657,6 +657,30 @@ class DataGovernanceService:
             organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         return self._filter_context_state(payload, state, actor=actor)
 
+    def filter_context_for_actors(
+        self,
+        payload: ContextFilterRequest,
+        *,
+        actors: tuple[AuthenticationActor, ...],
+    ) -> tuple[ContextFilterResult, ...]:
+        """Evaluate every principal against one fresh scoped record observation.
+
+        This observation lasts only for this synchronous call. It does not
+        replace each principal's filter or any caller's current authority check.
+        Custom filter implementations and different tenants retain separate
+        ordinary calls rather than sharing another principal's record view.
+        """
+        if not actors:
+            return ()
+        scope = actors[0].tenant
+        if (any(actor.tenant != scope for actor in actors)
+                or getattr(self.filter_context, '__func__', None) is not _CANONICAL_CONTEXT_FILTER
+                or getattr(self.filter_context, '__self__', None) is not self):
+            return tuple(self.filter_context(payload, actor=actor) for actor in actors)
+        state = self.store.context_state(payload.record_ids,
+            organization_id=actors[0].organization_id, workspace_id=actors[0].workspace_id)
+        return tuple(self._filter_context_state(payload, state, actor=actor) for actor in actors)
+
     def filter_leaf_context(
         self,
         payload: ContextFilterRequest,

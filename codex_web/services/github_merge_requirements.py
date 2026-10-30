@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime
 import hashlib
@@ -70,10 +71,11 @@ class GitHubMergeRequirementsReader:
     MAX_PROJECTION_BYTES = 128 * 1024
 
     def __init__(self, client, binding, resource, repository, credential, *, clock=time.time, checkpoint=None,
-                 observation_seconds=30):
+                 observation_seconds=30, execution_budget=None):
         if type(observation_seconds) is not int or not 1 <= observation_seconds <= 300:
             raise ValueError('invalid observation validity')
         self.observation_seconds = observation_seconds
+        self.execution_budget = execution_budget
         if not credential:
             raise CodeHostError("authenticated merge-requirement reads require a credential reference")
         if (not isinstance(repository, str) or len(repository.split('/')) != 2
@@ -111,20 +113,25 @@ class GitHubMergeRequirementsReader:
 
     async def _json(self, path, *, params=None, query=None):
         async def guard():
-            if self.checkpoint is not None:
-                try:
+            try:
+                if self.execution_budget is not None:
+                    self.execution_budget.require_current()
+                if self.checkpoint is not None:
                     await self.checkpoint()
-                except Exception as exc:
-                    raise _GuardRejected(exc) from None
+                if self.execution_budget is not None:
+                    self.execution_budget.require_current()
+            except Exception as exc:
+                raise _GuardRejected(exc) from None
         await guard()
         self.calls += 1
         if self.calls > 40:
             raise GitHubReadIncompleteError("request_limit")
         try:
-            result = await self.client.read_json_bounded(
+            request = self.client.read_json_bounded(
                 self.graphql_base if query is not None else self.binding.base_url,
                 self.graphql_path if query is not None else path, token=self.credential,
                 params=params, query_body=query)
+            result = await request if self.execution_budget is None else await self.execution_budget.request(request)
         except Exception:
             await guard()
             raise
@@ -418,6 +425,14 @@ class GitHubMergeRequirementsReader:
             self.gates = after_gates
 
     async def read(self, external_id):
+        if self.execution_budget is None:
+            return await self._read_once(external_id)
+        async with asyncio.timeout(self.execution_budget.remaining_seconds()):
+            result = await self._read_once(external_id)
+            self.execution_budget.require_current()
+            return result
+
+    async def _read_once(self, external_id):
         if self.used:
             raise CodeHostError("A merge-requirement reader owns exactly one observation")
         self.used = True
@@ -428,7 +443,7 @@ class GitHubMergeRequirementsReader:
         self.number, self.started = int(external_id), float(self.clock())
         self.legacy = self.rules = self.gates = self.checks = self.reviews = self.threads = None
         try:
-            async with asyncio.timeout(30):
+            async with (asyncio.timeout(30) if self.execution_budget is None else nullcontext()):
                 repository = object_(await self._json(self.root))
                 self.repository_id = native_id(repository.get('id'))
                 if not self.repository_id or str(repository.get('full_name', '')).casefold() != self.repository.casefold():
@@ -454,8 +469,12 @@ class GitHubMergeRequirementsReader:
             if self.pr is None:
                 raise CodeHostError("GitHub could not establish the exact repository and pull-request scope") from None
             self._source(Source.PULL_REQUEST, Availability.UNKNOWN, "read_did_not_complete")
+        if self.execution_budget is not None:
+            self.execution_budget.require_current()
         if self.checkpoint is not None:
             await self.checkpoint()
+        if self.execution_budget is not None:
+            self.execution_budget.require_current()
         try:
             result = self._result()
         except (ValueError, TypeError, KeyError):

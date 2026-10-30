@@ -240,11 +240,11 @@ class GitHubCodeHostProvider:
 
     async def merge_requirements(self, binding: CodeHostProviderBinding, resource: Resource,
                                  external_id: str, *, credential: str | None, checkpoint=None,
-                                 observation_seconds=30) -> CodeHostMergeRequirementsFact:
+                                 observation_seconds=30, execution_budget=None) -> CodeHostMergeRequirementsFact:
         from codex_web.services.github_merge_requirements import GitHubMergeRequirementsReader
         return await GitHubMergeRequirementsReader(self.client, binding, resource,
             _repository_name(resource), credential, checkpoint=checkpoint,
-            observation_seconds=observation_seconds).read(external_id)
+            observation_seconds=observation_seconds, execution_budget=execution_budget).read(external_id)
 
     async def pull_requests(
         self,

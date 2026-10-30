@@ -434,13 +434,36 @@ merge approval. Evidence metadata exposes the pinned policy and absolute expiry
 through existing Evidence/procedure inspectors; historical records are distinct
 from currently usable observations.
 
-Observation validity is separate from operation budgets. The existing registered
+Observation validity is separate from operation budgets. The original registered
 read-only action/ActionIntent execution budget remains 30 seconds, including its
-canonical execution checkpoints; provider HTTP I/O remains separately bounded at
-30 seconds. Provider verification and canonical result projection retain their
-existing ownership/budgets (including the joined five-second projection owner),
-and the published procedure's overall deadline and assignment lease still apply.
-A larger observation window promises none of those operations additional time.
+canonical execution checkpoints. A larger observation window alone promises no
+additional execution time.
+
+The additive `code-host.pull-request.observe-readiness.v2` operation instead
+registers a 120-second maximum and requires an exact current published schema
+`1.3` / input v2 procedure. Its existing persisted ActionDefinition timeout field
+and the step's declared timeout carry the bound; there is no new request timeout
+field or stored schema. Execute, fresh verification, output projection and final
+completion share the earliest of the procedure deadline, step start plus its
+timeout, and any assignment deadline. Fresh verification does not reset the
+deadline. Current lease/fence checks remain independent, allowing ordinary valid
+same-fence renewal without granting more procedure time. Canonical result
+projection for the new operation uses the existing joined owner and cooperative
+storage budget with only the remaining shared deadline; it does not start another
+execution window. Legacy projection retains its five-second bound.
+
+Each guarded reader permits at most 30 cumulative seconds of actual provider I/O
+across its requests; canonical before/after checks run within the wall deadline
+but outside that network counter. Trusted v2 broker publication reads use the
+same separation, capped at 120 seconds and the current assignment deadline.
+Legacy readers and the original action keep their whole-operation bounds.
+Existing input expiry, current-use governance, authority and exact-head checks
+are unchanged. A known durable execution result is retained if a later phase
+refuses completion. The provider-wide contract stays `1.2`; old binaries reject
+the new operation ID before execution. A separately reviewed, scanned and
+published Skill revision adopts it, with operation ID and timeout visible through
+existing catalog and intent inspectors. See [guarded readiness execution](code-host-providers.md#guarded-readiness-execution).
+
 An execution timeout remains UNKNOWN until its exact original intent/receipt is
 reconciled; it does not authorize another request, new nonce or provider replay.
 The controlled private 47-second input-to-start case is not a live host-capacity
@@ -452,3 +475,11 @@ schema. Local worker registration advertises execution transport contracts and
 capabilities, not a second procedure-schema version. Existing runtime capability
 revision and worker/lease checks remain enforced; a new published Skill revision
 cannot enlarge an existing assignment's sealed procedure custody.
+
+MR input admission evaluates the requester, context requester and executing worker
+against one fresh selected Governance record observation per validator call. Each
+principal retains its independent classification/lifecycle filter and current API
+and Role checks. The observation never crosses a provider/network checkpoint or
+request. Custom Governance filters and different tenants retain ordinary separate
+filter calls. This changes no stored format, authority or observation deadline;
+there is no additional operator UI setting.

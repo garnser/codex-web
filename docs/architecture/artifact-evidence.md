@@ -286,6 +286,29 @@ its original JSON value. This preserves duplicate order,
 numeric types and legacy decoder/savepoint fallback while avoiding repeated
 whole-catalog parsing. It changes no authority, schema, timeout or UI contract.
 
+Known governed-input Verification IDs use the same fresh scoped envelope reader
+through `get_verification`, selecting **all** matching ID/organization/workspace
+members rather than a first match. The existing Work filter applies before the
+exactly-one check, so missing or ambiguous scoped matches remain refused. Each
+native input checkpoint still rechecks the original Verification result, source
+Evidence, governance, current policy and authority; neither a prior successful
+lookup nor an immutable input bypasses revocation. This changes no public DTO,
+persisted format, provider I/O budget or inspection surface.
+
+Managed content opening reuses the existing fresh scoped Artifact getter and
+retains its first-scoped-member selection, content-state, digest and range guards.
+Governed-input checks may share one selected Governance snapshot across the three
+principals within that check; each principal retains its normal current filters
+and authority checks. Custom/legacy owners retain their individual filter calls,
+and no snapshot survives into a later checkpoint.
+
+A governed-input callback reads its three known source Evidence IDs from one
+fresh scoped envelope. Each ID retains the same first-scoped-member selection
+before decoding, request order and repeated-ID behavior as individual reads;
+missing members still refuse. Custom getters and unsupported backend projections
+retain their existing owner/fallback validation. Every later callback reads again,
+then performs all original provenance, freshness, governance and authority checks.
+
 ### Home preservation atomic catalog guard
 
 Dormant Home preservation computes actor/tenant/source/key identities and checks

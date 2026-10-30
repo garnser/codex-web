@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import re
 import time
 from urllib.parse import quote
@@ -65,13 +66,14 @@ class _GuardRejected(Exception):
 
 
 class GitLabMergeRequirementsReader:
-    """Bounded 30s provider read, finite validity, at most eight GETs/128KiB."""
+    """Legacy whole-30s or trusted-wall read, at most eight GETs/128KiB."""
 
     def __init__(self, client, binding, resource, project, credential, *, checkpoint=None, clock=time.time,
-                 observation_seconds=30):
+                 observation_seconds=30, execution_budget=None):
         if type(observation_seconds) is not int or not 1 <= observation_seconds <= 300:
             raise ValueError('invalid observation validity')
         self.observation_seconds = observation_seconds
+        self.execution_budget = execution_budget
         if not credential:
             raise CodeHostError('Authenticated GitLab merge-requirement read required')
         if not isinstance(project, str) or not project or len(project) > 1024:
@@ -89,11 +91,15 @@ class GitLabMergeRequirementsReader:
             reason_code=reason, record_count=records)
 
     async def guard(self):
-        if self.checkpoint is not None:
-            try:
+        try:
+            if self.execution_budget is not None:
+                self.execution_budget.require_current()
+            if self.checkpoint is not None:
                 await self.checkpoint()
-            except Exception as error:
-                raise _GuardRejected(error) from None
+            if self.execution_budget is not None:
+                self.execution_budget.require_current()
+        except Exception as error:
+            raise _GuardRejected(error) from None
 
     async def get(self, path):
         await self.guard()
@@ -101,7 +107,8 @@ class GitLabMergeRequirementsReader:
         if self.calls > 8:
             raise GitLabReadIncompleteError('request_limit')
         try:
-            value = await self.client.read_json_bounded(self.binding.base_url, path, token=self.credential)
+            request = self.client.read_json_bounded(self.binding.base_url, path, token=self.credential)
+            value = await request if self.execution_budget is None else await self.execution_budget.request(request)
         except Exception:
             await self.guard()
             raise
@@ -157,6 +164,14 @@ class GitLabMergeRequirementsReader:
         return dict(approved=raw['approved'], required=required, left=left, users=tuple(sorted(users)))
 
     async def read(self, external_id):
+        if self.execution_budget is None:
+            return await self._read_once(external_id)
+        async with asyncio.timeout(self.execution_budget.remaining_seconds()):
+            result = await self._read_once(external_id)
+            self.execution_budget.require_current()
+            return result
+
+    async def _read_once(self, external_id):
         if self.used:
             raise CodeHostError('A merge-requirement reader owns exactly one observation')
         self.used = True
@@ -167,7 +182,7 @@ class GitLabMergeRequirementsReader:
         self.source(Source.EFFECTIVE_RULES, Availability.UNKNOWN, 'native_gate_is_not_effective_rule_inventory')
         self.source(Source.CONVERSATIONS, Availability.UNKNOWN, 'aggregate_resolution_is_not_thread_inventory')
         try:
-            async with asyncio.timeout(30):
+            async with (asyncio.timeout(30) if self.execution_budget is None else nullcontext()):
                 self.project_id = self.project_identity(await self.get(self.root))
                 path = self.root + f'/merge_requests/{self.number}'
                 self.pr = self.pull(await self.get(path))

@@ -50,15 +50,28 @@ async def read_merge_requirements(broker, assignment, worker_actor, resolved, va
         return current, actor, requester, binding_id, repository_id, action_binding.model_dump(mode='json'), provider
 
     original = await asyncio.to_thread(scope)
+    execution_budget = None
+    if observation_policy is not None:
+        from codex_web.code_host_read_budget import ReadExecutionBudget
+        from codex_web.services.code_host_action_contract import GUARDED_OBSERVATION_SECONDS
+        deadline = broker._clock() + GUARDED_OBSERVATION_SECONDS
+        if original[0].deadline_at is not None:
+            deadline = min(deadline, original[0].deadline_at)
+        execution_budget = ReadExecutionBudget(deadline, clock=broker._clock)
     latest = [original]
     read_id = uuid.uuid4().hex
 
     async def checkpoint():
+        if execution_budget is not None:
+            execution_budget.require_current()
         current = await asyncio.to_thread(scope)
         if current[3:6] != original[3:6] or current[6] is not original[6]:
             raise ControlPlaneBrokerDeniedError("Merge-requirement provider binding changed")
         latest[0] = current
+        if execution_budget is not None:
+            execution_budget.require_current()
 
+    budget_options = {'execution_budget': execution_budget} if execution_budget is not None else {}
     item = await broker.code_hosts.merge_requirements(original[3], original[4], resolved.target_ref,
         actor=original[1], checkpoint=checkpoint, audit_context={
             'assignment_id': assignment.id, 'execution_id': assignment.execution_id,
@@ -66,7 +79,7 @@ async def read_merge_requirements(broker, assignment, worker_actor, resolved, va
             'requester_identity_id': original[2].identity_id, 'inspection_kind': inspection_kind,
             'read_id': read_id, 'external_id': resolved.target_ref,
             'definition_record_id': assignment.execution_profile_definition.record_id},
-        observation_policy=observation_policy)
+        observation_policy=observation_policy, **budget_options)
     await checkpoint()
     current, actor, requester = latest[0][:3]
     return {'item': item.model_dump(mode='json'), 'scope': {

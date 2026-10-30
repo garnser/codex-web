@@ -115,6 +115,40 @@ class ArtifactEvidenceStore:
             organization_id=organization_id, workspace_id=workspace_id,
             collection_names=("artifacts", "evidence", "verifications")))
 
+    def evidence_states(self, evidence_ids: tuple[str, ...], *, organization_id: str,
+                        workspace_id: str) -> dict[str, ArtifactEvidenceState]:
+        """One fresh snapshot, selecting each ID's first scoped raw member.
+
+        Match evidence_state's POINT selection before decoding, including its
+        duplicate and legacy fallback semantics. No result survives this call.
+        """
+        ids = tuple(dict.fromkeys(evidence_ids))
+        if not ids:
+            return {}
+        reader = getattr(self.store, "document_array_items_envelope", None)
+        if not callable(reader):
+            state = self.load()
+        else:
+            state = self._decode(reader(self.namespace, "evidence", ids,
+                organization_id=organization_id, workspace_id=workspace_id,
+                collection_names=("artifacts", "evidence", "verifications"), first_per_id=True))
+        return dict.fromkeys(ids, state)
+
+    def verification_state(self, verification_id: str, *, organization_id: str,
+                           workspace_id: str) -> ArtifactEvidenceState:
+        """Select all scoped matches for one known ID, retaining ambiguity.
+
+        Unlike first-match Artifact/Evidence reads, verification consumers must
+        refuse duplicate IDs. Reuse the canonical envelope/header decoder and
+        retain full validation on unsupported/legacy backend fallbacks.
+        """
+        reader = getattr(self.store, "document_array_items_envelope", None)
+        if not callable(reader):
+            return self.load()
+        return self._decode(reader(self.namespace, "verifications", (verification_id,),
+            organization_id=organization_id, workspace_id=workspace_id,
+            collection_names=("artifacts", "evidence", "verifications"), first_per_id=False))
+
     def load(self) -> ArtifactEvidenceState:
         return self._decode(self.store.get(self.namespace))
 

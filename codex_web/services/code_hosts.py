@@ -136,12 +136,12 @@ class CodeHostService:
     async def merge_requirements(self, binding_id: str, resource_id: str, external_id: str, *,
         actor: AuthenticationActor, checkpoint: Callable[[], Awaitable[None]] | None = None,
         audit_context: dict[str, str | int] | None = None,
-        observation_policy=None,
+        observation_policy=None, execution_budget=None,
     ) -> CodeHostMergeRequirementsFact:
         from codex_web.services.code_host_merge_reads import read_merge_requirements
         return await read_merge_requirements(self, binding_id, resource_id, external_id,
                                              actor=actor, checkpoint=checkpoint, audit_context=audit_context,
-                                             observation_policy=observation_policy)
+                                             observation_policy=observation_policy, execution_budget=execution_budget)
 
     @staticmethod
     def _require_capability(
