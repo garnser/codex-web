@@ -38,6 +38,14 @@ RECOVERY_CAPTURE_STAGES = frozenset({
 })
 
 
+class StorageLockUnavailable(TimeoutError):
+    """A bounded canonical lock acquisition ended before its updater ran.
+
+    This is not an unknown write outcome or permission to retry a mutation.
+    Callers may only reconcile through their existing current-authority owner.
+    """
+
+
 class StorageOperationBudget:
     """Cooperative deadline for existing store/validation work, not a lease.
 

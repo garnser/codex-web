@@ -15,6 +15,7 @@ from codex_web.work_graph_telemetry import graph_read_connection, graph_read_sta
 
 from codex_web.storage.state_store import (
     check_operation_budget, storage_operation_budget,
+    StorageLockUnavailable,
     OperationTimingMetrics,
     parse_state_record_storage_key,
     state_record_marker,
@@ -222,10 +223,18 @@ class PostgresStateStore:
 
     @staticmethod
     def _lock(cursor: Any, namespace: str) -> None:
-        cursor.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-            (namespace,),
-        )
+        try:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (namespace,),
+            )
+        except Exception as exc:
+            # Only this acquisition statement has a known no-updater boundary.
+            # A cancelled read, updater, commit or disconnected connection has
+            # different outcome semantics and must retain its original error.
+            if storage_operation_budget.get() is not None and getattr(exc, "sqlstate", None) == "57014":
+                raise StorageLockUnavailable("canonical storage lock acquisition cancelled") from exc
+            raise
 
     @classmethod
     def _lock_many(cls, cursor: Any, namespaces: tuple[str, ...]) -> None:

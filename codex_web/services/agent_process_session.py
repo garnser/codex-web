@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
-from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget, check_operation_budget, operation_lock
+from codex_web.storage.state_store import StorageLockUnavailable, StorageOperationBudget, storage_operation_budget, check_operation_budget, operation_lock
 from codex_web.services.managed_validation_custody import ManagedValidationCustody
 from codex_web.observability import log_event
 from codex_web.runtime import managed_validation_runner
@@ -1047,7 +1047,24 @@ class AssignmentBoundAgentProcessSession:
             # Only inspect this exact terminal future; never resubmit the work.
             if not future.done() or future.cancelled():
                 raise
-            result = future.result()  # Preserve the actual worker exception.
+            try:
+                result = future.result()  # Preserve the actual worker exception.
+            except StorageLockUnavailable:
+                if phase != "renewal":
+                    raise
+                # The exact owned attempt is terminal; the failing lock owner's
+                # updater did not run. An earlier heartbeat may have committed.
+                # Retain only freshly validated, unchanged, still-live custody;
+                # this does not assert renewal or extend the old hard lease.
+                read_budget = min(seconds, self._lease_budget())
+                current = await self._supervise(
+                    "renewal_authority", self._validate_current_authority,
+                    seconds=read_budget, reconcile_late=False,
+                )
+                self._lease_budget()  # The predecessor must remain live throughout.
+                self._renewal_observation_budget(current)
+                self._supervision_phase = phase
+                return current
             if completed_at is None or completed_at >= budget.deadline:
                 raise
             # A timely *renewal* may have extended canonical custody while its
