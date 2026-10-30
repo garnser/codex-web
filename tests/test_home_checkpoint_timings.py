@@ -81,7 +81,7 @@ class HomeCheckpointTimingTests(unittest.IsolatedAsyncioTestCase):
             with self.assertLogs(telemetry._logger, level='INFO') as captured:
                 with patch.object(self.f.goal_bindings, 'list_all', side_effect=read):
                     with self.assertRaises(ExecutionPrestartRefusal) as failed:
-                        self.f.drain()
+                        self.f.strict_checkpoint()
         self.assertEqual(failed.exception.detail['phase'], 'final_snapshot')
         self.assertEqual(failed.exception.detail['exception_type'], 'TimeoutError')
         self.assertIs(failed.exception.detail['retryable'], False)
@@ -114,7 +114,7 @@ class HomeCheckpointTimingTests(unittest.IsolatedAsyncioTestCase):
         with patch('codex_web.observability.log_event', side_effect=asyncio.CancelledError):
             with patch.object(self.f.goal_bindings, 'list_all', side_effect=refusal):
                 with self.assertRaises(ExecutionPrestartRefusal) as failed:
-                    self.f.drain()
+                    self.f.strict_checkpoint()
         self.assertIs(failed.exception.__cause__, refusal)
         self.assertEqual(failed.exception.detail['phase'], 'initial_snapshot')
         self.assertIsNone(self.f.planned._dormant_artifact(self.f.plan.id,self.f.actor))
