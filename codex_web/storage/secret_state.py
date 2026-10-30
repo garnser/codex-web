@@ -43,6 +43,29 @@ class SecretStateStore:
     def load(self) -> SecretState:
         return self._decode(self.store.get(self.namespace))
 
+    def reference_state(self, secret_id: str, *, organization_id: str, workspace_id: str) -> SecretState:
+        """Read a current reference through the existing document envelope.
+
+        First-ID selection precedes scope filtering, matching the broker's
+        original global lookup. Missing/foreign selections retain the full
+        owner so not-found, tenant denial and legacy decoder behavior survive.
+        This is metadata only; it never resolves material or caches authority.
+        """
+        load = self.load
+        if (type(self) is not SecretStateStore
+                or getattr(load, '__self__', None) is not self
+                or getattr(load, '__func__', None) is not _CANONICAL_SECRET_STATE_LOAD):
+            return load()
+        project = getattr(self.store, 'document_array_items_envelope', None)
+        if (callable(project)
+                and getattr(self.store, 'supports_document_array_scope_after_first', False) is True):
+            state = self._decode(project(self.namespace, 'references', (secret_id,),
+                organization_id=organization_id, workspace_id=workspace_id,
+                collection_names=('references', 'audit'), first_per_id=True, scope_after_first=True))
+            if any(reference.id == secret_id for reference in state.references):
+                return state
+        return load()
+
     def update(self, updater: Callable[[SecretState], SecretState]) -> SecretState:
         def apply(raw: Any) -> dict[str, Any]:
             state = self._decode(raw)
@@ -54,3 +77,6 @@ class SecretStateStore:
             default=SecretState().model_dump(mode="json"),
         )
         return self._decode(payload)
+
+
+_CANONICAL_SECRET_STATE_LOAD = SecretStateStore.load

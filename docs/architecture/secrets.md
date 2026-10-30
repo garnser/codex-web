@@ -10,6 +10,15 @@ The initial local backend stores only opaque secret bytes beneath the private `d
 
 Configuration values use `secret_id` references. Definitions and policy must also refer to secrets rather than embedding credentials.
 
+Current metadata reads may select the first matching reference through the
+StateStore document envelope without decoding unrelated audit history. Global
+ID order precedes tenant filtering; missing or foreign-first references and
+custom storage owners retain the original full-reader behavior. The selected
+read validates namespace/schema shape and the selected reference; audit entries
+remain validated by their full-read/write owners. Every call still checks current
+tenant and metadata/use permissions. It neither resolves material nor caches
+authority; credential use, reveal, audit and mutation paths retain their owners.
+
 ## Use vs reveal
 
 The broker separates three operations:
