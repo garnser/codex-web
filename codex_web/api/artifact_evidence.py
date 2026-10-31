@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
-from typing import Any, Iterator
+from typing import Annotated, Any, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import StreamingResponse
 
 from codex_web.api.identity import request_actor
@@ -53,6 +55,15 @@ def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, (ArtifactEvidenceError, ArtifactContentError)):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
+
+
+class DerivedArtifactCreate(BaseModel):
+    """Operator ingestion request; source IDs are not stored domain fields."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    artifact: ArtifactCreate
+    source_evidence_ids: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] = Field(min_length=1, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=200)
 
 
 def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRouter:
@@ -106,6 +117,17 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
                 )
             ]
         }
+
+    @router.post("/api/artifacts/derived")
+    async def create_derived_artifact(payload: DerivedArtifactCreate, request: Request) -> dict[str, Any]:
+        try:
+            actor = require_artifact_evidence_admin(request)
+            item = await asyncio.to_thread(service.create_derived_artifact,
+                payload.artifact, actor=actor, source_evidence_ids=payload.source_evidence_ids,
+                idempotency_key=payload.idempotency_key)
+            return {"item": item.model_dump(mode="json")}
+        except (ArtifactEvidenceError, AuthorizationError, TenantIsolationError, ResourceNotFoundError) as exc:
+            raise _error(exc) from exc
 
     @router.post("/api/artifacts")
     async def create_artifact(payload: ArtifactCreate, request: Request) -> dict[str, Any]:

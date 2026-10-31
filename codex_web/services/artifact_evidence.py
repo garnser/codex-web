@@ -739,6 +739,38 @@ class ArtifactEvidenceService:
         updated = self.store.update(apply)
         return next(item for item in updated.artifacts if item.id == artifact.id)
 
+    def create_derived_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor,
+                                source_evidence_ids: tuple[str, ...], idempotency_key: str) -> Artifact:
+        """Authorized operator admission through the existing governed writer.
+
+        Parent Evidence remains immutable. Explicit Work/resources narrow the
+        derivative; they never make an unscoped parent visible to a worker.
+        """
+        from codex_web.identity import AuthenticationAssurance
+        from codex_web.services.identity import IdentityService
+        if not self._admin(actor):
+            raise AuthorizationError("artifact-evidence administrator required")
+        if actor.principal_kind != PrincipalKind.SERVICE:
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        if (not source_evidence_ids or len(source_evidence_ids) > 64
+                or any(not isinstance(value, str) or not value.strip() for value in source_evidence_ids)
+                or not isinstance(idempotency_key, str) or not idempotency_key.strip()
+                or len(idempotency_key) > 200):
+            raise ArtifactEvidenceConflictError("Bounded parent Evidence and idempotency key required")
+        if (not payload.project_id or not payload.work_item_ref or not payload.resource_ids
+                or len(payload.resource_ids) > 64 or payload.digest is None
+                or self.work_item_host is None or self.governance is None or self.resources is None):
+            raise ArtifactEvidenceConflictError("Current Work, Project, resources and governance required")
+        target = self.work_item_host._load_work_item_states().get(payload.work_item_ref)
+        if target is not None and (target.organization_id, target.workspace_id) != (
+                actor.organization_id, actor.workspace_id):
+            raise TenantIsolationError("Derived Artifact target Work is outside caller scope")
+        if (target is None or target.project_id != payload.project_id
+                or set(target.resource_ids) != set(payload.resource_ids)):
+            raise ArtifactEvidenceConflictError("Derived Artifact target Work/Project/resource scope changed")
+        return self.create_artifact(payload, actor=actor,
+            source_evidence_ids=source_evidence_ids, idempotency_key=idempotency_key)
+
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor,
                         source_artifact_ids: tuple[str, ...] = (),
                         source_evidence_ids: tuple[str, ...] = (), _commit=None,

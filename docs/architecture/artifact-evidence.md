@@ -482,3 +482,29 @@ unchanged. Custom readers, content-open owners, decoders and governance filters
 retain the ordinary complete validation path. This internal read optimization
 adds no operator control or public state; existing canonical inspection surfaces
 remain sufficient.
+
+### Operator admission of a governed input derivative
+
+`POST /api/artifacts/derived` admits an explicit Work-scoped Artifact through the
+existing Artifact owner, using a bounded nonempty set of same-Project Evidence
+parents and a stable idempotency key. The operator supplies the target Project,
+Work Item, exact current Work resources, document digest and a nonempty
+`artifact.source` (for example, `operator-derived-input`), as required by the
+existing idempotent Artifact writer. Human administrators
+require MFA/local-trusted assurance; service administrators require
+`artifact-evidence:admin`. Ordinary worker read boundaries are unchanged.
+
+The existing Artifact/governance transaction validates current source lifecycle
+and links canonical parent governance records. Classification, retention, residency
+and model-context denial inherit through the existing governance engine. Parent
+Evidence, approval decisions and historical UNKNOWN inputs are not rewritten.
+A cross-Project historical provenance reference may remain descriptive metadata;
+it cannot become a typed parent or grant access. This operation neither approves
+work nor changes QA, ownership, execution scope or release gates.
+
+The Artifact administration panel offers the same canonical request, shows target
+resources, parent Evidence links and the digest before confirmation, and links the
+resulting Artifact for governance inspection. It uploads no content. If bytes are
+needed, the separate canonical ArtifactContent upload/integrity workflow applies.
+The new request DTO/route changes no persisted Artifact or governance schema,
+backend layout, worker protocol or existing creation request.
