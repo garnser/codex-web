@@ -368,15 +368,83 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_evidence_artifact_invalid")
         return evidence
 
-    def _procedure(self, assignment, actor):
+    def _procedure(self, assignment, actor, *, _definitions=None, _resources=None, _identity=None):
         ref = assignment.procedure_checkpoint.definition
         def read(reader):
-            options = {"_definitions": reader} if reader is not None else {}
+            options = {key: value for key, value in (
+                ('_definitions', reader), ('_resources', _resources), ('_identity', _identity)
+            ) if value is not None}
             self.skills.validate_required_procedure(ref, actor=actor, project_id=assignment.project_id, **options)
             definitions = reader if reader is not None else self.skills.definitions
             return SkillDefinition.model_validate(definitions.get_record(ref.record_id).payload).operational_procedure
+        if _definitions is not None:
+            self.skills.definitions.require_read_observation(_definitions)
+            return read(_definitions)
         observe = getattr(self.skills, "observe_definition_reads", None)
         return observe((ref,), read) if callable(observe) else read(None)
+
+    def _result_procedure(self, assignment, step, actor):
+        """Fresh metadata validation only; no view survives into policy or writes."""
+        from codex_web.services.action_providers import ActionExecutionService, _CANONICAL_CONTRACT_READ_CHECK
+        from codex_web.services.action_intents import ActionIntentService
+        from codex_web.services.identity import IdentityService, _CANONICAL_IDENTITY_READS
+        from codex_web.services.skills import _CANONICAL_SKILL_READS
+        from codex_web.services.procedure_discovery import ProcedureDiscoveryService
+
+        if (type(self) is not ProcedureExecutionService
+                or step.action.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                or not _original_bound(self, '_procedure', _CANONICAL_PROCEDURE_READ)
+                or self._metadata_read_options is not _CANONICAL_METADATA_READ_OPTIONS
+                or type(self.identity) is not IdentityService
+                or type(self.discovery) is not ProcedureDiscoveryService
+                or type(self.intents) is not ActionIntentService
+                or type(self.intents.execution) is not ActionExecutionService
+                or not _CANONICAL_SKILL_METADATA_CHECK(self)):
+            return self._procedure(assignment, actor)
+        resources = self.discovery.resources
+        if (not _original_bound(self.skills, 'observe_definition_reads', _CANONICAL_SKILL_OBSERVER)
+                or self.skills.procedure_actions is not self.intents.execution.registry
+                or not _CANONICAL_IDENTITY_READS['can_observe_reads'](self.identity)
+                or not _CANONICAL_SKILL_READS['can_observe_metadata_reads'](self.skills, self.identity, resources)
+                or not _CANONICAL_CONTRACT_READ_CHECK(self.intents.execution, resources=resources)
+                or self.identity.store.store is not self.skills.definitions.store.store
+                or resources.store.store is not self.skills.definitions.store.store):
+            return self._procedure(assignment, actor)
+        fallback = object()
+        reference = assignment.procedure_checkpoint.definition
+
+        def with_definitions(definitions):
+            if definitions is None:
+                return fallback
+            # The Skill observer has classified the full ancestry before invoking
+            # this callback. Unknown providers likewise leave every view before
+            # entering their original callbacks/content paths.
+            from codex_web.services.definitions import DefinitionNotFoundError
+            try:
+                procedure = SkillDefinition.model_validate(
+                    definitions.get_record(reference.record_id).payload).operational_procedure
+            except (DefinitionNotFoundError, ValueError):
+                return fallback
+            if procedure is None or not _CANONICAL_CONTRACT_READ_CHECK(self.intents.execution,
+                    resources=resources, provider_references=tuple(
+                        (declared.action.provider_type, declared.action.provider_instance)
+                        for declared in procedure.steps if declared.action)):
+                return fallback
+
+            def with_identity(identity):
+                if identity is None:
+                    return fallback
+
+                def with_resources(resource_reader):
+                    if resource_reader is None:
+                        return fallback
+                    return self._procedure(assignment, actor, _definitions=definitions,
+                        _resources=resource_reader, _identity=identity)
+                return resources.observe_reads(with_resources)
+            return self.identity.observe_reads(with_identity)
+
+        result = self.skills.observe_definition_reads((reference,), with_definitions)
+        return self._procedure(assignment, actor) if result is fallback else result
 
     def _targets(self, procedure, assignment, actor, *, _resources=None):
         if _resources is not None:
@@ -968,6 +1036,42 @@ class ProcedureExecutionService:
             ("_definitions", definitions), ("_resources", resources), ("_identity", identity)
         ) if value is not None}
 
+    def _can_observe_skill_metadata(self):
+        """The shared exact Definition/Security metadata owner boundary."""
+        if type(self.skills) is not SkillService:
+            return False
+        definitions = self.skills.definitions
+        if (type(definitions) is not _DefinitionRegistryService
+                or not all(_original_bound(definitions, name, original)
+                    for name, original in _CANONICAL_FRAME_DEFINITION_READS.items())
+                or type(definitions.store) is not _DefinitionRegistryStore
+                or not all(_original_bound(definitions.store, name, original)
+                    for name, original in _CANONICAL_FRAME_DEFINITION_STORE_READS.items())
+                or not _CANONICAL_FRAME_DEFINITION_CHECK(definitions)):
+            return False
+        security = self.skills.security
+        if security is not None:
+            if (type(security) is not _SkillSecurityService
+                    or not all(_original_bound(security, name, original)
+                        for name, original in _CANONICAL_FRAME_SECURITY_READS.items())
+                    or any(getattr(security, name, None) is not original
+                        for name, original in _CANONICAL_FRAME_SECURITY_STATIC_READS.items())
+                    or type(security.store) is not _SkillSecurityStore
+                    or not all(_original_bound(security.store, name, original)
+                        for name, original in _CANONICAL_FRAME_SECURITY_STORE_READS.items())
+                    or security.store._prefix is not _CANONICAL_FRAME_SECURITY_PREFIX
+                    or not _CANONICAL_FRAME_SECURITY_CHECK(security, definitions)):
+                return False
+            # required_mode is also reached by summary/decision. Preserve its
+            # optional current source trust lookup, including the key builder.
+            source = security.source_store
+            if source is not None and (
+                    type(source) is not _SkillSourceStore
+                    or not _original_bound(source, 'get', _CANONICAL_FRAME_SECURITY_SOURCE_GET)
+                    or source._key is not _CANONICAL_FRAME_SECURITY_SOURCE_KEY):
+                return False
+        return True
+
     def _can_observe_post_input_metadata(self, assignment, step, procedure):
         """Choose only stock synchronous metadata; unsupported owners stay eager."""
         from codex_web.services.action_providers import _CANONICAL_CONTRACT_READ_CHECK
@@ -1012,36 +1116,8 @@ class ProcedureExecutionService:
         if not all(_original_bound(self, name, original)
                    for name, original in _CANONICAL_POST_INPUT_READS.items()):
             return False
-        definitions = self.skills.definitions
-        if (type(definitions) is not _DefinitionRegistryService
-                or not all(_original_bound(definitions, name, original)
-                    for name, original in _CANONICAL_FRAME_DEFINITION_READS.items())
-                or type(definitions.store) is not _DefinitionRegistryStore
-                or not all(_original_bound(definitions.store, name, original)
-                    for name, original in _CANONICAL_FRAME_DEFINITION_STORE_READS.items())
-                or not _CANONICAL_FRAME_DEFINITION_CHECK(definitions)):
+        if not _CANONICAL_SKILL_METADATA_CHECK(self):
             return False
-        security = self.skills.security
-        if security is not None:
-            if (type(security) is not _SkillSecurityService
-                    or not all(_original_bound(security, name, original)
-                        for name, original in _CANONICAL_FRAME_SECURITY_READS.items())
-                    or any(getattr(security, name, None) is not original
-                        for name, original in _CANONICAL_FRAME_SECURITY_STATIC_READS.items())
-                    or type(security.store) is not _SkillSecurityStore
-                    or not all(_original_bound(security.store, name, original)
-                        for name, original in _CANONICAL_FRAME_SECURITY_STORE_READS.items())
-                    or security.store._prefix is not _CANONICAL_FRAME_SECURITY_PREFIX
-                    or not _CANONICAL_FRAME_SECURITY_CHECK(security, definitions)):
-                return False
-            # required_mode is also reached by summary/decision. Preserve its
-            # optional current source trust lookup, including the key builder.
-            source = security.source_store
-            if source is not None and (
-                    type(source) is not _SkillSourceStore
-                    or not _original_bound(source, 'get', _CANONICAL_FRAME_SECURITY_SOURCE_GET)
-                    or source._key is not _CANONICAL_FRAME_SECURITY_SOURCE_KEY):
-                return False
         resources = self.discovery.resources
         if (self._metadata_read_options is not _CANONICAL_METADATA_READ_OPTIONS
                 or not _original_bound(self.discovery, 'resource_facts', _CANONICAL_RESOURCE_FACTS)
@@ -1270,7 +1346,7 @@ class ProcedureExecutionService:
         if intent.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from codex_web.mr_observation_policy import INPUT_V2, READINESS_V2, validate_policy, expiry_valid, canonical
             expiry = outputs.get("expires_at")
-            if self._procedure(assignment, actor).input_protocol == INPUT_V2:
+            if self._result_procedure(assignment, step, actor).input_protocol == INPUT_V2:
                 policy = validate_policy(result.output.get('observation_policy'),
                     self.mr_observation_configuration, now=self.clock())
                 started = outputs.get('observed_at')
@@ -1290,7 +1366,13 @@ class ProcedureExecutionService:
                     "verification_method": "code-host-readiness-observation.v1",
                     "observation_expires_at": expiry,
                 }
-        proofs = {}
+        from codex_web.services.artifact_evidence import _CANONICAL_EVIDENCE_BATCH_CHECK
+        batch = (intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+            and {(item.name, item.kind) for item in step.expected_evidence}
+                == {('receipt', 'provider_receipt'), ('verification', 'verification')}
+            and len(step.expected_evidence) == 2
+            and _CANONICAL_EVIDENCE_BATCH_CHECK(self.evidence, work_item_ref=intent.work_item_ref))
+        proofs, pending = {}, []
         for requirement in step.expected_evidence:
             if (requirement.name, requirement.kind) == ("receipt", "provider_receipt"):
                 evidence_type, observed_at, verification_id = "provider_receipt", result.completed_at, None
@@ -1315,10 +1397,19 @@ class ProcedureExecutionService:
                     "provider_result_id": result.execution_id, "action_id": intent.action_id,
                     "provider_instance": intent.provider_instance, "provider_contract_version": adapter.contract_version,
                     "verification_id": verification_id, **observation_metadata})
-            evidence = self.evidence.create_evidence(payload, actor=actor,
-                idempotency_key=f"procedure-result:{receipt.id}:{requirement.name}")
-            self._evidence(evidence.id, actor, assignment)
-            proofs[requirement.name] = evidence.id
+            key = f"procedure-result:{receipt.id}:{requirement.name}"
+            if batch:
+                pending.append((requirement.name, payload, key))
+            else:
+                evidence = self.evidence.create_evidence(payload, actor=actor, idempotency_key=key)
+                self._evidence(evidence.id, actor, assignment)
+                proofs[requirement.name] = evidence.id
+        if batch:
+            created = self.evidence.create_evidence_batch(
+                tuple((payload, key) for _, payload, key in pending), actor=actor)
+            for (name, _, _), evidence in zip(pending, created, strict=True):
+                self._evidence(evidence.id, actor, assignment)
+                proofs[name] = evidence.id
         return {"outputs": outputs, "evidence": proofs}
 
     async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
@@ -1964,3 +2055,6 @@ _CANONICAL_FRAME_SECURITY_STORE_READS = {
 _CANONICAL_FRAME_SECURITY_PREFIX = _SkillSecurityStore._prefix
 _CANONICAL_FRAME_SECURITY_SOURCE_GET = _SkillSourceStore.get
 _CANONICAL_FRAME_SECURITY_SOURCE_KEY = _SkillSourceStore._key
+
+_CANONICAL_SKILL_METADATA_CHECK = ProcedureExecutionService._can_observe_skill_metadata
+_CANONICAL_PROCEDURE_READ = ProcedureExecutionService._procedure
