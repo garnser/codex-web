@@ -572,7 +572,8 @@ class NativeProcedureAdmissionService:
         return self.procedure_execution.admit_initial_native_credentials(
             assignment, selected, actor, validate)
 
-    def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references):
+    def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references, *,
+                                     _include_supporting_context=True):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
         if self.native_session_attestor is None or self.procedure_execution is None:
@@ -611,7 +612,8 @@ class NativeProcedureAdmissionService:
             return True
         proof = NativeProviderPreparation((),source,validate,context=context,exclude_empty=excludes)
         with native_provider_preparation(proof):
-            discovery, text = self.discovery.discover(context)
+            discovery, text = self.discovery.discover(context,
+                _include_supporting_context=_include_supporting_context)
         if not excluded or tuple(candidate.reference for candidate in discovery.candidates) != tuple(references):
             raise ValueError("physical-scope candidates changed or are unsupported")
         return discovery, text
@@ -725,13 +727,15 @@ class NativeProcedureAdmissionService:
                     from dataclasses import replace
                     context = replace(context, enforcement="native_tools")
         discovery, text = await asyncio.to_thread(self.discovery.discover, context)
+        empty_preparation_references = None
         if (not is_reasoning and assignment is not None and assignment.resource_ids == () and discovery.candidates
                 and context.enforcement in {"bounded_read_only", "isolated_preparation"}
                 and self.native_session_attestor is not None and self.procedure_execution is not None):
             try:
+                references = tuple(candidate.reference for candidate in discovery.candidates)
                 discovery, text = await asyncio.to_thread(self._empty_preparation_discovery,
-                    assignment, actor, project, sandbox, request_checksum,
-                    tuple(candidate.reference for candidate in discovery.candidates))
+                    assignment, actor, project, sandbox, request_checksum, references)
+                empty_preparation_references = references
             except Exception:
                 pass  # Unknown/unsupported scope retains the original refusal.
         if (not is_reasoning and assignment is not None and discovery.outcome == "unsupported_enforcement"
@@ -762,10 +766,27 @@ class NativeProcedureAdmissionService:
             # publication cannot turn an already used bootstrap into a grant.
             def seal_empty():
                 def validate(current):
-                    fresh_context = self.discovery.assignment_context(context, current, actor=actor)
-                    fresh, _ = self.discovery.discover(fresh_context, _include_supporting_context=False)
+                    if empty_preparation_references is not None:
+                        # Rebuild the same attested empty physical scope under
+                        # the credential CAS, including candidate exclusions and
+                        # policy/capability provenance. Supporting retrieval can
+                        # audit, so it must remain outside this writer lock.
+                        fresh, _ = self._empty_preparation_discovery(current, actor, project,
+                            sandbox, request_checksum, empty_preparation_references,
+                            _include_supporting_context=False)
+                    else:
+                        # A genuine zero-candidate discovery has no attested
+                        # exclusions; retain its original plain-context check.
+                        fresh_context = self.discovery.assignment_context(context, current, actor=actor)
+                        fresh, _ = self.discovery.discover(fresh_context, _include_supporting_context=False)
                     if not fresh.admitted or fresh.selected or fresh.context_checksum != discovery.context_checksum:
-                        raise ValueError("initial empty native preparation changed")
+                        # This comparison is an authoritative local pre-input
+                        # refusal. Unexpected storage/attestor failures still
+                        # propagate unchanged; old uncertain attempts stay so.
+                        raise ExecutionPrestartRefusal(status_code=409, detail={
+                            "code": "procedure_native_preparation_changed",
+                            "message": "Current empty native preparation differs from its initial admission",
+                        })
                 return self.procedure_execution.admit_initial_native_credentials(assignment, (), actor, validate)
             assignment = await asyncio.to_thread(seal_empty)
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
