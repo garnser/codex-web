@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import secrets
 import time
 import uuid
@@ -191,8 +192,11 @@ class IdentityService:
 
         return self.store.update(apply)
 
-    def state(self) -> IdentityState:
-        return self.store.load()
+    def state(self, *, _read_observation=None) -> IdentityState:
+        if _read_observation is None:
+            return self.store.load()
+        self.require_read_observation(_read_observation)
+        return _read_observation._raw.load(self.store)
 
     @staticmethod
     def _policy_from_state(
@@ -447,18 +451,59 @@ class IdentityService:
             assurance=AuthenticationAssurance.LOCAL_TRUSTED,
         )
 
+    def can_observe_reads(self) -> bool:
+        return (type(self) is IdentityService
+                and all(getattr(getattr(self, name, None), "__self__", None) is self
+                        and getattr(getattr(self, name, None), "__func__", None) is method
+                        for name, method in _CANONICAL_IDENTITY_READS.items())
+                and getattr(self._actor, "__self__", None) is IdentityService
+                and getattr(self._actor, "__func__", None) is _CANONICAL_IDENTITY_ACTOR
+                and self._active_memberships is _CANONICAL_ACTIVE_MEMBERSHIPS
+                and type(self.store) is IdentityStateStore
+                and _CANONICAL_IDENTITY_STORE_CAN_OBSERVE(self.store))
+
+    def observe_reads(self, callback):
+        """Share current raw identity facts only within one trusted sync callback."""
+        if not _CANONICAL_IDENTITY_READS["can_observe_reads"](self):
+            return callback(None)
+
+        def read(raw):
+            if raw is None:
+                return callback(None)
+            observation = _IdentityReadObservation(self, raw)
+            try:
+                result = callback(observation)
+                if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                    if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                        result.close()
+                    raise ValueError("Identity read observation callback must be synchronous")
+                return result
+            finally:
+                observation.close()
+        return self.store.observe_reads(read)
+
+    def require_read_observation(self, observation):
+        if type(observation) is not _IdentityReadObservation:
+            raise IdentityError("Identity read observation is unavailable")
+        observation.require_owner(self)
+
     def actor_for_identity(
         self,
         identity_id: str,
         *,
         scope: TenantScope,
+        _read_observation=None,
     ) -> AuthenticationActor:
         """Resolve current canonical membership/team context for an identity.
 
         This is intentionally credential-free and is for server-side
         authorization re-evaluation only. It does not authenticate a request.
         """
-        state = self.store.load()
+        if _read_observation is None:
+            state = self.store.load()
+        else:
+            self.require_read_observation(_read_observation)
+            state = _read_observation._raw.load(self.store)
         human = next(
             (
                 item
@@ -1390,3 +1435,40 @@ def identity_http_error(exc: IdentityError) -> HTTPException:
     if isinstance(exc, IdentityConflictError):
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
+
+
+class _IdentityReadObservation:
+    """Explicit data capability; no credentials or authenticated scopes are added."""
+
+    def __init__(self, owner, raw):
+        self._owner = owner
+        self._raw = raw
+        self._thread = threading.get_ident()
+        self._active = True
+
+    def require_owner(self, owner):
+        if (not self._active or owner is not self._owner
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_IDENTITY_READS["can_observe_reads"](owner)):
+            raise IdentityError("Identity read observation is foreign, closed or on another thread")
+        self._raw.require_owner(owner.store)
+
+    def actor_for_identity(self, identity_id, *, scope):
+        self.require_owner(self._owner)
+        return self._owner.actor_for_identity(identity_id, scope=scope, _read_observation=self)
+
+    def state(self):
+        self.require_owner(self._owner)
+        return self._owner.state(_read_observation=self)
+
+    def close(self):
+        self._active = False
+        self._raw = None
+
+
+_CANONICAL_IDENTITY_READS = {name: getattr(IdentityService, name)
+    for name in ("state", "actor_for_identity", "can_observe_reads", "observe_reads", "require_read_observation")}
+_CANONICAL_IDENTITY_ACTOR = IdentityService._actor.__func__
+_CANONICAL_ACTIVE_MEMBERSHIPS = IdentityService._active_memberships
+
+_CANONICAL_IDENTITY_STORE_CAN_OBSERVE = IdentityStateStore.can_observe_reads

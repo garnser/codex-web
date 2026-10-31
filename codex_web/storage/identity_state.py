@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+import threading
+
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractSpec, MigrationRegistry
@@ -75,6 +78,27 @@ class IdentityStateStore:
     def load(self) -> IdentityState:
         return self._decode(self.store.get(self.namespace))
 
+    def can_observe_reads(self) -> bool:
+        return (type(self) is IdentityStateStore
+                and all(getattr(getattr(self, name, None), "__self__", None) is self
+                        and getattr(getattr(self, name, None), "__func__", None) is method
+                        for name, method in _CANONICAL_IDENTITY_STORE_READS.items()))
+
+    def observe_reads(self, callback):
+        """Offer one lazy, expiring canonical catalog read to a sync owner."""
+        if not _CANONICAL_IDENTITY_STORE_READS["can_observe_reads"](self):
+            return callback(None)
+        observation = _IdentityStateReadObservation(self)
+        try:
+            result = callback(observation)
+            if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                    result.close()
+                raise ValueError("Identity read observation callback must be synchronous")
+            return result
+        finally:
+            observation.close()
+
     def save(self, state: IdentityState) -> IdentityState:
         payload = state.model_dump(mode="json")
         self.store.put(self.namespace, payload)
@@ -128,3 +152,37 @@ IDENTITY_STATE_MIGRATIONS.register(
         ],
     },
 )
+
+
+class _IdentityStateReadObservation:
+    """A lazy full-envelope observation, never an authorization decision."""
+
+    def __init__(self, owner):
+        self._owner = owner
+        self._backend = owner.store
+        self._thread = threading.get_ident()
+        self._active = True
+        self._state = None
+
+    def require_owner(self, owner):
+        if (not self._active or owner is not self._owner
+                or owner.store is not self._backend
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_IDENTITY_STORE_READS["can_observe_reads"](owner)):
+            raise ValueError("Identity read observation is foreign, closed or on another thread")
+
+    def load(self, owner):
+        self.require_owner(owner)
+        if self._state is None:
+            # Keep full canonical migration/validation, including unrelated rows.
+            # Loading is delayed until the original first identity lookup.
+            self._state = owner.load()
+        return self._state.model_copy(deep=True)
+
+    def close(self):
+        self._active = False
+        self._state = None
+
+
+_CANONICAL_IDENTITY_STORE_READS = {name: getattr(IdentityStateStore, name)
+    for name in ("load", "_decode", "can_observe_reads", "observe_reads")}

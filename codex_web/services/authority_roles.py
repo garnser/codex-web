@@ -58,6 +58,34 @@ class AuthorityRoleService:
         self.registry = registry
         self.resources = resources
 
+    def can_observe_reads(self) -> bool:
+        if type(self) is not AuthorityRoleService:
+            return False
+        for name, original in _CANONICAL_AUTHORITY_BOUND_READS.items():
+            method = getattr(self, name, None)
+            if (getattr(method, "__self__", None) is not self
+                    or getattr(method, "__func__", None) is not original):
+                return False
+        if any(getattr(self, name, None) is not original
+               for name, original in _CANONICAL_AUTHORITY_STATIC_READS.items()):
+            return False
+        definition_check = getattr(self.registry, "can_observe_reads", None)
+        resource_check = getattr(self.resources, "can_observe_reads", None)
+        return (callable(definition_check) and definition_check()
+                and (self.resources is None or callable(resource_check) and resource_check()))
+
+    def _require_readers(self, definitions=None, resources=None):
+        if definitions is None and resources is None:
+            return
+        if not _CANONICAL_AUTHORITY_CAN_OBSERVE(self):
+            raise ValueError("Authority read observations require canonical owners")
+        if definitions is not None:
+            self.registry.require_read_observation(definitions)
+        if resources is not None:
+            if self.resources is None:
+                raise ValueError("Authority Resource reader owner is unavailable")
+            self.resources.require_read_observation(resources)
+
     def bootstrap(self) -> None:
         self.registry.bootstrap(
             [
@@ -78,8 +106,11 @@ class AuthorityRoleService:
         actor: AuthenticationActor,
         project_id: str | None = None,
         now: float | None = None,
+        _definitions=None,
     ):
-        return self.registry.resolve(
+        self._require_readers(_definitions)
+        definitions = self.registry if _definitions is None else _definitions
+        return definitions.resolve(
             definition_id=AUTHORITY_ROLE_CATALOG_ID,
             kind=AUTHORITY_ROLE_CATALOG_KIND,
             context=DefinitionContext(
@@ -233,7 +264,10 @@ class AuthorityRoleService:
         grant: AuthorityGrant,
         request: AuthorityEvaluationRequest,
         actor: AuthenticationActor,
+        *,
+        _resources=None,
     ) -> list[str]:
+        self._require_readers(resources=_resources)
         restrictions = bool(
             grant.resource_ids
             or grant.resource_types
@@ -250,7 +284,8 @@ class AuthorityRoleService:
         resources = []
         for resource_id in request.resource_ids:
             try:
-                resource = self.resources.get(resource_id, actor)
+                resources_owner = self.resources if _resources is None else _resources
+                resource = resources_owner.get(resource_id, actor)
             except ResourceCatalogError:
                 return [f"resource is unavailable or outside tenant scope: {resource_id}"]
             if resource.lifecycle in {
@@ -305,7 +340,10 @@ class AuthorityRoleService:
         path: _GrantPath,
         request: AuthorityEvaluationRequest,
         actor: AuthenticationActor,
+        *,
+        _resources=None,
     ) -> list[str]:
+        self._require_readers(resources=_resources)
         grant = path.grant
         findings: list[str] = []
         if grant.capability not in {"*", request.capability}:
@@ -375,7 +413,8 @@ class AuthorityRoleService:
                     f"grant requires {requirement.count} qualifying approval(s)"
                 )
 
-        findings.extend(self._resource_findings(grant, request, actor))
+        options = {"_resources": _resources} if _resources is not None else {}
+        findings.extend(self._resource_findings(grant, request, actor, **options))
         return findings
 
     @staticmethod
@@ -409,7 +448,9 @@ class AuthorityRoleService:
         *,
         actor: AuthenticationActor,
         evaluated_at: float,
+        _resources=None,
     ) -> AuthorityDecision:
+        self._require_readers(resources=_resources)
         catalog = AuthorityRoleCatalogDefinition.model_validate(record.payload)
         definition_ref = reference_for(record)
 
@@ -456,9 +497,8 @@ class AuthorityRoleService:
         for path in paths:
             if path.grant.capability not in {"*", request.capability}:
                 continue
-            candidates.append(
-                (path, self._grant_findings(path, request, actor))
-            )
+            options = {"_resources": _resources} if _resources is not None else {}
+            candidates.append((path, self._grant_findings(path, request, actor, **options)))
 
         allowed = [
             item for item in candidates if not item[1]
@@ -573,19 +613,26 @@ class AuthorityRoleService:
         *,
         actor: AuthenticationActor,
         now: float | None = None,
+        _definitions=None,
+        _resources=None,
     ) -> AuthorityDecision:
+        self._require_readers(_definitions, _resources)
         evaluated_at = time.time() if now is None else now
         try:
+            definition_options = {"_definitions": _definitions} if _definitions is not None else {}
             record = self.catalog_record(
                 actor=actor,
                 project_id=request.project_id,
                 now=evaluated_at,
+                **definition_options,
             )
+            resource_options = {"_resources": _resources} if _resources is not None else {}
             return self._evaluate_record(
                 record,
                 request,
                 actor=actor,
                 evaluated_at=evaluated_at,
+                **resource_options,
             )
         except (
             DefinitionCompatibilityError,
@@ -600,6 +647,19 @@ class AuthorityRoleService:
                 reasons=(f"canonical authority definition unavailable: {exc}",),
                 evaluated_at=evaluated_at,
             )
+
+
+_CANONICAL_AUTHORITY_BOUND_READS = {
+    name: getattr(AuthorityRoleService, name)
+    for name in ("catalog_record", "role_ids_for_actor", "_resource_findings", "_grant_findings",
+                 "_evaluate_record", "evaluate_record", "evaluate", "_require_readers", "can_observe_reads")
+}
+_CANONICAL_AUTHORITY_STATIC_READS = {
+    name: getattr(AuthorityRoleService, name)
+    for name in ("_binding_matches", "_delegation_matches", "_expand_role_paths", "_deny")
+}
+_CANONICAL_AUTHORITY_CAN_OBSERVE = AuthorityRoleService.can_observe_reads
+
 
 def install_authority_roles(
     registry: DefinitionRegistryService,

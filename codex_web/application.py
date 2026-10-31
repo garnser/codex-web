@@ -1219,31 +1219,11 @@ action_provider_registry.register(gitlab_action_provider)
 app.state.gitlab_action_provider = gitlab_action_provider
 
 
-def _procedure_definition_scope_actor(record):
-    from codex_web.services.projects import ProjectNotFoundError
-    if record.scope_type.value == "project":
-        try:
-            project = project_service.get(record.scope_id)
-        except ProjectNotFoundError:
-            return None
-        workspace_id = project.workspace_id
-        organization_id = project.organization_id
-    elif record.scope_type.value == "workspace":
-        workspace_id = record.scope_id
-        organization_id = None
-    else:
-        return None
-    workspace = next((w for w in identity_service.state().workspaces if w.id == workspace_id
-                      and (organization_id is None or w.organization_id == organization_id)), None)
-    if workspace is None:
-        return None
-    from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
-    return AuthenticationActor(
-        identity_id="procedure-contract-metadata", principal_kind=PrincipalKind.SERVICE,
-        organization_id=workspace.organization_id, workspace_id=workspace.id,
-        assurance=AuthenticationAssurance.SERVICE_TOKEN, service_scopes=(),
-    )
+from codex_web.services.procedure_scope_actor import ProcedureDefinitionScopeActor
 
+_procedure_definition_scope_actor = ProcedureDefinitionScopeActor(
+    identity_service, project_service,
+)
 
 skill_service.bind_procedure_contracts(
     actions=action_provider_registry, resources=resource_catalog_service,

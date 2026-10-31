@@ -852,3 +852,29 @@ Existing procedure/action inspectors and the bounded verification-stage logs
 remain the operator surfaces. No new public fields, UI controls or success
 classification are introduced; a known completed action with failed verification
 continues to require reconciliation.
+
+### Synchronous post-input admission metadata
+
+A stock guarded admission may share raw Identity, Resource and Definition
+metadata within its synchronous post-input checks. Identity and Resource
+observations load lazily at the original first lookup, validate the full
+canonical envelope (including migrations and unrelated malformed rows), and
+expire when their callback returns. Each lookup still performs its ordinary
+membership, tenant, lifecycle and authority judgments. Observations belong to
+one service, store/backend and thread; a closed or foreign reader fails closed.
+They are separate namespace observations, not a cross-catalog transaction.
+
+The eligible region starts after governed input content has been read. Its
+original live worker/lease prefix precedes the eager Definition observation.
+Prior managed outputs, outcome-derived Skill lineage and custom callback
+implementations retain the ordinary path. No observation may span managed
+content access, a provider request, an await, or another admission callback.
+The canonical procedure scope resolver supplies only a scope metadata actor;
+it neither authenticates a worker nor adds service scopes.
+
+Binding, worker, lease, workspace, credential metadata and current-clock checks
+remain current point reads. Resource reader plumbing in action contract
+resolution does not execute a provider action or borrow secret material.
+There is no retained authorization result, global cache, deadline adjustment,
+canonical format change, new API or UI control. Existing procedure, intent,
+verification and stage-timing inspectors remain the operator surfaces.

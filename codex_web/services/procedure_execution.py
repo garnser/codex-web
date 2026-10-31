@@ -113,7 +113,7 @@ class ProcedureExecutionService:
         return self.identity.actor_for_identity(assignment.procedure_checkpoint.actor_identity_id,
             scope=TenantScope(organization_id=assignment.organization_id, workspace_id=assignment.workspace_id))
 
-    def _live(self, assignment):
+    def _live(self, assignment, *, _identity=None):
         now = self.clock()
         lease = assignment.lease
         worker = self.workers.store.worker(assignment.assigned_worker_id) if assignment.assigned_worker_id else None
@@ -129,7 +129,8 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_assignment_fence_expired_or_revoked")
         try:
             worker_actor = self.identity.actor_for_identity(worker.service_identity_id,
-                scope=TenantScope(organization_id=assignment.organization_id, workspace_id=assignment.workspace_id))
+                scope=TenantScope(organization_id=assignment.organization_id, workspace_id=assignment.workspace_id),
+                **({"_read_observation": _identity} if _identity is not None else {}))
             if worker_actor.principal_kind.value != "service":
                 raise ValueError("worker identity must be a service")
         except Exception as exc:
@@ -309,7 +310,7 @@ class ProcedureExecutionService:
         ) as exc:
             raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
 
-    def _values(self, contracts, values, actor, assignment):
+    def _values(self, contracts, values, actor, assignment, *, _definitions=None, _resources=None, _identity=None):
         if not isinstance(values, dict) or set(values) - {c.name for c in contracts}:
             raise ProcedureExecutionError("procedure_value_contract_mismatch")
         bounded_data(values)
@@ -328,9 +329,10 @@ class ProcedureExecutionService:
             if contract.type == "evidence_reference":
                 self._evidence(value, actor, assignment)
             if contract.type == "secret_reference":
-                self._secret(value, actor, assignment)
+                self._secret(value, actor, assignment,
+                    **self._metadata_read_options(_definitions, _resources, _identity))
 
-    def _secret(self, ref, actor, assignment):
+    def _secret(self, ref, actor, assignment, *, _definitions=None, _resources=None, _identity=None):
         broker = self.intents.execution.secret_broker
         if ref not in assignment.secret_refs or broker is None:
             raise ProcedureExecutionError("procedure_secret_reference_not_assigned")
@@ -338,9 +340,11 @@ class ProcedureExecutionService:
         if custody is not None:
             if custody.admitted_at is None:
                 raise ProcedureExecutionError("procedure_credential_initial_admission_required")
-            worker = self._live(assignment)
-            worker_actor = self._credential_worker_actor(assignment, worker)
-            self.validate_native_credential_custody(assignment, custody.procedures, actor)
+            identity_options = {"_identity": _identity} if _identity is not None else {}
+            worker = self._live(assignment, **identity_options)
+            worker_actor = self._credential_worker_actor(assignment, worker, **identity_options)
+            self.validate_native_credential_custody(assignment, custody.procedures, actor,
+                **self._metadata_read_options(_definitions, _resources, _identity))
             if broker.metadata(ref, actor=worker_actor, require_use=True).status(self.clock()) != "active":
                 raise ProcedureExecutionError("procedure_secret_reference_revoked")
         # Unmarked historical/generic assignments retain their original
@@ -374,8 +378,11 @@ class ProcedureExecutionService:
         observe = getattr(self.skills, "observe_definition_reads", None)
         return observe((ref,), read) if callable(observe) else read(None)
 
-    def _targets(self, procedure, assignment, actor):
-        resources = [self.discovery.resources.get(r, actor) for r in assignment.resource_ids]
+    def _targets(self, procedure, assignment, actor, *, _resources=None):
+        if _resources is not None:
+            self.discovery.resources.require_read_observation(_resources)
+        options = {"_read_observation": _resources} if _resources is not None else {}
+        resources = [self.discovery.resources.get(r, actor, **options) for r in assignment.resource_ids]
         if any(r.lifecycle != "active" for r in resources):
             raise ProcedureExecutionError("procedure_resource_revoked")
         result = {}
@@ -388,8 +395,9 @@ class ProcedureExecutionService:
             result[selector.id] = selected
         return result
 
-    def _facts(self, assignment, actor):
-        return self.discovery.resource_facts(assignment.resource_ids, actor)
+    def _facts(self, assignment, actor, *, _resources=None):
+        return self.discovery.resource_facts(assignment.resource_ids, actor,
+            **({"_resources": _resources} if _resources is not None else {}))
 
     def _conditions(self, step, checkpoint, inputs):
         def check(c):
@@ -398,7 +406,7 @@ class ProcedureExecutionService:
             return checkpoint.steps[c.name].status == c.predicate
         return all(check(c) for c in step.preconditions)
 
-    def _step_inputs(self, step, checkpoint, inputs, actor, assignment):
+    def _step_inputs(self, step, checkpoint, inputs, actor, assignment, *, _definitions=None, _resources=None, _identity=None):
         values = {}
         for contract in step.inputs:
             candidates = [self._output_values(assignment, s, actor)[contract.name] for s in checkpoint.steps.values()
@@ -409,7 +417,8 @@ class ProcedureExecutionService:
                 values[contract.name] = candidates[0]
             elif contract.name in inputs:
                 values[contract.name] = inputs[contract.name]
-        self._values(step.inputs, values, actor, assignment)
+        self._values(step.inputs, values, actor, assignment,
+            **self._metadata_read_options(_definitions, _resources, _identity))
         return values
 
     def _output_values(self, assignment, state, actor):
@@ -458,7 +467,7 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_action_binding_missing_or_ambiguous")
         return matches[0]
 
-    def _request(self, step, assignment, actor, procedure, values):
+    def _request(self, step, assignment, actor, procedure, values, *, _definitions=None, _resources=None, _identity=None):
         binding = self._binding(step, assignment, actor)
         custody = assignment.native_credential_custody
         if custody is not None:
@@ -466,7 +475,8 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_credential_initial_admission_required")
             if custody.provider_bindings.get(binding.id) != checksum(binding.model_dump(mode="json")):
                 raise ProcedureExecutionError("procedure_credential_binding_not_admitted")
-        targets = self._targets(procedure, assignment, actor)[step.action.resource_selector]
+        targets = self._targets(procedure, assignment, actor,
+            **({"_resources": _resources} if _resources is not None else {}))[step.action.resource_selector]
         credential = binding.credential_ref
         secrets = [values[c.name] for c in step.inputs if c.type == "secret_reference" and c.name in values]
         if secrets:
@@ -474,7 +484,8 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_credential_reference_conflict")
             credential = secrets[0]
         if credential:
-            self._secret(credential, actor, assignment)
+            self._secret(credential, actor, assignment,
+                **self._metadata_read_options(_definitions, _resources, _identity))
         if step.action.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
             from codex_web.mr_observation_policy import INPUT_V2
             if procedure.input_protocol != INPUT_V2 or procedure.schema_version != '1.3':
@@ -484,7 +495,8 @@ class ProcedureExecutionService:
             workspace_id=actor.workspace_id, project_id=assignment.project_id, resource_ids=targets,
             parameters={k:v for k,v in values.items() if k not in {c.name for c in step.inputs if c.type == 'secret_reference'}},
             credential_ref=credential, idempotency_key=key)
-        _, provider, definition, request = self.intents.execution.resolve_contract(binding.id, request, actor=actor)
+        _, provider, definition, request = self.intents.execution.resolve_contract(binding.id, request, actor=actor,
+            **({"_resources": _resources} if _resources is not None else {}))
         if provider.contract_version != step.action.provider_contract_version:
             raise ProcedureExecutionError("procedure_provider_contract_incompatible")
         if step.kind == "recovery" and (not definition.reversible or not definition.capabilities.rollback):
@@ -610,7 +622,7 @@ class ProcedureExecutionService:
         return self.workers.store.transition_assignment(assignment.assigned_worker_id, assignment.id, apply,
             guard_rows={self.intents.store.records_namespace: ()}).assignments[0]
 
-    def _credential_worker_actor(self, assignment, worker):
+    def _credential_worker_actor(self, assignment, worker, *, _identity=None):
         # Use the authenticated canonical worker owner, never synthesize token
         # scopes from an identity lookup or stored membership/credential IDs.
         worker_actor = self.worker_actor
@@ -618,17 +630,24 @@ class ProcedureExecutionService:
                 or (worker_actor.organization_id, worker_actor.workspace_id) !=
                     (assignment.organization_id, assignment.workspace_id)):
             raise ProcedureExecutionError("procedure_credential_worker_unavailable")
-        self.workers._require_worker_actor(worker, worker_actor)
+        self.workers._require_worker_actor(worker, worker_actor,
+            **({"_identity": _identity} if _identity is not None else {}))
         return worker_actor
 
-    def _native_credential_projection(self, assignment, selected, actor):
+    def _native_credential_projection(self, assignment, selected, actor, *, _definitions=None, _resources=None, _identity=None):
         """Resolve references through the same owners as native preparation/start."""
         with verification_stage('custody'):
-            worker = self._live(assignment)
+            worker = self._live(assignment, **({"_identity": _identity} if _identity is not None else {}))
             if (actor.organization_id, actor.workspace_id) != (assignment.organization_id, assignment.workspace_id):
                 raise ProcedureExecutionError("procedure_credential_requester_changed")
             # Keep original custody/principal refusals ahead of any Definition read.
-            owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant)
+            owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant,
+                **({"_read_observation": _identity} if _identity is not None else {}))
+            if _definitions is not None:
+                self.skills.definitions.require_read_observation(_definitions)
+                return self._read_native_credential_projection(assignment, selected, actor,
+                    worker=worker, owner=owner,
+                    **self._metadata_read_options(_definitions, _resources, _identity))
             observe = getattr(self.skills, "observe_definition_reads", None)
             canonical_observer = (
                 getattr(observe, "__self__", None) is self.skills
@@ -648,7 +667,8 @@ class ProcedureExecutionService:
             # entering its legacy callback, including outcome-derived content.
             return observe(selected, read) if canonical_preparation and canonical_observer else read(None)
 
-    def _read_native_credential_projection(self, assignment, selected, actor, *, worker, owner, _definitions=None):
+    def _read_native_credential_projection(self, assignment, selected, actor, *, worker, owner,
+                                         _definitions=None, _resources=None, _identity=None):
         """Share Definition data only; every custody judgment still runs."""
         from codex_web.execution_workers import NativeCredentialCustody
         from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
@@ -670,7 +690,7 @@ class ProcedureExecutionService:
                 self.validate_native_preparation(assignment, selected, actor)
             else:
                 self._validate_native_preparation(assignment, selected, actor,
-                    _definitions=_definitions)
+                    **self._metadata_read_options(_definitions, _resources, _identity))
         worker_actor = None
         refs, bindings = set(), {}
         for reference in selected:
@@ -685,7 +705,8 @@ class ProcedureExecutionService:
                     broker = self.intents.execution.secret_broker
                     if broker is None:
                         raise ProcedureExecutionError("procedure_secret_broker_unavailable")
-                    worker_actor = self._credential_worker_actor(assignment, worker)
+                    worker_actor = self._credential_worker_actor(assignment, worker,
+                        **({"_identity": _identity} if _identity is not None else {}))
                     from codex_web.services.secrets import SecretBrokerError, SecretUseDeniedError
                     try:
                         for principal in (owner, worker_actor):
@@ -700,19 +721,21 @@ class ProcedureExecutionService:
             fence=assignment.fence, procedures=tuple(selected), provider_bindings=bindings,
             procedure_secret_refs=tuple(sorted(refs)))
 
-    def validate_native_credential_custody(self, assignment, selected, actor):
+    def validate_native_credential_custody(self, assignment, selected, actor, *, _definitions=None, _resources=None, _identity=None):
         """Read-only: ordinary preparation/current use can never enlarge custody."""
         custody = assignment.native_credential_custody
         if custody is None:
             # Preserve existing manually admitted contracts without retrofitting
             # historical native assignments that lack a trusted pending marker.
-            expected = self._native_credential_projection(assignment, selected, actor)
+            expected = self._native_credential_projection(assignment, selected, actor,
+                **self._metadata_read_options(_definitions, _resources, _identity))
             if not set(expected.procedure_secret_refs).issubset(assignment.secret_refs):
                 raise ProcedureExecutionError("procedure_credential_initial_admission_required")
             return
         if custody.admitted_at is None:
             raise ProcedureExecutionError("procedure_credential_initial_admission_required")
-        expected = self._native_credential_projection(assignment, selected, actor)
+        expected = self._native_credential_projection(assignment, selected, actor,
+            **self._metadata_read_options(_definitions, _resources, _identity))
         if custody.model_dump(exclude={"admitted_at"}) != expected.model_dump(exclude={"admitted_at"}):
             raise ProcedureExecutionError("procedure_credential_custody_changed")
         allowed = set(custody.procedure_secret_refs)
@@ -782,28 +805,36 @@ class ProcedureExecutionService:
         return self.workers.store.transition_assignment(assignment.assigned_worker_id,
             assignment.id, apply, guard_rows=guards).assignments[0]
 
-    def validate_native_preparation_owner(self, assignment):
-        self._live(assignment)
+    def validate_native_preparation_owner(self, assignment, *, _identity=None):
+        self._live(assignment, **({"_identity": _identity} if _identity is not None else {}))
         hook = getattr(self.intents.execution, "procedure_admission", None)
         if (getattr(hook, "__self__", None) is not self.intents
                 or getattr(hook, "__func__", None) is not type(self.intents).procedure_provider_admission
-                or self.intents.procedure_execution is not self):
+                or self.intents.procedure_execution is not self
+                or self.skills.procedure_actions is not self.intents.execution.registry):
             raise ProcedureExecutionError("procedure_canonical_provider_hook_unavailable")
 
-    def validate_native_preparation(self, assignment, selected, actor, *, require_targets=True):
+    def validate_native_preparation(self, assignment, selected, actor, *, require_targets=True,
+                                    _definitions=None, _resources=None, _identity=None):
         """One synchronous sealed-Skill observation; no provider/content I/O."""
         observe = getattr(self.skills, "observe_definition_reads", None)
         def read(reader):
             return self._validate_native_preparation(assignment, selected, actor,
-                require_targets=require_targets, _definitions=reader)
+                require_targets=require_targets,
+                **self._metadata_read_options(reader, _resources, _identity))
+        if _definitions is not None:
+            self.skills.definitions.require_read_observation(_definitions)
+            return read(_definitions)
         return observe(selected, read) if callable(observe) else read(None)
 
-    def _validate_native_preparation(self, assignment, selected, actor, *, require_targets=True, _definitions=None):
+    def _validate_native_preparation(self, assignment, selected, actor, *, require_targets=True,
+                                     _definitions=None, _resources=None, _identity=None):
         """Read-only provider contract proof, never a step or credential grant."""
         definition_reader = _definitions if _definitions is not None else self.skills.definitions
-        options = {"_definitions": _definitions} if _definitions is not None else {}
+        options = self._metadata_read_options(_definitions, _resources, _identity)
         from codex_web.services.procedure_discovery import checksum
-        self.validate_native_preparation_owner(assignment)
+        self.validate_native_preparation_owner(assignment,
+            **({"_identity": _identity} if _identity is not None else {}))
         if not selected:
             raise ProcedureExecutionError("procedure_preparation_pin_missing")
         for reference in selected:
@@ -813,7 +844,8 @@ class ProcedureExecutionService:
             if procedure is None or any(step.worker for step in procedure.steps):
                 raise ProcedureExecutionError("procedure_native_worker_step_unsupported")
             if require_targets:
-                self._targets(procedure, assignment, actor)
+                self._targets(procedure, assignment, actor,
+                    **({"_resources": _resources} if _resources is not None else {}))
             action_steps = [step for step in procedure.steps if step.action]
             if not action_steps:
                 raise ProcedureExecutionError("procedure_native_provider_action_missing")
@@ -930,12 +962,180 @@ class ProcedureExecutionService:
             idempotency_key=target.fingerprint(), resulting_operation_reference=self._step_origin(assignment, step.id)), actor=self.control_actor)
         return True
 
-    def _protected(self, assignment, step, actor, procedure, inputs):
-        worker = self._live(assignment)
-        self.skills.validate_required_procedure(assignment.procedure_checkpoint.definition, actor=actor, project_id=assignment.project_id)
-        if checksum(self._facts(assignment, actor)) != assignment.procedure_checkpoint.resource_context_checksum:
+    @staticmethod
+    def _metadata_read_options(definitions=None, resources=None, identity=None):
+        return {key: value for key, value in (
+            ("_definitions", definitions), ("_resources", resources), ("_identity", identity)
+        ) if value is not None}
+
+    def _can_observe_post_input_metadata(self, assignment, step, procedure):
+        """Choose only stock synchronous metadata; unsupported owners stay eager."""
+        from codex_web.services.action_providers import _CANONICAL_CONTRACT_READ_CHECK
+        from codex_web.services.authority_roles import _CANONICAL_AUTHORITY_CAN_OBSERVE
+        from codex_web.services.identity import _CANONICAL_IDENTITY_READS
+        from codex_web.services.skills import _CANONICAL_SKILL_READS
+        from codex_web.services.execution_workers import _CANONICAL_WORKER_IDENTITY_READS
+
+        from codex_web.services.action_intents import ActionIntentService
+        from codex_web.services.action_providers import ActionExecutionService
+        from codex_web.services.authority_roles import AuthorityRoleService
+        from codex_web.services.identity import IdentityService
+        from codex_web.services.procedure_discovery import ProcedureDiscoveryService
+        from codex_web.services.execution_workers import ExecutionWorkerService
+
+        # Inspect only known owner instances before traversing relationships.
+        # Custom descriptors and legacy owners never run inside these views.
+        if (type(self) is not ProcedureExecutionService
+                or type(self.skills) is not SkillService
+                or type(self.identity) is not IdentityService
+                or type(self.authority) is not AuthorityRoleService
+                or type(self.discovery) is not ProcedureDiscoveryService
+                or type(self.intents) is not ActionIntentService
+                or type(self.workers) is not ExecutionWorkerService):
+            return False
+        if (type(self.intents.execution) is not ActionExecutionService
+                or type(self.workers.workspaces) is not _ExecutionWorkspaceService
+                or type(self.workers.store) is not _ExecutionWorkerStore
+                or type(self.workers.workspaces.store) is not _ExecutionWorkspaceStateStore):
+            return False
+        checkpoint = assignment.procedure_checkpoint
+        if (step.action is None
+                or step.action.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                or procedure.schema_version != '1.3' or procedure.input_protocol != 'code-host-mr-procedure-input.v2'
+                or len(procedure.steps) != 1 or procedure.steps[0].id != step.id
+                or step.worker or step.recovery or step.kind not in {'diagnostic', 'verification'}
+                or procedure.required_provider_capabilities
+                or any(state.status == 'succeeded' or state.outputs or state.output_snapshot_id
+                       or state.approval_id for state in checkpoint.steps.values())
+                or any(contract.type == 'evidence_reference' for contract in step.inputs)):
+            return False
+        if not all(_original_bound(self, name, original)
+                   for name, original in _CANONICAL_POST_INPUT_READS.items()):
+            return False
+        definitions = self.skills.definitions
+        if (type(definitions) is not _DefinitionRegistryService
+                or not all(_original_bound(definitions, name, original)
+                    for name, original in _CANONICAL_FRAME_DEFINITION_READS.items())
+                or type(definitions.store) is not _DefinitionRegistryStore
+                or not all(_original_bound(definitions.store, name, original)
+                    for name, original in _CANONICAL_FRAME_DEFINITION_STORE_READS.items())
+                or not _CANONICAL_FRAME_DEFINITION_CHECK(definitions)):
+            return False
+        security = self.skills.security
+        if security is not None:
+            if (type(security) is not _SkillSecurityService
+                    or not all(_original_bound(security, name, original)
+                        for name, original in _CANONICAL_FRAME_SECURITY_READS.items())
+                    or any(getattr(security, name, None) is not original
+                        for name, original in _CANONICAL_FRAME_SECURITY_STATIC_READS.items())
+                    or type(security.store) is not _SkillSecurityStore
+                    or not all(_original_bound(security.store, name, original)
+                        for name, original in _CANONICAL_FRAME_SECURITY_STORE_READS.items())
+                    or security.store._prefix is not _CANONICAL_FRAME_SECURITY_PREFIX
+                    or not _CANONICAL_FRAME_SECURITY_CHECK(security, definitions)):
+                return False
+            # required_mode is also reached by summary/decision. Preserve its
+            # optional current source trust lookup, including the key builder.
+            source = security.source_store
+            if source is not None and (
+                    type(source) is not _SkillSourceStore
+                    or not _original_bound(source, 'get', _CANONICAL_FRAME_SECURITY_SOURCE_GET)
+                    or source._key is not _CANONICAL_FRAME_SECURITY_SOURCE_KEY):
+                return False
+        resources = self.discovery.resources
+        if (self._metadata_read_options is not _CANONICAL_METADATA_READ_OPTIONS
+                or not _original_bound(self.discovery, 'resource_facts', _CANONICAL_RESOURCE_FACTS)
+                or self.workers.workspaces._scope_matches is not _CANONICAL_WORKSPACE_SCOPE
+                or self.workers.workspaces._admin is not _CANONICAL_WORKSPACE_ADMIN
+                or self.workers.workspaces.store._event_records is not _CANONICAL_WORKSPACE_EVENTS
+                or not _original_bound(self.skills, 'observe_definition_reads', _CANONICAL_SKILL_OBSERVER)
+                or self.authority.registry is not self.skills.definitions
+                or self.authority.resources is not resources
+                or self.intents.procedure_execution is not self
+                or self.skills.procedure_actions is not self.intents.execution.registry
+                or self.workers.identity is not self.identity
+                or not _CANONICAL_IDENTITY_READS['can_observe_reads'](self.identity)
+                or not _CANONICAL_AUTHORITY_CAN_OBSERVE(self.authority)
+                or not _CANONICAL_SKILL_READS['can_observe_metadata_reads'](self.skills, self.identity, resources)
+                or not _CANONICAL_WORKER_IDENTITY_READS(self.workers, self.identity)
+                or not _CANONICAL_CONTRACT_READ_CHECK(self.intents.execution, resources=resources)):
+            return False
+        # These owners remain independent point reads, not part of a snapshot.
+        if not all(type(owner) is cls and all(_original_bound(owner, name, original)
+                for name, original in methods.items())
+                for owner, cls, methods in (
+                    (self.workers.store, _ExecutionWorkerStore, _CANONICAL_WORKER_POINT_READS),
+                    (self.workers.workspaces, _ExecutionWorkspaceService, _CANONICAL_WORKSPACE_POINT_READS),
+                    (self.workers.workspaces.store, _ExecutionWorkspaceStateStore, _CANONICAL_WORKSPACE_STORE_READS))):
+            return False
+        return (self.identity.store.store is self.skills.definitions.store.store
+                and resources.store.store is self.skills.definitions.store.store)
+
+    def _protected(self, assignment, step, actor, procedure, inputs, *, _post_input_request=False):
+        if not _post_input_request:
+            worker = self._live(assignment)
+            return self._protected_current(assignment, step, actor, procedure, inputs, worker=worker)
+
+        fallback = object()
+        prefix = {}
+        selected = tuple(dict.fromkeys((assignment.procedure_checkpoint.definition,
+            *(assignment.native_credential_custody.procedures if assignment.native_credential_custody else ()))))
+
+        def with_identity(identity):
+            if identity is None:
+                return fallback
+            # Original protected prefix: no eager Definition read precedes this
+            # live judgment. The Identity observation itself has done no read.
+            worker = self._live(assignment, _identity=identity)
+            prefix['worker'] = worker
+
+            def with_definitions(definitions):
+                if definitions is None:
+                    return fallback
+                # Classify every sealed provider without invoking actions or a
+                # custom callback. The Skill owner already checked ancestry.
+                from codex_web.services.definitions import DefinitionNotFoundError
+                try:
+                    references = []
+                    for reference in selected:
+                        sealed = SkillDefinition.model_validate(
+                            definitions.get_record(reference.record_id).payload).operational_procedure
+                        if sealed is None:
+                            return fallback
+                        references.extend((s.action.provider_type, s.action.provider_instance)
+                            for s in sealed.steps if s.action is not None)
+                except (DefinitionNotFoundError, ValueError):
+                    return fallback
+                if not self.intents.execution.can_observe_contract_reads(
+                        resources=self.discovery.resources, provider_references=tuple(references)):
+                    return fallback
+
+                def with_resources(resources):
+                    if resources is None:
+                        return fallback
+                    return self._protected_current(assignment, step, actor, procedure, inputs,
+                        worker=worker, _definitions=definitions, _resources=resources,
+                        _identity=identity, _post_input_request=True)
+                return self.discovery.resources.observe_reads(with_resources)
+            return self.skills.observe_definition_reads(selected, with_definitions)
+
+        result = self.identity.observe_reads(with_identity)
+        if result is not fallback:
+            return result
+        # Unsupported ancestry/providers leave ALL observations before legacy
+        # validation can read managed content. Never replay the live prefix.
+        worker = prefix['worker'] if 'worker' in prefix else self._live(assignment)
+        return self._protected_current(assignment, step, actor, procedure, inputs,
+            worker=worker, _post_input_request=True)
+
+    def _protected_current(self, assignment, step, actor, procedure, inputs, *, worker,
+                           _definitions=None, _resources=None, _identity=None, _post_input_request=False):
+        options = self._metadata_read_options(_definitions, _resources, _identity)
+        resource_options = {"_resources": _resources} if _resources is not None else {}
+        self.skills.validate_required_procedure(assignment.procedure_checkpoint.definition, actor=actor, project_id=assignment.project_id, **options)
+        if checksum(self._facts(assignment, actor, **resource_options)) != assignment.procedure_checkpoint.resource_context_checksum:
             raise ProcedureExecutionError("procedure_material_preconditions_changed")
-        targets = self._targets(procedure, assignment, actor)
+        targets = self._targets(procedure, assignment, actor, **resource_options)
         if not set(procedure.required_worker_capabilities).issubset(worker.capabilities):
             raise ProcedureExecutionError("procedure_live_worker_capabilities_unavailable")
         if procedure.required_provider_capabilities:
@@ -954,16 +1154,21 @@ class ProcedureExecutionService:
         for permission in step.permissions:
             decision = self.authority.evaluate(AuthorityEvaluationRequest(capability=permission.capability,
                 level=permission.level, project_id=assignment.project_id,
-                resource_ids=targets[permission.resource_selector], environment=self._facts(assignment, actor)['environment'],
-                approval_role_ids=approval_roles), actor=actor)
+                resource_ids=targets[permission.resource_selector], environment=self._facts(assignment, actor, **resource_options)['environment'],
+                approval_role_ids=approval_roles), actor=actor,
+                **({key: value for key, value in (("_definitions", _definitions), ("_resources", _resources))
+                    if value is not None}))
             decisions.append(decision)
             if decision.outcome != "allow":
                 raise ProcedureExecutionError("procedure_current_authority_denied")
         assignment.procedure_checkpoint.steps[step.id].authority_decisions = tuple(decisions)
         for ref in assignment.secret_refs:
-            self._secret(ref, actor, assignment)
+            self._secret(ref, actor, assignment, **options)
         if step.worker and step.worker.capability not in worker.capabilities:
             raise ProcedureExecutionError("procedure_worker_capability_revoked")
+        if _post_input_request:
+            values = self._step_inputs(step, assignment.procedure_checkpoint, inputs, actor, assignment, **options)
+            return self._request(step, assignment, actor, procedure, values, **options)
         return targets
 
     def _proof(self, assignment, step, state, actor):
@@ -1326,9 +1531,13 @@ class ProcedureExecutionService:
             if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":
                 raise ProcedureExecutionError("procedure_action_not_current_step")
             inputs = self._inputs(assignment, actor, procedure)
-            self._protected(assignment, step, actor, procedure, inputs)
-            binding, _, _, request = self._request(step, assignment, actor, procedure,
-                self._step_inputs(step, checkpoint, inputs, actor, assignment))
+            if _CANONICAL_POST_INPUT_CHECK(self, assignment, step, procedure):
+                binding, _, _, request = self._protected(assignment, step, actor, procedure, inputs,
+                    _post_input_request=True)
+            else:
+                self._protected(assignment, step, actor, procedure, inputs)
+                binding, _, _, request = self._request(step, assignment, actor, procedure,
+                    self._step_inputs(step, checkpoint, inputs, actor, assignment))
             if binding.id != intent.binding_id or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(intent.request):
                 raise ProcedureExecutionError("procedure_action_request_changed")
             deadline = self._guarded_readonly_deadline(assignment, procedure, step)
@@ -1679,3 +1888,79 @@ _CANONICAL_PROVIDER_MEDIATION = {
     name: getattr(ProcedureExecutionService, name)
     for name in ('provider_admission', 'provider_admission_current')
 }
+
+
+# Capture stock implementations once. Replaced class methods, rebound methods,
+# subclasses and instance hooks select the complete legacy admission path.
+from codex_web.storage.execution_workers import ExecutionWorkerStore as _ExecutionWorkerStore
+from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore as _ExecutionWorkspaceStateStore
+from codex_web.services.execution_workspaces import ExecutionWorkspaceService as _ExecutionWorkspaceService
+from codex_web.services.procedure_discovery import ProcedureDiscoveryService as _ProcedureDiscoveryService
+
+
+def _original_bound(owner, name, original):
+    method = getattr(owner, name, None)
+    return (getattr(method, "__self__", None) is owner
+            and getattr(method, "__func__", None) is original)
+
+
+_CANONICAL_METADATA_READ_OPTIONS = ProcedureExecutionService._metadata_read_options
+_CANONICAL_RESOURCE_FACTS = _ProcedureDiscoveryService.resource_facts
+_CANONICAL_POST_INPUT_READS = {
+    name: getattr(ProcedureExecutionService, name) for name in (
+        '_live', '_values', '_secret', '_targets', '_facts', '_conditions',
+        '_step_inputs', '_request', '_binding', '_credential_worker_actor',
+        '_native_credential_projection', '_read_native_credential_projection',
+        'validate_native_credential_custody', 'validate_native_preparation_owner',
+        'validate_native_preparation', '_validate_native_preparation',
+        '_protected', '_protected_current', '_approved_roles', '_step_origin',
+        '_can_observe_post_input_metadata')
+}
+_CANONICAL_POST_INPUT_CHECK = ProcedureExecutionService._can_observe_post_input_metadata
+_CANONICAL_WORKER_POINT_READS = {
+    name: getattr(_ExecutionWorkerStore, name) for name in ('worker', '_ensure_records', '_decode')
+}
+_CANONICAL_WORKSPACE_POINT_READS = {
+    name: getattr(_ExecutionWorkspaceService, name) for name in ('get', '_existing', '_authorized')
+}
+_CANONICAL_WORKSPACE_STORE_READS = {
+    name: getattr(_ExecutionWorkspaceStateStore, name)
+    for name in ('workspace', 'lease', '_ensure_records', '_migrate_records', '_decode')
+}
+_CANONICAL_WORKSPACE_SCOPE = _ExecutionWorkspaceService._scope_matches
+
+_CANONICAL_WORKSPACE_ADMIN = _ExecutionWorkspaceService._admin
+
+_CANONICAL_WORKSPACE_EVENTS = _ExecutionWorkspaceStateStore._event_records
+
+from codex_web.services.definitions import DefinitionRegistryService as _DefinitionRegistryService
+from codex_web.storage.definition_registry import DefinitionRegistryStore as _DefinitionRegistryStore
+from codex_web.services.skill_security import SkillSecurityService as _SkillSecurityService
+
+_CANONICAL_FRAME_DEFINITION_CHECK = _DefinitionRegistryService.can_observe_reads
+_CANONICAL_FRAME_DEFINITION_READS = {
+    name: getattr(_DefinitionRegistryService, name)
+    for name in ('can_observe_reads', 'observe_reads', 'require_read_observation')
+}
+_CANONICAL_FRAME_DEFINITION_STORE_READS = {
+    name: getattr(_DefinitionRegistryStore, name)
+    for name in ('can_observe_reads', 'observe_reads')
+}
+_CANONICAL_FRAME_SECURITY_CHECK = _SkillSecurityService.can_observe_definition_reads
+
+from codex_web.storage.skill_security import SkillSecurityStore as _SkillSecurityStore
+from codex_web.storage.skill_catalog import SkillSourceStore as _SkillSourceStore
+
+_CANONICAL_FRAME_SECURITY_READS = {
+    name: getattr(_SkillSecurityService, name) for name in (
+        'can_observe_definition_reads', '_definition_reader', '_latest', '_active_override')
+}
+_CANONICAL_FRAME_SECURITY_STATIC_READS = {
+    name: getattr(_SkillSecurityService, name) for name in ('_read_options', '_public_scan')
+}
+_CANONICAL_FRAME_SECURITY_STORE_READS = {
+    name: getattr(_SkillSecurityStore, name) for name in ('scans', 'overrides')
+}
+_CANONICAL_FRAME_SECURITY_PREFIX = _SkillSecurityStore._prefix
+_CANONICAL_FRAME_SECURITY_SOURCE_GET = _SkillSourceStore.get
+_CANONICAL_FRAME_SECURITY_SOURCE_KEY = _SkillSourceStore._key

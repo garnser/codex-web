@@ -389,8 +389,11 @@ class ProcedureDiscoveryService:
                 capability_reasons=("provider:capability_resolver_unavailable", "worker:capability_resolver_unavailable"))
         return self.execution_capabilities.resolve(context, assignment, actor=actor)
 
-    def resource_facts(self, resource_ids, actor):
-        resources = [self.resources.get(r, actor) for r in resource_ids]
+    def resource_facts(self, resource_ids, actor, *, _resources=None):
+        if _resources is not None:
+            self.resources.require_read_observation(_resources)
+        read_options = {'_read_observation': _resources} if _resources is not None else {}
+        resources = [self.resources.get(r, actor, **read_options) for r in resource_ids]
         facts = {r.id: r.operational_context for r in resources}
         environments = {f.environment for f in facts.values() if f is not None and f.environment is not None}
         environment = next(iter(environments)) if len(environments) == 1 and all(
