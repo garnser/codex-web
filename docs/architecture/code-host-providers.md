@@ -407,24 +407,27 @@ an action boundary or grant a merge, credential, lease or execution permission.
 
 The additive GitLab operation `code-host.pull-request.observe-readiness.v2`
 separates canonical admission work from cumulative provider I/O. Its registered
-ActionDefinition permits at most 120 seconds, one attempt and the same read-only
+ActionDefinition permits at most 300 seconds, one attempt and the same read-only
 repository scope as the original operation. It requires an exact current published
 procedure using schema `1.3` and `code-host-mr-procedure-input.v2`; an arbitrary
 ActionIntent cannot opt into the longer bound. The provider-wide contract remains
-`1.2`. Existing operation IDs and persisted definitions retain their prior bounds.
+`1.2`. Existing sealed step timeouts retain their prior bounds; the original
+readiness action remains at 30 seconds. The v2 registered ceiling is code-owned,
+while a newly published Skill chooses its finite step and parent durations.
 An older binary rejects the unknown new operation before provider execution.
 
 Execution, fresh verification and procedure completion share one absolute deadline:
 the earliest of the procedure deadline, the step start plus its declared timeout,
 and the assignment deadline when present. Verification does not receive a new
-120-second window. Each reader separately aggregates at most 30 seconds of actual
+execution window. Each reader separately aggregates at most 30 seconds of actual
 provider client awaits across all requests and pages. Canonical checks run before
 and after those awaits within the shared deadline, without consuming the network
 counter. Current lease, fence, authority, binding, credential and input checks still
 apply; an ordinary valid same-fence lease renewal is not an execution extension.
 
 Trusted v2 broker publication reads use the same separation of guarded wall time
-and cumulative network time, bounded by the current assignment. Legacy reads keep
+and cumulative network time: the same 300-second code ceiling, clamped by the
+current assignment. This explicitly increases publication wall capacity too. Legacy reads keep
 their whole-operation 30-second bound. These budgets are internal execution context,
 never caller-supplied request fields. Observation validity remains a separate,
 immutable policy pin; neither execution nor verification extends an existing expiry.

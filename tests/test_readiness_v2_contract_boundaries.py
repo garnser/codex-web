@@ -3,7 +3,6 @@
 No action execution, provider request, native process or model invocation occurs.
 The separate composed tests qualify execute/verification parent deadlines.
 """
-import copy
 import unittest
 
 from codex_web.action_intents import ActionIntentCreate, ActionIntentWorkItemSuccess
@@ -30,7 +29,7 @@ class ReadinessPublicationBoundaryTests(unittest.TestCase):
     def content(self, action=GUARDED, *, version='1.3', protocol='code-host-mr-procedure-input.v2', timeout=120):
         content = publication.procedure()
         content.update(schema_version=version, inputs=[], service_versions=[],
-                       required_worker_capabilities=[], max_duration_seconds=120,
+                       required_worker_capabilities=[], max_duration_seconds=max(120, timeout),
                        operation_triggers=[action])
         if protocol is not None:
             content['input_protocol'] = protocol
@@ -70,12 +69,16 @@ class ReadinessPublicationBoundaryTests(unittest.TestCase):
         definitions = {row.action_id: row for row in provider.actions()}
         self.assertEqual(provider.contract_version, '1.2')
         self.assertEqual(definitions[LEGACY].timeout_seconds, 30)
-        self.assertEqual(definitions[GUARDED].timeout_seconds, 120)
+        self.assertEqual(definitions[GUARDED].timeout_seconds, 300)
         self.publish(self.content(LEGACY, version='1.2', protocol='code-host-mr-procedure-input.v1', timeout=30), 'legacy-valid')
-        for suffix, content in [('new-over',self.content(timeout=121)),
+        supported = self.content(timeout=240)
+        supported['max_duration_seconds'] = 300
+        self.publish(supported, 'finite-host-capacity')
+        self.publish(self.content(timeout=300), 'exact-ceiling')
+        for suffix, content in [('new-over',self.content(timeout=301)),
                                 ('old-over',self.content(LEGACY, version='1.2', protocol='code-host-mr-procedure-input.v1', timeout=31))]:
             # Keep overall duration valid so the actual registered-operation gate decides.
-            content['max_duration_seconds'] = 121
+            content['max_duration_seconds'] = 301
             with self.subTest(action=content['steps'][0]['action']['action_id']), self.assertRaises((SkillConflict, DefinitionGateDeniedError)):
                 self.publish(content, suffix)
 
@@ -113,7 +116,7 @@ class ReadinessIntentBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_secret_reference_new_intent_cannot_inflate_or_bypass_published_step(self):
         before = self.intents.store.load().model_dump(mode='json')
-        for timeout, message in [(121, 'registered execution limit'), (120, 'exact current published procedure step')]:
+        for timeout, message in [(301, 'registered execution limit'), (240, 'exact current published procedure step'), (120, 'exact current published procedure step')]:
             with self.subTest(timeout=timeout), self.assertRaisesRegex(ActionRequirementError, message):
                 self.intents.create(self.payload(timeout_seconds=timeout), actor=self.actor)
         with self.assertRaisesRegex(ActionRequirementError, 'cannot declare Work success'):
