@@ -820,3 +820,35 @@ resource, provider binding and SecretUse check still runs independently; the
 result of a custody judgment is never cached. Custom preparation validators keep
 their original complete path and signatures. No observation is carried into
 managed content reads, provider I/O or a subsequent admission checkpoint.
+
+
+## Deferred discovery context for current procedure admission
+
+The canonical ActionIntent provider boundary retains its fresh intent, requester,
+repository-scope and Role-authority checks before mediating a current durable
+procedure step. When the complete canonical mediator admits that step, its result
+does not consume a discovery `OperationContext`. That path therefore omits
+construction of the unused context. Context construction otherwise resolves
+Resource facts, assignment/runtime capabilities and the AgentProvider catalog;
+the latter can load the complete ModelGateway document through linked-provider
+discovery even though no model call is made.
+
+This optimization requires captured original methods bound to their original
+owners: the context builder, shared discovery context methods, provider hook,
+complete procedure mediator and capability resolver. Custom owners, subclasses,
+class-level overrides and methods rebound from another owner use the original
+eager ordering. Rollback also builds and rewrites its context before mediation.
+A false canonical mediation constructs the ordinary context and runs fallback
+discovery once; mediation is never repeated to obtain that context.
+
+No admission decision or read observation is cached. Every subsequent callback
+performs fresh current checks. The independent protected-step validation still
+resolves required provider capabilities when declared and still refuses revoked
+provider grants, resources, identities, leases, custody or Role authority. This
+change removes discarded discovery work; it does not remove those judgments or
+change any deadline, canonical format, SQL object, API or worker protocol.
+
+Existing procedure/action inspectors and the bounded verification-stage logs
+remain the operator surfaces. No new public fields, UI controls or success
+classification are introduced; a known completed action with failed verification
+continues to require reconciliation.

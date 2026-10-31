@@ -965,3 +965,10 @@ def install_native_procedure_admission(turns, sessions, discovery, workers, hist
     turns.procedure_admission = admission
     sessions.procedure_admission = admission.agent_session_admission
     return admission
+
+
+_CANONICAL_DISCOVERY_CONTEXT_READS = {
+    name: getattr(ProcedureDiscoveryService, name)
+    for name in ('action_context', 'assignment_context', 'resource_facts')
+}
+_CANONICAL_CAPABILITY_RESOLVE = ProcedureExecutionCapabilityService.resolve

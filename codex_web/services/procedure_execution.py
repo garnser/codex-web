@@ -1674,3 +1674,8 @@ _CANONICAL_INPUT_CONTENT_READS={name:getattr(ProcedureExecutionService,name) for
 _CANONICAL_CUSTODY_PREPARATION_READS = {name: getattr(ProcedureExecutionService, name)
     for name in ('validate_native_preparation', '_validate_native_preparation')}
 _CANONICAL_SKILL_OBSERVER = SkillService.observe_definition_reads
+
+_CANONICAL_PROVIDER_MEDIATION = {
+    name: getattr(ProcedureExecutionService, name)
+    for name in ('provider_admission', 'provider_admission_current')
+}
