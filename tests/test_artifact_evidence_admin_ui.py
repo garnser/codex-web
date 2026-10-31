@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -8,6 +10,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ArtifactEvidenceAdminUiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node is required for UI contract tests")
+    def test_continuation_input_provenance_contract(self) -> None:
+        result = subprocess.run(
+            [shutil.which("node"), "--test", "tests/js/mr_continuation_input_presenter.test.mjs"],
+            cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        javascript = (ROOT / "static" / "artifact_evidence_admin.js").read_text(encoding="utf-8")
+        self.assertEqual(javascript.count("${continuationInputHtml(item)}"), 2)
+        self.assertIn("observationPolicyHtml, continuationInputHtml", javascript)
+        presenters = (ROOT / "static" / "artifact_evidence_presenters.js").read_text(encoding="utf-8")
+        self.assertIn("export { continuationInputHtml }", presenters)
+        self.assertLessEqual((ROOT / "static" / "mr_continuation_input_presenter.js").stat().st_size, 3000)
+
     def test_explorer_uses_canonical_artifact_evidence_and_governance_apis(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (ROOT / "static" / "artifact_evidence_admin.js").read_text(

@@ -63,3 +63,5 @@ export function observationPolicyHtml(item) {
     return '<small>Observation policy provenance is invalid; server validation is required.</small>';
   }
 }
+
+export { continuationInputHtml } from './mr_continuation_input_presenter.js';
