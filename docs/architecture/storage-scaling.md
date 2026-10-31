@@ -878,3 +878,25 @@ resolution does not execute a provider action or borrow secret material.
 There is no retained authorization result, global cache, deadline adjustment,
 canonical format change, new API or UI control. Existing procedure, intent,
 verification and stage-timing inspectors remain the operator surfaces.
+
+### Procedure result projection
+
+After a guarded action succeeds, its pinned procedure is validated again using
+fresh, synchronous Definition, Identity and Resource observations where the
+complete canonical owner graph supports them. Every validation runs again;
+the observations close before current policy validation or Evidence writes.
+Custom callbacks and unsupported Skill ancestry retain their ordinary path.
+
+The canonical Artifact/Evidence owner can compose the two originating receipt
+and verification proofs in one existing Artifact/Governance transaction. Each
+payload keeps its ordinary resource, Work Item and research-source validation
+before that transaction. The existing creation updaters preserve deterministic
+IDs, idempotency conflicts, provenance and governance records. An interrupted
+transaction commits neither new proof. Unsupported owners use the original
+creation calls without replaying a callback.
+
+Output content storage and final procedure proof checks remain separate. This
+composition does not execute or verify the provider action again, renew its
+deadline, or turn a successful action into a completed procedure. Canonical
+intent, receipt, verification and procedure states remain distinct, including
+when result projection fails after the action has succeeded.

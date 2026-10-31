@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+from types import MethodType, ModuleType, SimpleNamespace
 import json
 import time
 from typing import Any, Callable, Iterable, Iterator
@@ -903,15 +905,131 @@ class ArtifactEvidenceService:
         except EvidenceNotFoundError:
             return None
 
+    def can_batch_evidence_creation(self, specs=(), *, work_item_ref=None) -> bool:
+        """Whether this exact owner can compose two ordinary Evidence appends.
+
+        No state is read here. Unsupported callbacks retain their complete
+        original public calls, before entering a canonical transaction.
+        """
+        if (type(self) is not ArtifactEvidenceService
+                or not all(_evidence_batch_bound(self, name, original)
+                    for name, original in _CANONICAL_EVIDENCE_BATCH_READS.items())
+                or not all(_evidence_batch_static(self, name, original)
+                    for name, original in _CANONICAL_EVIDENCE_BATCH_STATIC.items())
+                or type(self.store) is not ArtifactEvidenceStore
+                or not all(_evidence_batch_bound(self.store, name, original)
+                    for name, original in _CANONICAL_EVIDENCE_BATCH_STORE.items())):
+            return False
+        if (_GovernedCreation is not _CANONICAL_BATCH_CREATION_TYPE
+                or _GovernedCreation.__init__ is not _CANONICAL_BATCH_CREATION_INIT):
+            return False
+        backend = self.store.store
+        if (type(backend) not in (_SQLiteStateStore, _PostgresStateStore)
+                or not _evidence_batch_bound(backend, 'record_mutate_many',
+                    _CANONICAL_BATCH_BACKEND_MUTATE[type(backend)])):
+            return False
+        if self.resources is not None and (
+                type(self.resources) is not ResourceCatalogService
+                or not _CANONICAL_BATCH_RESOURCE_CHECK(self.resources)):
+            return False
+        governance = self.governance
+        if governance is not None and (
+                type(governance) is not DataGovernanceService
+                or type(governance.store) is not _DataGovernanceStore
+                or governance.store.store is not backend
+                or not _evidence_batch_bound(governance, 'register_domain_record',
+                    _CANONICAL_BATCH_GOVERNANCE_REGISTER)
+                or not _evidence_batch_bound(governance.store, '_decode',
+                    _CANONICAL_BATCH_GOVERNANCE_DECODE)
+                or not all(_evidence_batch_static(governance, name, original)
+                    for name, original in _CANONICAL_BATCH_GOVERNANCE_STATIC.items())):
+            return False
+        if (work_item_ref is not None and self.work_item_host is not None
+                and not _evidence_batch_work_host(self.work_item_host, backend)):
+            return False
+        if specs:
+            if not isinstance(specs, (tuple, list)) or len(specs) != 2:
+                return False
+            for spec in specs:
+                if (not isinstance(spec, (tuple, list)) or len(spec) != 2
+                        or type(spec[0]) is not EvidenceCreate
+                        or not isinstance(spec[1], str) or not spec[1]):
+                    return False
+                if (spec[0].work_item_ref is not None and self.work_item_host is not None
+                        and not _evidence_batch_work_host(self.work_item_host, backend)):
+                    return False
+        return True
+
+    def create_evidence_batch(self, specs, *, actor: AuthenticationActor) -> tuple[Evidence, ...]:
+        """Append two proofs with ordinary checks in one canonical transaction.
+
+        Raw domain models are local to the transaction callback. There is no
+        reader observation, provider/content I/O, retry or second deadline.
+        """
+        if not isinstance(specs, (tuple, list)) or len(specs) != 2:
+            raise ArtifactEvidenceConflictError('Evidence composition requires exactly two payloads')
+        if not _CANONICAL_EVIDENCE_BATCH_CHECK(self, specs):
+            return tuple(self.create_evidence(payload, actor=actor, idempotency_key=key)
+                         for payload, key in specs)
+        # Preserve each ordinary creation prefix once, outside writer locks.
+        # In production Work lookup can invoke legacy migration/filesystem I/O.
+        prepared = tuple((payload, key, self._evidence_creation_prefix(payload, actor))
+                         for payload, key in specs)
+        domains = {self.store.namespace: (None,)}
+        if self.governance is not None:
+            domains[self.governance.store.namespace] = (None,)
+        returned = []
+
+        def persist(rows):
+            state = self.store._decode(rows[self.store.namespace][None])
+            governance = (self.governance.store._decode(rows[self.governance.store.namespace][None])
+                          if self.governance is not None else None)
+
+            dirty = False
+
+            def compose(creation):
+                nonlocal state, dirty
+                if (type(creation) is not _GovernedCreation or creation.service is not self
+                        or creation.domains != domains or creation.catalog_guard is not None):
+                    raise ArtifactEvidenceConflictError('Evidence composition requires its complete canonical owner')
+                state = creation.updater(state, governance)
+                dirty = True
+
+            proofs = tuple(self._create_evidence_prepared(payload, actor=actor, sources=sources,
+                idempotency_key=key, _state=state, _commit=compose)
+                for payload, key, sources in prepared)
+            returned.append(proofs)
+            if not dirty:
+                return {}
+            changes = {self.store.namespace: {None: state.model_dump(mode='json')}}
+            if governance is not None:
+                changes[self.governance.store.namespace] = {None: governance.model_dump(mode='json')}
+            return changes
+
+        self.store.store.record_mutate_many(domains, persist)
+        return returned[0]
+
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor,
                         idempotency_key: str | None = None,
                         source_evidence_ids: tuple[str, ...] = (), _commit=None,
                         _state: ArtifactEvidenceState | None = None) -> Evidence:
         if _state is not None and (_commit is None or not isinstance(_state, ArtifactEvidenceState)):
             raise ArtifactEvidenceConflictError("composed Evidence state requires its owning commit")
+        sources = self._evidence_creation_prefix(payload, actor)
+        return self._create_evidence_prepared(payload, actor=actor, sources=sources,
+            idempotency_key=idempotency_key, source_evidence_ids=source_evidence_ids,
+            _commit=_commit, _state=_state)
+
+    def _evidence_creation_prefix(self, payload, actor):
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
+        return sources
+
+    def _create_evidence_prepared(self, payload, *, actor, sources, idempotency_key=None,
+                                  source_evidence_ids=(), _commit=None, _state=None):
+        # Called synchronously by this owner's ordinary prefix or its batch.
+        # Prepared research data grants no authority and never crosses an await.
         state = _state if _state is not None else self.store.load()
         source_evidence = [self._evidence(state, evidence_id, actor) for evidence_id in source_evidence_ids]
         if any(item.project_id != payload.project_id for item in source_evidence):
@@ -1637,3 +1755,67 @@ _CANONICAL_MR_INPUT_READS={name:getattr(ArtifactEvidenceService,name) for name i
     '_artifact','_evidence','_verify_content_pointer')}
 _CANONICAL_MR_STORE_READS={name:getattr(ArtifactEvidenceStore,name) for name in (
     '_decode','artifact_state','evidence_state','evidence_states','verification_state','input_records_state')}
+
+
+from codex_web.storage.sqlite_state import SQLiteStateStore as _SQLiteStateStore
+from codex_web.storage.postgres_state import PostgresStateStore as _PostgresStateStore
+from codex_web.storage.data_governance import DataGovernanceStore as _DataGovernanceStore
+from codex_web.services.resources import _CANONICAL_RESOURCE_SERVICE_CHECK as _CANONICAL_BATCH_RESOURCE_CHECK
+
+
+def _evidence_batch_bound(owner, name, original):
+    raw = inspect.getattr_static(owner, name, None)
+    if raw is not original and not isinstance(raw, MethodType):
+        return False
+    method = getattr(owner, name, None)
+    return (getattr(method, '__self__', None) is owner
+            and getattr(method, '__func__', None) is original)
+
+
+def _evidence_batch_static(owner, name, original):
+    raw = inspect.getattr_static(owner, name, None)
+    return isinstance(raw, staticmethod) and raw.__func__ is original
+
+
+_CANONICAL_EVIDENCE_BATCH_READS = {name: getattr(ArtifactEvidenceService, name) for name in (
+    'can_batch_evidence_creation', 'create_evidence_batch', 'create_evidence', '_commit_creation',
+    '_evidence_creation_prefix', '_create_evidence_prepared',
+    '_research_sources', '_validate_resources', '_validate_work_item_ref', '_artifact', '_evidence')}
+_CANONICAL_EVIDENCE_BATCH_STATIC = {name: getattr(ArtifactEvidenceService, name)
+    for name in ('_same_scope', '_idempotent_evidence_id')}
+_CANONICAL_EVIDENCE_BATCH_STORE = {name: getattr(ArtifactEvidenceStore, name)
+    for name in ('load', 'update', '_decode')}
+_CANONICAL_BATCH_GOVERNANCE_REGISTER = DataGovernanceService.register_domain_record
+_CANONICAL_BATCH_GOVERNANCE_DECODE = _DataGovernanceStore._decode
+_CANONICAL_BATCH_GOVERNANCE_STATIC = {name: getattr(DataGovernanceService, name)
+    for name in ('_record_from_state', '_audit')}
+
+_CANONICAL_EVIDENCE_BATCH_CHECK = ArtifactEvidenceService.can_batch_evidence_creation
+_CANONICAL_BATCH_CREATION_TYPE = _GovernedCreation
+_CANONICAL_BATCH_CREATION_INIT = _GovernedCreation.__init__
+
+_CANONICAL_BATCH_BACKEND_MUTATE = {owner: owner.record_mutate_many
+    for owner in (_SQLiteStateStore, _PostgresStateStore)}
+
+from codex_web.storage.runtime_state import ModelMapRepository as _ModelMapRepository
+from codex_web.models import WorkItemState as _WorkItemState
+
+
+def _evidence_batch_work_host(host, backend):
+    # The application's module owns this exact repository binding. Inspect the
+    # attribute without executing descriptors or importing the application.
+    if type(host) not in (ModuleType, SimpleNamespace):
+        return False
+    method = inspect.getattr_static(host, '_load_work_item_states', None)
+    if not isinstance(method, MethodType) or type(method.__self__) is not _ModelMapRepository:
+        return False
+    owner = method.__self__
+    return (method.__func__ is _CANONICAL_BATCH_WORK_READS['load']
+            and owner.store is backend and owner.model is _WorkItemState
+            and owner.namespace == 'work_item_states' and owner.key_filter is None
+            and all(_evidence_batch_bound(owner, name, original)
+                for name, original in _CANONICAL_BATCH_WORK_READS.items()))
+
+
+_CANONICAL_BATCH_WORK_READS = {name: getattr(_ModelMapRepository, name)
+    for name in ('load', '_raw', '_ensure_records', '_legacy_payload', '_included')}
