@@ -440,7 +440,7 @@ canonical execution checkpoints. A larger observation window alone promises no
 additional execution time.
 
 The additive `code-host.pull-request.observe-readiness.v2` operation instead
-registers a 120-second maximum and requires an exact current published schema
+registers a 300-second hard maximum and requires an exact current published schema
 `1.3` / input v2 procedure. Its existing persisted ActionDefinition timeout field
 and the step's declared timeout carry the bound; there is no new request timeout
 field or stored schema. Execute, fresh verification, output projection and final
@@ -455,7 +455,7 @@ execution window. Legacy projection retains its five-second bound.
 Each guarded reader permits at most 30 cumulative seconds of actual provider I/O
 across its requests; canonical before/after checks run within the wall deadline
 but outside that network counter. Trusted v2 broker publication reads use the
-same separation, capped at 120 seconds and the current assignment deadline.
+same separation, capped at 300 seconds and the current assignment deadline.
 Legacy readers and the original action keep their whole-operation bounds.
 Existing input expiry, current-use governance, authority and exact-head checks
 are unchanged. A known durable execution result is retained if a later phase
@@ -463,6 +463,30 @@ refuses completion. The provider-wide contract stays `1.2`; old binaries reject
 the new operation ID before execution. A separately reviewed, scanned and
 published Skill revision adopts it, with operation ID and timeout visible through
 existing catalog and intent inspectors. See [guarded readiness execution](code-host-providers.md#guarded-readiness-execution).
+
+The registered maximum is a code-owned safety ceiling, not a replacement for
+published procedure capacity. A new reviewed Skill revision may declare a
+240-second step and 300-second parent; previously sealed 120-second steps retain
+120 seconds. An already-created observation ActionIntent also retains its
+original ActionDefinition snapshot and timeout; the larger current registry does
+not rewrite those durable fields or extend the sealed step. Read-only observation
+execution still revalidates current authority and the published procedure. It
+has no new blanket snapshot-drift refusal; the separate PR-ready mutation's
+snapshot-equality checks are not observation semantics. Raising the ceiling also
+raises the trusted v2 broker publication
+wall allowance, because it uses the same bound, without raising either reader's
+30-second I/O allowance. No action ID, provider contract or wire/schema changes.
+
+Observation validity must be published separately through canonical Configuration.
+A new 300-second policy applies only to new observations. Historical 180-second
+pins keep their original records, digests and expiry. The final same-run advance
+still reads current inputs and proofs before committing completion; its work and
+pre-step publication/admission latency consume freshness too. These finite bounds
+provide operational capacity, not a guaranteed completion margin or permission
+to reuse stale facts. Old binaries can read the ordinary records but their
+120-second registry cannot publish/admit a new step above 120 seconds. Existing
+catalog, Skill, Configuration and ActionIntent inspectors expose the same fields;
+there is no separate UI budget or authority grant.
 
 An execution timeout remains UNKNOWN until its exact original intent/receipt is
 reconciled; it does not authorize another request, new nonce or provider replay.

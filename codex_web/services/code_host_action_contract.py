@@ -37,7 +37,7 @@ READINESS_OBSERVATION_ACTION_IDS = (
     CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
     CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
 )
-GUARDED_OBSERVATION_SECONDS = 120
+GUARDED_OBSERVATION_SECONDS = 300
 CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE = "code-host-pull-request-readiness-observation"
 CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID = "code-host.pull-request.verify-merge"
 CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE = "code-host-pull-request-merge-observation"
@@ -210,7 +210,7 @@ class CodeHostActionContract:
             *((ActionDefinition(
                 action_id=CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID,
                 title="Observe exact premerge readiness with guarded budget",
-                description="Procedure 1.3 guarded read: at most 120s total guarded execution and verification within the parent deadline; cumulative provider I/O 30s per fresh observation. Pending is not approval or merge permission.",
+                description="Procedure 1.3 guarded read: at most 300s total guarded execution, verification and completion, further limited by the published step, parent and assignment deadlines; cumulative provider I/O 30s per fresh observation. Pending is not approval or merge permission.",
                 capabilities=ActionCapability(read=True,prepare=True,execute=True,
                     idempotency=True,verification=True,evidence=True),
                 risk_class=ActionRiskClass.LOW,

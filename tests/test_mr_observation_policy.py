@@ -145,11 +145,14 @@ class MRObservationPolicyTests(fixture.GovernedMRProcedureRunTests):
                 scope_type='project',scope_id='project-a',value=120,actor=self.admin.identity_id))
         default=resolve_policy(self.configuration,now=time.time())
         self.assertEqual(default.seconds,30)
-        first=self.configure(120)
+        first=self.configure(180)
         original=resolve_policy(self.configuration,now=time.time())
-        self.configure(240)
-        self.assertEqual(validate_policy(original,self.configuration,now=time.time()).seconds,120)
-        forged=original.model_dump();forged['seconds']=240
+        self.configure(300)
+        current=resolve_policy(self.configuration,now=time.time())
+        self.assertEqual(current.seconds,300)
+        self.assertNotEqual(current.record_id,original.record_id)
+        self.assertEqual(validate_policy(original,self.configuration,now=time.time()).seconds,180)
+        forged=original.model_dump();forged['seconds']=300
         with self.assertRaises(ObservationPolicyError):validate_policy(forged,self.configuration,now=time.time())
         forged=default.model_copy(update={'resolved_at':time.time()})
         with self.assertRaises(ObservationPolicyError):validate_policy(forged,self.configuration,now=time.time())
@@ -159,7 +162,7 @@ class MRObservationPolicyTests(fixture.GovernedMRProcedureRunTests):
         with self.assertRaises(ObservationPolicyError):validate_policy(original,self.configuration,now=time.time())
         with self.assertRaises(ObservationPolicyError):validate_policy(default,self.configuration,now=time.time())
         self.assertEqual(original.record_id,first.id)
-        self.assertEqual(original.seconds,120)
+        self.assertEqual(original.seconds,180)
 
     async def test_v2_policy_revocation_before_start_no_new_provider_effects(self):
         self.configure(120);await self.v2_skill()
@@ -236,7 +239,7 @@ class MRObservationPolicyTests(fixture.GovernedMRProcedureRunTests):
             def timeout(seconds):
                 timeout_calls.append(seconds)
                 return io_timeout(seconds)
-            for duration in (30,120):
+            for duration in (30,300):
                 calls.clear()
                 with patch('asyncio.timeout',side_effect=timeout):
                     fact=await reader(client,f.binding,f.resource,'acme/widgets',token,
