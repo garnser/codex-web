@@ -185,6 +185,15 @@ class AssignmentReasoningBroker:
         record = skills.definitions.resolve(definition_id=target, kind="agent.skill",
             context=context, now=float(skills.clock()))
         reference = reference_for(record)
+        if query == {"view": ["reference"]}:
+            # Discovery returns only a current governed reference, never content
+            # or an execution grant. Keep both publication and security checks.
+            skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
+            if reference_for(skills.definitions.resolve(definition_id=target, kind="agent.skill",
+                    context=context, now=float(skills.clock()))) != reference:
+                deny("effective procedure changed during reference resolution")
+            skills.validate_required_procedure(reference, actor=actor, project_id=assignment.project_id)
+            return {"item": {"definitionReference": reference.model_dump(mode="json")}}
         if (reference.record_id != query["record_id"][0]
                 or str(reference.revision) != query["revision"][0]
                 or reference.checksum != query["checksum"][0]):
@@ -206,13 +215,15 @@ class AssignmentReasoningBroker:
             if query:
                 deny("exact object read accepts no query")
             return
+        if query == {"view": ["reference"]}:
+            return
         if (set(query) != {"record_id", "revision", "checksum"}
                 or any(not isinstance(v, list) or len(v) != 1 or not isinstance(v[0], str)
                        for v in query.values())
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", query["record_id"][0])
                 or not re.fullmatch(r"[1-9][0-9]{0,8}", query["revision"][0])
                 or not re.fullmatch(r"[0-9a-f]{64}", query["checksum"][0])):
-            deny("procedure read requires exact record_id, revision and checksum")
+            deny("procedure read requires exact record_id, revision and checksum, or sole view=reference")
 
     def prepared_context(self, item, assignment, actor, operation):
         # These canonical projections lack a verifiable Resource envelope. Do
