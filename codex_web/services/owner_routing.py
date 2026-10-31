@@ -552,9 +552,8 @@ class OwnerRoutingService:
             token = self.recipient_preparer.logical_id(state, binding,
                 old_pin.binding.configured_owner, tuple(requested))
             actor = (lookup_actor or self.control_actor)()
-            bootstrap = self.bootstraps.get_by_bootstrap('bootstrap-' + physical, actor)
-            assignment = self.assignments(bootstrap.assignment_id)
             historical = old_pin.recipient
+            admitted = self.assignments(historical.assignment_id)
             source_bootstrap, source_assignment, source_native, cancelled = self._cancelled_recipient_custody(
                 state, binding, owner, requested, lookup_actor=lookup_actor)
             source_profile, source_actor = self.executor(state, binding, owner,
@@ -570,44 +569,190 @@ class OwnerRoutingService:
                 proof['retry_attempt'] = old_pin.retry_attempt
                 if not self.recipient_preparer.recoverable(previous, proof, source_profile, token):
                     raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
-            if (bootstrap.thread_id != delivery.thread_id
-                    or bootstrap.id != historical.bootstrap_id
-                    or bootstrap.assignment_id != historical.assignment_id
-                    or bootstrap.execution_id != 'thread-bootstrap-' + physical
-                    or bootstrap.execution_id != delivery.execution_id
-                    or assignment is None or assignment.subject is None
+            # Historical START attribution survives canonical rebind, which
+            # intentionally removes the superseded bootstrap mapping. The
+            # immutable original and its retained assignment remain the anchor.
+            if (admitted is None or admitted.subject is None
+                    or admitted.subject.kind != 'thread_bootstrap'
+                    or admitted.subject.ref != 'bootstrap-' + physical
+                    or admitted.execution_id != 'thread-bootstrap-' + physical
+                    or admitted.execution_id != delivery.execution_id
+                    or admitted.agent_profile is None
+                    or admitted.agent_profile != source_assignment.agent_profile
+                    or admitted.created_by != source_assignment.created_by
+                    or (admitted.organization_id, admitted.workspace_id, admitted.project_id)
+                        != (state.organization_id, state.workspace_id, state.project_id)
+                    or admitted.agent_profile.profile_id != original.agent_profile_id
+                    or admitted.agent_profile.profile_revision != original.agent_profile_revision
+                    or admitted.execution_profile_id != delivery.execution_profile_id
+                    or admitted.repository_scope is None
+                    or set(admitted.repository_scope.writable_repository_ids) != set(requested)
+                    or admitted.repository_scope.read_only_repository_ids
+                    or set(admitted.resource_ids) != set(requested)
+                    or self._authority_checksum(admitted) != historical.authority_checksum
+                    or correlation.assignment_id != historical.assignment_id
+                    or correlation.execution_id != historical.execution_id
+                    or correlation.worker_id != historical.worker_id
+                    or correlation.fence != historical.fence):
+                raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
+            try:
+                anchor = self.bootstraps.get_by_bootstrap('bootstrap-' + physical, actor)
+            except ThreadBootstrapBindingNotFoundError:
+                from codex_web.thread_bootstrap import deterministic_thread_bootstrap_binding_id
+                if historical.bootstrap_id != deterministic_thread_bootstrap_binding_id(
+                        state.organization_id, state.workspace_id, 'bootstrap-' + physical):
+                    raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            else:
+                if (anchor.id != historical.bootstrap_id or anchor.thread_id != delivery.thread_id
+                        or anchor.assignment_id != admitted.id or anchor.execution_id != admitted.execution_id
+                        or anchor.execution_workspace_id != admitted.execution_workspace_id):
+                    raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            target = delivery.thread_id
+            try:
+                bootstrap = self.bootstraps.get_by_thread(target, actor)
+                assignment = self.assignments(bootstrap.assignment_id)
+            except LookupError:
+                bootstrap, assignment = None, None
+            # A current canonical same-thread rebind is the normal recovery
+            # owner. Only a missing/retired mapping consults the scoped durable
+            # replacement graph, never an arbitrary matching live candidate.
+            if (assignment is None or (str(assignment.status) in {'succeeded', 'failed', 'cancelled'}
+                    and assignment.lease is None)):
+                replacement = self.replacement_resolver(delivery.thread_id, project_id=state.project_id,
+                    organization_id=state.organization_id, workspace_id=state.workspace_id)
+                if replacement:
+                    target = replacement
+                    bootstrap = self.bootstraps.get_by_thread(target, actor)
+                    assignment = self.assignments(bootstrap.assignment_id)
+            if bootstrap is None or assignment is None:
+                raise OwnerRoutingError('owner_recipient_custody_unavailable')
+            changed = bootstrap.assignment_id != admitted.id or target != delivery.thread_id
+            if changed and (str(admitted.status) not in {'succeeded', 'failed', 'cancelled'}
+                    or admitted.lease is not None):
+                raise OwnerRoutingError('owner_recipient_custody_unavailable')
+            if (assignment is None or assignment.subject is None
                     or assignment.subject.kind != 'thread_bootstrap'
                     or assignment.subject.ref != bootstrap.bootstrap_id
-                    or assignment.agent_profile is None
-                    or assignment.agent_profile != source_assignment.agent_profile
-                    or assignment.created_by != source_assignment.created_by
-                    or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
-                        != (state.organization_id, state.workspace_id, state.project_id)
-                    or assignment.agent_profile.profile_id != original.agent_profile_id
-                    or assignment.agent_profile.profile_revision != original.agent_profile_revision
-                    or assignment.execution_profile_id != delivery.execution_profile_id
-                    or assignment.repository_scope is None
-                    or set(assignment.repository_scope.writable_repository_ids) != set(requested)
-                    or assignment.repository_scope.read_only_repository_ids
-                    or set(assignment.resource_ids) != set(requested)):
-                raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+                    or assignment.agent_profile != admitted.agent_profile
+                    or assignment.created_by != admitted.created_by
+                    or assignment.execution_profile_id != admitted.execution_profile_id
+                    or assignment.execution_profile_definition != admitted.execution_profile_definition
+                    or assignment.runtime_binding != admitted.runtime_binding
+                    or assignment.resource_context != admitted.resource_context
+                    or assignment.repository_target != admitted.repository_target
+                    or assignment.skill_refs != admitted.skill_refs
+                    or assignment.repository_scope != admitted.repository_scope
+                    or set(assignment.resource_ids) != set(admitted.resource_ids)
+                    or (assignment.sandbox, assignment.approval_policy, assignment.network)
+                        != (admitted.sandbox, admitted.approval_policy, admitted.network)):
+                raise OwnerRoutingError('owner_recipient_custody_changed')
             witness, profile, resolved_actor = self._live_recipient(
                 state, binding, bootstrap, owner, lookup_actor=lookup_actor)
-            if (witness.model_dump(exclude={'work_item_owner_checksum'})
-                    != historical.model_dump(exclude={'work_item_owner_checksum'})
-                    or profile.profile_id != original.agent_profile_id
+            if changed:
+                self._accepted_recovery_credentials(admitted, assignment, historical, delivery.started_at)
+                self._accepted_recovery_native_custody(state, delivery.thread_id,
+                    target, admitted, assignment)
+            elif witness.model_dump(exclude={'work_item_owner_checksum'}) != historical.model_dump(
+                    exclude={'work_item_owner_checksum'}):
+                raise OwnerRoutingError('owner_recipient_custody_changed')
+            if (profile.profile_id != original.agent_profile_id
                     or profile.revision != original.agent_profile_revision
-                    or resolved_actor.identity_id != original.agent_profile_actor_id
-                    or correlation.assignment_id != witness.assignment_id
-                    or correlation.execution_id != witness.execution_id
-                    or correlation.worker_id != witness.worker_id
-                    or correlation.fence != witness.fence):
+                    or resolved_actor.identity_id != original.agent_profile_actor_id):
                 raise OwnerRoutingError('owner_recipient_custody_changed')
             return witness, profile, resolved_actor
         except OwnerRoutingError:
             raise
         except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
             raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified') from exc
+
+    def _accepted_recovery_credentials(self, admitted, current, historical, started_at):
+        """Distinguish canonical initial sealing from an arbitrary reference change.
+
+        This checks reference provenance only. Native admission still resolves
+        selected Skills, provider bindings and both principals' current SecretUse
+        before its existing CAS can seal a pending replacement assignment.
+        """
+        old, new = admitted.native_credential_custody, current.native_credential_custody
+        if old is None:
+            if admitted.secret_refs != current.secret_refs:
+                raise OwnerRoutingError('owner_recipient_custody_changed')
+            if new is None:
+                return
+            if new.admitted_at is None:
+                if (new.requester_identity_id is not None or new.worker_identity_id is not None
+                        or new.fence is not None or new.procedures or new.provider_bindings
+                        or new.procedure_secret_refs
+                        or current.secret_refs != ((new.runtime_secret_ref,) if new.runtime_secret_ref else ())):
+                    raise OwnerRoutingError('owner_recipient_custody_changed')
+                return
+            worker = self.workers(current.assigned_worker_id) if self.workers is not None else None
+            allowed = set(new.procedure_secret_refs)
+            if new.runtime_secret_ref:
+                allowed.add(new.runtime_secret_ref)
+            if (worker is None or new.fence != current.fence
+                    or new.requester_identity_id != current.created_by
+                    or new.worker_identity_id != worker.service_identity_id
+                    or set(current.secret_refs) != allowed
+                    or not set(new.procedures).issubset(current.skill_refs)):
+                raise OwnerRoutingError('owner_recipient_custody_changed')
+            return
+        if new is None:
+            raise OwnerRoutingError('owner_recipient_custody_changed')
+        old_allowed = set(old.procedure_secret_refs)
+        if old.runtime_secret_ref:
+            old_allowed.add(old.runtime_secret_ref)
+        old_worker = self.workers(historical.worker_id) if self.workers is not None else None
+        if (old_worker is None or admitted.assigned_worker_id != historical.worker_id
+                or (old_worker.organization_id, old_worker.workspace_id)
+                    != (admitted.organization_id, admitted.workspace_id)
+                or old.worker_identity_id != old_worker.service_identity_id
+                or old.admitted_at is None or old.admitted_at > started_at
+                or old.fence != historical.fence
+                or old.requester_identity_id != admitted.created_by
+                or set(admitted.secret_refs) != old_allowed
+                or new.runtime_secret_ref != old.runtime_secret_ref):
+            raise OwnerRoutingError('owner_recipient_custody_changed')
+        if new.admitted_at is None:
+            # Exact pristine pending marker emitted by the bootstrap builder.
+            if (new.requester_identity_id is not None or new.worker_identity_id is not None
+                    or new.fence is not None or new.procedures or new.provider_bindings
+                    or new.procedure_secret_refs
+                    or current.secret_refs != ((new.runtime_secret_ref,) if new.runtime_secret_ref else ())):
+                raise OwnerRoutingError('owner_recipient_custody_changed')
+            return
+        worker = self.workers(current.assigned_worker_id) if self.workers is not None else None
+        if (worker is None or new.fence != current.fence
+                or new.requester_identity_id != current.created_by
+                or new.worker_identity_id != worker.service_identity_id
+                or new.procedures != old.procedures
+                or new.provider_bindings != old.provider_bindings
+                or new.procedure_secret_refs != old.procedure_secret_refs
+                or set(current.secret_refs) != old_allowed):
+            raise OwnerRoutingError('owner_recipient_custody_changed')
+
+    def _accepted_recovery_native_custody(self, state, delivered_thread, target, admitted, current):
+        """Fresh canonical native metadata only, never infer a recovery edge."""
+        from codex_web.agent_runtime import AgentSessionStatus
+        if self.sessions is None:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        session = self.sessions.native_custody(target)
+        if session is None:
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        source = current if session.assignment_id == current.id else admitted
+        if (session.assignment_id != source.id
+                or (target != delivered_thread and source.id != current.id)
+                or (session.organization_id, session.workspace_id, session.project_id)
+                    != (state.organization_id, state.workspace_id, state.project_id)
+                or session.status != AgentSessionStatus.READY or session.failure is not None
+                or session.execution_id != source.execution_id
+                or session.execution_workspace_id != source.execution_workspace_id
+                or session.worker_id != source.assigned_worker_id
+                or (source.runtime_binding is not None
+                    and (session.provider_id, session.runtime_id)
+                        != (source.runtime_binding.provider_id, source.runtime_binding.runtime_id))
+                or set(session.resource_ids) != set(current.resource_ids)):
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
 
     async def prepare_compatible_pin(self, state, binding, configured_owner, *, writable_repository_ids):
         import asyncio
@@ -765,6 +910,36 @@ class OwnerRoutingService:
             handoff_requested_at=handoff.requested_at if handoff and handoff.status == 'pending' else None,
             bot_binding_id=binding.id, original_thread_id=binding.thread_id)
 
+    def _accepted_initial_seal_compatible(self, pinned, fresh):
+        """One same-owner initial seal may expand only its recorded references.
+
+        Never transfer a queued witness across a rebind or fence. Reconstruct
+        the exact pre-seal authority fingerprint instead of ignoring checksum
+        differences; current accepted lineage and native custody already passed.
+        """
+        if pinned.model_dump(exclude={'authority_checksum'}) != fresh.model_dump(
+                exclude={'authority_checksum'}):
+            return False
+        current = self.assignments(fresh.assignment_id)
+        if current is None or self._authority_checksum(current) != fresh.authority_checksum:
+            return False
+        seal = current.native_credential_custody
+        worker = self.workers(fresh.worker_id) if self.workers is not None else None
+        if (seal is None or seal.admitted_at is None or worker is None
+                or current.id != fresh.assignment_id or current.fence != fresh.fence
+                or current.assigned_worker_id != fresh.worker_id
+                or seal.fence != fresh.fence
+                or seal.requester_identity_id != current.created_by
+                or seal.worker_identity_id != worker.service_identity_id):
+            return False
+        allowed = set(seal.procedure_secret_refs)
+        pending_refs = (seal.runtime_secret_ref,) if seal.runtime_secret_ref else ()
+        allowed.update(pending_refs)
+        if set(current.secret_refs) != allowed:
+            return False
+        pending = current.model_copy(update={'secret_refs': pending_refs})
+        return self._authority_checksum(pending) == pinned.authority_checksum
+
     def recipient_context(self, pin, state, binding, *, lookup_actor=None):
         if binding.is_master or binding.id != pin.bot_binding_id or binding.thread_id != pin.original_thread_id:
             raise OwnerRoutingError('owner_executor_binding_changed')
@@ -776,7 +951,8 @@ class OwnerRoutingService:
                 pin.binding.canonical_owner, set(writable), lookup_actor=lookup_actor,
                 originals_checked=True)
             if accepted is not None:
-                if accepted[0] != pin.recipient:
+                if (accepted[0] != pin.recipient
+                        and not self._accepted_initial_seal_compatible(pin.recipient, accepted[0])):
                     raise OwnerRoutingError('owner_recipient_custody_changed')
                 return accepted[1], accepted[2]
         try:

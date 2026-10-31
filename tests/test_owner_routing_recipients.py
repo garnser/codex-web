@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from codex_web.execution_workers import ExecutionAssignment, AssignmentLease, AssignmentStatus
+from codex_web.execution_workers import ExecutionAssignment, AssignmentLease, AssignmentStatus, NetworkPolicy, WorkerResourceLimits
 from codex_web.models import WorkItemHandoff, WorkItemHandoffDelivery, WorkItemAckCreate
 from codex_web.owner_routing import OwnerRoutingError, OwnerRoutingPin
 from codex_web.resources import RepositoryExecutionScope
@@ -41,6 +41,8 @@ class CompatibleRecipientTests(unittest.IsolatedAsyncioTestCase):
                     acquired_at=time.time(), expires_at=time.time()+1000),
                 agent_profile=f.assignment.agent_profile, execution_profile_id='repository-write',
                 sandbox=f.binding.sandbox, approval_policy=f.binding.approval_policy,
+                network=NetworkPolicy(), execution_contract_version='thread-bootstrap/1.0',
+                required_capabilities=(), limits=WorkerResourceLimits(),
                 resource_ids=(scope,), repository_scope=RepositoryExecutionScope(
                     organization_id='org-a', workspace_id='workspace-a', project_id='project-a',
                     writable_repository_ids=(scope,), source='explicit'))

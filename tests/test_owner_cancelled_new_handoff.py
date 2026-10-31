@@ -165,11 +165,11 @@ class CancelledNewHandoffRecipientTests(unittest.IsolatedAsyncioTestCase):
             admission_validator=lambda: self.validate(pin, attempt.id), require_send_guard=True).bind_assignment(
                 assignment, worker_id=assignment.assigned_worker_id, fence=assignment.fence,
                 validator=lambda: assignment)
-        correlation = capture.prepare(generation='generation', rpc_request_id='rpc', native_session_id='native')
+        correlation = capture.prepare(generation='generation', rpc_request_id='rpc', native_session_id=queued.thread_id)
         capture.validate_before_send(correlation)
         self.assertTrue(capture.observe(correlation, generation='generation', message={
-            'id': 'rpc', 'result': {'thread': {'id': 'native'},
-            'turn': {'id': 'turn', 'threadId': 'native', 'status': 'inProgress'}}}))
+            'id': 'rpc', 'result': {'thread': {'id': queued.thread_id},
+            'turn': {'id': 'turn', 'threadId': queued.thread_id, 'status': 'inProgress'}}}))
         delivered = self.f.f.env.states.get(self.n.state.ref)
         self.assertEqual(delivered.handoff.delivery.thread_id, pin.recipient.thread_id)
         result = self.f.f.env.machine._structured_ack(self.n.state.ref,

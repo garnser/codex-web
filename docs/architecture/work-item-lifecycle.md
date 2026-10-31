@@ -504,6 +504,28 @@ a generation-one reservation additionally requires the existing controller-owned
 pre-worker refusal and unchanged predecessor attribution. Missing, ambiguous or
 unknown originals do not become permission through an ACK or delivery timestamp.
 
+A new current-owner witness may follow a normal canonical recovery/rebind on
+that delivered thread, or its exact tenant-scoped recorded replacement. The
+historical START, delivery and ACK remain immutable even when rebind removes the
+old bootstrap mapping: the retained original and its exact assignment subject
+anchor the original deterministic reservation. A changed assignment requires
+positive terminal retirement without a lease, unchanged historical authority and
+compatible current actor, complete Profile, Definition, policy and repository
+scope. Changed custody requires positive READY native-session metadata exactly
+associated with the retired original or the current assignment; absence and
+ambiguity refuse. Runtime, resource context, target and selected Skills remain
+unchanged. A pristine canonical pending credential marker may omit only the old
+seal's recorded procedure references until fresh native admission rechecks and
+seals them; arbitrary credential changes refuse. Current native-session custody
+is revalidated through existing guards;
+no arbitrary same-scope live candidate or fabricated historical edge is accepted.
+A same-assignment initial credential seal may add only its recorded procedure
+references when the runtime-only projection reproduces the exact queued
+authority checksum; every other witness field remains exact.
+An old queued witness remains exact and refuses changed assignment/fence; it is
+never transferred to the recovered assignment. Publication-recovery scope on the
+new workspace remains a separate canonical worker authorization requirement.
+
 Selection and the final native edge revalidate current worker custody, lease,
 fence, Profile, actor, policy and repository scope. They construct a fresh owner
 witness after ACK; the original pending-handoff owner checksum is historical
