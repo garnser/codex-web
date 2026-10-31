@@ -977,6 +977,18 @@ class ProcedureExecutionService:
         checkpoint = assignment.procedure_checkpoint
         if checkpoint is None or checkpoint.status != "running" or checkpoint.actor_identity_id != actor.identity_id:
             return ()
+        state = checkpoint.steps.get(checkpoint.current_step_id)
+        if (request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                and type(checkpoint) is ProcedureCheckpoint
+                and type(state) is ProcedureStepCheckpoint and state.status == 'running'
+                and state.action_intent_id is not None and state.approval_id is None
+                and checkpoint.recovery_step_id is None and state.rollback_origin_receipt_id is None
+                and _CANONICAL_EMPTY_APPROVAL_CHECK(self)
+                and request.idempotency_key == self._step_origin(assignment, checkpoint.current_step_id, intent=True)):
+            # No approval contributes no supplemental Role. Mandatory ordinary
+            # Role evaluation and full mediated admission still run before I/O.
+            # Invalid-procedure refusal may therefore occur at that later gate.
+            return ()
         procedure = self._procedure(assignment, actor)
         step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None)
         if step is None or not step.action or checkpoint.steps[step.id].status != "running":
@@ -991,6 +1003,16 @@ class ProcedureExecutionService:
             if request.idempotency_key != expected_key or request.action_id != step.action.action_id:
                 return ()
         return self._approved_roles(assignment, step, actor)
+
+    def _can_skip_empty_approval_roles(self):
+        """Only direct stock helpers opt in to the absent-approval contract.
+
+        Nested Skill/provider validation belongs to mandatory full mediation,
+        not a lookup for supplemental roles from an absent approval record.
+        """
+        return (type(self) is ProcedureExecutionService
+                and all(_original_bound(self, name, original)
+                    for name, original in _CANONICAL_EMPTY_APPROVAL_READS.items()))
 
     async def _approval(self, assignment, step, actor):
         checkpoint = assignment.procedure_checkpoint; state = checkpoint.steps[step.id]
@@ -2058,3 +2080,7 @@ _CANONICAL_FRAME_SECURITY_SOURCE_KEY = _SkillSourceStore._key
 
 _CANONICAL_SKILL_METADATA_CHECK = ProcedureExecutionService._can_observe_skill_metadata
 _CANONICAL_PROCEDURE_READ = ProcedureExecutionService._procedure
+
+_CANONICAL_EMPTY_APPROVAL_READS = {name: getattr(ProcedureExecutionService, name) for name in (
+    'authority_approval_roles', '_procedure', '_approved_roles', '_step_origin', '_can_skip_empty_approval_roles')}
+_CANONICAL_EMPTY_APPROVAL_CHECK = ProcedureExecutionService._can_skip_empty_approval_roles

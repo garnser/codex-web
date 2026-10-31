@@ -879,6 +879,22 @@ There is no retained authorization result, global cache, deadline adjustment,
 canonical format change, new API or UI control. Existing procedure, intent,
 verification and stage-timing inspectors remain the operator surfaces.
 
+### Supplemental approval roles during guarded admission
+
+For a stock guarded-readiness step, a current running checkpoint with no
+approval record contributes no supplemental approval roles. That lookup can
+return the empty role set without validating a procedure merely to discover
+that no approval exists. Ordinary Role authority evaluation still runs, and the
+provider boundary still performs full current procedure admission before
+credential use or provider I/O. This is not a cached admission or an approval.
+
+Actual approvals, recovery paths and custom implementations of the direct
+procedure, approval-role or origin-key helpers retain their ordinary validation
+path. Invalid procedure metadata may therefore be reported
+by the mandatory procedure admission rather than by the earlier empty approval
+lookup; it must still prevent provider I/O. No deadline, freshness window,
+authority grant, canonical record or operator control changes.
+
 ### Procedure result projection
 
 After a guarded action succeeds, its pinned procedure is validated again using
