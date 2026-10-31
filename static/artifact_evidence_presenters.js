@@ -34,7 +34,7 @@ export function governanceHtml(record) {
       ? `legal hold since ${timeText(record.legal_hold_at)} by ${record.legal_hold_by || "unknown"}`
       : "no legal hold";
     return `<small>Governance: ${escapeHtml(record.classification)} · ${escapeHtml(record.lifecycle)} · retention ${escapeHtml(record.retention_action)} at ${timeText(record.retention_expires_at)} · ${escapeHtml(hold)}</small>
-      <small>Residency: ${listText(record.residency_tags)} · deny model context: ${record.deny_model_context ? "yes" : "no"} · governance ID: ${escapeHtml(record.id)}</small>`;
+      <small>Residency: ${listText(record.residency_tags)} · deny model context: ${record.deny_model_context ? "yes" : "no"} · governance ID: ${escapeHtml(record.id)}</small><small>Source governance records: ${listText(record.source_record_ids)}</small>`;
   }
 
 

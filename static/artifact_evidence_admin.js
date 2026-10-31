@@ -6,15 +6,13 @@
   const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
   const { timeText, listText, safeLink, governanceHtml, researchLinks, observationPolicyHtml, continuationInputHtml } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
+  await import(`${BASE}/static/derived_artifact_admission.js`);
   let refreshGeneration = 0;
   let actor = null;
   let artifacts = [];
   let evidence = [];
   let verifications = [];
   let governance = [];
-
-
-
 
   function setStatus(message) {
     const host = document.getElementById("artifact-evidence-status");
@@ -35,7 +33,6 @@
   function governanceFor(objectId) {
     return governance.find((item) => item.object_id === objectId) || null;
   }
-
 
   function canMutateRecord(producerId) {
     if (!actor) return false;
@@ -106,7 +103,6 @@
     if (!active) return "";
     return `<button type="button" class="ghost-button" data-artifact-evidence-invalidate="${kind}" data-record-id="${escapeHtml(item.id)}">Invalidate</button>`;
   }
-
 
   function renderArtifacts() {
     const host = document.getElementById("artifact-list");

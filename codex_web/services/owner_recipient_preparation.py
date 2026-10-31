@@ -70,6 +70,15 @@ class OwnerRecipientPreparationService:
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
         # Full source custody and current business intent are rechecked before
         # every provider preparation edge; the token uses the genuine nonce.
+        proof = self._context_proof(current, binding, owner, writable, bootstrap,
+            assignment, source, original if cancelled is not None else None, profile, actor, snapshot)
+        return proof, profile, actor
+
+    def _context_proof(self, current, binding, owner, writable, bootstrap,
+                       assignment, source, cancelled_source, profile, actor, snapshot):
+        """Construct the existing immutable reservation attribution, read only."""
+        routing = self.routing
+        handoff = current.handoff
         execution_definition = None
         if routing.execution_profiles is not None:
             _, reference = routing.execution_profiles.resolve(profile.execution_profile_id,
@@ -92,9 +101,9 @@ class OwnerRecipientPreparationService:
             'profile': profile.model_dump(mode='json'), 'actor_id': actor.identity_id,
             'routing_definition': snapshot.definition.model_dump(mode='json'),
             'execution_definition': execution_definition}
-        if cancelled is not None:
-            proof['cancelled_source'] = original
-        return proof, profile, actor
+        if cancelled_source is not None:
+            proof['cancelled_source'] = cancelled_source
+        return proof
 
     @staticmethod
     def logical_id(state, binding, owner, writable):
