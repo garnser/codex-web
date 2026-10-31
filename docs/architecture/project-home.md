@@ -774,7 +774,13 @@ recorded as `blocked`; known budget/query refusal is `deferred_unknown`; a retur
 Artifact is `recorded`. Unconfigured Home is `not_applicable`. No outcome grants
 Home input or continuation. Mandatory Upgrade authority, immutable Release/instance
 checks, global drain admission fences, and active-work preflight remain unchanged.
-Unrecognized programming failures still propagate rather than becoming a warning.
+A canonical `HomeOperatorConflict` during the observed checkpoint remains a
+strict Home selection refusal (`home_upgrade_selection_changed`). The optional
+supervisor records that settled refusal as `blocked` while mandatory global
+drain checks still run. It grants no continuation, writer retry or inference
+that a preservation Artifact is absent: observed Artifact references and any
+committed evidence remain unchanged, including when selection drifts after a
+write. Unrecognized programming failures still propagate rather than becoming a warning.
 
 A repeated same-plan drain reuses the disposition and never invokes another Home
 Artifact writer. If the reservation or final plan write returned an unknown result,

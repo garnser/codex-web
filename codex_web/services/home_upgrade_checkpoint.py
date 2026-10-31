@@ -467,11 +467,14 @@ class HomeUpgradeCheckpointService:
         """Existing supervisor boundary: typed denial, never a lease bypass."""
         from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError
         from codex_web.services.agent_profiles import AgentProfileError
+        from codex_web.services.home_operator import HomeOperatorConflict
         from codex_web.services.identity import IdentityError
         self._operator(operator_actor)
         try:
             return self._checkpoint_current(plan_id, worker_runtime=worker_runtime, operator_actor=operator_actor,
                 _expected_selection=_expected_selection)
+        except HomeOperatorConflict:
+            self.refused('home_upgrade_selection_changed')
         except (ControlPlaneBrokerDeniedError, AgentProfileError, IdentityError):
             self.refused('home_upgrade_current_authority_unavailable')
 
