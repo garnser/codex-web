@@ -504,7 +504,10 @@ class TurnService:
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile_id=agent_profile_id,
                 agent_profile_revision=agent_profile_revision,
-                agent_profile_actor_id=agent_profile_actor_id,
+                agent_profile_actor_id=(agent_profile_actor_id or (actor.identity_id if actor is not None else None)),
+                **({"automatic_assignment_renewal": True}
+                   if guarded_admission and not payload.defer_start and allow_assignment_renewal and source == "web"
+                   else {}),
                 **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
             )
             queue_depth = self.queue_policy.depth(thread_id)
@@ -561,6 +564,14 @@ class TurnService:
                 ),
             }
 
+        # Preparation guards require the durable original and native writer-lock
+        # capture for BOTH initial input and resume. Do not first create native
+        # custody through an immediate path that has no admission claim.
+        guarded_admission = (
+            getattr(self.execution, "queued_preflight", None) is not None
+            and (getattr(self.execution, "procedure_admission", None) is not None
+                 or getattr(self.execution, "native_input_guard_factory", None) is not None)
+        )
         if getattr(payload, "defer_start", False):
             result = await queue_web_turn("web_turn_queued")
             self.execution.schedule_queue_drain(thread_id)
@@ -579,6 +590,10 @@ class TurnService:
             or self.queue_policy.depth(thread_id)
         ):
             return await queue_web_turn("web_turn_queued")
+        if guarded_admission:
+            result = await queue_web_turn("web_turn_queued")
+            self.execution.schedule_queue_drain(thread_id)
+            return result
         try:
             result = await self.execution.start_thread_turn_now(
                 thread_id,

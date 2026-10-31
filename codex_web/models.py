@@ -927,6 +927,8 @@ class OwnerLaneRecoveryContext(BaseModel):
 
 
 class QueuedTurn(BaseModel):
+    # Server-owned scheduling provenance; never a native admission grant.
+    automatic_assignment_renewal: bool = Field(default=False, strict=True)
     owner_lane_recovery: OwnerLaneRecoveryContext | None = None
     resource_context: ReadOnlyResourceContext | None = None
     canonical_ingress_id: str | None = None
@@ -968,6 +970,8 @@ class QueuedTurn(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
+        if not self.automatic_assignment_renewal:
+            result.pop("automatic_assignment_renewal", None)
         if self.owner_lane_recovery is None:
             result.pop("owner_lane_recovery", None)
         if getattr(self, "resource_context", None) is None:
