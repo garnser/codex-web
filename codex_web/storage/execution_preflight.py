@@ -138,12 +138,12 @@ class ExecutionPreflightStore:
     @classmethod
     def queued_identity(cls, snapshot: dict[str, Any]) -> dict[str, Any]:
         return {key:value for key,value in cls.normalized_queued_snapshot(snapshot).items()
-            if key not in {'id','execution_id','created_at','attempts'}}
+            if key not in {'id','execution_id','created_at','attempts','automatic_assignment_renewal'}}
 
     @staticmethod
     def _raw_queued_identity_key(snapshot: dict[str, Any]) -> str:
         identity = {key:value for key,value in snapshot.items()
-            if key not in {'id','execution_id','created_at','attempts'}}
+            if key not in {'id','execution_id','created_at','attempts','automatic_assignment_renewal'}}
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True,
             separators=(',', ':')).encode()).hexdigest()
         return f"q/{snapshot['thread_id']}/{digest}/"

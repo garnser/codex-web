@@ -1667,3 +1667,31 @@ positive process cleanup remain unchanged. Operational agent sessions retain
 their Python environment and managed validation outputs. This avoids unrelated
 setup; it does not change the finite inference deadline or establish live
 Executive completion.
+
+### Immediate web input and durable native admission
+
+When native preparation or operator input admission is configured together with
+the canonical queued preflight owner, an ordinary `TurnCreate` is retained in
+the normal queue even when `defer_start` is false. The response uses the existing
+`queued`/`queuedId` contract; acceptance is not native START. The existing human
+priority order and immediate queue-drain scheduler remain in effect. The same
+message, execution, requester, Profile revision and repository scope enter the
+existing guarded resume/start capture, without a second direct native attempt.
+
+A first human web original refused locally because its procedure-history budget
+is exhausted retains the existing single idle-assignment renewal. Its durable
+retry claim is reserved before renewal, and only the same positively unstarted
+original is requeued after success. Possible resume/start observations, custody
+uncertainty, changed claims, later attempts and automation never authorize this
+automatic renewal. Failed or interrupted renewal stays in canonical recovery.
+The existing queue and preflight inspector represent these states; no new UI
+authority or alternative native transport is introduced.
+
+The optional server-owned `QueuedTurn.automatic_assignment_renewal` is set only
+for formerly immediate web input when the caller permits assignment renewal.
+It defaults false and is omitted when false, preserving historical queue bytes.
+Explicitly deferred and restricted native-reasoning input retains no automatic
+renewal permission. This flag is part of the immutable retained snapshot, but
+not task identity: changing it cannot bypass an existing unknown-original hold
+or create a second copy of a request already in the queue. It is not accepted
+through `TurnCreate` and never replaces current requester/worker/scope checks.

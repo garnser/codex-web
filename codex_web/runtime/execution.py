@@ -962,6 +962,7 @@ class TurnExecutionService:
         project_coordination_dispatch=None,
         admit_first: bool = False,
         home_restart_input=None,
+        automatic_assignment_renewal: bool = False,
     ) -> QueuedTurn:
         h = self.host
         if home_restart_input is not None:
@@ -1053,6 +1054,7 @@ class TurnExecutionService:
             # rather than reporting successful admission.
 
             queued = QueuedTurn(
+                automatic_assignment_renewal=automatic_assignment_renewal,
                 canonical_ingress_id=canonical_ingress_id,
                 ingress_execution_profile_definition=ingress_execution_profile_definition,
                 id=(
@@ -4224,6 +4226,7 @@ class TurnExecutionService:
 
         queued.attempts += 1
         reschedule_queue = operator_original is None
+        queued_actor = None
         try:
             await asyncio.to_thread(self._require_automated_admission, queued.source, operator_admission_validator)
             if retained_attempt is not None:
@@ -4305,7 +4308,7 @@ class TurnExecutionService:
                     ),
                 )
             queued_actor = None
-            if queued.agent_profile_id or queued.canonical_ingress_id:
+            if queued.agent_profile_id or queued.canonical_ingress_id or queued.agent_profile_actor_id:
                 if (
                     not queued.agent_profile_actor_id
                     or self.actor_resolver is None
@@ -4483,6 +4486,50 @@ class TurnExecutionService:
                     and disposition.queued_start_evidence is None
                     and disposition.queued_start_receipt is None and disposition.started_at is None
                     and disposition.scheduling_retirement is None)
+                # Preserve the web path's single automatic idle renewal, now
+                # owned by the SAME durable original. Only this typed local
+                # refusal, never a provider detail or elapsed time, permits it.
+                from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
+                exhausted = next((blocker for blocker in disposition.blockers
+                    if blocker.code == 'procedure_assignment_exhausted'), None)
+                if (known_unstarted and operator_original is None
+                        and queued.source == 'web' and queued.automatic_assignment_renewal
+                        and queued_actor is not None
+                        and queued_actor.principal_kind == 'human'
+                        and disposition.attempt_number == 1
+                        and isinstance(exc.__cause__, ProcedureHistoryExhaustedError)
+                        and exhausted is not None and exhausted.target_id
+                        and disposition.scheduling_retirement is None
+                        and disposition.queued_resume_correlation is None
+                        and disposition.queued_resume_evidence is None
+                        and not disposition.queued_resume_history):
+                    retry_claim = None
+                    try:
+                        _reserved, retry_claim, acquired = await asyncio.to_thread(
+                            self.queued_preflight.claim_retry, disposition.id, actor=queued_actor)
+                        if acquired and _reserved.attempt_number != 2:
+                            # Another explicit retry may have won since the
+                            # local disposition. Never renew a later attempt.
+                            await asyncio.to_thread(self.queued_preflight.hold_renewal_retry,
+                                disposition.id, actor=queued_actor, claim_id=retry_claim, error=exc)
+                            return
+                        if acquired:
+                            await self.renew_exhausted_assignment(thread_id, project=project,
+                                actor=queued_actor, expected_assignment_id=exhausted.target_id)
+                            committed = await asyncio.to_thread(self.queued_preflight.queue_retry_committed,
+                                disposition.id, claim_id=retry_claim)
+                            if (committed.status == 'queued' and committed.attempt_number == 2
+                                    and committed.scheduling_retirement is None):
+                                restore_original_position()
+                    except BaseException as renewal_error:
+                        if retry_claim is not None:
+                            await asyncio.to_thread(self.queued_preflight.hold_renewal_retry,
+                                disposition.id, actor=queued_actor, claim_id=retry_claim,
+                                error=renewal_error)
+                        if not isinstance(renewal_error, Exception):
+                            raise
+                    await self.publish_queue_status(thread_id)
+                    return
                 if operator_original is not None and known_unstarted:
                     restore_original_position()
                 # The complete request now belongs to the existing durable
