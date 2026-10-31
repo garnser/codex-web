@@ -141,8 +141,39 @@ class SkillService:
         )
 
     @staticmethod
-    def _read_options(reader):
-        return {"_definitions": reader} if reader is not None else {}
+    def _read_options(reader, *, _resources=None, _identity=None):
+        return {key: value for key, value in (
+            ("_definitions", reader), ("_resources", _resources), ("_identity", _identity)
+        ) if value is not None}
+
+    def can_observe_metadata_reads(self, identity, resources):
+        from codex_web.services.procedure_scope_actor import (
+            ProcedureDefinitionScopeActor, _CANONICAL_SCOPE_CHECK,
+        )
+        from codex_web.services.resources import ResourceCatalogService, _CANONICAL_RESOURCE_SERVICE_CHECK
+        return (_CANONICAL_SKILL_OBSERVATION_CHECK(self)
+                and self._read_options is _CANONICAL_SKILL_READ_OPTIONS
+                and self._context is _CANONICAL_SKILL_CONTEXT
+                and self.procedure_resources is resources
+                and type(resources) is ResourceCatalogService
+                and _CANONICAL_RESOURCE_SERVICE_CHECK(resources)
+                and type(self.procedure_scope_actor) is ProcedureDefinitionScopeActor
+                and (self.projects is None or self.projects is self.procedure_scope_actor.projects)
+                and _CANONICAL_SCOPE_CHECK(self.procedure_scope_actor, identity))
+
+    def _metadata_scope_actor(self, record, *, _identity=None):
+        if self.procedure_scope_actor is None:
+            return None
+        if _identity is None:
+            return self.procedure_scope_actor(record)
+        from codex_web.services.procedure_scope_actor import (
+            ProcedureDefinitionScopeActor, _CANONICAL_SCOPE_CHECK,
+        )
+        resolver = self.procedure_scope_actor
+        if (type(resolver) is not ProcedureDefinitionScopeActor
+                or not _CANONICAL_SCOPE_CHECK(resolver, resolver.identity)):
+            raise SkillConflict("canonical procedure tenant metadata resolver is unavailable")
+        return resolver(record, _identity=_identity)
 
     def _definition_reader(self, reader):
         if reader is None:
@@ -232,19 +263,19 @@ class SkillService:
     def _procedure_definition_publication_gate(self, record: DefinitionRecord, publisher: str) -> None:
         self._procedure_definition_gate(record, "publication", self._procedure_publication_guard, publisher)
 
-    def _validate_procedure_references(self, record: DefinitionRecord, *, _definitions=None) -> None:
+    def _validate_procedure_references(self, record: DefinitionRecord, *, _definitions=None, _resources=None, _identity=None) -> None:
         definitions = self._definition_reader(_definitions)
         skill = SkillDefinition.model_validate(record.payload)
         if skill.lifecycle == SkillLifecycle.ARCHIVED:
             return
         if record.derived_from_record_id:
-            self._outcome_guard(definitions.get_record(record.derived_from_record_id), **self._read_options(_definitions))
+            self._outcome_guard(definitions.get_record(record.derived_from_record_id), **self._read_options(_definitions, _resources=_resources, _identity=_identity))
         procedure = skill.operational_procedure
         if procedure is None or skill.lifecycle == SkillLifecycle.ARCHIVED:
             return
         if self.procedure_scope_actor is None:
             raise SkillConflict("procedure tenant metadata resolution is unavailable")
-        actor = self.procedure_scope_actor(record)
+        actor = self._metadata_scope_actor(record, _identity=_identity)
         if actor is None:
             raise SkillConflict("operational procedures require a canonical tenant workspace scope")
         # Resource IDs and operations are resolved in the Definition's tenant,
@@ -253,7 +284,10 @@ class SkillService:
             for resource_id in selector.resource_ids:
                 if self.procedure_resources is None:
                     raise SkillConflict("procedure Resource registry is unavailable")
-                resource = self.procedure_resources.get(resource_id, actor)
+                if _resources is not None:
+                    self.procedure_resources.require_read_observation(_resources)
+                resource = self.procedure_resources.get(resource_id, actor,
+                    **({"_read_observation": _resources} if _resources is not None else {}))
                 if resource.resource_type not in selector.resource_types:
                     raise SkillConflict("procedure Resource selector type is incompatible")
         from codex_web.authority import AUTHORITY_LEVEL_RANK, AuthorityLevel
@@ -325,9 +359,9 @@ class SkillService:
         if now >= min(procedure.review_due_at, procedure.expires_at):
             raise SkillResolutionFailure("procedure_expired", "procedure has expired or requires freshness review")
 
-    def _assert_procedure_usable(self, record: DefinitionRecord, *, actor=None, _definitions=None) -> None:
+    def _assert_procedure_usable(self, record: DefinitionRecord, *, actor=None, _definitions=None, _resources=None, _identity=None) -> None:
         definitions = self._definition_reader(_definitions)
-        self._outcome_guard(record, actor=actor, phase="assignment", **self._read_options(_definitions))
+        self._outcome_guard(record, actor=actor, phase="assignment", **self._read_options(_definitions, _resources=_resources, _identity=_identity))
         skill = SkillDefinition.model_validate(record.payload)
         self._assert_procedure_fresh(skill)
         if skill.operational_procedure is not None:
@@ -341,15 +375,15 @@ class SkillService:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
             if SkillDefinition.model_validate(latest.payload).lifecycle == SkillLifecycle.ARCHIVED:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is archived")
-            self._validate_procedure_references(record, **self._read_options(_definitions))
+            self._validate_procedure_references(record, **self._read_options(_definitions, _resources=_resources, _identity=_identity))
 
-    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None, _definitions=None) -> DefinitionReference:
+    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None, _definitions=None, _resources=None, _identity=None) -> DefinitionReference:
         if _definitions is None:
             return self.observe_definition_reads((reference,), lambda reader:
-                self._validate_required_procedure(reference, actor=actor, project_id=project_id, _definitions=reader))
-        return self._validate_required_procedure(reference, actor=actor, project_id=project_id, _definitions=_definitions)
+                self._validate_required_procedure(reference, actor=actor, project_id=project_id, _definitions=reader, **self._read_options(None, _resources=_resources, _identity=_identity)))
+        return self._validate_required_procedure(reference, actor=actor, project_id=project_id, _definitions=_definitions, **self._read_options(None, _resources=_resources, _identity=_identity))
 
-    def _validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None, _definitions=None) -> DefinitionReference:
+    def _validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor, project_id: str | None = None, _definitions=None, _resources=None, _identity=None) -> DefinitionReference:
         """Required-procedure facet of ordinary exact Skill reference validation.
 
         No discovery, policy admission, planning, step dispatch or model calls.
@@ -377,7 +411,7 @@ class SkillService:
                 raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
             if latest.effective_until is not None and float(self.clock()) >= latest.effective_until:
                 raise SkillResolutionFailure("procedure_expired", "current operational procedure effective window expired")
-            valid = self.validate_reference(reference, actor=actor, project_id=project_id, **self._read_options(_definitions))
+            valid = self.validate_reference(reference, actor=actor, project_id=project_id, **self._read_options(_definitions, _resources=_resources, _identity=_identity))
             record = definitions.get_record(valid.record_id)
             if SkillDefinition.model_validate(record.payload).operational_procedure is None:
                 raise SkillResolutionFailure("procedure_missing", "required operational procedure is absent")
@@ -419,7 +453,7 @@ class SkillService:
     def bind_security(self, security: Any) -> None:
         self.security = security
 
-    def _outcome_guard(self, record, *, publication=False, actor=None, phase=None, _definitions=None):
+    def _outcome_guard(self, record, *, publication=False, actor=None, phase=None, _definitions=None, _resources=None, _identity=None):
         definitions = self._definition_reader(_definitions)
         # Follow immutable ancestry so removing visible provenance in a local
         # revision or rollback cannot shed source governance/publication gates.
@@ -432,6 +466,8 @@ class SkillService:
             if provenance.get("source_type") == "governance_tombstone":
                 raise SkillConflict("source governance erased this derivation")
             if provenance.get("source_type") == "procedure_outcome":
+                if _resources is not None or _identity is not None:
+                    raise SkillConflict("metadata read observations cannot enter outcome content I/O")
                 derived_outcome = True
                 if self.outcome_drafts is None:
                     raise SkillConflict("outcome source governance is unavailable")
@@ -442,7 +478,7 @@ class SkillService:
         if derived_outcome and (publication or phase):
             if self.security is None:
                 raise SkillConflict("outcome Skill security service is unavailable")
-            actor = actor or (self.procedure_scope_actor(record) if self.procedure_scope_actor else None)
+            actor = actor or self._metadata_scope_actor(record, _identity=_identity)
             if actor is None:
                 raise SkillConflict("outcome security tenant scope is unavailable")
             view = self._view(record, **self._read_options(_definitions))
@@ -1004,7 +1040,7 @@ class SkillService:
         *,
         actor: AuthenticationActor,
         project_id: str | None = None,
-        _definitions=None,
+        _definitions=None, _resources=None, _identity=None,
     ) -> DefinitionReference:
         definitions = self._definition_reader(_definitions)
         record = definitions.get_record(reference.record_id)
@@ -1049,7 +1085,7 @@ class SkillService:
                 phase="assignment",
                 **self._read_options(_definitions),
             )
-        self._assert_procedure_usable(record, actor=actor, **self._read_options(_definitions))
+        self._assert_procedure_usable(record, actor=actor, **self._read_options(_definitions, _resources=_resources, _identity=_identity))
         return actual
 
     def validate_reference_for_scope(
@@ -1532,4 +1568,11 @@ class SkillService:
 
 _CANONICAL_SKILL_READS = {name: getattr(SkillService, name) for name in (
     "validate_required_procedure", "_validate_required_procedure", "validate_reference", "_assert_procedure_usable",
-    "_outcome_guard", "_records", "_view", "_validate_procedure_references")}
+    "_outcome_guard", "_records", "_view", "_validate_procedure_references",
+    "can_observe_metadata_reads", "_metadata_scope_actor", "_definition_reader",
+    "_project", "_assert_visible_scope", "_assert_procedure_fresh")}
+
+_CANONICAL_SKILL_OBSERVATION_CHECK = SkillService.can_observe_definition_reads
+_CANONICAL_SKILL_READ_OPTIONS = SkillService._read_options
+
+_CANONICAL_SKILL_CONTEXT = SkillService._context

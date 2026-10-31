@@ -1043,3 +1043,7 @@ class GitLabActionProvider:
         credential: str | None = None,
     ) -> ActionResult:
         raise ValueError("GitLab code-host actions are not rollback-capable")
+
+
+# Captured once; metadata read scopes must refuse later class/instance overrides.
+_CANONICAL_GITLAB_ACTIONS = GitLabActionProvider.actions

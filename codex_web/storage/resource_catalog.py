@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+import threading
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractSpec, MigrationRegistry
@@ -47,6 +49,27 @@ class ResourceCatalogStore:
     def load(self) -> ResourceCatalogState:
         return self._decode(self.store.get(self.namespace))
 
+    def can_observe_reads(self) -> bool:
+        return (type(self) is ResourceCatalogStore
+                and all(getattr(getattr(self, name, None), "__self__", None) is self
+                        and getattr(getattr(self, name, None), "__func__", None) is method
+                        for name, method in _CANONICAL_RESOURCE_STORE_READS.items()))
+
+    def observe_reads(self, callback):
+        """One lazy, full canonical load for an explicitly synchronous owner."""
+        if not self.can_observe_reads():
+            return callback(None)
+        observation = _ResourceCatalogReadObservation(self)
+        try:
+            result = callback(observation)
+            if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                    result.close()
+                raise ValueError("Resource read observation callback must be synchronous")
+            return result
+        finally:
+            observation.close()
+
     def update(
         self,
         updater: Callable[[ResourceCatalogState], ResourceCatalogState],
@@ -61,3 +84,37 @@ class ResourceCatalogStore:
             default=ResourceCatalogState().model_dump(mode="json"),
         )
         return self._decode(payload)
+
+
+class _ResourceCatalogReadObservation:
+    def __init__(self, owner):
+        self._owner = owner
+        self._backend = owner.store
+        self._thread = threading.get_ident()
+        self._active = True
+        self._state = None
+
+    def require_owner(self, owner):
+        if (not self._active or owner is not self._owner
+                or owner.store is not self._backend
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_RESOURCE_STORE_CAN_OBSERVE(owner)):
+            raise ValueError("Resource store read observation is foreign, closed or on another thread")
+
+    def load(self, owner):
+        self.require_owner(owner)
+        if self._state is None:
+            # Keep the ordinary full decoder and migrations, including failure
+            # for malformed unrelated resources, relationships and bindings.
+            self._state = owner.load().model_copy(deep=True)
+        return self._state
+
+    def close(self):
+        self._active = False
+        self._state = None
+
+
+_CANONICAL_RESOURCE_STORE_READS = {
+    name: getattr(ResourceCatalogStore, name) for name in ("load", "_decode")
+}
+_CANONICAL_RESOURCE_STORE_CAN_OBSERVE = ResourceCatalogStore.can_observe_reads

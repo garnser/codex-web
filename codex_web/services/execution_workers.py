@@ -217,10 +217,17 @@ class ExecutionWorkerService:
         self,
         worker: ExecutionWorker,
         actor: AuthenticationActor,
+        *,
+        _identity=None,
     ) -> None:
+        if _identity is not None:
+            if not _CANONICAL_WORKER_IDENTITY_READS(self, self.identity):
+                raise AuthorizationError("canonical worker identity reader is unavailable")
+            self.identity.require_read_observation(_identity)
         if self.identity is not None:
             try:
-                live = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+                options = {"_read_observation": _identity} if _identity is not None else {}
+                live = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant, **options)
             except IdentityError as exc:
                 raise AuthorizationError("worker service identity or membership is revoked/unavailable") from exc
             if live.principal_kind != PrincipalKind.SERVICE:
@@ -237,6 +244,13 @@ class ExecutionWorkerService:
             "execution-worker:admin",
         }.intersection(actor.service_scopes):
             raise AuthorizationError("execution-worker:run scope required")
+
+    def can_observe_identity_reads(self, identity) -> bool:
+        return (type(self) is ExecutionWorkerService
+                and self.identity is identity and type(identity) is IdentityService
+                and getattr(self._require_worker_actor, "__self__", None) is self
+                and getattr(self._require_worker_actor, "__func__", None) is _CANONICAL_REQUIRE_WORKER_ACTOR
+                and identity.can_observe_reads())
 
     @staticmethod
     def _active_count(
@@ -2109,3 +2123,7 @@ class ExecutionWorkerService:
             key=lambda item: (item.occurred_at, item.id),
             reverse=True,
         )
+
+
+_CANONICAL_REQUIRE_WORKER_ACTOR = ExecutionWorkerService._require_worker_actor
+_CANONICAL_WORKER_IDENTITY_READS = ExecutionWorkerService.can_observe_identity_reads

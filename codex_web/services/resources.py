@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+import threading
 import time
 from collections import deque
 from typing import Iterable
@@ -64,6 +66,44 @@ class ResourceCatalogService:
     def __init__(self, store: ResourceCatalogStore) -> None:
         self.store = store
 
+    def can_observe_reads(self) -> bool:
+        store_check = getattr(self.store, "can_observe_reads", None)
+        return (type(self) is ResourceCatalogService
+                and type(self.store) is ResourceCatalogStore
+                and getattr(self.get, "__self__", None) is self
+                and getattr(self.get, "__func__", None) is _CANONICAL_RESOURCE_GET
+                and self._scope_matches is _CANONICAL_RESOURCE_SCOPE
+                and getattr(store_check, "__self__", None) is self.store
+                and getattr(store_check, "__func__", None) is _CANONICAL_RESOURCE_STORE_CHECK
+                and getattr(self.store.observe_reads, "__self__", None) is self.store
+                and getattr(self.store.observe_reads, "__func__", None) is _CANONICAL_RESOURCE_STORE_OBSERVE
+                and callable(store_check) and store_check())
+
+    def observe_reads(self, callback):
+        """Pass one explicit expiring view; no authority decisions are retained."""
+        if not self.can_observe_reads():
+            return callback(None)
+
+        def read(raw):
+            if raw is None:
+                return callback(None)
+            observation = _ResourceReadObservation(self, raw)
+            try:
+                result = callback(observation)
+                if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                    if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                        result.close()
+                    raise ValueError("Resource read observation callback must be synchronous")
+                return result
+            finally:
+                observation.close()
+        return self.store.observe_reads(read)
+
+    def require_read_observation(self, observation):
+        if type(observation) is not _ResourceReadObservation:
+            raise ResourceCatalogError("Resource read observation was not produced by this owner")
+        observation.require_owner(self)
+
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
         if actor.principal_kind == PrincipalKind.SERVICE:
@@ -105,11 +145,16 @@ class ResourceCatalogService:
             resources = [item for item in resources if item.lifecycle == lifecycle]
         return sorted(resources, key=lambda item: (item.resource_type.value, item.name.casefold(), item.id))
 
-    def get(self, resource_id: str, actor: AuthenticationActor) -> Resource:
+    def get(self, resource_id: str, actor: AuthenticationActor, *, _read_observation=None) -> Resource:
+        if _read_observation is None:
+            state = self.store.load()
+        else:
+            self.require_read_observation(_read_observation)
+            state = _read_observation._raw.load(self.store)
         item = next(
             (
                 resource
-                for resource in self.store.load().resources
+                for resource in state.resources
                 if resource.id == resource_id
                 and self._scope_matches(resource, actor.tenant)
             ),
@@ -117,7 +162,7 @@ class ResourceCatalogService:
         )
         if item is None:
             raise ResourceNotFoundError("resource not found")
-        return item
+        return item.model_copy(deep=True) if _read_observation is not None else item
 
     @staticmethod
     def _alias_conflicts(
@@ -815,3 +860,37 @@ class ResourceCatalogService:
                 )
                 created_or_existing.append(resource)
         return created_or_existing
+
+
+class _ResourceReadObservation:
+    """Owner-bound synchronous metadata, never a resource permission grant."""
+
+    def __init__(self, owner, raw):
+        self._owner = owner
+        self._store = owner.store
+        self._raw = raw
+        self._thread = threading.get_ident()
+        self._active = True
+
+    def require_owner(self, owner):
+        if (not self._active or owner is not self._owner
+                or owner.store is not self._store
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_RESOURCE_SERVICE_CHECK(owner)):
+            raise ResourceCatalogError("Resource read observation is foreign, closed or on another thread")
+        self._raw.require_owner(owner.store)
+
+    def get(self, resource_id, actor):
+        self.require_owner(self._owner)
+        return self._owner.get(resource_id, actor, _read_observation=self)
+
+    def close(self):
+        self._active = False
+        self._raw = None
+
+
+_CANONICAL_RESOURCE_GET = ResourceCatalogService.get
+_CANONICAL_RESOURCE_SCOPE = ResourceCatalogService._scope_matches
+_CANONICAL_RESOURCE_SERVICE_CHECK = ResourceCatalogService.can_observe_reads
+_CANONICAL_RESOURCE_STORE_CHECK = ResourceCatalogStore.can_observe_reads
+_CANONICAL_RESOURCE_STORE_OBSERVE = ResourceCatalogStore.observe_reads
