@@ -582,8 +582,11 @@ class ControlPlaneBrokerService:
         if item.id in CONTEXT_READ_IDS:
             result["scope"] = "Exact current assignment/fence, requester, project and explicit current execution Definition; read only"
             result["query_parameters"] = ({"allowed": True,
-                "required": ["record_id", "revision", "checksum"],
-                "description": "Exact effective published operational-procedure Skill reference; no implicit latest revision"}
+                "one_of": [
+                    {"required": ["record_id", "revision", "checksum"]},
+                    {"required": ["view"], "values": {"view": ["reference"]}},
+                ],
+                "description": "Exact published procedure content requires record_id, revision and checksum; sole view=reference resolves one known Skill ID to current authorized DefinitionReference metadata only. Modes cannot be mixed; execution still requires exact pins."}
                 if item.id == "skill.procedure.read" else {"allowed": False})
             result["request_body"] = {"allowed": False}
         work_item_model = {

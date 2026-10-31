@@ -386,11 +386,32 @@ A native scratch context can prove its physical resource scope is exactly empty 
 tenant and Project. Goals require exclusive bindings to that Project; linked
 Work roots retain Resource checks. `skill.procedure.read` reads one effective
 published operational-procedure Skill through its canonical owner, including
-the full Definition reference, procedure and security view. Its GET query must
-provide the exact `record_id`, `revision` and `checksum`; a superseded or changed
-reference is refused rather than silently replaced by a newer revision. Scope,
-security, lifecycle and freshness gates remain in force. No inventory or generic
-Definition payload endpoint is exposed by these operations.
+the full Definition reference, procedure and security view. The content GET query
+must provide the exact `record_id`, `revision` and `checksum`; a superseded or
+changed reference is refused rather than silently replaced by a newer revision.
+
+For a known procedure Skill ID, the same declared `skill.procedure.read` operation
+also accepts the sole query `view=reference`. For example,
+`GET /api/skills/my-procedure?view=reference` returns only
+`{"item":{"definitionReference":{...}}}`. This metadata-only mode resolves the
+current effective published reference under the assignment's tenant and Project,
+validates the procedure's current security, lifecycle, review and compatibility,
+then rechecks publication and validation before returning. It does not return Skill
+content, list definitions or alter any assignment or execution pin. It allows a
+repository-free coordinator whose admission selects no repository procedure to
+discover the exact reference after publication changes without operator-supplied
+record/checksum values. The existing content read and procedure START continue to
+require exact pins and current revalidation. Empty, mixed, repeated or unknown
+query fields fail closed; a stale exact read is never converted into resolution.
+Scope, security, lifecycle and freshness gates remain in force. No inventory or
+generic Definition payload endpoint is exposed by these operations.
+
+UI impact: no new object or control is introduced. Existing Skill/Definition
+inspection and broker denial/provenance surfaces remain canonical; the advertised
+operation help describes both modes. Reference resolution is deterministic and
+uses no model or provider calls, new store, cache, schema migration or grant.
+Existing Profiles declaring this read operation need no pin rewrite; a Profile
+that does not declare it still cannot resolve or read a procedure.
 
 All three reads require an explicit operation declaration in the current pinned
 execution Definition, current worker and workspace leases, requester authority,
