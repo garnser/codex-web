@@ -1695,3 +1695,17 @@ renewal permission. This flag is part of the immutable retained snapshot, but
 not task identity: changing it cannot bypass an existing unknown-original hold
 or create a second copy of a request already in the queue. It is not accepted
 through `TurnCreate` and never replaces current requester/worker/scope checks.
+
+### Watchdog attempts and recipient activity
+
+Watchdog dispatch events retain their complete historical result even when the
+result is a duplicate, ignored/busy outcome, or refusal. These explicit no-op
+results do not refresh recipient recent-activity grace. A real queued/started
+dispatch and native turn activity retain their normal duplicate guards; legacy
+watchdog events without a structured result retain their historical behavior.
+This distinction prevents repeated declined owner-watchdog attempts from
+starving a genuine pending handoff after current recipient custody recovers.
+It does not extend handoff/ACK deadlines, alter canonical replacement routing,
+weaken current authority or native custody checks, or claim delivery from an
+attempt. Existing event details remain the operator audit/UI source; the
+activity projection alone excludes explicitly unsuccessful attempts.

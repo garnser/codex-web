@@ -101,6 +101,20 @@ class BotRuntimeTelemetry:
                 continue
             if event.get("type") not in activity_types:
                 continue
+            if event.get("type") in {
+                "owner_work_watchdog_dispatched", "release_gate_watchdog_dispatched",
+            }:
+                result = event.get("result")
+                # These events record an attempted dispatch, including an
+                # ignored duplicate or refusal. Such outcomes are not activity
+                # and must not indefinitely suppress a pending handoff retry.
+                # Preserve legacy records which did not capture a result.
+                if isinstance(result, dict) and (
+                    result.get("ignored") is True or result.get("ok") is False
+                    or result.get("reason") in ("canonical_duplicate", "owner_lane_busy")
+                    or result.get("skipped") == "already_active"
+                ):
+                    continue
             created_at = event.get("created_at")
             if isinstance(created_at, (int, float)):
                 return max(0.0, current - float(created_at))
