@@ -494,6 +494,27 @@ same pending nonce through admitted canonical routing after readiness changes;
 its cooldown, current-lane busy checks and original expiry remain effective.
 Neither a handled routing refusal nor context creation proves native delivery.
 
+After a prepared recipient has actually started and accepted its current handoff,
+current-owner routing may read that existing lineage without preparing another
+context. The accepted handoff must retain its qualified delivery and exactly one
+matching canonical original with positive START correlation, evidence and receipt.
+The original Work, tenant, nonce, binding, actor, Profile, routing Definition and
+repository scope must agree. Its deterministic bootstrap reservation is required;
+a generation-one reservation additionally requires the existing controller-owned
+pre-worker refusal and unchanged predecessor attribution. Missing, ambiguous or
+unknown originals do not become permission through an ACK or delivery timestamp.
+
+Selection and the final native edge revalidate current worker custody, lease,
+fence, Profile, actor, policy and repository scope. They construct a fresh owner
+witness after ACK; the original pending-handoff owner checksum is historical
+attribution, not current authority. The final edge excludes only its own exact
+retained current-owner admission, while other unresolved originals still block.
+This read-only path never creates a thread, replays an input, resumes cancelled
+custody, extends the old nonce or edits source Sessions, bindings or history.
+Pending-handoff preparation retains its original unacknowledged, undelivered and
+unexpired guards. Ordinary accepted handoffs without a prepared reservation keep
+their existing routing path.
+
 If a current recipient admission callback raises a typed routing denial, the
 recipient owner restores that exact exception from the controller's genuine
 pre-provider thread refusal, preserving canonical blocker/event handling

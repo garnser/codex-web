@@ -329,7 +329,6 @@ class OwnerRoutingService:
         custody. A missing historical predecessor requires its existing exact
         canonical replacement, whose own native/assignment association is known.
         """
-        from codex_web.agent_runtime import AgentSessionStatus
         from codex_web.services.work_item_timing import WorkItemTimingPolicy
         handoff = state.handoff
         deadline = WorkItemTimingPolicy.handoff_deadline_projection(state)
@@ -340,6 +339,12 @@ class OwnerRoutingService:
                 or deadline is None or deadline['deadline_at'] is None
                 or not handoff.requested_at <= time.time() < deadline['deadline_at']):
             raise OwnerRoutingError('owner_recipient_preparation_changed')
+        return self._cancelled_recipient_custody(state, binding, owner, requested,
+            lookup_actor=lookup_actor)
+
+    def _cancelled_recipient_custody(self, state, binding, owner, requested, *, lookup_actor=None):
+        """Read exact cancelled source metadata; this alone grants no preparation."""
+        from codex_web.agent_runtime import AgentSessionStatus
         actor = (lookup_actor or self.control_actor)()
         try:
             original = self.bootstraps.get_by_thread(binding.thread_id, actor)
@@ -442,6 +447,168 @@ class OwnerRoutingService:
             authority_checksum=self._authority_checksum(assignment),
             work_item_owner_checksum=self._work_item_owner_checksum(state)), profile, actor
 
+    def _accepted_owner_recipient(self, state, binding, owner, requested, *, lookup_actor=None, originals_checked=False):
+        """Select an already delivered recipient, never prepare or replay input.
+
+        Only the current accepted handoff is lineage. Its retained exact START
+        and deterministic reservation locate a candidate; all current authority
+        and custody judgments still run before returning a new owner witness.
+        Callers retain their normal unresolved-original check.
+        """
+        from codex_web.models import QueuedTurn, QueuedNativeStartReceipt
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_start import validate_attribution
+        handoff = state.handoff
+        routing = self.snapshot(state)
+        if (handoff is None or handoff.status != 'accepted'
+                or normalized_owner(actionable_owner_value(state)) != owner
+                or routing is None
+                or routing.owner(normalized_owner(state.current_owner)) != owner
+                or routing.owner(normalized_owner(handoff.to_agent)) != owner):
+            return None
+        delivery = handoff.delivery
+        if delivery is None or self.recipient_preparer is None:
+            return None
+        token = self.recipient_preparer.logical_id(state, binding,
+            normalized_owner(handoff.to_agent), tuple(requested))
+        physical = delivery.execution_id.removeprefix('thread-bootstrap-') if delivery.execution_id else ''
+        previous = None
+        if physical != token:
+            previous = self.recipient_preparer.existing_assignment(execution_id='thread-bootstrap-' + token)
+            if previous is None:
+                # Ordinary non-reservation handoffs retain their existing path.
+                return None
+            expected = self.recipient_preparer.digest({'logical_id': token,
+                'predecessor_id': previous.id, 'predecessor_fence': previous.fence})[:32]
+            if physical != expected:
+                return None
+        if (handoff.acknowledged_at is None
+                or delivery.status != 'delivered' or delivery.scope_verified is not True
+                or not delivery.thread_id or not delivery.turn_id
+                or not delivery.execution_id or delivery.started_at is None
+                or set(delivery.writable_repository_resource_ids) != set(requested)
+                or delivery.read_only_repository_resource_ids
+                or set(work_item_repository_scope(state)[1]) != set(requested)):
+            raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+        if not originals_checked:
+            self.require_resolved_originals(state)
+        try:
+            attempts = self.preflight.for_work_item(organization_id=state.organization_id,
+                workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref)
+            matches = []
+            for attempt in attempts:
+                raw = attempt.queued_turn_snapshot
+                if (raw is None or raw.get('handoff_requested_at') != handoff.requested_at
+                        or attempt.status != 'started'):
+                    continue
+                original = QueuedTurn.model_validate(raw)
+                old_pin = original.owner_routing_pin
+                receipt, correlation, evidence = (attempt.queued_start_receipt,
+                    attempt.queued_start_correlation, attempt.queued_start_evidence)
+                if (old_pin is None or old_pin.recipient is None
+                        or old_pin.handoff_requested_at != handoff.requested_at
+                        or old_pin.work_item_ref != state.ref
+                        or old_pin.bot_binding_id != binding.id
+                        or old_pin.original_thread_id != binding.thread_id
+                        or old_pin.binding.canonical_owner != owner
+                        or old_pin.binding.configured_owner != normalized_owner(handoff.to_agent)
+                        or (old_pin.binding.organization_id, old_pin.binding.workspace_id, old_pin.binding.project_id)
+                            != (state.organization_id, state.workspace_id, state.project_id)
+                        or receipt is None or correlation is None or evidence is None
+                        or receipt.thread_id != delivery.thread_id
+                        or receipt.execution_id != delivery.execution_id
+                        or receipt.provider_native_turn_id != delivery.turn_id
+                        or receipt.observed_at != delivery.started_at):
+                    continue
+                validate_attribution(ExecutionPreflightService, attempt, correlation)
+                expected = QueuedNativeStartReceipt(
+                    admission_claim_id=correlation.admission_claim_id,
+                    requested_execution_id=correlation.requested_execution_id,
+                    execution_id=correlation.execution_id, thread_id=correlation.thread_id,
+                    provider_native_session_id=evidence.provider_native_session_id,
+                    provider_native_turn_id=evidence.provider_native_turn_id,
+                    provider_id=correlation.provider_id, runtime_id=correlation.runtime_id,
+                    observed_at=evidence.observed_at)
+                if (receipt != expected or evidence.runtime_generation != correlation.runtime_generation
+                        or evidence.rpc_request_id != correlation.rpc_request_id
+                        or evidence.provider_native_session_id != correlation.provider_native_session_id
+                        or correlation.actor_identity_id != original.agent_profile_actor_id
+                        or old_pin.binding.definition != routing.definition
+                        or (attempt.organization_id, attempt.workspace_id, attempt.project_id)
+                            != (state.organization_id, state.workspace_id, state.project_id)
+                        or original.work_item_ref != state.ref
+                        or original.thread_id != delivery.thread_id
+                        or correlation.execution_profile_id != delivery.execution_profile_id
+                        or correlation.repository_resource_id != delivery.repository_resource_id
+                        or tuple(correlation.writable_repository_resource_ids)
+                            != tuple(delivery.writable_repository_resource_ids)
+                        or tuple(correlation.read_only_repository_resource_ids)
+                            != tuple(delivery.read_only_repository_resource_ids)):
+                    raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+                matches.append((old_pin, original, correlation))
+            if len(matches) != 1:
+                raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            old_pin, original, correlation = matches[0]
+            token = self.recipient_preparer.logical_id(state, binding,
+                old_pin.binding.configured_owner, tuple(requested))
+            actor = (lookup_actor or self.control_actor)()
+            bootstrap = self.bootstraps.get_by_bootstrap('bootstrap-' + physical, actor)
+            assignment = self.assignments(bootstrap.assignment_id)
+            historical = old_pin.recipient
+            source_bootstrap, source_assignment, source_native, cancelled = self._cancelled_recipient_custody(
+                state, binding, owner, requested, lookup_actor=lookup_actor)
+            source_profile, source_actor = self.executor(state, binding, owner,
+                recipient_thread_id=source_bootstrap.thread_id, lookup_actor=lookup_actor)
+            if previous is not None:
+                proof = self.recipient_preparer._context_proof(state, binding,
+                    old_pin.binding.configured_owner, tuple(requested), source_bootstrap,
+                    source_assignment, source_native, cancelled, source_profile, source_actor, routing)
+                # The positive retained original pins the pre-ACK business
+                # identity; ACK changes only ownership/delivery bookkeeping.
+                proof['owner_checksum'] = historical.work_item_owner_checksum
+                proof['stage'] = old_pin.stage
+                proof['retry_attempt'] = old_pin.retry_attempt
+                if not self.recipient_preparer.recoverable(previous, proof, source_profile, token):
+                    raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            if (bootstrap.thread_id != delivery.thread_id
+                    or bootstrap.id != historical.bootstrap_id
+                    or bootstrap.assignment_id != historical.assignment_id
+                    or bootstrap.execution_id != 'thread-bootstrap-' + physical
+                    or bootstrap.execution_id != delivery.execution_id
+                    or assignment is None or assignment.subject is None
+                    or assignment.subject.kind != 'thread_bootstrap'
+                    or assignment.subject.ref != bootstrap.bootstrap_id
+                    or assignment.agent_profile is None
+                    or assignment.agent_profile != source_assignment.agent_profile
+                    or assignment.created_by != source_assignment.created_by
+                    or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                        != (state.organization_id, state.workspace_id, state.project_id)
+                    or assignment.agent_profile.profile_id != original.agent_profile_id
+                    or assignment.agent_profile.profile_revision != original.agent_profile_revision
+                    or assignment.execution_profile_id != delivery.execution_profile_id
+                    or assignment.repository_scope is None
+                    or set(assignment.repository_scope.writable_repository_ids) != set(requested)
+                    or assignment.repository_scope.read_only_repository_ids
+                    or set(assignment.resource_ids) != set(requested)):
+                raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            witness, profile, resolved_actor = self._live_recipient(
+                state, binding, bootstrap, owner, lookup_actor=lookup_actor)
+            if (witness.model_dump(exclude={'work_item_owner_checksum'})
+                    != historical.model_dump(exclude={'work_item_owner_checksum'})
+                    or profile.profile_id != original.agent_profile_id
+                    or profile.revision != original.agent_profile_revision
+                    or resolved_actor.identity_id != original.agent_profile_actor_id
+                    or correlation.assignment_id != witness.assignment_id
+                    or correlation.execution_id != witness.execution_id
+                    or correlation.worker_id != witness.worker_id
+                    or correlation.fence != witness.fence):
+                raise OwnerRoutingError('owner_recipient_custody_changed')
+            return witness, profile, resolved_actor
+        except OwnerRoutingError:
+            raise
+        except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
+            raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified') from exc
+
     async def prepare_compatible_pin(self, state, binding, configured_owner, *, writable_repository_ids):
         import asyncio
         try:
@@ -483,6 +650,17 @@ class OwnerRoutingService:
                 organization_id=state.organization_id, workspace_id=state.workspace_id, project_id=state.project_id)
             if execution_profile.repository_access == 'none':
                 return self.pin(state, binding, configured_owner, lookup_actor=lookup_actor)
+        accepted = self._accepted_owner_recipient(state, binding, owner, requested,
+            lookup_actor=lookup_actor)
+        if accepted is not None:
+            intent = routing.binding(configured_owner) or OwnerRoutingBinding(schema_version='1.1',
+                organization_id=state.organization_id, workspace_id=state.workspace_id,
+                project_id=state.project_id, configured_owner=normalized_owner(configured_owner),
+                canonical_owner=owner, definition=routing.definition)
+            return OwnerRoutingPin(schema_version='1.1', binding=intent, recipient=accepted[0],
+                work_item_ref=state.ref, stage=state.current_stage,
+                retry_attempt=state.execution.retry.attempt, handoff_requested_at=None,
+                bot_binding_id=binding.id, original_thread_id=binding.thread_id)
         required_replacement = None
         try:
             native_compatible = self.native_scope_compatible(state, source, source_assignment)
@@ -592,6 +770,15 @@ class OwnerRoutingService:
             raise OwnerRoutingError('owner_executor_binding_changed')
         if self._work_item_owner_checksum(state) != pin.recipient.work_item_owner_checksum:
             raise OwnerRoutingError('owner_routing_work_item_changed')
+        if pin.handoff_requested_at is None:
+            _, writable = work_item_repository_scope(state)
+            accepted = self._accepted_owner_recipient(state, binding,
+                pin.binding.canonical_owner, set(writable), lookup_actor=lookup_actor,
+                originals_checked=True)
+            if accepted is not None:
+                if accepted[0] != pin.recipient:
+                    raise OwnerRoutingError('owner_recipient_custody_changed')
+                return accepted[1], accepted[2]
         try:
             source = self.bootstraps.get_by_thread(binding.thread_id, (lookup_actor or self.control_actor)())
             original = self.assignments(source.assignment_id)
@@ -615,7 +802,7 @@ class OwnerRoutingService:
                     self.cancelled_recipient_source(state, binding, pin.binding.canonical_owner,
                         requested, lookup_actor=lookup_actor)
                     target = self._prepared_cancelled_recipient(state, binding,
-                        pin.binding.canonical_owner, requested, lookup_actor=lookup_actor,
+                        pin.binding.configured_owner, requested, lookup_actor=lookup_actor,
                         originals_checked=True)
                 if target != pin.recipient.thread_id:
                     raise OwnerRoutingError('owner_recipient_custody_changed')
@@ -636,7 +823,7 @@ class OwnerRoutingService:
                     self.cancelled_recipient_source(state, binding, pin.binding.canonical_owner,
                         requested, lookup_actor=lookup_actor)
                     target = self._prepared_cancelled_recipient(state, binding,
-                        pin.binding.canonical_owner, requested, lookup_actor=lookup_actor,
+                        pin.binding.configured_owner, requested, lookup_actor=lookup_actor,
                         originals_checked=True)
                     if target != pin.recipient.thread_id:
                         raise OwnerRoutingError('owner_recipient_custody_changed')
