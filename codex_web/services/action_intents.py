@@ -947,6 +947,15 @@ class ActionIntentService:
             definition=definition, request=intent.request, actor=requester, execution_id=intent.execution_id)
         if authority.outcome != ActionDecisionOutcome.ALLOW:
             raise ActionRequirementError("procedure_authority_denied: " + (authority.reason or "requester authority denied"))
+        # The complete canonical mediator validates the current durable step
+        # independently of discovery metadata. Do not reconstruct an unused
+        # provider/model catalog merely to discard it after that admission.
+        defer_context = _can_defer_mediated_context(self, phase)
+        if defer_context:
+            mediated = await self.procedure_execution.provider_admission(intent, requester, phase)
+            if mediated:
+                return (mediated if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
+                    else None)
         context = await asyncio.to_thread(self._procedure_context,
             actor=requester, request=intent.request, definition=definition, provider=provider,
             policy_source=intent.policy_decision.source,
@@ -956,7 +965,7 @@ class ActionIntentService:
         if phase == "rollback":
             from dataclasses import replace
             context = replace(context, operation=intent.action_id + ".rollback", enforcement="canonical_rollback")
-        if self.procedure_execution is not None:
+        if not defer_context and self.procedure_execution is not None:
             mediated = await self.procedure_execution.provider_admission(intent, requester, phase)
             if mediated:
                 return (mediated if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
@@ -3193,3 +3202,52 @@ class ActionIntentService:
             error=checkpoint.error_code,
             failure=self._failure(intent, FailureReason.UNCLASSIFIED, source_native_code=checkpoint.error_code,
                 details={"operation":"rollback", "origin_receipt_id":receipt.id}) if checkpoint.error_code else None)
+
+
+# Capture once: comparing against mutable class attributes would accidentally
+# treat a later class-level override as the original implementation.
+_CANONICAL_PROCEDURE_CONTEXT = ActionIntentService._procedure_context
+_CANONICAL_PROVIDER_ADMISSION_HOOK = ActionIntentService.procedure_provider_admission
+
+
+def _can_defer_mediated_context(service, phase):
+    """Eligibility only; this neither observes nor caches an admission decision."""
+    from codex_web.services.procedure_discovery import (
+        ProcedureDiscoveryService, ProcedureExecutionCapabilityService,
+        _CANONICAL_DISCOVERY_CONTEXT_READS, _CANONICAL_CAPABILITY_RESOLVE,
+    )
+    from codex_web.services.procedure_execution import (
+        ProcedureExecutionService, _CANONICAL_PROVIDER_MEDIATION,
+    )
+
+    mediator = service.procedure_execution
+    discovery = service.procedure_discovery
+    if (phase not in ('execute', 'verify')
+            or type(service) is not ActionIntentService
+            or type(mediator) is not ProcedureExecutionService
+            or type(discovery) is not ProcedureDiscoveryService
+            or mediator.intents is not service or mediator.discovery is not discovery
+            or mediator.workers is not service.execution_workers):
+        return False
+
+    def original(owner, name, method):
+        bound = getattr(owner, name, None)
+        return (getattr(bound, '__self__', None) is owner
+                and getattr(bound, '__func__', None) is method)
+
+    # The facade holds a hook bound to the ActionIntent owner, not to itself.
+    hook = getattr(service.execution, 'procedure_admission', None)
+    if (not original(service, '_procedure_context', _CANONICAL_PROCEDURE_CONTEXT)
+            or not original(service, 'procedure_provider_admission', _CANONICAL_PROVIDER_ADMISSION_HOOK)
+            or getattr(hook, '__self__', None) is not service
+            or getattr(hook, '__func__', None) is not _CANONICAL_PROVIDER_ADMISSION_HOOK):
+        return False
+    for owner, methods in ((discovery, _CANONICAL_DISCOVERY_CONTEXT_READS),
+                           (mediator, _CANONICAL_PROVIDER_MEDIATION)):
+        if not all(original(owner, name, method) for name, method in methods.items()):
+            return False
+    capabilities = discovery.execution_capabilities
+    return (capabilities is None
+            or (type(capabilities) is ProcedureExecutionCapabilityService
+                and capabilities.workers is mediator.workers
+                and original(capabilities, 'resolve', _CANONICAL_CAPABILITY_RESOLVE)))
