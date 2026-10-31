@@ -22,6 +22,7 @@ from codex_web.artifact_evidence import EvidenceCreate, EvidenceType, EvidenceRe
 from codex_web.attention import AttentionItemCreate, AttentionSource
 from codex_web.authority import AuthorityEvaluationRequest
 from codex_web.identity import TenantScope
+from codex_web.guarded_verification_telemetry import verification_stage
 from codex_web.procedure_execution import ProcedureCheckpoint, ProcedureStepCheckpoint, ProcedureDeviation
 from codex_web.services.action_providers import ActionRequirementError
 from codex_web.services.code_host_action_contract import (
@@ -208,73 +209,74 @@ class ProcedureExecutionService:
         return (bytes(data), actual, artifact) if _with_metadata else (bytes(data), actual)
 
     def _inputs(self, assignment, actor, procedure):
-        pin = assignment.procedure_checkpoint
-        witness = _current_input_witness.get()
-        capability = getattr(self.evidence, "can_batch_mr_input_reads", None)
-        batched = (
-            procedure.input_protocol == "code-host-mr-procedure-input.v2"
-            and all(
-                getattr(getattr(self, name), "__self__", None) is self
-                and getattr(getattr(self, name), "__func__", None) is method
-                for name, method in _CANONICAL_INPUT_CONTENT_READS.items()
+        with verification_stage('inputs'):
+            pin = assignment.procedure_checkpoint
+            witness = _current_input_witness.get()
+            capability = getattr(self.evidence, "can_batch_mr_input_reads", None)
+            batched = (
+                procedure.input_protocol == "code-host-mr-procedure-input.v2"
+                and all(
+                    getattr(getattr(self, name), "__self__", None) is self
+                    and getattr(getattr(self, name), "__func__", None) is method
+                    for name, method in _CANONICAL_INPUT_CONTENT_READS.items()
+                )
+                and callable(capability)
+                and capability()
             )
-            and callable(capability)
-            and capability()
-        )
-        hint = None
-        if batched:
-            data, _, hint = self._content(
-                pin.input_snapshot_id,
-                actor,
-                assignment,
-                pin.input_snapshot_checksum,
-                _with_metadata=True,
-            )
-        else:
-            data, _ = self._content(
-                pin.input_snapshot_id, actor, assignment, pin.input_snapshot_checksum
-            )
-        if witness is not None:
-            assignment_id, run_id, artifact_id = witness
-            if (
-                procedure.input_protocol is None
-                or assignment_id != assignment.id
-                or run_id != self.run_id(pin)
-            ):
-                raise ProcedureExecutionError("procedure_current_input_witness_scope")
+            hint = None
             if batched:
-                fresh, _, hint = self._content(
-                    artifact_id,
+                data, _, hint = self._content(
+                    pin.input_snapshot_id,
                     actor,
                     assignment,
                     pin.input_snapshot_checksum,
                     _with_metadata=True,
                 )
             else:
-                fresh, _ = self._content(
-                    artifact_id, actor, assignment, pin.input_snapshot_checksum
+                data, _ = self._content(
+                    pin.input_snapshot_id, actor, assignment, pin.input_snapshot_checksum
                 )
-            # The witness authenticates current use only. Original immutable
-            # snapshot/history/run identity and typed values never change.
-            if fresh != data:
-                raise ProcedureExecutionError("procedure_current_input_witness_changed")
-            options = {"_metadata_hint": hint} if hint is not None else {}
-            self._input_protocol(
-                procedure, artifact_id, fresh, actor, assignment, **options
-            )
-        else:
-            options = {"_metadata_hint": hint} if hint is not None else {}
-            self._input_protocol(
-                procedure, pin.input_snapshot_id, data, actor, assignment, **options
-            )
-        values = bounded_data(json.loads(data))
-        self._values(procedure.inputs, values, actor, assignment)
-        if (
-            pin.canonical_input_checksum is not None
-            and checksum(values) != pin.canonical_input_checksum
-        ):
-            raise ProcedureExecutionError("procedure_input_identity_changed")
-        return values
+            if witness is not None:
+                assignment_id, run_id, artifact_id = witness
+                if (
+                    procedure.input_protocol is None
+                    or assignment_id != assignment.id
+                    or run_id != self.run_id(pin)
+                ):
+                    raise ProcedureExecutionError("procedure_current_input_witness_scope")
+                if batched:
+                    fresh, _, hint = self._content(
+                        artifact_id,
+                        actor,
+                        assignment,
+                        pin.input_snapshot_checksum,
+                        _with_metadata=True,
+                    )
+                else:
+                    fresh, _ = self._content(
+                        artifact_id, actor, assignment, pin.input_snapshot_checksum
+                    )
+                # The witness authenticates current use only. Original immutable
+                # snapshot/history/run identity and typed values never change.
+                if fresh != data:
+                    raise ProcedureExecutionError("procedure_current_input_witness_changed")
+                options = {"_metadata_hint": hint} if hint is not None else {}
+                self._input_protocol(
+                    procedure, artifact_id, fresh, actor, assignment, **options
+                )
+            else:
+                options = {"_metadata_hint": hint} if hint is not None else {}
+                self._input_protocol(
+                    procedure, pin.input_snapshot_id, data, actor, assignment, **options
+                )
+            values = bounded_data(json.loads(data))
+            self._values(procedure.inputs, values, actor, assignment)
+            if (
+                pin.canonical_input_checksum is not None
+                and checksum(values) != pin.canonical_input_checksum
+            ):
+                raise ProcedureExecutionError("procedure_input_identity_changed")
+            return values
 
     def _input_protocol(
         self, procedure, artifact_id, data, actor, assignment, *, _metadata_hint=None
@@ -621,29 +623,30 @@ class ProcedureExecutionService:
 
     def _native_credential_projection(self, assignment, selected, actor):
         """Resolve references through the same owners as native preparation/start."""
-        worker = self._live(assignment)
-        if (actor.organization_id, actor.workspace_id) != (assignment.organization_id, assignment.workspace_id):
-            raise ProcedureExecutionError("procedure_credential_requester_changed")
-        # Keep original custody/principal refusals ahead of any Definition read.
-        owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant)
-        observe = getattr(self.skills, "observe_definition_reads", None)
-        canonical_observer = (
-            getattr(observe, "__self__", None) is self.skills
-            and getattr(observe, "__func__", None) is _CANONICAL_SKILL_OBSERVER
-        )
-        canonical_preparation = all(
-            getattr(getattr(self, name), "__self__", None) is self
-            and getattr(getattr(self, name), "__func__", None) is method
-            for name, method in _CANONICAL_CUSTODY_PREPARATION_READS.items()
-        )
-        def read(reader):
-            return self._read_native_credential_projection(
-                assignment, selected, actor, worker=worker, owner=owner,
-                _definitions=reader)
-        # A custom validator retains the entire original call and signature.
-        # The existing Skill owner closes unsupported observations before
-        # entering its legacy callback, including outcome-derived content.
-        return observe(selected, read) if canonical_preparation and canonical_observer else read(None)
+        with verification_stage('custody'):
+            worker = self._live(assignment)
+            if (actor.organization_id, actor.workspace_id) != (assignment.organization_id, assignment.workspace_id):
+                raise ProcedureExecutionError("procedure_credential_requester_changed")
+            # Keep original custody/principal refusals ahead of any Definition read.
+            owner = self.identity.actor_for_identity(assignment.created_by, scope=actor.tenant)
+            observe = getattr(self.skills, "observe_definition_reads", None)
+            canonical_observer = (
+                getattr(observe, "__self__", None) is self.skills
+                and getattr(observe, "__func__", None) is _CANONICAL_SKILL_OBSERVER
+            )
+            canonical_preparation = all(
+                getattr(getattr(self, name), "__self__", None) is self
+                and getattr(getattr(self, name), "__func__", None) is method
+                for name, method in _CANONICAL_CUSTODY_PREPARATION_READS.items()
+            )
+            def read(reader):
+                return self._read_native_credential_projection(
+                    assignment, selected, actor, worker=worker, owner=owner,
+                    _definitions=reader)
+            # A custom validator retains the entire original call and signature.
+            # The existing Skill owner closes unsupported observations before
+            # entering its legacy callback, including outcome-derived content.
+            return observe(selected, read) if canonical_preparation and canonical_observer else read(None)
 
     def _read_native_credential_projection(self, assignment, selected, actor, *, worker, owner, _definitions=None):
         """Share Definition data only; every custody judgment still runs."""
@@ -1291,47 +1294,48 @@ class ProcedureExecutionService:
 
     def provider_admission_current(self, intent, actor, phase):
         """Read-only durable-step check, reusable under canonical writer locks."""
-        if not intent.execution_id:
-            return False
-        assignment = self.workers.assignment_for_execution(intent.execution_id, actor=actor)
-        checkpoint = assignment.procedure_checkpoint
-        if checkpoint is None:
-            return False
-        procedure = self._procedure(assignment, actor)
-        step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None)
-        if step is None or not step.action:
-            raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
-        self._guarded_readonly_deadline(assignment, procedure, step)
-        if phase == "rollback":
-            if not step.recovery or step.recovery.mode != "provider_rollback":
+        with verification_stage('admission'):
+            if not intent.execution_id:
+                return False
+            assignment = self.workers.assignment_for_execution(intent.execution_id, actor=actor)
+            checkpoint = assignment.procedure_checkpoint
+            if checkpoint is None:
+                return False
+            procedure = self._procedure(assignment, actor)
+            step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None)
+            if step is None or not step.action:
                 raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
+            self._guarded_readonly_deadline(assignment, procedure, step)
+            if phase == "rollback":
+                if not step.recovery or step.recovery.mode != "provider_rollback":
+                    raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
+                inputs = self._inputs(assignment, actor, procedure)
+                self._protected(assignment, step, actor, procedure, inputs)
+                origin, receipt = self._rollback_origin(assignment, step, actor, procedure)
+                state = checkpoint.steps[step.id]
+                if (origin.id != intent.id or state.action_intent_id != intent.id or state.status != "running"
+                    or checkpoint.status != "running" or intent.rollback_checkpoint is None
+                    or intent.rollback_checkpoint.origin_receipt_id != receipt.id
+                    or state.rollback_origin_receipt_id != receipt.id):
+                    raise ProcedureExecutionError("procedure_rollback_origin_not_current")
+                return True
+            if (phase != "execute" and not (phase == "verify"
+                    and intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS})) or step.recovery:
+                raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
+            state = checkpoint.steps[step.id]
+            if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":
+                raise ProcedureExecutionError("procedure_action_not_current_step")
             inputs = self._inputs(assignment, actor, procedure)
             self._protected(assignment, step, actor, procedure, inputs)
-            origin, receipt = self._rollback_origin(assignment, step, actor, procedure)
-            state = checkpoint.steps[step.id]
-            if (origin.id != intent.id or state.action_intent_id != intent.id or state.status != "running"
-                or checkpoint.status != "running" or intent.rollback_checkpoint is None
-                or intent.rollback_checkpoint.origin_receipt_id != receipt.id
-                or state.rollback_origin_receipt_id != receipt.id):
-                raise ProcedureExecutionError("procedure_rollback_origin_not_current")
-            return True
-        if (phase != "execute" and not (phase == "verify"
-                and intent.action_id in {CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS})) or step.recovery:
-            raise ProcedureExecutionError("procedure_unmediated_rollback_or_action")
-        state = checkpoint.steps[step.id]
-        if state.action_intent_id != intent.id or state.status != "running" or checkpoint.status != "running":
-            raise ProcedureExecutionError("procedure_action_not_current_step")
-        inputs = self._inputs(assignment, actor, procedure)
-        self._protected(assignment, step, actor, procedure, inputs)
-        binding, _, _, request = self._request(step, assignment, actor, procedure,
-            self._step_inputs(step, checkpoint, inputs, actor, assignment))
-        if binding.id != intent.binding_id or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(intent.request):
-            raise ProcedureExecutionError("procedure_action_request_changed")
-        deadline = self._guarded_readonly_deadline(assignment, procedure, step)
-        # Return the current bound computed from the very same fully admitted
-        # assignment/procedure. The facade compares its original bound without
-        # duplicating canonical reads around this complete current admission.
-        return deadline if deadline is not None else True
+            binding, _, _, request = self._request(step, assignment, actor, procedure,
+                self._step_inputs(step, checkpoint, inputs, actor, assignment))
+            if binding.id != intent.binding_id or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(intent.request):
+                raise ProcedureExecutionError("procedure_action_request_changed")
+            deadline = self._guarded_readonly_deadline(assignment, procedure, step)
+            # Return the current bound computed from the very same fully admitted
+            # assignment/procedure. The facade compares its original bound without
+            # duplicating canonical reads around this complete current admission.
+            return deadline if deadline is not None else True
 
     def _require_current_run(self, assignment, run_id):
         pin = assignment.procedure_checkpoint

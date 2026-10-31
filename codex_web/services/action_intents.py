@@ -51,6 +51,7 @@ from codex_web.identity import (
     TenantScope,
 )
 from codex_web.observability import correlated, current_correlation, new_correlation_id
+from codex_web.guarded_verification_telemetry import guarded_verification_timings, verification_stage
 from codex_web.resources import ResourceType
 from codex_web.security import (
     SecurityDecisionOutcome,
@@ -2100,90 +2101,92 @@ class ActionIntentService:
         actor: AuthenticationActor,
         settlement_guard: dict | None = None,
     ) -> bool | tuple[ActionIntentVerificationReceipt, ActionIntent]:
-        provider_verification = None
-        findings: list[str] = []
-        provider_ok = True
-        # Readiness success is never caller-optional, including legacy or
-        # previously persisted records with verification_required=False.
-        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
-            try:
-                ready_context = (await self._ready_verification_context(intent, result, actor)
-                                 if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)
-                from codex_web.procedure_discovery import procedure_action_intent
-                with procedure_action_intent(intent.id), readiness_execution(ready_context):
-                    if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
-                        remaining = self._guarded_readonly_remaining(intent, actor)
-                        provider_verification = await asyncio.wait_for(
-                            self.execution.verify(intent.binding_id, result, actor=actor),
-                            timeout=remaining)
-                    else:
-                        provider_verification = await self.execution.verify(intent.binding_id, result, actor=actor)
-                provider_ok = bool(provider_verification.verified)
-                findings.extend(provider_verification.findings)
-            except Exception as exc:
-                provider_ok = False
-                findings.append(f"provider verification failed: {type(exc).__name__}: {exc}")
+        with guarded_verification_timings(intent), verification_stage('verification'):
+            provider_verification = None
+            findings: list[str] = []
+            provider_ok = True
+            # Readiness success is never caller-optional, including legacy or
+            # previously persisted records with verification_required=False.
+            if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
+                try:
+                    ready_context = (await self._ready_verification_context(intent, result, actor)
+                                     if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)
+                    from codex_web.procedure_discovery import procedure_action_intent
+                    with procedure_action_intent(intent.id), readiness_execution(ready_context):
+                        if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                            remaining = self._guarded_readonly_remaining(intent, actor)
+                            with verification_stage('provider_verification'):
+                                provider_verification = await asyncio.wait_for(
+                                    self.execution.verify(intent.binding_id, result, actor=actor),
+                                    timeout=remaining)
+                        else:
+                            provider_verification = await self.execution.verify(intent.binding_id, result, actor=actor)
+                    provider_ok = bool(provider_verification.verified)
+                    findings.extend(provider_verification.findings)
+                except Exception as exc:
+                    provider_ok = False
+                    findings.append(f"provider verification failed: {type(exc).__name__}: {exc}")
 
-        evidence_evaluation = None
-        evidence_ok = True
-        if intent.expected_evidence:
-            if self.artifact_evidence is None or not intent.work_item_ref:
-                evidence_ok = False
-                findings.append("required evidence cannot be evaluated")
-            else:
-                evidence_evaluation = await asyncio.to_thread(self.artifact_evidence.evaluate,
-                    intent.work_item_ref,
-                    intent.expected_evidence,
-                    actor=actor,
-                )
-                evidence_ok = evidence_evaluation.satisfied
-                if not evidence_ok:
-                    findings.extend(
-                        outcome.reason or outcome.requirement_id
-                        for outcome in evidence_evaluation.outcomes
-                        if not outcome.satisfied
+            evidence_evaluation = None
+            evidence_ok = True
+            if intent.expected_evidence:
+                if self.artifact_evidence is None or not intent.work_item_ref:
+                    evidence_ok = False
+                    findings.append("required evidence cannot be evaluated")
+                else:
+                    evidence_evaluation = await asyncio.to_thread(self.artifact_evidence.evaluate,
+                        intent.work_item_ref,
+                        intent.expected_evidence,
+                        actor=actor,
                     )
+                    evidence_ok = evidence_evaluation.satisfied
+                    if not evidence_ok:
+                        findings.extend(
+                            outcome.reason or outcome.requirement_id
+                            for outcome in evidence_evaluation.outcomes
+                            if not outcome.satisfied
+                        )
 
-        verified = provider_ok and evidence_ok
-        guarded = settlement_guard
-        if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            verified = provider_ok and evidence_ok
+            guarded = settlement_guard
+            if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                try:
+                    # Evidence may await after the last provider observation. Re-enter
+                    # canonical admission, then guard the actual successful write.
+                    with procedure_action_intent(intent.id):
+                        await ready_context.checkpoint()
+                    guarded = ready_context.settlement_guard(intent)
+                except Exception as exc:
+                    verified = False
+                    findings.append(f"readiness settlement denied: {type(exc).__name__}: {exc}")
+            if verified and intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                try:
+                    self._guarded_readonly_remaining(intent, actor)
+                    guarded = self._guarded_readonly_commit_guard(intent, actor)
+                except Exception:
+                    verified = False
+                    findings.append('guarded observation deadline/current scope refused verification settlement')
             try:
-                # Evidence may await after the last provider observation. Re-enter
-                # canonical admission, then guard the actual successful write.
-                with procedure_action_intent(intent.id):
-                    await ready_context.checkpoint()
-                guarded = ready_context.settlement_guard(intent)
+                receipt = await asyncio.to_thread(self._append_verification, intent,
+                    provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
+                    verified=verified, findings=tuple(findings), guarded=guarded)
             except Exception as exc:
+                if not guarded:
+                    raise
                 verified = False
-                findings.append(f"readiness settlement denied: {type(exc).__name__}: {exc}")
-        if verified and intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
-            try:
-                self._guarded_readonly_remaining(intent, actor)
-                guarded = self._guarded_readonly_commit_guard(intent, actor)
-            except Exception:
-                verified = False
-                findings.append('guarded observation deadline/current scope refused verification settlement')
-        try:
-            receipt = await asyncio.to_thread(self._append_verification, intent,
-                provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
-                verified=verified, findings=tuple(findings), guarded=guarded)
-        except Exception as exc:
-            if not guarded:
-                raise
-            verified = False
-            findings.append(f"readiness settlement guard denied: {type(exc).__name__}: {exc}")
-            await asyncio.to_thread(self._append_verification, intent,
-                provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
-                verified=False, findings=tuple(findings))
-        if verified and intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
-            try:
-                self._guarded_readonly_remaining(intent, actor)
-            except Exception:
-                # The real earlier receipt remains immutable; no completed
-                # current intent can be claimed after a slow canonical append.
-                verified = False
-        return ((receipt, ready_context.admitted_intent())
-                if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else verified)
+                findings.append(f"readiness settlement guard denied: {type(exc).__name__}: {exc}")
+                await asyncio.to_thread(self._append_verification, intent,
+                    provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
+                    verified=False, findings=tuple(findings))
+            if verified and intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                try:
+                    self._guarded_readonly_remaining(intent, actor)
+                except Exception:
+                    # The real earlier receipt remains immutable; no completed
+                    # current intent can be claimed after a slow canonical append.
+                    verified = False
+            return ((receipt, ready_context.admitted_intent())
+                    if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else verified)
 
     async def _finish_ready(self, intent, result, actor, verification):
         verification, admitted = verification
