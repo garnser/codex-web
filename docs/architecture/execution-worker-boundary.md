@@ -1019,6 +1019,18 @@ that canonical runtime binding and refuses an implicit change from the inherited
 or explicitly requested runtime. The actual turn repository and writable scope
 remain subject to normal resource, assignment and workspace validation.
 
+### Guarded automatic input admission
+
+An idle automatic bot/event request uses the existing durable queue whenever
+native procedure preparation or an input guard is wired to retained preflight.
+This also applies to canonical current owners with no role-alias routing pin.
+The original retains requester, Profile, Work and repository scope before the
+ordinary queue drain claims it and captures native resume/start. Existing
+idle-only suppression, queue priority, provider batching and owner-pin validation
+remain authoritative. Queue acceptance does not prove native START; unexpected
+or possible-send failures retain their ordinary reconciliation requirements.
+Automatic events do not acquire human-only assignment-renewal privileges.
+
 ### Retained queue replacement routing
 
 Queue admission restores replacement routing only from the canonical durable
