@@ -518,3 +518,19 @@ An existing empty legacy document still requires the governed transition. Old
 1.3 readers/writers reject 1.4; binary rollback or metadata downgrade is invalid
 after the boundary. Use a separately qualified consistent pre-boundary restore.
 Webhook lookup never migrates, backfills or scans the entire ActionIntent state.
+
+### Procedure actions in publication-recovery scope
+
+A procedure on a non-Work bootstrap keeps its original assignment and governed
+input attribution unchanged. Its code-host ActionIntent receives the Work Item
+from the existing, currently validated publication-recovery scope, just like an
+ordinary broker-created repository intent. Creation discovery compares against
+that canonical action attribution rather than the immutable assignment's null
+Work field. Provider execution/verification, result projection and step proof
+validation recheck the exact retained recovery scope; a changed Work, recovery
+revision, repository, fence or expired/released lease cannot inherit the old
+intent's authority. Result Evidence and output Artifacts carry the validated
+action Work attribution while retaining the original execution/workspace and
+provider receipt provenance. This introduces no caller-supplied scope, input
+relabel, worker-read exception, replay or new public/persisted contract. Existing
+procedure, intent and Evidence inspectors expose these canonical references.

@@ -184,15 +184,20 @@ class VerifiedPublicationEventRouting:
             number = (request_output.get('change_request_number') if request_output is not None
                       else branch_intent.request.parameters.get('existing_change_request_number'))
             original_issue = ref.removeprefix(project_path + '#')
+            typed_issue_scope = (ref.startswith(project_path + '#') and original_issue.isdigit()
+                and type(branch_output.get('work_item_issue_number')) is int
+                and branch_output['work_item_issue_number'] == int(original_issue))
+            typed_mr_scope = (type(number) is int and ref == project_path + '!' + str(number)
+                and type(branch_output.get('work_item_merge_request_number')) is int
+                and branch_output['work_item_merge_request_number'] == number
+                and branch_output.get('work_item_issue_number') is None)
             typed_repair = (
-                ref.startswith(project_path + '#') and original_issue.isdigit()
+                (typed_issue_scope or typed_mr_scope)
                 and type(number) is int and number > 0
                 and type(branch_intent.request.parameters.get('existing_change_request_number')) is int
                 and branch_intent.request.parameters['existing_change_request_number'] == number
                 and type(branch_output.get('existing_change_request_number')) is int
                 and branch_output['existing_change_request_number'] == number
-                and type(branch_output.get('work_item_issue_number')) is int
-                and branch_output['work_item_issue_number'] == int(original_issue)
                 and (request_intent is None or (branch_intent.completed_at or branch_intent.updated_at)
                     >= (request_intent.completed_at or request_intent.updated_at)))
             same_execution = (request_intent is not None

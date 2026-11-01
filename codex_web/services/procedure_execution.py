@@ -504,14 +504,49 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_current_input_witness_scope")
         return tuple(dict.fromkeys((original, witness[2])))
 
+    def _action_work_item_ref(self, assignment, request, actor, *, intent=None):
+        """Resolve current action attribution without relabelling its assignment/input.
+
+        ActionIntent creation owns recovery capture and its atomic insert guard.
+        Procedure callbacks independently compare that same canonical scope, never
+        accept a caller-nominated Work reference, and recheck it after provider I/O.
+        """
+        from codex_web.services.publication_recovery import capture_scope, PublicationRecoveryConflict
+
+        try:
+            admission = capture_scope(self.workers, request, assignment.execution_id,
+                actor, assignment_id=assignment.id)
+        except PublicationRecoveryConflict as exc:
+            raise ProcedureExecutionError("procedure_action_recovery_scope_changed") from exc
+        scope = admission[0] if admission is not None else None
+        if scope is not None and (
+            scope.execution_workspace_id != assignment.execution_workspace_id
+            or scope.recovery.assignment_id != assignment.id
+            or scope.recovery.assignment_fence != assignment.fence
+        ):
+            raise ProcedureExecutionError("procedure_action_recovery_scope_changed")
+        if intent is not None and intent.publication_recovery_scope != scope:
+            raise ProcedureExecutionError("procedure_action_recovery_scope_changed")
+        return scope.recovery.work_item_ref if scope is not None else assignment.work_item_ref
+
+    def _step_work_item_ref(self, assignment, step, state, actor):
+        if step.action is None or state.action_intent_id is None:
+            return assignment.work_item_ref
+        intent = self.intents.get(state.action_intent_id, actor)
+        work_item_ref = self._action_work_item_ref(assignment, intent.request, actor, intent=intent)
+        if intent.execution_id != assignment.execution_id or intent.work_item_ref != work_item_ref:
+            raise ProcedureExecutionError("procedure_provider_result_origin_mismatch")
+        return work_item_ref
+
     def _record_outputs(self, assignment, step, state, values, actor):
         from codex_web.artifact_evidence import ArtifactCreate, sha256_digest
         self._values(step.outputs, values, actor, assignment)
         raw = json.dumps(bounded_data(values), sort_keys=True, allow_nan=False).encode()
         proof_ids = tuple(state.evidence.values())
+        work_item_ref = self._step_work_item_ref(assignment, step, state, actor)
         artifact = self.evidence.create_artifact(ArtifactCreate(project_id=assignment.project_id,
             execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
-            work_item_ref=assignment.work_item_ref, resource_ids=assignment.resource_ids,
+            work_item_ref=work_item_ref, resource_ids=assignment.resource_ids,
             artifact_type="report", name="Bounded procedure step output", provider="procedure-interpreter",
             source=self._step_origin(assignment, step.id), digest=sha256_digest(raw),
             metadata={"step_id":step.id, "attempt":state.attempts,
@@ -1273,8 +1308,11 @@ class ProcedureExecutionService:
         self._values(step.outputs, self._output_values(assignment, state, actor), actor, assignment)
         if set(state.evidence) != {e.name for e in step.expected_evidence}:
             raise ProcedureExecutionError("procedure_declared_evidence_missing")
+        work_item_ref = self._step_work_item_ref(assignment, step, state, actor)
         for requirement in step.expected_evidence:
             evidence = self._evidence(state.evidence[requirement.name], actor, assignment)
+            if step.action is not None and evidence.work_item_ref != work_item_ref:
+                raise ProcedureExecutionError("procedure_provider_evidence_provenance_mismatch")
             if evidence.execution_id != assignment.execution_id:
                 raise ProcedureExecutionError("procedure_evidence_execution_mismatch")
             if state.started_at is None or evidence.observed_at < state.started_at:
@@ -1336,10 +1374,11 @@ class ProcedureExecutionService:
         import math
         result = receipt.result
         request = intent.request
+        work_item_ref = self._action_work_item_ref(assignment, request, actor, intent=intent)
         if (intent.status != "succeeded" or result is None or result.status != "succeeded"
             or (intent.organization_id, intent.workspace_id, intent.project_id, intent.execution_id)
                 != (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.execution_id)
-            or intent.work_item_ref != assignment.work_item_ref
+            or intent.work_item_ref != work_item_ref
             or intent.requested_by != assignment.procedure_checkpoint.actor_identity_id
             or intent.binding_id != result.provider_binding_id
             or (intent.provider_type, intent.provider_instance, intent.action_id)
@@ -1409,7 +1448,7 @@ class ProcedureExecutionService:
                 evidence_type, observed_at, verification_id = "artifact_verification", verification.verified_at, verification.id
             else:
                 raise ProcedureExecutionError("procedure_provider_evidence_contract_unsupported")
-            payload = EvidenceCreate(project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+            payload = EvidenceCreate(project_id=assignment.project_id, work_item_ref=work_item_ref,
                 execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
                 resource_ids=request.resource_ids, evidence_type=evidence_type, result="pass",
                 provider=intent.provider_type, source=f"action-intent:{intent.id}",
@@ -1469,7 +1508,8 @@ class ProcedureExecutionService:
         self._protected(assignment, step, actor, procedure, inputs)
         binding, _, _, request = self._request(step, assignment, actor, procedure,
             self._step_inputs(step, checkpoint, inputs, actor, assignment))
-        if (binding.id != payload.binding_id or payload.work_item_ref != assignment.work_item_ref
+        work_item_ref = self._action_work_item_ref(assignment, request, actor)
+        if (binding.id != payload.binding_id or payload.work_item_ref != work_item_ref
             or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(payload.request)):
             raise ProcedureExecutionError("procedure_action_creation_request_changed")
         original = next((d for d in assignment.procedure_discoveries if checkpoint.definition in d.selected and d.admitted), None)
@@ -1651,7 +1691,9 @@ class ProcedureExecutionService:
                 self._protected(assignment, step, actor, procedure, inputs)
                 binding, _, _, request = self._request(step, assignment, actor, procedure,
                     self._step_inputs(step, checkpoint, inputs, actor, assignment))
-            if binding.id != intent.binding_id or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(intent.request):
+            work_item_ref = self._action_work_item_ref(assignment, request, actor, intent=intent)
+            if (binding.id != intent.binding_id or intent.work_item_ref != work_item_ref
+                or self.intents._idempotency_request_identity(request) != self.intents._idempotency_request_identity(intent.request)):
                 raise ProcedureExecutionError("procedure_action_request_changed")
             deadline = self._guarded_readonly_deadline(assignment, procedure, step)
             # Return the current bound computed from the very same fully admitted
