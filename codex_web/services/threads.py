@@ -17,6 +17,9 @@ from pydantic import ValidationError
 from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSessionRequest
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
+from codex_web.configuration import ConfigurationContext
+from codex_web.execution_subjects import ExecutionSubject
+from codex_web.runtime_credentials import runtime_authentication_requirement, RuntimeAuthenticationConfigurationError
 from codex_web.identity import AuthenticationActor
 from codex_web.runtime.execution import _runtime_for_model
 from codex_web.models import (
@@ -80,7 +83,7 @@ class ThreadBootstrapPrestartRefusal(HTTPException):
 
 
 _BOOTSTRAP_PREPARATION_STAGES = frozenset({
-    'request_validation', 'profile_resolution', 'runtime_routing',
+    'request_validation', 'profile_resolution', 'runtime_routing', 'authentication_metadata',
     'admission_before_reservation', 'bootstrap_reservation',
     'admission_before_worker_start', 'worker_start',
     'resource_context_validation', 'session_workspace_validation',
@@ -186,6 +189,7 @@ class ThreadService:
         active_turn_getter: Callable[[str], Any | None] | None = None,
         transcript: Any | None = None,
         project_bindings: Callable[[str], list[BotBinding]] | None = None,
+        authentication_preparation: Callable[[], Any] | None = None,
     ) -> None:
         self.runtime_transport = runtime_transport
         self.runtime_request_for_thread = runtime_request_for_thread
@@ -214,6 +218,7 @@ class ThreadService:
         self.active_turn_getter = active_turn_getter
         self.transcript = transcript
         self.project_bindings = project_bindings
+        self.authentication_preparation = authentication_preparation
 
     def _transcript_response(
         self,
@@ -1116,6 +1121,32 @@ class ThreadService:
                 'message':'Bootstrap preparation failed before provider thread startup.',
                 **diagnostic}) from exc
 
+    async def _prepare_bootstrap_authentication(self, project, runtime_binding, bootstrap_id, actor):
+        """Refresh only selected trusted-local Codex evidence; preflight still decides."""
+        owner = self.binding_service
+        if (self.authentication_preparation is None or type(owner) is not TurnExecutionBindingService
+                or runtime_binding is None
+                or (runtime_binding.provider_id, runtime_binding.runtime_id) != ('openai', 'codex')):
+            return
+        requester = actor or self.control_actor
+        if requester is None or (requester.organization_id, requester.workspace_id) != (
+                project.organization_id, project.workspace_id):
+            raise HTTPException(status_code=403, detail='Bootstrap authentication is outside caller scope')
+        subject = ExecutionSubject(kind='thread_bootstrap', ref=bootstrap_id)
+        try:
+            requirement = runtime_authentication_requirement(runtime_binding,
+                configuration=owner.configuration,
+                context=ConfigurationContext(organization_id=project.organization_id,
+                    workspace_id=project.workspace_id, project_id=project.id, subject_id=subject.key),
+                credential_mapping=owner.runtime_credential_configs,
+                permitted_codex_modes=owner.permitted_codex_authentication_modes)
+        except RuntimeAuthenticationConfigurationError:
+            # Existing credential preflight retains its typed configuration refusal.
+            return
+        if requirement is not None and requirement.local_session and requirement.permitted:
+            await PostTurnReadinessService._run_owned(self.authentication_preparation,
+                seconds=5., name='bootstrap-authentication-metadata')
+
     async def _create(
         self,
         project_id: str | None = None,
@@ -1269,6 +1300,9 @@ class ThreadService:
         token = bootstrap_token or uuid.uuid4().hex
         bootstrap_id = f"bootstrap-{token}"
         execution_id = f"thread-bootstrap-{token}"
+
+        stage('authentication_metadata')
+        await self._prepare_bootstrap_authentication(project, runtime_binding, bootstrap_id, actor)
 
         if admission_guard is not None:
             stage('admission_before_reservation')

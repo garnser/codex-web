@@ -937,6 +937,20 @@ before an invalidation cannot restore old evidence. The existing bounded quota
 probe verifies account metadata once before reading quota; no model sampling or
 additional polling loop is introduced.
 
+Fresh thread bootstrap preparation, including exact-request queued bootstrap
+recovery, reuses the same coalesced trusted-local account metadata preparation
+as native reasoning and contextual Project readiness. It runs after current
+Project/Profile/runtime selection and before credential preflight; the existing
+current admission guard and binding/worker checks still run afterward. Only a
+selected, permitted trusted-local OpenAI Codex authentication mode may request
+this preparation. Explicit API-key/delegated-token modes and other runtimes do
+not touch the operator account. A fresh proof needs no additional account read;
+negative account/RPC results remain refused. The 120-second proof policy is
+unchanged. Bootstrap-only recovery does not submit a native turn or replay an
+original whose input outcome is unknown. Existing authentication and recovery
+inspectors retain the authoritative typed refusal; no new UI field or grant is
+introduced.
+
 Authentication evidence remains separate from RPC transport health and execution
 preflight. A runtime with cleared readiness is unavailable even when its recent
 authenticated-account evidence is still fresh. Worker-scoped delegation, actor,
