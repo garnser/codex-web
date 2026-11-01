@@ -146,19 +146,26 @@ and Git enforces the same expected revision with `--force-with-lease`. This lets
 an isolated replacement execution repair an existing pull request without
 granting arbitrary branch replacement.
 
-For GitLab, `existing_change_request_number` permits a legacy source branch only
-when the canonical workspace and active lease agree on a repository-qualified
-issue reference. The provider independently verifies an opened same-project MR,
-its exact source branch and expected head, its presence in the assigned issue’s
-complete GitLab related-MR enumeration, and
-an unprotected non-default remote branch at that same revision. A related-only
-MR is sufficient; publication does not require or imply issue closure. Local workspace
-attestation is repeated after provider reads, and Git still enforces the exact
-remote SHA with compare-and-swap. A thread-bootstrap workspace without an issue
-scope cannot use this recovery; acquire a separate canonical issue workspace.
-Missing, unrelated, forked, protected, stale or changed proofs fail closed. The
-existing ActionIntent preparation and receipts expose the MR and issue reference;
-no separate mutation path or authority is introduced.
+For GitLab, `existing_change_request_number` permits a legacy source branch when
+canonical workspace/lease scope or active publication-recovery provenance names
+an exact repository-qualified issue or the exact `repository!MR` being published.
+Issue scope still requires the assigned issue's complete GitLab related-MR
+enumeration to prove that same-project relationship; a related-only MR suffices
+without implying issue closure. MR scope never fabricates an issue relationship:
+the credential-bound project lookup must match the repository path, and its typed
+project ID must equal the MR's project, source and target project IDs.
+Both paths independently require an opened MR, its exact source branch and
+expected head, and an unprotected non-default remote branch at that revision.
+Local attestation, including exact Work reference and recovery provenance, is
+repeated after provider reads. Existing ActionIntent admission continues to fence
+the current assignment, owner, tenant, Project, profile and leases; Git enforces
+the exact remote SHA with compare-and-swap. Recovery scope is not retagged or
+replaced by publication, and failed/uncertain historical intents are not replayed.
+Missing, unrelated, forked, protected, stale or changed proofs fail closed.
+UI impact (#127): existing Work/workspace recovery inspectors expose canonical
+scope and provenance; ActionIntent preparation and receipts also expose the exact
+`work_item_ref` and MR, with a null issue number for MR scope. Existing denial and
+receipt surfaces suffice; no new operator transition or domain object is added.
 
 GitHub merge retains its preflight checks and forwards a supplied, validated
 `expected_head_sha` as the REST merge endpoint's atomic `sha` condition. It never

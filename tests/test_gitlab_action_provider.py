@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 
@@ -872,7 +873,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.client.closing_issues = []
         self.client.related_issue_reads = []
         self.client.related_merge_requests = [{"iid": 258, "project_id": 5}]
-        self.client.merge_request_rows = [{"iid": 258, "state": "opened", "source_project_id": 5, "target_project_id": 5, "target_branch": "main", "source_branch": self.legacy_branch, "sha": old_head}]
+        self.client.merge_request_rows = [{"iid": 258, "project_id": 5, "state": "opened", "source_project_id": 5, "target_project_id": 5, "target_branch": "main", "source_branch": self.legacy_branch, "sha": old_head}]
         self.client.branches[self.legacy_branch] = old_head
         async def existing_mr(*args, **kwargs):
             return self.client.merge_request_rows[0]
@@ -893,7 +894,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.published[5], self.head)
         self.assertTrue((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
 
-    async def test_existing_mr_recovery_accepts_bounded_bootstrap_provenance(self):
+    def _bootstrap_mr_request(self, ref="group/platform/codex-web#289"):
         request = self._existing_mr_request()
         workspace = self.recovery_state.workspaces[0]
         lease = self.recovery_state.leases[0]
@@ -906,7 +907,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         lease.subject = subject
         lease.work_item_ref = None
         workspace.publication_recovery = PublicationRecoveryProvenance(
-            work_item_ref="group/platform/codex-web#289",
+            work_item_ref=ref,
             repository_resource_id=self.repository.id,
             assignment_id="assignment-recovery",
             assignment_fence=4,
@@ -918,6 +919,14 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             expires_at=min(lease.expires_at, time.time() + 120),
         )
 
+        self.client.project_row = {"id": 5, "path_with_namespace": "group/platform/codex-web"}
+        async def project(*args, **kwargs):
+            return self.client.project_row
+        self.client.project = project
+        return request
+
+    async def test_existing_mr_recovery_accepts_bounded_bootstrap_provenance(self):
+        request = self._bootstrap_mr_request()
         result = await self.execution.execute(
             self.binding.id, request, actor=self.actor
         )
@@ -931,6 +940,143 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 )
             ).verified
         )
+
+    async def test_existing_mr_scoped_recovery_publishes_without_issue_provenance(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        self.client.issues.clear()
+        self.client.related_merge_requests = []
+        result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertIsNone(result.output["work_item_issue_number"])
+        self.assertEqual(self.client.related_issue_reads, [])
+        self.assertEqual(self.published[2], self.legacy_branch)
+        self.assertEqual(self.published[5], self.head)
+        self.assertTrue((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
+
+    async def test_mr_scope_rejects_wrong_mr_repository_and_provider_identity(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        workspace = self.recovery_state.workspaces[0]
+        recovery = workspace.publication_recovery
+        for ref in ("group/platform/codex-web!259", "other/repo!258", "group/platform/codex-web!0258"):
+            with self.subTest(ref=ref):
+                workspace.publication_recovery = recovery.model_copy(update={"work_item_ref": ref})
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id, request, actor=self.actor)
+        workspace.publication_recovery = recovery
+        mr = self.client.merge_request_rows[0]
+        for row, key, value in (
+            (self.client.project_row, "id", True), (self.client.project_row, "id", 6),
+            (self.client.project_row, "path_with_namespace", "other/repo"),
+            (mr, "iid", 259), (mr, "iid", "258"), (mr, "project_id", 6),
+            (mr, "source_project_id", 6), (mr, "target_project_id", 6),
+            (mr, "source_branch", "other"), (mr, "target_branch", self.legacy_branch),
+            (mr, "state", "closed"), (mr, "sha", "f" * 40),
+        ):
+            with self.subTest(key=key, value=value):
+                old = row[key]
+                row[key] = value
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id, request, actor=self.actor)
+                row[key] = old
+        self.assertIsNone(self.published)
+
+    async def test_mr_scope_rechecks_provenance_and_local_guards_after_remote_reads(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        workspace = self.recovery_state.workspaces[0]
+        original = self.client.branch
+        async def refence(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            workspace.publication_recovery = workspace.publication_recovery.model_copy(
+                update={"assignment_fence": workspace.publication_recovery.assignment_fence + 1}
+            )
+            return result
+        self.client.branch = refence
+        with self.assertRaisesRegex(ActionRequirementError, "attestation changed"):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertIsNone(self.published)
+
+    async def test_mr_scope_refuses_expired_foreign_or_readonly_recovery(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        workspace = self.recovery_state.workspaces[0]
+        lease = self.recovery_state.leases[0]
+        recovery = workspace.publication_recovery
+        for changes in ({"repository_resource_id": "foreign"}, {"lease_id": "foreign"},
+                        {"authorized_by": "foreign"}, {"source_execution_id": "foreign"}, {"expires_at": 0}):
+            with self.subTest(changes=changes):
+                workspace.publication_recovery = recovery.model_copy(update=changes)
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id, request, actor=self.actor)
+        workspace.publication_recovery = recovery
+        for key, value in (("owner_identity_id", "foreign"), ("expires_at", 0),
+                           ("resource_modes", {self.repository.id: LeaseMode.READ})):
+            old = getattr(lease, key)
+            setattr(lease, key, value)
+            with self.subTest(key=key), self.assertRaises(ActionRequirementError):
+                await self.execution.execute(self.binding.id, request, actor=self.actor)
+            setattr(lease, key, old)
+        self.assertIsNone(self.published)
+
+    async def test_mr_scope_preserves_remote_branch_and_local_cleanliness_guards(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        original = self.client.branch
+        for field in ("protected", "default"):
+            async def unsafe(*args, **kwargs):
+                return {**await original(*args, **kwargs), field: True}
+            self.client.branch = unsafe
+            with self.subTest(field=field), self.assertRaises(ActionRequirementError):
+                await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.client.branch = original
+        self.client.branches[self.legacy_branch] = "f" * 40
+        with self.assertRaises(ActionRequirementError):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.client.branches[self.legacy_branch] = self.head
+        request.parameters["head_revision"] = self.head
+        with self.assertRaises(ActionRequirementError):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        request.parameters["head_revision"] = self.recovery_head
+        (Path(self.recovery_state.workspaces[0].path) / "dirty.txt").write_text("dirty")
+        with self.assertRaises(ActionRequirementError):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertIsNone(self.published)
+
+    async def test_mr_scope_rejects_remote_cas_race_in_real_git_transport(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        path = Path(self.recovery_state.workspaces[0].path)
+        remote = Path(self.temp.name) / "remote.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        concurrent = subprocess.check_output(
+            ["git", "commit-tree", f"{self.head}^{{tree}}", "-p", self.head, "-m", "Concurrent writer"],
+            cwd=path, text=True).strip()
+        subprocess.run(["git", "push", str(remote), f"{concurrent}:refs/heads/{self.legacy_branch}"],
+                       cwd=path, check=True, capture_output=True)
+        real_run = subprocess.run
+        pushes = []
+        def local_transport(command, **kwargs):
+            if command[:2] == ["git", "push"]:
+                command = list(command)
+                url = "https://gitlab.example/group/platform/codex-web.git"
+                self.assertIn(url, command)
+                self.assertIn(f"--force-with-lease=refs/heads/{self.legacy_branch}:{self.head}", command)
+                command[command.index(url)] = str(remote)
+                pushes.append(command)
+            return real_run(command, **kwargs)
+        self.provider.branch_publisher = None
+        with patch("codex_web.services.gitlab_action_provider.subprocess.run", side_effect=local_transport):
+            with self.assertRaisesRegex(RuntimeError, "GitLab branch publication failed"):
+                await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(len(pushes), 1)
+        self.assertEqual(subprocess.check_output(
+            ["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{self.legacy_branch}"], text=True).strip(), concurrent)
+        self.assertIsNone(self.published)
+
+    async def test_mr_scope_refuses_local_head_unrelated_to_expected_remote(self):
+        request = self._bootstrap_mr_request("group/platform/codex-web!258")
+        path = Path(self.recovery_state.workspaces[0].path)
+        unrelated = subprocess.check_output(
+            ["git", "commit-tree", f"{self.head}^{{tree}}", "-m", "Unrelated root"], cwd=path, text=True).strip()
+        request.parameters["expected_remote_revision"] = unrelated
+        with self.assertRaisesRegex(ActionRequirementError, "Git validation failed"):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertIsNone(self.published)
 
     async def test_existing_mr_recovery_rejects_expired_bootstrap_provenance(self):
         request = self._existing_mr_request()

@@ -292,6 +292,35 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
                 await self.service.handoff(self.request, actor=self.actor)
         self.assertEqual(self.workspaces.get(self.workspace.id, self.actor).publication_recovery, self.prior)
 
+    async def test_mr_scoped_branch_intent_keeps_live_owner_project_fence_and_lease_guards(self):
+        from codex_web.services.publication_recovery import capture_scope
+        from codex_web.action_intents import ActionIntentLease
+        recovery = self.prior.model_copy(update={"work_item_ref": "group/app!258"})
+        self.mutate(WS, self.workspace.id, publication_recovery=recovery.model_dump(mode="json"))
+        workers = SimpleNamespace(store=self.workers_store, assignment_for_execution=lambda *a, **kw: self.assignment)
+        intent = self.make_intent("code-host.branch.publish", status="claimed")
+        admission = capture_scope(workers, intent.request, intent.execution_id, self.actor, assignment_id=self.assignment.id)
+        self.assertEqual(admission[0].recovery.work_item_ref, "group/app!258")
+        intent = intent.model_copy(update={"publication_recovery_scope": admission[0],
+            "lease": ActionIntentLease(owner="worker", acquired_at=time.time(), expires_at=time.time()+60)})
+        self.action_store.insert(intent, guard_rows=admission[1], guard=admission[2])
+        executor = ActionIntentService(self.action_store, SimpleNamespace(), execution_workers=workers)
+        for namespace, key, changes in (
+            (ASSIGNMENTS, self.assignment.id, {"fence": self.assignment.fence + 1}),
+            (ASSIGNMENTS, self.assignment.id, {"lease": None}),
+            (ASSIGNMENTS, self.assignment.id, {"project_id": "foreign"}),
+            (ASSIGNMENTS, self.assignment.id, {"created_by": "foreign"}),
+            (LEASES, self.workspace.lease_id, {"expires_at": 0}),
+            (LEASES, self.workspace.lease_id, {"owner_identity_id": "foreign"}),
+        ):
+            original = self.store.record_get(namespace, key)
+            self.mutate(namespace, key, **changes)
+            with self.subTest(changes=changes), self.assertRaises(PublicationRecoveryConflict):
+                executor._mark_executing(intent.id, "worker", self.actor)
+            self.assertEqual(self.action_store.get(intent.id).attempt, 0)
+            self.store.record_apply(namespace, upserts={key: original})
+        self.assertEqual(executor._mark_executing(intent.id, "worker", self.actor).status, "executing")
+
     async def test_hot_scope_admission_reads_bounded_rows_preserves_unrelated_records(self):
         from codex_web.services.publication_recovery import capture_scope
         namespaces = (*scope_defaults(), self.action_store.records_namespace)

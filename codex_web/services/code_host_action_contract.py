@@ -16,7 +16,9 @@ from codex_web.action_providers import (
     ActionRiskClass,
     ActionResult,
 )
-from codex_web.execution_workspaces import ExecutionWorkspaceStatus, LeaseMode
+from codex_web.execution_workspaces import (
+    ExecutionWorkspaceStatus, LeaseMode, PublicationRecoveryProvenance,
+)
 from codex_web.resources import Resource, ResourceLifecycle, ResourceType
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.resources import ResourceCatalogService
@@ -66,6 +68,8 @@ class AttestedBranch:
     expected_remote_revision: str | None = None
     existing_change_request_number: int | None = None
     work_item_issue_number: int | None = None
+    work_item_ref: str | None = None
+    publication_recovery: PublicationRecoveryProvenance | None = None
 
 
 class CodeHostActionContract:
@@ -658,6 +662,8 @@ class CodeHostActionContract:
             raise ValueError("repository is not writable in the execution workspace")
         existing_number = request.parameters.get("existing_change_request_number")
         issue_number = None
+        ref = None
+        recovery = None
         if existing_number is not None:
             if (
                 self.provider_type != "gitlab"
@@ -673,6 +679,7 @@ class CodeHostActionContract:
                 or lease.workspace_id != workspace.workspace_id
                 or lease.execution_id != workspace.execution_id
                 or lease.owner_identity_id != workspace.owner_identity_id
+                or lease.subject != workspace.subject
                 or lease.resource_modes.get(resource_id) != LeaseMode.WRITE
             ):
                 raise ValueError("existing change request recovery lease is outside the writable workspace scope")
@@ -694,18 +701,18 @@ class CodeHostActionContract:
                     )
                 ref = recovery.work_item_ref
             repository, separator, issue = ref.rpartition("#")
+            issue_scope = (
+                separator and repository == self.locator(request)
+                and issue.isdecimal() and int(issue) > 0
+            )
+            # MR scope is exact ownership, not an inferred issue relationship.
+            mr_scope = ref == f"{self.locator(request)}!{existing_number}"
             if (
-                not separator
-                or repository != self.locator(request)
-                or not issue.isdecimal()
-                or int(issue) < 1
-                or (
-                    workspace.work_item_ref is not None
-                    and lease.work_item_ref != ref
-                )
+                not (issue_scope or mr_scope)
+                or (workspace.work_item_ref is not None and lease.work_item_ref != ref)
             ):
-                raise ValueError("existing change request recovery requires a matching repository issue-scoped workspace lease")
-            issue_number = int(issue)
+                raise ValueError("existing change request recovery requires a matching repository issue-scoped workspace lease or exact MR scope")
+            issue_number = int(issue) if issue_scope else None
         publishing_recovery_branch = member.branch_name != branch
         if publishing_recovery_branch and (
             (not branch.startswith("codex/") and existing_number is None)
@@ -758,6 +765,8 @@ class CodeHostActionContract:
             expected_remote_revision=expected_remote_revision,
             existing_change_request_number=existing_number,
             work_item_issue_number=issue_number,
+            work_item_ref=ref,
+            publication_recovery=recovery.model_copy(deep=True) if recovery else None,
         )
 
     @staticmethod

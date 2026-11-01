@@ -1382,6 +1382,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("action-intent:worker", actor.service_scopes)
         self.assertEqual(actor.tenant, self.worker_actor.tenant)
 
+    async def test_publication_recovery_requires_owned_mr_and_exact_repository(self) -> None:
+        self.ref = "group/app!258"
+        state = SimpleNamespace(**{**vars(next(iter(self.states.values()))), "ref": self.ref})
+        self.states[self.ref] = state
+        await self.test_publication_recovery_requires_owned_issue_and_exact_repository()
+
     async def test_publication_recovery_requires_owned_issue_and_exact_repository(self) -> None:
         calls = []
 

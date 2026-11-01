@@ -637,7 +637,11 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(set(self.host.states), {self.work_item.ref})
         self.assertEqual(self.host.events, [])
 
-    def test_issue_scoped_publication_recovery_preserves_bootstrap_subject(self) -> None:
+    def test_mr_scoped_publication_recovery_preserves_bootstrap_subject(self) -> None:
+        self.test_issue_scoped_publication_recovery_preserves_bootstrap_subject("group/app!258")
+
+    def test_issue_scoped_publication_recovery_preserves_bootstrap_subject(self, ref=None) -> None:
+        ref = ref or self.work_item.ref
         workspace = self.service.acquire(
             ExecutionWorkspaceAcquire(
                 subject=ExecutionSubject(
@@ -661,7 +665,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         ):
             self.service.authorize_publication_recovery(
                 workspace.id,
-                work_item_ref=self.work_item.ref,
+                work_item_ref=ref,
                 repository_resource_id=self.repo.id,
                 assignment_id="assignment-admin-refused",
                 assignment_fence=7,
@@ -672,7 +676,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             )
         authorized = self.service.authorize_publication_recovery(
             workspace.id,
-            work_item_ref=self.work_item.ref,
+            work_item_ref=ref,
             repository_resource_id=self.repo.id,
             assignment_id="assignment-recovery",
             assignment_fence=7,
@@ -686,7 +690,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertIsNone(authorized.work_item_ref)
         self.assertEqual(
             authorized.publication_recovery.work_item_ref,
-            self.work_item.ref,
+            ref,
         )
         self.assertEqual(authorized.publication_recovery.assignment_fence, 7)
         self.assertLessEqual(

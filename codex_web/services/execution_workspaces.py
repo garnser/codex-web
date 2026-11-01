@@ -610,7 +610,7 @@ class ExecutionWorkspaceService:
         assignment_deadline_at: float | None,
         actor: AuthenticationActor,
     ) -> ExecutionWorkspace:
-        """Bind one live non-Work-Item workspace to one issue recovery scope."""
+        """Bind one live non-Work-Item workspace to one Work recovery scope."""
 
         workspace = self.get(workspace_id, actor)
         self._authorized(workspace, actor)
