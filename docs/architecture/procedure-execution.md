@@ -80,7 +80,14 @@ New publications, changed bindings, revoked Use or changed custody refuse rather
 than enlarge the old scope. Existing discovery/audit records still retain denied
 admissions. A normal same-token/worker/fence lease renewal is allowed, while
 scope, token, worker, fence and assignment deadline remain fixed CAS predicates.
-An initial no-match seals an empty procedure scope as well.
+An initial no-match seals an empty procedure scope as well. If pending custody
+already retains discovery or procedure history, its initial admission remains
+closed. Both selected and empty-scope preparation retain a typed local pre-input
+credential refusal before sending native input; unexpected failures and possible
+or observed native starts remain uncertain. A known refusal does not authorize
+resealing or erase history: normal fenced retirement and a freshly admitted
+bootstrap are required before retrying the retained original. The existing
+preflight inspector exposes this refusal and its worker-assignment remediation.
 
 Runtime authentication stays separate: the original runtime credential reference
 (or explicit `None` for agent-owned local sign-in) is pinned at bootstrap. Reuse
