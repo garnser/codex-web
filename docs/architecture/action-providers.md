@@ -154,11 +154,34 @@ complete GitLab related-MR enumeration, and
 an unprotected non-default remote branch at that same revision. A related-only
 MR is sufficient; publication does not require or imply issue closure. Local workspace
 attestation is repeated after provider reads, and Git still enforces the exact
-remote SHA with compare-and-swap. A thread-bootstrap workspace without an issue
-scope cannot use this recovery; acquire a separate canonical issue workspace.
+remote SHA with compare-and-swap. A thread-bootstrap workspace without issue scope requires the exact canonical
+MR-scoped recovery described below; an arbitrary repository lease is insufficient.
 Missing, unrelated, forked, protected, stale or changed proofs fail closed. The
 existing ActionIntent preparation and receipts expose the MR and issue reference;
 no separate mutation path or authority is introduced.
+
+An explicit existing-MR recovery also accepts an active publication-recovery
+scope for the exact canonical `repository!MR` Work Item. It requires the current
+owned, open MR Work record and its exact repository, tenant, Project, requester,
+assignment, worker, fence and write lease. The typed existing-MR number must match
+the Work reference. GitLab independently proves the canonical repository project
+ID/path, opened non-fork MR source/target identity, source branch/head and an
+unprotected non-default branch. Current local ownership and Git attestation are
+repeated after those reads, and the push retains remote SHA compare-and-swap.
+No issue relationship is invented or substituted: the issue-scoped route above
+continues to require the complete related-MR proof. A configured TaskSource proxy
+is not a provider grant; canonical Work/Resource identity and the actual bound
+provider's project proof remain authoritative.
+
+This is an additive engine correction on existing request/recovery contracts;
+no persisted schema, Definition or HTTP version changes. Preparation and result
+metadata add the optional integer `work_item_merge_request_number`; old issue
+proofs retain `work_item_issue_number`. Verified publication events accept only
+the matching typed proof for the exact Work scope. The existing Work, workspace
+recovery and ActionIntent inspectors already expose that scope, ownership,
+provenance and refusals; no new operator transition or UI-owned authority exists.
+Historical failed/unknown intents and active recovery scopes are never rewritten
+or replayed by this path. A repaired workflow needs a newly authorized action.
 
 GitHub merge retains its preflight checks and forwards a supplied, validated
 `expected_head_sha` as the REST merge endpoint's atomic `sha` condition. It never

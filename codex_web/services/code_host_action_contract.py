@@ -66,6 +66,7 @@ class AttestedBranch:
     expected_remote_revision: str | None = None
     existing_change_request_number: int | None = None
     work_item_issue_number: int | None = None
+    work_item_merge_request_number: int | None = None
 
 
 class CodeHostActionContract:
@@ -658,6 +659,7 @@ class CodeHostActionContract:
             raise ValueError("repository is not writable in the execution workspace")
         existing_number = request.parameters.get("existing_change_request_number")
         issue_number = None
+        mr_number = None
         if existing_number is not None:
             if (
                 self.provider_type != "gitlab"
@@ -693,19 +695,16 @@ class CodeHostActionContract:
                         "or active publication recovery"
                     )
                 ref = recovery.work_item_ref
-            repository, separator, issue = ref.rpartition("#")
-            if (
-                not separator
-                or repository != self.locator(request)
-                or not issue.isdecimal()
-                or int(issue) < 1
-                or (
-                    workspace.work_item_ref is not None
-                    and lease.work_item_ref != ref
-                )
-            ):
-                raise ValueError("existing change request recovery requires a matching repository issue-scoped workspace lease")
-            issue_number = int(issue)
+            if "!" in ref:
+                self._attest_owned_mr_recovery(request, workspace, lease, ref, existing_number)
+                mr_number = existing_number
+            else:
+                repository, separator, issue = ref.rpartition("#")
+                if (not separator or repository != self.locator(request)
+                        or not issue.isdecimal() or int(issue) < 1
+                        or (workspace.work_item_ref is not None and lease.work_item_ref != ref)):
+                    raise ValueError("existing change request recovery requires a matching repository issue-scoped workspace lease")
+                issue_number = int(issue)
         publishing_recovery_branch = member.branch_name != branch
         if publishing_recovery_branch and (
             (not branch.startswith("codex/") and existing_number is None)
@@ -758,7 +757,49 @@ class CodeHostActionContract:
             expected_remote_revision=expected_remote_revision,
             existing_change_request_number=existing_number,
             work_item_issue_number=issue_number,
+            work_item_merge_request_number=mr_number,
         )
+
+    def _attest_owned_mr_recovery(self, request, workspace, lease, ref, number):
+        """Current canonical ownership, repeated after provider reads before push."""
+        from codex_web.models import WorkItemState
+        from codex_web.execution_workers import ExecutionAssignment
+        from codex_web.services.publication_recovery import (
+            ASSIGNMENTS, WORKERS, WS, LEASES, live_scope,
+        )
+        repository, separator, suffix = ref.rpartition("!")
+        recovery = workspace.publication_recovery
+        if (not separator or repository != self.locator(request)
+                or suffix != str(number) or workspace.work_item_ref is not None
+                or recovery is None or recovery.work_item_ref != ref
+                or request.project_id != workspace.project_id
+                or request.requested_by != workspace.owner_identity_id):
+            raise ValueError("existing MR recovery requires exact canonical MR scope and requester")
+        store = self.workspaces.store.store
+        raw = store.record_get(ASSIGNMENTS, recovery.assignment_id)
+        if raw is None:
+            raise ValueError("existing MR recovery assignment is unavailable")
+        assignment = ExecutionAssignment.model_validate(raw)
+        worker = store.record_get(WORKERS, assignment.assigned_worker_id)
+        documents = {ASSIGNMENTS: {assignment.id: raw},
+            WORKERS: {assignment.assigned_worker_id: worker} if worker else {},
+            WS: {workspace.id: workspace.model_dump(mode="json")},
+            LEASES: {lease.id: lease.model_dump(mode="json")}}
+        current, _, observed = live_scope(documents, assignment.id, workspace.id, request.requested_by)
+        state = store.record_get("work_item_states", ref)
+        work = WorkItemState.model_validate(state) if state else None
+        profile = current.agent_profile
+        if (observed != recovery or recovery.authorized_at > time.time()
+                or work is None or work.ref != ref or work.kind != "merge_request"
+                or (work.organization_id, work.workspace_id, work.project_id) !=
+                    (workspace.organization_id, workspace.workspace_id, workspace.project_id)
+                or work.project_path != repository or tuple(work.resource_ids) != request.resource_ids
+                or work.closed_at is not None or work.current_stage == "closed"
+                or not work.current_owner
+                or work.current_owner not in {v for v in (profile.profile_id, profile.role_id) if v}
+                or work.source_identity is None or work.source_identity.source_type != "gitlab"
+                or work.source_identity.external_id != ref):
+            raise ValueError("existing MR recovery current Work ownership or scope changed")
 
     @staticmethod
     def git(path: Path, *args: str) -> str:

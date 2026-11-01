@@ -213,21 +213,32 @@ class GitLabActionProvider:
     ) -> None:
         iid = attested.existing_change_request_number
         mr = await self.client.merge_request(self.api_base, project, iid, token=credential)
-        issue = await self.client.project_issue(
-            self.api_base, project, attested.work_item_issue_number, token=credential,
-        )
-        related = await self.client.issue_related_merge_requests(
-            self.api_base, project, attested.work_item_issue_number, token=credential,
-        )
+        if attested.work_item_merge_request_number is not None:
+            repository = await self.client.project(self.api_base, project, token=credential)
+            project_id = repository.get("id")
+            relation_valid = (repository.get("path_with_namespace") == project
+                and attested.work_item_merge_request_number == iid
+                and type(mr.get("project_id")) is int and mr["project_id"] == project_id)
+        else:
+            issue = await self.client.project_issue(
+                self.api_base, project, attested.work_item_issue_number, token=credential,
+            )
+            related = await self.client.issue_related_merge_requests(
+                self.api_base, project, attested.work_item_issue_number, token=credential,
+            )
+            project_id = issue.get("project_id")
+            relation_valid = (type(issue.get("iid")) is int
+                and issue.get("iid") == attested.work_item_issue_number
+                and any(type(row.get("iid")) is int and row["iid"] == iid
+                    and type(row.get("project_id")) is int and row["project_id"] == project_id
+                    for row in related))
         remote = await self.client.branch(
             self.api_base, project, attested.branch, token=credential,
         )
-        project_id = issue.get("project_id")
         if (
             type(project_id) is not int
             or project_id < 1
-            or issue.get("iid") != attested.work_item_issue_number
-            or type(issue.get("iid")) is not int
+            or not relation_valid
             or type(mr.get("iid")) is not int
             or mr.get("iid") != iid
             or mr.get("state") != "opened"
@@ -244,13 +255,7 @@ class GitLabActionProvider:
             or remote.get("default") is not False
             or remote.get("name") != attested.branch
             or (remote.get("commit") or {}).get("id") != attested.expected_remote_revision
-            or not any(
-                type(row.get("iid")) is int
-                and row.get("iid") == iid
-                and type(row.get("project_id")) is int
-                and row.get("project_id") == project_id
-                for row in related
-            )
+
         ):
             raise ActionRequirementError(
                 "existing merge request source, current revision and assigned issue relation could not be attested"
@@ -319,6 +324,7 @@ class GitLabActionProvider:
                 "workspace_attested": attested.workspace_path.is_dir(),
                 "existing_change_request_number": attested.existing_change_request_number,
                 "work_item_issue_number": attested.work_item_issue_number,
+                "work_item_merge_request_number": attested.work_item_merge_request_number,
             }
         if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             return {"operation": "pull-request-ready", "repository": project,
@@ -656,6 +662,7 @@ class GitLabActionProvider:
                     "execution_workspace_id": attested.workspace_id,
                     "existing_change_request_number": attested.existing_change_request_number,
                     "work_item_issue_number": attested.work_item_issue_number,
+                    "work_item_merge_request_number": attested.work_item_merge_request_number,
                 }
             )
             summary = "GitLab branch matches the committed execution workspace head."
