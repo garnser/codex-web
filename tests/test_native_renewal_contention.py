@@ -21,7 +21,10 @@ class LockClassificationTests(unittest.TestCase):
     def test_only_budgeted_advisory_acquisition_is_classified(self):
         cursor = Mock()
         original = CancelledStatement('private synthetic cancellation')
-        cursor.execute.side_effect = original
+        def acquisition_error(statement, parameters):
+            if 'pg_advisory_xact_lock' in statement:
+                raise original
+        cursor.execute.side_effect = acquisition_error
         with self.assertRaises(CancelledStatement) as refused:
             PostgresStateStore._lock(cursor, 'synthetic')
         self.assertIs(refused.exception, original)

@@ -1005,7 +1005,13 @@ class AssignmentBoundAgentProcessSession:
         return assignment
 
     async def _supervise(self, phase, function, *args, seconds, reconcile_late=True):
-        budget = StorageOperationBudget(seconds)
+        # Acquisition cancellation/rollback must settle before the observer
+        # closes. Equal storage and observation deadlines can hide a known
+        # unstarted refusal behind an unfinished executor future. Reserve this
+        # headroom inside the existing bound; never extend a lease or timeout.
+        settlement = min(1.0, seconds / 4) if phase == "renewal" else 0.0
+        budget = StorageOperationBudget(seconds - settlement)
+        observation_deadline = budget.deadline + settlement
         context = contextvars.copy_context()
         context.run(storage_operation_budget.set, budget)
         submitted = time.monotonic()
@@ -1033,7 +1039,7 @@ class AssignmentBoundAgentProcessSession:
             # Callback ordering may deliver a completed result before a delayed
             # timeout callback. That is still late observation, including for
             # the one-shot authority gate, which must not accept stale success.
-            if time.monotonic() >= budget.deadline:
+            if time.monotonic() >= observation_deadline:
                 raise TimeoutError("supervision result observed after its deadline")
             return result
         except TimeoutError:

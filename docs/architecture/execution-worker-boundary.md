@@ -855,9 +855,12 @@ heartbeat or renewal. Old work completion alone cannot authorize continued
 execution after revocation. This is reconciliation of bounded supervision work,
 not replay or reconciliation of native/provider outcomes.
 
-A settled PostgreSQL advisory-lock acquisition cancellation has a separate,
-internal `StorageLockUnavailable` classification only when a cooperative storage
-budget applies. Cancellation in an updater, a read, commit or a disconnected
+A settled PostgreSQL advisory-lock acquisition cancellation or local mutex
+acquisition deadline has a separate, internal `StorageLockUnavailable`
+classification only when a cooperative storage budget applies. A local waiter
+must not have acquired the mutex or entered its callback; explicit owner
+cancellation retains its original error. Cancellation in an updater, a read,
+commit or a disconnected
 connection retains its original error. During renewal only, the same terminal
 future may instead establish that the failing lock owner's updater did not run.
 An earlier worker heartbeat may already have committed and is not replayed.
@@ -870,6 +873,30 @@ all its transactional custody guards. A failed, delayed or contended authority
 gate cannot reconcile itself again. The existing typed runner failure projection
 continues to describe terminal failures; no new operator action or UI state is
 introduced.
+
+Renewal reserves settlement headroom inside its existing observation bound:
+the cooperative work budget is shorter by one quarter of that bound, capped at
+one second. The ten-second observation maximum and hard lease/deadline do not
+increase. This lets an acquisition refusal and rollback become an actual terminal
+future before the observer closes; it does not infer that a pending mutation
+settled. Only the existing one-shot current-authority gate can retain the same
+live claim after a known unstarted refusal. The retained claim has no extended
+expiry, and only a subsequent ordinary watchdog cycle may attempt renewal.
+If settlement itself is still unfinished when the original observer closes,
+supervision continues to fail closed. Existing runner failure phase, timing,
+cleanup and custody metadata expose the outcome; no new UI action or persisted
+state is introduced. A measured renewal-phase timeout alone does not identify
+which acquisition, callback or commit consumed its budget.
+
+Before each PostgreSQL advisory acquisition, the existing transaction-local
+statement timeout is refreshed from the current remaining cooperative budget.
+PostgreSQL applies that timeout per statement: a second acquisition must not
+reuse the larger allowance calculated before a slow first acquisition. An
+already expired budget starts no next acquisition. Timeout-configuration errors
+retain their original exception; only cancellation of the actual advisory
+acquisition has known unstarted-callback semantics. This does not classify a
+read, updater, commit, disconnect or unfinished transaction as successful or
+safe to replay.
 
 A still-running, cancelled, otherwise failed or over-budget future continues to fail
 closed and stops the owned process through existing cleanup. Its cooperative
