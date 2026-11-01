@@ -441,6 +441,17 @@ class BotEventDispatchService:
                 }
             return await queue_turn("event_turn_queued")
 
+        # Selected procedure and other native input guards need the retained
+        # original/claim even when a canonical owner has no routing alias pin.
+        # Use the ordinary drain so authority, custody and send capture remain
+        # current; queue acceptance itself is not a native START receipt.
+        if (getattr(self.execution, "queued_preflight", None) is not None
+                and (getattr(self.execution, "procedure_admission", None) is not None
+                     or getattr(self.execution, "native_input_guard_factory", None) is not None)):
+            result = await queue_turn("event_turn_queued_guarded_admission")
+            self.execution.schedule_queue_drain(recipient_thread_id)
+            return result
+
         try:
             turn = await self.execution.start_thread_turn_now(
                 binding.thread_id,
