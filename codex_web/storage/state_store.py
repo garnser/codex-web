@@ -106,8 +106,18 @@ def operation_lock(lock):
         with lock:
             yield
         return
-    while not lock.acquire(timeout=min(.05, budget.remaining())):
-        pass
+    while True:
+        try:
+            remaining = budget.remaining()
+        except TimeoutError as exc:
+            # This owner has not acquired the mutex or entered its callback.
+            # Cancellation by its enclosing owner remains a normal failure;
+            # only a settled acquisition deadline is known unstarted work.
+            if budget.cancelled.is_set():
+                raise
+            raise StorageLockUnavailable("canonical storage mutex acquisition deadline exceeded") from exc
+        if lock.acquire(timeout=min(.05, remaining)):
+            break
     try:
         check_operation_budget()
         yield

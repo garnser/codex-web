@@ -225,6 +225,14 @@ class PostgresStateStore:
 
     @staticmethod
     def _lock(cursor: Any, namespace: str) -> None:
+        budget = storage_operation_budget.get()
+        if budget is not None:
+            # statement_timeout is per statement, not per transaction. A later
+            # acquisition must not borrow the allowance from connection entry
+            # or an earlier lock. Keep configuration errors outside the known
+            # unstarted acquisition classification below.
+            cursor.execute("SELECT set_config('statement_timeout', %s, true)",
+                (str(max(1, int(budget.remaining() * 1000))),))
         try:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
