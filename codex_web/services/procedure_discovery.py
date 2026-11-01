@@ -788,7 +788,18 @@ class NativeProcedureAdmissionService:
                             "message": "Current empty native preparation differs from its initial admission",
                         })
                 return self.procedure_execution.admit_initial_native_credentials(assignment, (), actor, validate)
-            assignment = await asyncio.to_thread(seal_empty)
+            try:
+                assignment = await asyncio.to_thread(seal_empty)
+            except Exception as exc:
+                from codex_web.services.procedure_execution import ProcedureExecutionError
+                if isinstance(exc, ProcedureExecutionError) and exc.code.startswith("procedure_credential_"):
+                    # This owner is still before native input. Retain the same
+                    # known refusal as selected preparation without opening a
+                    # used seal or treating arbitrary/RPC errors as noninput.
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                        "code": exc.code, "message": "Native procedure credential custody requires a fresh authorized bootstrap",
+                        "retryable": False, "remediation_route": "/api/execution-workers/assignments"}) from exc
+                raise
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
         if assignment is not None:
             from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
