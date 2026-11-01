@@ -146,7 +146,8 @@ class ProcedurePublicationRecoveryAttributionTests(unittest.IsolatedAsyncioTestC
         f = self.f
         _, started = await self.start()
         if kind == 'expiry':
-            self.change_recovery(expires_at=time.time() - 1)
+            expired = time.time() - 1
+            self.change_recovery(authorized_at=expired - 1, expires_at=expired)
         elif kind == 'repository':
             def change_repository(state):
                 for i, workspace in enumerate(state.workspaces):
