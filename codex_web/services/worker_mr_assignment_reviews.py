@@ -30,9 +30,14 @@ class WorkerMRAssignmentReviewAdapter:
         return 'sha256:' + digest({'assignment_id': assignment.id, 'fence': assignment.fence,
             'execution_id': assignment.execution_id, 'request_id': request.request_id, 'method': METHOD})
 
-    def existing(self, assignment, worker, source, request_digest=None):
+    def scoped_work(self, assignment, ref):
+        if assignment.work_item_ref is not None and assignment.work_item_ref != ref:
+            self.adapter.denied('MR review selector differs from assigned Work Item')
+        return self.adapter.scope(assignment, ref)
+
+    def existing(self, assignment, worker, ref, source, request_digest=None):
         service = self.adapter.service()
-        matches = [v for v in service.list_verifications(worker, work_item_ref=assignment.work_item_ref)
+        matches = [v for v in service.list_verifications(worker, work_item_ref=ref)
             if v.execution_id == assignment.execution_id and v.method == METHOD and v.source == source]
         if len(matches) > 1:
             self.adapter.denied('Ambiguous original MR assignment review; reconcile without replay')
@@ -115,16 +120,17 @@ class WorkerMRAssignmentReviewAdapter:
             require_principal_independence=require_principal_independence)
 
     def lookup(self, assignment, worker_actor, resolved, validator):
-        if (set(resolved.query) != {'method', 'source'} or resolved.query['method'] != [METHOD]
-                or len(resolved.query['source']) != 1):
+        if (set(resolved.query) != {'method', 'work_item_ref', 'source'} or resolved.query['method'] != [METHOD]
+                or len(resolved.query['source']) != 1 or len(resolved.query['work_item_ref']) != 1):
             self.adapter.denied('Exact MR assignment review method/source required')
         import re
         source = resolved.query['source'][0]
         if not re.fullmatch(r'sha256:[a-f0-9]{64}', source):
             self.adapter.denied('Exact original request digest required')
         worker, _, _ = self.adapter.principals(assignment, worker_actor, resolved, validator, {})
-        self.adapter.scope(assignment, assignment.work_item_ref)
-        result = self.existing(assignment, worker, source)
+        ref = resolved.query['work_item_ref'][0]
+        self.scoped_work(assignment, ref)
+        result = self.existing(assignment, worker, ref, source)
         self.adapter.principals(assignment, worker_actor, resolved, validator, {})
         return {'outcome': 'unique' if result else 'unknown', 'original': result,
             'absence_is_not_permission_to_replay': True}
@@ -153,9 +159,9 @@ class WorkerMRAssignmentReviewAdapter:
         if self.roles is None or self.preflights is None:
             self.adapter.denied('Canonical MR review Role/START owners unavailable')
         worker, _, _ = self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
-        work = self.adapter.scope(assignment, assignment.work_item_ref)
+        work = self.scoped_work(assignment, request.work_item_ref)
         source = self.source(assignment, request)
-        prior = self.existing(assignment, worker, source, digest(payload))
+        prior = self.existing(assignment, worker, request.work_item_ref, source, digest(payload))
         if prior is not None:
             return prior
         service = self.adapter.service()
@@ -179,7 +185,7 @@ class WorkerMRAssignmentReviewAdapter:
             self.adapter.denied('MR review content size changed')
         manifest = AssignmentMRReviewManifest.model_validate_json(content)
         scope = MRClosureScope.model_validate(manifest.model_dump(include=set(MRClosureScope.model_fields)))
-        if (scope.work_item_ref != assignment.work_item_ref or scope.project_id != assignment.project_id
+        if (scope.work_item_ref != request.work_item_ref or scope.project_id != assignment.project_id
                 or (scope.organization_id, scope.workspace_id) != (assignment.organization_id, assignment.workspace_id)
                 or scope.repository_resource_id != self.broker._writable_repository_id(assignment)
                 or not scope.work_item_ref.endswith('!' + str(scope.pull_request_number))):
@@ -236,13 +242,13 @@ class WorkerMRAssignmentReviewAdapter:
             current_worker, _, _ = self.adapter.principals(assignment, worker_actor, resolved, validator, payload)
             if current_worker != worker:
                 self.adapter.denied('Authenticated MR reviewer changed')
-            current_work = self.adapter.scope(assignment, scope.work_item_ref)
+            current_work = self.scoped_work(assignment, scope.work_item_ref)
             current_catalog, current_ref = self.roles.resolve_catalog(**context)
             if current_ref != catalog_ref or current_work.handoff != work.handoff:
                 self.adapter.denied('Current MR review policy or accepted handoff changed')
             if self.broker._clock() >= fact.expires_at:
                 self.adapter.denied('Exact MR provider observation expired')
-            prior = self.existing(assignment, worker, source, digest(payload))
+            prior = self.existing(assignment, worker, request.work_item_ref, source, digest(payload))
             if prior is not None:
                 returned.append(prior)
                 return {}

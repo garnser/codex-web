@@ -24,7 +24,7 @@ from codex_web.execution_role_models import (
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.models import QueuedTurn, WorkItemHandoff
 from codex_web.mr_assignment_review import (
-    METHOD, RECEIPT_CONTRACT, AssignmentMRReviewManifest, AssignmentMRReviewReceipt,
+    METHOD, RECEIPT_CONTRACT, AssignmentReviewRequest, AssignmentMRReviewManifest, AssignmentMRReviewReceipt,
     AssignmentReviewError, ReviewAssignmentProvenance, check_assignment_acceptance,
     digest, qualification, publication_proof, start_provenance,
 )
@@ -417,7 +417,7 @@ class AssignmentMRReviewTests(unittest.IsolatedAsyncioTestCase):
         artifact=e.evidence.attach_artifact_content(artifact.id,(self.content,),actor=e.worker_actor)
         self.native_owner=WorkerMRAssignmentReviewAdapter(WorkerVerificationAdapter(e.service),
             execution_roles=e.roles,preflights=preflights)
-        self.native_request=dict(method=METHOD,manifest_artifact_id=artifact.id,implementation_intent_id=intent.id,
+        self.native_request=dict(method=METHOD,work_item_ref=e.ref,manifest_artifact_id=artifact.id,implementation_intent_id=intent.id,
             implementation_assignment_id=old.id,implementation_preflight_id=impl_attempt.id,
             validation_preflight_id=qa_attempt.id,expected_handoff_requested_at=self.now-20,request_id='f'*32)
         self.native_preflights=preflights
@@ -561,3 +561,109 @@ class AssignmentMRReviewTests(unittest.IsolatedAsyncioTestCase):
             result=await self.native_create({**self.native_request,'validation_preflight_id':attempt.id})
             self.assertEqual(result['outcome'],'inconclusive',result)
             self.assertIsNone(result['item'])
+
+    async def prepare_broker_review(self, *, bootstrap=False):
+        e=self.e
+        if bootstrap:
+            from codex_web.execution_workers import ExecutionSubject
+            from codex_web.resources import RepositoryExecutionScope
+            subject=ExecutionSubject(kind='thread_bootstrap',ref='private-qa-bootstrap')
+            e.assignment=e.assignment.model_copy(update={'work_item_ref':None,'subject':subject,
+                'repository_scope':RepositoryExecutionScope(organization_id='local',workspace_id='default',
+                    project_id='project-a',writable_repository_ids=(e.target.id,),
+                    source='single_repository',source_ref=e.target.id)})
+            e.workers.store.update_assignment(e.worker.id,e.assignment.id,
+                lambda state:state.model_copy(update={'assignments':[e.assignment]}))
+            store=e.workspaces.store
+            workspace=store.workspace(e.assignment.execution_workspace_id)
+            for namespace,ident in ((store.workspace_namespace,workspace.id),(store.lease_namespace,workspace.lease_id)):
+                e.sqlite.record_update(namespace,ident,lambda raw:{**raw,'work_item_ref':None,
+                    'subject':subject.model_dump(mode='json')},default=None)
+            e.workspaces.authorize_publication_recovery(workspace.id,work_item_ref=e.ref,
+                repository_resource_id=e.target.id,assignment_id=e.assignment.id,assignment_fence=e.assignment.fence,
+                source_execution_id=e.assignment.execution_id,source_subject=subject,
+                assignment_deadline_at=e.assignment.deadline_at,actor=e.admin)
+        self.native_resolved=await self.prepare_native_owner()
+        e.service.execution_roles=e.roles
+        e.service.execution_preflights=self.native_preflights
+        # Use the canonical operational response bound, not the borrowed tiny
+        # parser/overflow fixture override; production limits remain unchanged.
+        from codex_web.control_plane_broker import ControlPlaneBrokerLimits
+        e.service.limits=e.service.limits.model_copy(update={
+            'max_response_bytes':ControlPlaneBrokerLimits().max_response_bytes})
+        # A fresh native broker binds the exact current Profile/custody snapshot.
+        from codex_web.services.control_plane_broker import AssignmentBoundControlPlaneBroker
+        await e.broker.stop()
+        e.broker=AssignmentBoundControlPlaneBroker(e.service,assignment=e.assignment,
+            worker_id=e.worker.id,worker_actor=e.worker_actor,fence=e.assignment.fence,
+            validator=lambda:e.workers.assignment_for_execution(e.assignment.execution_id,actor=e.admin))
+        await e.broker.start()
+
+    async def test_real_broker_catalog_create_and_exact_read_keep_ci_method(self):
+        await self.prepare_broker_review()
+        e=self.e
+        status,_,catalog=await e._request('GET','/api/control-plane-broker/operations')
+        import json
+        capability=e.service.public_assignment_capability(e.assignment)
+        baseline=deepcopy(capability)
+        for operation in baseline.get('operations',[]):
+            if operation['id']=='verification.create':
+                operation['request_body'].pop('MR_assignment_review',None)
+                operation['request_body']['methods'].remove(METHOD)
+            if operation['id']=='verification.read':
+                operation.pop('MR_assignment_review_query',None)
+        measurement={'new_catalog_bytes':len(json.dumps(capability,separators=(',',':')).encode()),
+            'baseline357_catalog_bytes':len(json.dumps(baseline,separators=(',',':')).encode()),
+            'canonical_bound':e.service.limits.max_response_bytes}
+        print('MR review catalog byte measurement: '+json.dumps(measurement,sort_keys=True))
+        self.assertLessEqual(measurement['new_catalog_bytes'],measurement['canonical_bound'])
+        self.assertEqual(status,200,{'response':catalog,**measurement})
+        # Inspect public contracts directly as well as the normal bound catalog.
+        create=e.service.public_operation(e.service._resolve_operation('POST','/api/verifications').operation)
+        from codex_web.services.worker_ci_verifications import CI_METHOD
+        self.assertIn(CI_METHOD,create['request_body']['methods'])
+        self.assertIn(METHOD,create['request_body']['methods'])
+        self.assertIn('work_item_ref',create['request_body']['MR_assignment_review']['schema']['required'])
+        status,_,body=await e._request('POST','/api/verifications',payload=self.native_request)
+        self.assertEqual(status,200,body)
+        self.assertFalse(body['item']['independent'])
+        source=self.native_owner.source(e.assignment,AssignmentReviewRequest.model_validate(self.native_request))
+        from urllib.parse import urlencode
+        status,_,read=await e._request('GET','/api/verifications?'+urlencode(
+            {'method':METHOD,'work_item_ref':e.ref,'source':source}))
+        self.assertEqual(status,200,read)
+        self.assertEqual(read['original']['item']['id'],body['item']['id'])
+        self.assertTrue(read['absence_is_not_permission_to_replay'])
+
+    async def test_real_broker_missing_canonical_role_owner_refuses_without_append(self):
+        await self.prepare_broker_review()
+        self.e.service.execution_roles=None
+        before=len(self.e.evidence.store.load().verifications)
+        status,_,body=await self.e._request('POST','/api/verifications',payload=self.native_request)
+        self.assertEqual(status,403,body)
+        self.assertEqual(len(self.e.evidence.store.load().verifications),before)
+
+    async def test_bootstrap_uses_exact_recovery_work_selector_not_assignment_mutation(self):
+        await self.prepare_broker_review(bootstrap=True)
+        e=self.e
+        before=e.workers.store.assignment(e.assignment.id)
+        # Current admitted recovery binds the MR; another selector cannot borrow it.
+        status,_,denied=await e._request('POST','/api/verifications',
+            payload={**self.native_request,'work_item_ref':'foreign/repo!8'})
+        self.assertEqual(status,403,denied)
+        status,_,body=await e._request('POST','/api/verifications',payload=self.native_request)
+        self.assertEqual(status,200,body)
+        self.assertFalse(body['item']['independent'])
+        self.assertIsNone(e.workers.store.assignment(e.assignment.id).work_item_ref)
+        after=e.workers.store.assignment(e.assignment.id)
+        self.assertEqual(after.model_dump(exclude={'procedure_discoveries','updated_at'}),
+            before.model_dump(exclude={'procedure_discoveries','updated_at'}))
+        self.assertEqual(after.procedure_discoveries[:len(before.procedure_discoveries)],before.procedure_discoveries)
+        self.assertGreaterEqual(after.updated_at,before.updated_at)
+        self.assertEqual(body['receipt']['work_item_ref'],e.ref)
+
+    async def test_nonempty_assignment_work_cannot_be_overridden_by_selector(self):
+        from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError
+        self.native_resolved=await self.prepare_native_owner()
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await self.native_create({**self.native_request,'work_item_ref':'foreign/repo!8'})

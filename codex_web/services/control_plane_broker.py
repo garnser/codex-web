@@ -520,6 +520,8 @@ class ControlPlaneBrokerService:
         service_instance_id: str | None = None,
         execution_profiles=None,
         execution_workers=None,
+        execution_roles=None,
+        execution_preflights=None,
         work_graph=None,
         mr_observation_configuration=None,
         operator: WorkItemOperatorService | None = None,
@@ -532,6 +534,8 @@ class ControlPlaneBrokerService:
         self.work_items = work_items
         self.execution_profiles = execution_profiles
         self.execution_workers = execution_workers
+        self.execution_roles = execution_roles
+        self.execution_preflights = execution_preflights
         self.work_graph = work_graph
         self.mr_observation_configuration = mr_observation_configuration
         self.operator = operator or WorkItemOperatorService(work_items)
@@ -636,6 +640,12 @@ class ControlPlaneBrokerService:
                     "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
+                from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD, AssignmentReviewRequest
+                result["request_body"]["methods"].append(ASSIGNMENT_REVIEW_METHOD)
+                result["request_body"]["MR_assignment_review"] = {
+                    "method": ASSIGNMENT_REVIEW_METHOD, "schema": AssignmentReviewRequest.model_json_schema(),
+                    "effect": "Record exact current-role-policy assignment review from governed QA-produced manifest and retained implementation/publication/START/accepted-handoff proofs; not merge consent or principal independence",
+                    "policy": "Requires explicit current execution-role-catalog schema1.1 assignment_role opt-in; no caller identity/result overrides"}
                 from codex_web.services.worker_ci_verifications import CI_METHOD, CIPrerequisiteReviewRequest
                 result["request_body"]["methods"].append(CI_METHOD)
                 result["request_body"]["CI_prerequisite_review"] = {
@@ -653,6 +663,11 @@ class ControlPlaneBrokerService:
                     "continuation": "Use v1 Artifact with published procedure1.2/input.v1; v2 requires procedure1.3/input.v2 and canonical server Configuration. Original policy snapshot is immutable; new same-head facts may start a settled next run. Reconcile exact original source after response loss; never blind replay."}
             if item.id == "verification.read":
                 result["required_query_parameters"] = ["work_item_ref", "source"]
+                from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
+                result["MR_assignment_review_query"] = {
+                    "required": ["method", "work_item_ref", "source"], "method": ASSIGNMENT_REVIEW_METHOD,
+                    "source": "sha256:<original reviewer assignment/request digest>",
+                    "effect": "Read exact original review only; unknown is not permission to replay"}
                 from codex_web.services.worker_ci_verifications import CI_METHOD
                 result["CI_prerequisite_review_query"] = {"required":["method","work_item_ref","source"],
                     "method":CI_METHOD,"source":"sha256:<original reviewer assignment/request digest>",
@@ -2235,7 +2250,13 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerRequestError('Verification write does not accept query parameters')
                 from codex_web.services.worker_mr_verifications import MR_METHODS, WorkerMRVerificationAdapter
                 from codex_web.services.worker_ci_verifications import CI_METHOD, WorkerCIPrerequisiteVerificationAdapter
-                if payload.get('method') == CI_METHOD:
+                from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
+                from codex_web.services.worker_mr_assignment_reviews import WorkerMRAssignmentReviewAdapter
+                if payload.get('method') == ASSIGNMENT_REVIEW_METHOD:
+                    result = await WorkerMRAssignmentReviewAdapter(adapter,
+                        execution_roles=self.execution_roles, preflights=self.execution_preflights).create(
+                            assignment, worker_actor, resolved, payload, assignment_validator)
+                elif payload.get('method') == CI_METHOD:
                     result = await asyncio.to_thread(WorkerCIPrerequisiteVerificationAdapter(adapter).create,
                         assignment, worker_actor, resolved, payload, assignment_validator)
                 elif payload.get('method') in MR_METHODS:

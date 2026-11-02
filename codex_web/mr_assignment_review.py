@@ -41,6 +41,7 @@ class AssignmentMRReviewManifest(MRClosureScope):
 class AssignmentReviewRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
     method: Literal['code-host-mr-assignment-review.v1']
+    work_item_ref: str = Field(min_length=1, max_length=240)
     manifest_artifact_id: str = Field(min_length=1, max_length=200)
     implementation_intent_id: str = Field(min_length=1, max_length=200)
     implementation_assignment_id: str = Field(min_length=1, max_length=200)

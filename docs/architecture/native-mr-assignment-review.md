@@ -100,3 +100,14 @@ managed content and controlled historical provider fixtures. Those tests do not
 claim a new real provider publication, native model review or live Definition
 publication. Full application composition, current policy opt-in and actual native
 workflow qualification remain separate integration work under the same issue.
+
+The fixed create request and exact read lookup require an explicit `work_item_ref`.
+A nonempty assignment Work must match it. For an ordinary generic bootstrap, the
+existing canonical workspace publication-recovery binding and current Work owner,
+Project, repository and lease must independently match. The selector grants no
+scope and does not rewrite the assignment. Broker composition accepts explicit
+`execution_roles` and `execution_preflights` owners; missing owners fail closed.
+The method is advertised alongside the unchanged CI prerequisite method and uses
+the existing Verification create/read paths, with exact method/Work/source lookup
+after response loss. Root application wiring and current semantic policy adoption
+remain necessary before live qualification.
