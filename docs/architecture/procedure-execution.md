@@ -598,3 +598,11 @@ attestor in this slice and remains `needs_input` with an accountable owner and
 basis; missing requirements or a native report offered against an external
 requirement remain unready. This requirement is never taken from caller text or
 a weaker request option. No Workspace or operational grant is added by a report.
+
+CI procedure output declarations use an optional string (`required: false`) for
+`execution_target_kind`. When current prerequisites do not establish a target,
+the scalar projection omits that field; raw original provider prerequisites
+retain their explicit null. Missing facts remain `needs_input` or `blocked`,
+without a sentinel target or a new nullable procedure type. The original receipt
+and verification Evidence prove the bounded observation only; their successful
+read does not turn those dispositions into readiness, approval, or merge consent.
