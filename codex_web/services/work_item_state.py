@@ -825,6 +825,17 @@ class WorkItemStateMachine:
                     and current_owner_normalized not in {handoff_from, handoff_to}
                 ):
                     archive_resolved_handoff = True
+                if (not archive_resolved_handoff
+                        and current_owner_normalized == handoff_to
+                        and current_owner_normalized != handoff_from
+                        and current_owner_normalized != previous_owner):
+                    raise HTTPException(status_code=409, detail={
+                        "code": "pending_handoff_ack_required",
+                        "message": "A pending recipient becomes current owner through ACK, not progress. "
+                                   "Use recipient acknowledgement or deliberately supersede the pending lane.",
+                        "ref": state.ref,
+                        "handoff_requested_at": state.handoff.requested_at,
+                    })
                 if unchanged_pending_lane:
                     # Repeating the existing stage/status while adding findings
                     # is not resolution of the recipient's pending intake.
