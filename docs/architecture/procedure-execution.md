@@ -535,3 +535,38 @@ and Role checks. The observation never crosses a provider/network checkpoint or
 request. Custom Governance filters and different tenants retain ordinary separate
 filter calls. This changes no stored format, authority or observation deadline;
 there is no additional operator UI setting.
+
+## Read-only CI and dependency readiness
+
+The registered GitLab `code-host.pull-request.observe-ci` action observes one
+explicit MR/head in Development. Its current native head pipeline must appear in
+a complete, bounded same-head pipeline/job inventory. Truncation, changing
+inventory, foreign job provenance and unsupported downstream bridges refuse a
+complete observation. A successful read is distinct from green CI: pending,
+failed and unknown remain explicit typed outputs. No rerun, installation or host
+operation is performed. A successful merge pipeline must also positively carry
+the exact current MR head SHA.
+
+The provider accepts an explicit canonical prerequisite validator; absent
+composition returns `needs_input`. It reads three distinct independent canonical
+Verification/Evidence/Artifact receipts using method
+`ci-dependency-readiness.v1`. Bounded SHA-256 content binds repository/head, Work,
+actual target resource and Development environment. Dependency provenance and
+runtime receipts must agree on ABI/platform. Evidence.digest and the original
+Verification.findings marker `ci_readiness_manifest_sha256:<sha256>` both bind
+exact reviewed content. `profile_reference_sha256` is SHA-256 of the complete
+canonical DefinitionReference serialized as sorted compact JSON (not a label or
+only its payload checksum). The runtime attribution must match
+its exact canonical assignment, profile reference and compatible worker/service
+identity. Target purpose/coordination observations are data, never helper-install
+permission. Privileged work still requires its separately registered operation,
+current authority and actual ApprovalRequest. An approval-reference string or a
+source/security review cannot substitute for that grant.
+
+Procedure result adapters preserve original ActionIntent/receipt identity. A
+procedure must explicitly gate on `readiness=ready_for_validation`; success of the
+read itself never authorizes a dependent mutation. No new definition is published
+or assigned automatically. Existing canonical procedure/run and evidence views
+expose the receipt, typed blockers and accountable next owner; this adds no
+operator control or parallel state. Diagnostic workers retain their existing
+network-off, secret-free sandbox.
