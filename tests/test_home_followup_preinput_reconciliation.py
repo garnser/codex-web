@@ -40,7 +40,7 @@ class HomePreinputReconciliationTests(unittest.IsolatedAsyncioTestCase):
             self.original = self.runtime.enqueue_turn(thread_id=thread, project_id='home',
                 message=payload.message, source=kw['source'], execution_id=kw['execution_id'],
                 execution_profile_id='orchestration-only', agent_profile_id='operator',
-                agent_profile_revision=3, agent_profile_actor_id='admin')
+                agent_profile_revision=3, agent_profile_actor_id=self.actor.identity_id)
             self.attempt = self.preflight.retain_queued(self.original,
                 organization_id='local', workspace_id='default')
             return {'queued': True, 'queuedId': self.original.id}
@@ -367,3 +367,100 @@ class HomePreinputReconciliationTests(unittest.IsolatedAsyncioTestCase):
             preinput_refusal=True, detail={'code': 'synthetic_local_refusal', 'message': 'No native write'})
         previous.assert_called_once_with(saved)
         self.assertEqual(self.current_run().status, 'running')
+
+
+class AuthenticatedHomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
+    """Real identity/session and reconciliation owners; Home/native edges remain fixtures."""
+    setUp = home_fixture.HomeFollowupTests.setUp
+    publish = home_fixture.HomeFollowupTests.publish
+    admit = home_fixture.HomeFollowupTests.admit
+    launch = home_fixture.HomeFollowupTests.launch
+    queued_run = HomePreinputReconciliationTests.queued_run
+    current_run = HomePreinputReconciliationTests.current_run
+    disposition = HomePreinputReconciliationTests.disposition
+
+    async def prepare_real_identity(self, *, session=False, typed=False, observe=False):
+        from codex_web.services.identity import IdentityService
+        from codex_web.storage.identity_state import IdentityStateStore
+        from codex_web.identity import AuthenticationAssurance, TenantScope
+        self.real_identity = IdentityService(IdentityStateStore(self.sql))
+        self.actor = self.real_identity.local_trusted_actor()
+        if session:
+            self.credentials = self.real_identity.create_session(identity_id=self.actor.identity_id,
+                scope=TenantScope(), assurance=AuthenticationAssurance.MFA)
+            self.actor = self.real_identity.authenticate_session(self.credentials.session_token,
+                csrf_token=self.credentials.csrf_token, require_csrf=True).actor
+        self.identity = self.followup.identity = self.execution.identity = self.real_identity
+        self.selected['binding']['selected_by'] = self.actor.identity_id
+        self.assignment.created_by = self.actor.identity_id
+        self.payload['owner_identity_id'] = self.actor.identity_id
+        self.publish(publisher=self.actor.identity_id)
+        await self.queued_run()
+        self.saved = self.disposition(typed=typed, observe=observe)
+        self.runs.clock = lambda: 1000.
+
+    async def api_reconcile(self, actor):
+        from codex_web.api.automation_outcomes import build_automation_outcomes_router, AutomationReconcileRequest
+        from starlette.requests import Request
+        self.outcomes.sync_attention = AsyncMock()
+        route = build_automation_outcomes_router(self.outcomes).routes[0]
+        request = Request({'type': 'http', 'method': 'POST', 'path': '/', 'headers': [],
+            'state': {'identity_actor': actor}})
+        from fastapi import HTTPException
+        try:
+            result = await route.endpoint(self.run.id, request, AutomationReconcileRequest(cancel_unknown_home=True))
+            return {'status_code': 200, **result}
+        except HTTPException as error:
+            return {'status_code': error.status_code, 'detail': error.detail}
+
+    async def test_real_local_trusted_operator_cancels_legacy_unknown_without_input(self):
+        await self.prepare_real_identity()
+        result = await self.api_reconcile(self.actor)
+        self.assertEqual(result['status_code'], 200, result)
+        self.assertEqual(result['run']['status'], 'cancelled')
+        self.assertIn('UNKNOWN', result['run']['result_reason'])
+        self.assertEqual(self.preflight.store.get(self.saved.id), self.saved)
+        self.assertEqual(self.actor.assurance, 'local_trusted')
+
+    async def test_real_mfa_session_operator_cancels_legacy_unknown_without_downgrade(self):
+        await self.prepare_real_identity(session=True)
+        result = await self.api_reconcile(self.actor)
+        self.assertEqual(result['status_code'], 200, result)
+        self.assertEqual(result['run']['status'], 'cancelled')
+        self.assertEqual(self.preflight.store.get(self.saved.id), self.saved)
+        self.assertEqual(self.actor.assurance, 'mfa')
+        self.assertEqual(self.actor.session_id, self.credentials.session_id)
+
+    async def test_revoked_session_and_changed_membership_cannot_cancel(self):
+        from codex_web.services.identity import AuthorizationError
+        await self.prepare_real_identity(session=True)
+        self.real_identity.revoke_session(self.credentials.session_id)
+        with self.assertRaises(AuthorizationError):
+            self.outcomes.reconcile(self.run.id, actor=self.actor, cancel_unknown_home=True)
+        self.assertEqual(self.current_run(), self.run)
+        self.assertEqual(self.preflight.store.get(self.saved.id), self.saved)
+
+    async def test_changed_current_membership_cannot_cancel(self):
+        from codex_web.services.identity import AuthorizationError
+        await self.prepare_real_identity()
+        state = self.real_identity.store.load()
+        membership = next(m for m in state.memberships if m.identity_id == self.actor.identity_id)
+        self.real_identity.revoke_membership(membership.id, actor=self.actor)
+        with self.assertRaises(AuthorizationError):
+            self.outcomes.reconcile(self.run.id, actor=self.actor, cancel_unknown_home=True)
+        self.assertEqual(self.current_run(), self.run)
+
+    async def test_primary_membership_is_not_api_authentication_and_native_comparison_stays_strict(self):
+        await self.prepare_real_identity()
+        primary = self.real_identity.actor_for_identity(self.actor.identity_id, scope=self.actor.tenant)
+        result = await self.api_reconcile(primary)
+        self.assertEqual(result['status_code'], 403)
+        with self.assertRaisesRegex(ValueError, 'current human administrator'):
+            self.followup.context(self.run, self.actor, check_controls=False)
+        self.assertEqual(self.current_run(), self.run)
+
+    async def test_real_identity_automatic_observer_settles_without_authenticated_request(self):
+        await self.prepare_real_identity(typed=True, observe=True)
+        self.assertEqual(self.current_run().status, 'failed')
+        self.assertEqual(self.current_run().result_code, 'home_followup_preinput_refused')
+        self.assertEqual(self.preflight.store.get(self.saved.id), self.saved)

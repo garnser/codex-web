@@ -39,7 +39,8 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.triggers = AutomationEventTriggerService(self.registry, self.bus)
         self.actor = AuthenticationActor(identity_id='admin', principal_kind='human',
             organization_id='local', workspace_id='default', assurance='local_trusted', roles=(MembershipRole.OWNER,))
-        self.identity = NS(actor_for_identity=lambda *a, **k: self.actor)
+        self.identity = NS(actor_for_identity=lambda *a, **k: self.actor,
+            revalidate_authenticated_origin=lambda actor: actor)
         self.selected = {'status': 'configured', 'binding': {'revision': 2, 'selected_by': 'admin',
             'agent_profile_id': 'operator', 'agent_profile_revision': 3},
             'thread': {'id': 'permanent-home-thread', 'execution_profile_id': 'orchestration-only'}}
