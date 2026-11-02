@@ -95,7 +95,8 @@ class HomeOperatorFollowup:
         # Event payloads are untrusted data. Carry only bounded identifier
         # references; never provider logs, body text, credentials or transcripts.
         references = {}
-        for key in ('project_id', 'work_item_ref', 'execution_id', 'artifact_id', 'revision', 'pipeline_id'):
+        for key in ('project_id', 'work_item_ref', 'execution_id', 'artifact_id', 'revision', 'pipeline_id',
+                    'parent_intent_id', 'admission_attempt_id'):
             value = event.payload.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool):
                 text = str(value)

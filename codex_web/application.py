@@ -4996,6 +4996,8 @@ home_operator_coordination_service = HomeOperatorCoordinationService(
     broker=control_plane_broker_service, origin_guard=_home_coordination_origin,
     thread_scope=thread_scope_service, bootstrap_bindings=thread_bootstrap_binding_service,
     project_coordination=project_coordination_service, turns=turn_service,
+    preflight=execution_preflight_service, events=canonical_event_store, usage=agent_runtime_usage_store,
+    sessions=agent_session_store,
 )
 control_plane_broker_service.home_operator_coordination = home_operator_coordination_service
 turn_execution_service.home_operator_coordination_admission = home_operator_coordination_service.validate_queued_delegation
