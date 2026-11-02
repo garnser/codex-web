@@ -1428,6 +1428,7 @@ class ThreadService:
             assignment_id=binding.assignment_id,
             execution_workspace_id=binding.workspace_id,
             worker_id=status.worker_id,
+            resource_ids=binding.resource_ids,
             model=model or project.model,
         )
         effective_runtime_binding = getattr(
