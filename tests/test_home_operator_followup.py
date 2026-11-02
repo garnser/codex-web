@@ -255,9 +255,13 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         active = NS(source='queued:'+SOURCE+run.id, turn_id='actual-native-turn', thread_id='permanent-home-thread',
             assignment_id='assignment', fence=1, execution_id='bootstrap-execution',
             worker_id='worker', execution_workspace_id='workspace')
-        self.followup.sessions = NS(find_by_native_id=lambda *a, **k: NS(id='session', assignment_id='assignment', execution_id='bootstrap-execution'))
+        self.followup.sessions = NS(find_unique_by_native_id=lambda *a, **k: NS(id='session',
+            organization_id='local', workspace_id='default', project_id='home', provider_id='openai',
+            runtime_id='codex', provider_native_session_id='permanent-home-thread',
+            assignment_id='assignment', execution_id='bootstrap-execution'))
         self.usage = AgentRuntimeUsage(id='runtime-usage-'+hashlib.sha256(b'session\nactual-native-turn').hexdigest()[:32],
-            organization_id='local', workspace_id='default', assignment_id='assignment', execution_id='bootstrap-execution',
+            organization_id='local', workspace_id='default', project_id='home', agent_session_id='session',
+            assignment_id='assignment', execution_id='bootstrap-execution', execution_workspace_id='workspace',
             provider_id='openai', runtime_id='codex', runtime_type='native', provider_native_session_id='permanent-home-thread',
             provider_native_turn_id='actual-native-turn', input_tokens=20, output_tokens=10,
             terminal_outcome='succeeded', started_at=100., completed_at=101.)

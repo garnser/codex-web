@@ -34,7 +34,7 @@ class HomeRuntimeUsageWakeTests(unittest.IsolatedAsyncioTestCase):
     launch = home_fixture.HomeFollowupTests.launch
     terminal_fixture = home_fixture.HomeFollowupTests.terminal_fixture
 
-    async def prepare(self):
+    async def prepare(self, *, checkpoint_succeeded=True):
         self.run = self.admit().run
         await self.launch(self.run)
         _, self.active = self.terminal_fixture(self.run)
@@ -89,7 +89,7 @@ class HomeRuntimeUsageWakeTests(unittest.IsolatedAsyncioTestCase):
         self.followup.scheduler = SchedulerService(SchedulerStore(self.sql),
             CanonicalEventIngestionService(self.bus), clock=lambda: 101.)
         self.addCleanup(self.bus.subscribe(self.followup.on_schedule, event_types=('schedule.due',)))
-        await self.followup.record_terminal(self.active, succeeded=True)
+        await self.followup.record_terminal(self.active, succeeded=checkpoint_succeeded)
         # Execute the real one-shot scheduler event while usage is absent.
         await self.followup.scheduler.run_due()
         self.assertEqual(self.current().result_code, 'home_followup_budget_pending')
@@ -256,3 +256,152 @@ class RuntimeUsageBridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await service.stop()
         self.assertTrue(finished.is_set())
         self.assertEqual(service.tasks, set())
+
+
+class HistoricalHomeUsageCustodyTests(unittest.IsolatedAsyncioTestCase):
+    """Real Home custody rollover plus the real worker telemetry/accounting path."""
+    setUp = home_fixture.HomeFollowupTests.setUp
+    admit = home_fixture.HomeFollowupTests.admit
+    launch = home_fixture.HomeFollowupTests.launch
+    current = HomeRuntimeUsageWakeTests.current
+    join_recovery = HomeRuntimeUsageWakeTests.join_recovery
+    emit = HomeRuntimeUsageWakeTests.emit
+    service_actor = HomeRuntimeUsageWakeTests.service_actor
+
+    def publish(self, publisher=None, identifier='home-ci'):
+        return home_fixture.HomeFollowupTests.publish(self, publisher or self.actor.identity_id, identifier)
+
+    def terminal_fixture(self, run):
+        a = self.host_fixture.assignment
+        self.followup.workers = self.host_fixture.f.workers
+        self.followup.bootstrap_bindings = self.host_fixture.bindings
+        active = NS(source='queued:home-operator-automation:' + run.id,
+            turn_id='actual-native-turn', thread_id='operator-thread', assignment_id=a.id,
+            fence=a.fence, execution_id=a.execution_id, worker_id=a.assigned_worker_id,
+            execution_workspace_id=a.execution_workspace_id)
+        return a, active
+
+    async def prepare_historical(self, *, checkpoint_succeeded=True):
+        from tests import test_home_operator_host as host_fixture
+        from codex_web.services.automation_definitions import install_automation_definitions, AutomationEventTriggerService
+        from codex_web.services.automation_runs import AutomationRunService
+        from codex_web.services.canonical_events import CanonicalEventBus
+        from codex_web.services.automation_outcomes import AutomationOutcomeReconciliationService
+        from codex_web.storage.automation_runs import AutomationRunStore
+        from codex_web.storage.canonical_events import CanonicalEventStore
+        e = self.host_fixture = host_fixture.HomeOperatorHostTests()
+        e.addCleanup, e.addAsyncCleanup = self.addCleanup, self.addAsyncCleanup
+        await e.asyncSetUp()
+        self.sql, self.registry, self.actor = e.f.sqlite, e.registry, e.actor
+        self.definitions = install_automation_definitions(self.registry)
+        self.runs = AutomationRunService(AutomationRunStore(self.sql), self.definitions, clock=lambda: 100.)
+        self.events = CanonicalEventStore(self.sql)
+        self.bus = CanonicalEventBus(self.events)
+        self.triggers = AutomationEventTriggerService(self.registry, self.bus)
+        self.selected = {'status':'configured', 'binding':{'revision':2,
+            'selected_by':self.actor.identity_id, 'agent_profile_id':e.assignment.agent_profile.profile_id,
+            'agent_profile_revision':e.assignment.agent_profile.profile_revision},
+            'thread':{'id':'operator-thread', 'execution_profile_id':'orchestration-only'}}
+        self.payload['owner_identity_id'] = self.actor.identity_id
+        self.payload['target'].update(id=e.assignment.agent_profile.profile_id,
+            agent_profile_revision=e.assignment.agent_profile.profile_revision, home_thread_id='operator-thread')
+        self.publish()
+        self.followup.runs, self.followup.events, self.followup.event_triggers = self.runs, self.events, self.triggers
+        self.followup.identity = e.f.identity
+        self.followup.workers, self.followup.bootstrap_bindings = e.f.workers, e.bindings
+        self.execution.runs, self.execution.events, self.execution.identity = self.runs, self.events, e.f.identity
+        self.followup.outcomes = AutomationOutcomeReconciliationService(self.runs, None)
+        # Reuse the actual EventHub→adapter→telemetry→application notifier seam,
+        # real one-shot wake, and existing Home recovery coordinator.
+        await HomeRuntimeUsageWakeTests.prepare(self, checkpoint_succeeded=checkpoint_succeeded)
+        await self.emit(method='turn/started', usage=False)
+        usage = self.usage_store.list()[0]
+        self.assertEqual((usage.agent_session_id, usage.assignment_id, usage.execution_id),
+            (self.session.id, self.active.assignment_id, self.active.execution_id))
+        self.old_usage = usage
+
+    def reassociate(self):
+        from codex_web.agent_runtime import AgentRuntimeResult
+        from codex_web.execution_workers import AssignmentCancelRequest, AssignmentClaimRequest, AssignmentStartRequest
+        from codex_web.services.agent_session_custody import AgentSessionCustodyService
+        e = self.host_fixture
+        self.old_assignment = old = e.f.workers.store.assignment(self.active.assignment_id)
+        e.f.workers.cancel_bootstrap(old.id, AssignmentCancelRequest(expected_fence=old.fence,
+            reason='Completed Home turn custody rollover'), actor=e.actor)
+        binding = e.f.service.prepare_bootstrap(bootstrap_id='historical-successor', execution_id='historical-successor-execution',
+            project_id='home', sandbox=old.sandbox, approval_policy=old.approval_policy,
+            execution_profile_id=old.execution_profile_id, agent_profile=old.agent_profile)
+        claimed = e.f.workers.claim(e.f.worker.id, AssignmentClaimRequest(), actor=e.worker_actor,
+            assignment_id=binding.assignment_id)
+        successor = e.f.workers.start(e.f.worker.id, binding.assignment_id,
+            AssignmentStartRequest(fence=claimed.fence, lease_token=claimed.lease.lease_token), actor=e.worker_actor)
+        e.bindings.rebind(bootstrap_id='historical-successor', thread_id='operator-thread',
+            execution_id=successor.execution_id, assignment_id=successor.id,
+            execution_workspace_id=successor.execution_workspace_id, actor=e.actor)
+        workspace = e.f.workspaces.store.workspace(successor.execution_workspace_id)
+        worker_session = NS(workspace_path=Path(workspace.path),
+            validate_current=lambda:e.f.workers.store.assignment(successor.id))
+        request = AgentRuntimeSessionRequest(project_id='home', assignment_id=successor.id,
+            execution_id=successor.execution_id, execution_workspace_id=workspace.id,
+            resource_ids=successor.resource_ids, worker_id=e.f.worker.id, workspace_cwd=workspace.path)
+        custody = AgentSessionCustodyService(e.sessions, e.f.workers, e.bindings, e.f.workspaces, e.f.execution_profiles)
+        adapter = NS(provider_id=self.session.provider_id, runtime_id=self.session.runtime_id,
+            runtime_type=self.session.runtime_type)
+        before = self.usage_store.get(self.old_usage.id)
+        current = custody.complete(custody.capture('operator-thread', adapter, worker_session, request, successor.fence),
+            'operator-thread', adapter, worker_session, request, successor.fence,
+            AgentRuntimeResult(provider_native_session_id='operator-thread'))
+        self.assertEqual(current.id, self.session.id)
+        self.assertEqual((current.assignment_id, current.execution_id), (successor.id, successor.execution_id))
+        self.assertEqual(self.usage_store.get(self.old_usage.id), before)
+        self.assertNotEqual(current.assignment_id, old.id)
+        return current
+
+    async def test_real_custody_reassociation_then_late_worker_usage_settles_original_without_input(self):
+        await self.prepare_historical()
+        witness, custody = self.current().home_terminal, self.current().home_custody
+        current = self.reassociate()
+        await self.emit()
+        self.assertEqual(self.current().status, 'succeeded')
+        self.assertEqual((self.current().home_terminal, self.current().home_custody), (witness, custody))
+        record = self.usage_store.get(self.old_usage.id)
+        self.assertEqual((record.agent_session_id, record.assignment_id, record.execution_id,
+            record.execution_workspace_id), (current.id, self.old_assignment.id,
+            self.old_assignment.execution_id, self.old_assignment.execution_workspace_id))
+        self.assertEqual(self.sessions.get(current.id, organization_id=self.actor.organization_id, workspace_id=self.actor.workspace_id), current)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_wrong_historical_usage_attribution_remains_pending(self):
+        await self.prepare_historical()
+        self.reassociate()
+        changes = ({'organization_id':'foreign'}, {'workspace_id':'foreign'}, {'project_id':'foreign'},
+            {'agent_session_id':'another-session'}, {'assignment_id':'another-assignment'},
+            {'execution_id':'another-execution'}, {'execution_workspace_id':'another-workspace'},
+            {'provider_id':'another-provider'}, {'runtime_id':'another-runtime'},
+            {'provider_native_session_id':'another-native-session'}, {'provider_native_turn_id':'another-turn'})
+        for change in changes:
+            with self.subTest(change=change):
+                # Deliberately malformed historical attribution fixture; the
+                # service must refuse it, not repair or borrow current custody.
+                self.sql.record_apply(self.usage_store.namespace, upserts={self.old_usage.id:
+                    self.old_usage.model_copy(update=change).model_dump(mode='json')})
+                await self.emit()
+                self.assertEqual(self.current().status, 'running')
+                self.assertIsNone(self.current().completed_at)
+        self.sql.record_apply(self.usage_store.namespace, upserts={self.old_usage.id:
+            self.old_usage.model_dump(mode='json')})
+        await self.emit()
+        self.assertEqual(self.current().status, 'succeeded')
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_known_failed_checkpoint_is_not_overridden_by_successful_historical_usage(self):
+        await self.prepare_historical(checkpoint_succeeded=False)
+        witness = self.current().home_terminal
+        self.reassociate()
+        await self.emit()
+        self.assertFalse(witness.checkpoint_succeeded)
+        self.assertEqual(self.current().home_terminal, witness)
+        self.assertEqual(self.current().status, 'failed')
+        self.assertEqual(self.current().result_code, 'home_followup_failed')
+        self.assertEqual(self.usage_store.get(self.old_usage.id).terminal_outcome, 'succeeded')
+        self.assertEqual(len(self.calls), 1)

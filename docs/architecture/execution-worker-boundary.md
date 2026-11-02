@@ -1869,3 +1869,16 @@ before accounting. Missing usage remains pending. Notifications create no native
 input, retry, fabricated outcome, new ledger or periodic poll. Existing Automation
 history and Operations diagnostics expose the resulting canonical settlement;
 no new UI control or response contract is required.
+
+
+Historical Home terminal accounting (#1952) resolves the unique stable canonical
+Session under the original tenant, Home Project, provider/runtime and native
+session identity. A normal custody resume may move that Session to a successor
+assignment/execution without rewriting old usage. Accounting therefore requires
+the exact usage Session ID and original assignment/execution/workspace,
+provider/runtime and native-turn tuple, rather than requiring current Session
+custody to remain historical. The original positive terminal/checkpoint and
+budget checks, and final same-Run/same-terminal CAS, remain authoritative. This
+read-only join needs no current lease and confers no input or replay authority;
+missing, ambiguous or mismatched evidence remains pending. Existing Automation
+history displays settlement; no new UI, ledger, schema or polling is introduced.

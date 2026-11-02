@@ -469,18 +469,27 @@ class HomeOperatorFollowup:
         for assignment_id,execution_id,session_id,turn_id in dict.fromkeys(turns):
             assignment = self.workers.store.assignment(assignment_id)
             runtime = getattr(assignment, 'runtime_binding', None)
-            if runtime is None:
+            if (runtime is None or (assignment.organization_id, assignment.workspace_id,
+                    assignment.project_id, assignment.execution_id) !=
+                    (scope.organization_id, scope.workspace_id, 'home', execution_id)):
                 return
-            session = self.sessions.find_by_native_id(session_id, organization_id=scope.organization_id,
-                workspace_id=scope.workspace_id, provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
-            if session is None or session.assignment_id != assignment_id or session.execution_id != execution_id:
+            # Canonical resume preserves Session identity while moving its live
+            # custody. Historical accounting joins the old turn's usage instead.
+            session = self.sessions.find_unique_by_native_id(session_id,
+                provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
+            if (session is None or (session.organization_id, session.workspace_id,
+                    session.project_id, session.provider_id, session.runtime_id,
+                    session.provider_native_session_id) != (scope.organization_id,
+                    scope.workspace_id, 'home', runtime.provider_id, runtime.runtime_id, session_id)):
                 return
             usage_id = 'runtime-usage-' + hashlib.sha256(f'{session.id}\n{turn_id}'.encode()).hexdigest()[:32]
             usage = self.runtime_usage.get(usage_id)
             if (usage is None or usage.terminal_outcome == 'unknown' or usage.completed_at is None
-                    or (usage.organization_id,usage.workspace_id,usage.assignment_id,usage.execution_id,
-                        usage.provider_native_session_id,usage.provider_native_turn_id) !=
-                        (scope.organization_id,scope.workspace_id,assignment_id,execution_id,session_id,turn_id)):
+                    or (usage.organization_id,usage.workspace_id,usage.project_id,usage.agent_session_id,
+                        usage.assignment_id,usage.execution_id,usage.execution_workspace_id,
+                        usage.provider_id,usage.runtime_id,usage.provider_native_session_id,usage.provider_native_turn_id) !=
+                        (scope.organization_id,scope.workspace_id,'home',session.id,assignment_id,execution_id,
+                        assignment.execution_workspace_id,runtime.provider_id,runtime.runtime_id,session_id,turn_id)):
                 return  # Unknown/missing original usage is retained, never synthetic zero.
             records.append(usage)
         automation, _ = self.runs.definitions.resolve_reference(run.definition_ref,
