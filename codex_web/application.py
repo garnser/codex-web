@@ -1224,10 +1224,14 @@ from codex_web.services.procedure_scope_actor import ProcedureDefinitionScopeAct
 _procedure_definition_scope_actor = ProcedureDefinitionScopeActor(
     identity_service, project_service,
 )
+from codex_web.procedure_control_plane import CanonicalOperationRegistry
+
+procedure_canonical_operations = CanonicalOperationRegistry()
 
 skill_service.bind_procedure_contracts(
     actions=action_provider_registry, resources=resource_catalog_service,
     scope_actor=_procedure_definition_scope_actor,
+    control_plane=procedure_canonical_operations,
 )
 
 control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
@@ -1300,6 +1304,22 @@ execution_worker_service = ExecutionWorkerService(
     identity=identity_service,
     workspaces=execution_workspace_service,
     assignment_notifier=_execution_assignment_notifier,
+)
+from codex_web.services.code_host_ci_observation import CanonicalCIPrerequisiteValidator
+
+
+def _mr_ci_execution_target_requirement(request, binding):
+    return execution_role_definition_service.resolve_mr_ci_readiness_policy(
+        organization_id=request.organization_id,
+        workspace_id=request.workspace_id,
+        project_id=request.project_id,
+    )
+
+
+gitlab_action_provider.ci_prerequisite_validator = CanonicalCIPrerequisiteValidator(
+    artifact_evidence_service, identity_service, resource_catalog_service,
+    workers=execution_worker_service,
+    execution_target_requirement=_mr_ci_execution_target_requirement,
 )
 # Reconcile persisted worker/lease state before ensuring the process-owned
 # worker. On a slow application import, doing this after ensure_local_worker()
@@ -2137,7 +2157,8 @@ procedure_execution_service = ProcedureExecutionService(
     authority=authority_role_service, approvals=approval_request_service, attention=attention_service,
     control_actor=identity_service.local_trusted_actor(), worker_runtime=local_execution_worker_runtime,
     models=model_gateway_service, worker_actor=local_worker_actor,
-    mr_observation_configuration=configuration_service)
+    mr_observation_configuration=configuration_service,
+    control_plane=procedure_canonical_operations)
 action_intent_service.procedure_execution = procedure_execution_service
 action_execution_service.observation_policy_resolver = procedure_execution_service.observation_policy_for_action
 action_execution_service.observation_deadline_resolver = procedure_execution_service.observation_deadline_for_action
@@ -2557,6 +2578,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     service_instance_id=instance_id,
     execution_profiles=execution_profile_definition_service,
     execution_workers=execution_worker_service,
+    execution_roles=execution_role_definition_service,
     mr_observation_configuration=configuration_service,
 )
 from codex_web.services.procedure_discovery import BrokerProcedureAdmissionService
@@ -3661,6 +3683,7 @@ execution_preflight_service = ExecutionPreflightService(
     event_sink=bot_runtime_telemetry.append,
 )
 app.state.execution_preflight_service = execution_preflight_service
+control_plane_broker_service.execution_preflights = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
 from codex_web.services.notification_outcomes import NotificationOutcomeInspection
 from codex_web.services.notification_results import NotificationResultCapture
@@ -4083,6 +4106,30 @@ turn_execution_service.owner_routing_validator = owner_routing_service.validate_
 app.state.owner_routing_service = owner_routing_service
 work_item_continuity_service.bind(
     canonical_work_item_continuity_service
+)
+from codex_web.services.procedure_custody_recovery import register_custody_operations
+
+register_custody_operations(
+    procedure_canonical_operations,
+    workers=execution_worker_service,
+    routing=owner_routing_service,
+    threads=thread_service,
+    continuity=canonical_work_item_continuity_service,
+    get_work=work_item_state_machine._work_item_state,
+    preflight=execution_preflight_service,
+)
+from codex_web.services.procedure_publication_recovery import (
+    PublicationRecoveryOperations, register_publication_operations,
+)
+
+register_publication_operations(
+    procedure_canonical_operations,
+    PublicationRecoveryOperations(
+        workers=execution_worker_service,
+        workspaces=execution_workspace_service,
+        intents=action_intent_service,
+        work_items=work_item_service,
+    ),
 )
 turn_execution_service.handoff_delivery_recorder = work_item_continuity_service.record_handoff_delivery
 app.state.canonical_work_item_continuity_service = (
