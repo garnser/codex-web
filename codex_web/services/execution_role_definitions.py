@@ -11,6 +11,7 @@ from codex_web.execution_role_models import (
     EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
     ExecutionRoleCatalogDefinition,
     validate_execution_role_catalog,
+    validate_execution_role_catalog_v11,
 )
 from codex_web.services.definitions import (
     DefinitionKindSchema,
@@ -79,6 +80,15 @@ class ExecutionRoleDefinitionService:
         )
         return ExecutionRoleCatalogDefinition.model_validate(record.payload), reference_for(record)
 
+    def resolve_mr_ci_readiness_policy(self, *, organization_id=None, workspace_id=None, project_id=None):
+        """Current semantic requirement and exact publication; absent is not a default."""
+        catalog, reference = self.resolve_catalog(organization_id=organization_id,
+            workspace_id=workspace_id, project_id=project_id)
+        policy = catalog.mr_ci_readiness_policy
+        if policy is not None and reference.definition_schema_version != "1.1":
+            raise ValueError("MR CI requirement requires execution-role-catalog schema 1.1")
+        return policy, reference
+
     def reference(
         self,
         *,
@@ -106,6 +116,10 @@ def install_execution_role_definitions(
                 validate=validate_execution_role_catalog,
             )
         )
+    if not any(item["kind"] == EXECUTION_ROLE_CATALOG_KIND and item["schema_version"] == "1.1"
+               for item in registry.schemas.metadata()):
+        registry.register_schema(DefinitionKindSchema(kind=EXECUTION_ROLE_CATALOG_KIND,
+            schema_version="1.1", validate=validate_execution_role_catalog_v11))
     service = ExecutionRoleDefinitionService(registry, projects=projects)
     service.bootstrap()
     install_execution_role_catalog_provider(service.catalog)
