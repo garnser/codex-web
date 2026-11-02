@@ -13,6 +13,8 @@ export function createQueuedBootstrapRecoveryUi({api, loadThread, scheduleRefres
       inspected = true; inspect.disabled = true; status.textContent = 'Loading recovery scope…';
       try {
         const preview = await api(attempt.bootstrap_recovery_href);
+        const homeReselection = preview.project_id === 'home'
+          ? ' Home selection is not transferred. Explicitly select the verified new conversation in Home and review pinned follow-up subscriptions before Retry.' : '';
         if (!current()) return;
         const details = document.createElement('pre');
         details.textContent = `Original request: ${preview.queued_turn_id}\nProject: ${preview.project_id}\n`
@@ -22,13 +24,13 @@ export function createQueuedBootstrapRecoveryUi({api, loadThread, scheduleRefres
           + `Read-only repositories: ${preview.read_only_repository_resource_ids.join(', ')}\nBootstrap state: ${preview.state}`;
         container.append(details);
         if (!preview.can_create && !preview.can_reconcile) {
-          status.textContent = 'Fresh bootstrap is verified. Use Retry to restore the original request.';
+          status.textContent = 'Fresh bootstrap is verified. Use Retry to restore the original request.' + homeReselection;
           return;
         }
         status.textContent = preview.prestart_refusal
           ? `Previous bootstrap was refused before provider startup: ${preview.prestart_refusal.message}. A new attempt requires an explicit request.`
           : preview.can_create
-          ? 'Creates a fresh runtime thread with the original scope. Retry remains a separate action.'
+          ? 'Creates a fresh runtime thread with the original scope. Retry remains a separate action.' + homeReselection
           : 'Checks the existing correlated receipt. An unresolved creation will remain held.';
         const label = document.createElement('label'); label.textContent = 'Recovery reason ';
         const reason = document.createElement('input'); reason.maxLength = 1000;
@@ -45,7 +47,7 @@ export function createQueuedBootstrapRecoveryUi({api, loadThread, scheduleRefres
               body:JSON.stringify({expected_snapshot_sha256:preview.snapshot_sha256, reason:reason.value.trim(),
                 ...(preview.source_thread_id ? {expected_source_thread_id:preview.source_thread_id} : {})})});
             if (!current()) return;
-            status.textContent = 'Fresh bootstrap verified. The original request remains blocked until Retry.';
+            status.textContent = 'Fresh bootstrap verified. The original request remains blocked until Retry.' + homeReselection;
             await loadThread(result.threadId);
             if (current()) scheduleRefresh(0);
           } catch (error) {
