@@ -259,6 +259,12 @@ budgets and a finite duration. It does not grant an assignment, Resource,
 Identity, transport, or recovery permission. Earlier Automation schema validators
 reject this arm, including explicit null new fields.
 
+Work watchdog events supplied with a canonical Work snapshot normalize
+`work_item_ref` and `handoff_status` (`pending`, `accepted`, or `none`) from
+that snapshot before ingestion and matching. Legacy `ref` remains available.
+Caller matching fields cannot override these canonical values; a pending-only
+procedure filter does not adopt ordinary owner events without a pending handoff.
+
 The composition owner connects the existing Work watchdog event ingress to the
 Automation event matcher before native reasoning. An explicit matching procedure
 policy consumes that observation deterministically, including truthful missing

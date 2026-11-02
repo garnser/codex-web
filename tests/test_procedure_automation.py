@@ -140,7 +140,7 @@ def procedure_content(effect):
 
 
 class ProcedureAutomationIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def build(self,effect='read',*,advances=8,claim_target=False):
+    async def build(self,effect='read',*,advances=8,claim_target=False,event_filter=None):
         from codex_web.agent_profiles import AgentProfileExecutionBinding
         from codex_web.execution_workers import ExecutionAssignmentCreate
         from codex_web.services.autonomy_controller import AutonomyController
@@ -226,6 +226,7 @@ class ProcedureAutomationIntegrationTests(unittest.IsolatedAsyncioTestCase):
             get_work=self.get_work,events=self.bus.store,event_triggers=self.triggers,controller=self.controller,
             coordinator=self.coordinator,automation_execution=SimpleNamespace())
         payload=automation_payload(f.pin.model_dump(mode='json'),advances=advances)
+        if event_filter is not None:payload['trigger']['event_filter']=event_filter
         self.draft=self.definitions.create_draft('fixture-automation',AutomationDefinition.model_validate(payload),
             actor_id=f.actor.identity_id,scope_type=DefinitionScope.PROJECT,scope_id=f.project.id)
         self.published=self.definitions.publish_draft(self.draft.record_id,actor_id=f.actor.identity_id)
@@ -382,6 +383,66 @@ class ProcedureAutomationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rows()[0].status,'succeeded')
         runtime.dispatch_event.assert_not_awaited()
         f.runner.models.invoke.assert_not_awaited()
+
+    async def watchdog_work_event(self, key, **payload_changes):
+        from unittest.mock import AsyncMock
+        from codex_web.services.autonomy import AutonomyService
+        f=self.env
+        runtime=SimpleNamespace(project_scope=lambda _: (f.actor.organization_id,f.actor.workspace_id),
+            dispatch_event=AsyncMock(return_value={'ok':True}))
+        service=AutonomyService(runtime=runtime,controller=self.controller,canonical_events=self.events)
+        service.procedure_event_handler=self.service.handle_event
+        # Exact pending-handoff SLA producer shape: legacy ref, not work_item_ref.
+        payload={'project_id':self.work.project_id,'ref':self.work.ref,'agent':'recipient',
+            'stage':self.work.current_stage,'handoff_status':'pending',**payload_changes}
+        result=await service._bounded_reasoning_dispatch(SimpleNamespace(thread_id='supervisor'),
+            'ordinary owner guidance','work-item-sla',cycle_key=key,payload=payload,work_item=self.work)
+        await self.join()
+        return result,runtime
+
+    async def test_sla_legacy_ref_reaches_exact_pending_work_procedure_without_native_fallback(self):
+        f=await self.build(event_filter={'project_id':'home','work_item_ref':'fixture!1','handoff_status':'pending'})
+        result,runtime=await self.watchdog_work_event('actual-handoff-sla')
+        self.assertEqual(result.get('reason'),'canonical_procedure_owned')
+        run=self.rows()[0]
+        event=self.bus.store.event(run.trigger.event_id)
+        self.assertEqual(event.payload['ref'],self.work.ref)
+        self.assertEqual(event.payload['work_item_ref'],self.work.ref)
+        self.assertEqual(event.payload['handoff_status'],'pending')
+        self.assertEqual(event.payload['resource_ids'],[f.resource.id])
+        self.assertEqual(run.work_item_ref,self.work.ref)
+        self.assertEqual(run.procedure_custody.checkpoint_id,self.initial_checkpoint)
+        self.assertEqual(run.status,'succeeded')
+        self.assertEqual(self.owner.calls,1)
+        runtime.dispatch_event.assert_not_awaited()
+        f.runner.models.invoke.assert_not_awaited()
+
+    async def test_missing_handoff_does_not_match_pending_policy_or_swallow_normal_owner_event(self):
+        await self.build(event_filter={'project_id':'home','work_item_ref':'fixture!1','handoff_status':'pending'})
+        self.work.handoff=None;self.save_work()
+        observed=[]
+        self.bus.subscribe(lambda event:observed.append(event))
+        result,runtime=await self.watchdog_work_event('ordinary-owner-no-handoff')
+        self.assertTrue(result['ok'])
+        self.assertEqual(observed[-1].payload['handoff_status'],'none')
+        self.assertEqual(observed[-1].payload['work_item_ref'],self.work.ref)
+        self.assertEqual(self.rows(),[])
+        self.assertEqual(self.owner.calls,0)
+        runtime.dispatch_event.assert_awaited_once()
+        self.assertEqual(runtime.dispatch_event.await_args.kwargs['work_item_ref'],self.work.ref)
+
+    async def test_canonical_accepted_status_and_work_override_caller_matching_fields(self):
+        await self.build(event_filter={'project_id':'home','work_item_ref':'fixture!1','handoff_status':'pending'})
+        self.work.handoff.status='accepted';self.save_work()
+        observed=[]
+        self.bus.subscribe(lambda event:observed.append(event))
+        result,runtime=await self.watchdog_work_event('accepted-owner',work_item_ref='foreign!2')
+        self.assertTrue(result['ok'])
+        self.assertEqual(observed[-1].payload['handoff_status'],'accepted')
+        self.assertEqual(observed[-1].payload['work_item_ref'],self.work.ref)
+        self.assertEqual(observed[-1].payload['ref'],self.work.ref)
+        self.assertEqual(self.rows(),[])
+        runtime.dispatch_event.assert_awaited_once()
 
     async def test_run_reservation_cas_refuses_stale_counter_before_an_effect(self):
         from codex_web.services.procedure_automation import ProcedureAutomationError

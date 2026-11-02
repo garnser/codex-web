@@ -101,9 +101,13 @@ class AutonomyService:
         dispatch_context = {}
         if work_item is not None:
             primary, writable = work_item_repository_scope(work_item)
-            payload = {**payload, "resource_ids": list(dict.fromkeys(
-                [*getattr(work_item, "resource_ids", ()), *writable]
-            ))}
+            # These matching fields come from the canonical Work snapshot, never
+            # watchdog caller aliases. Keep legacy payload fields for consumers.
+            payload = {**payload, "work_item_ref": work_item.ref,
+                "handoff_status": work_item.handoff.status if work_item.handoff is not None else "none",
+                "resource_ids": list(dict.fromkeys(
+                    [*getattr(work_item, "resource_ids", ()), *writable]
+                ))}
             if getattr(work_item, "goal_id", None):
                 payload["goal_id"] = work_item.goal_id
             dispatch_context = {
