@@ -3857,6 +3857,9 @@ def _notify_automation_action_intent(intent):
 action_intent_service.status_notifier = _notify_automation_action_intent
 
 async def _launch_admitted_automation(run):
+    if run.target_kind == 'home_operator':
+        home_operator_followup.schedule_launch(run)
+        return
     await automation_execution_service.launch(
         run.id,
         organization_id=run.organization_id,
@@ -5007,6 +5010,7 @@ home_operator_followup = HomeOperatorFollowup(
     scheduler=scheduler_service, sessions=agent_session_store,
     runtime_usage=agent_runtime_usage_store,
     outcomes=automation_outcome_reconciliation_service,
+    launch_coordinator=native_recovery_service.coordinator,
 )
 async def _launch_home_event_run(run):
     return await automation_execution_service.launch(run.id,
