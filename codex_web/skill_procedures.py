@@ -17,7 +17,7 @@ from codex_web.authority import AuthorityApprovalRequirement, AuthorityEnvironme
 from codex_web.execution_workers import WorkerCapability
 from codex_web.resources import ResourceType
 
-PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.3", ("1.0", "1.1", "1.2", "1.3"))
+PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.4", ("1.0", "1.1", "1.2", "1.3", "1.4"))
 PROCEDURE_SCHEMA_VERSION = "1.0"
 PROCEDURE_MAX_BYTES = 64 * 1024
 Identifier = Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")]
@@ -107,16 +107,35 @@ class ProcedureEvidence(ProcedureData):
 
 class ProcedureFailure(ProcedureData):
     outcome: Literal["stop", "escalate", "conditional_recovery", "reconcile"]
-    escalation_owner_identity_id: Identifier
+    escalation_owner_identity_id: Identifier | None = None
+    escalation_owner_policy: Literal["current_work_action_owner"] | None = None
     attention_reason: Text
     recovery_step_id: Identifier | None = None
     unknown_outcome: Literal["reconcile_before_retry"] = "reconcile_before_retry"
 
     @model_validator(mode="after")
     def recovery(self):
+        if (self.escalation_owner_identity_id is None) == (self.escalation_owner_policy is None):
+            raise ValueError("failure requires exactly one explicit identity or canonical owner policy")
         if (self.outcome == "conditional_recovery") != (self.recovery_step_id is not None):
             raise ValueError("conditional recovery requires exactly one recovery step reference")
         return self
+
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        payload = handler(self)
+        if self.escalation_owner_policy is None:
+            payload.pop("escalation_owner_policy", None)
+        if self.escalation_owner_identity_id is None:
+            payload.pop("escalation_owner_identity_id", None)
+        return payload
+
+
+class ProcedureCanonicalOperation(ProcedureData):
+    operation_id: Identifier
+    contract_version: Annotated[str, Field(pattern=r"^\d{1,3}\.\d{1,3}$")]
+    resource_selector: Identifier
 
 
 class ProcedureImpact(ProcedureData):
@@ -157,6 +176,7 @@ class ProcedureStep(ProcedureData):
     failure: ProcedureFailure
     permissions: tuple[ProcedurePermission, ...] = Field(min_length=1, max_length=16)
     action: ProcedureAction | None = None
+    control_plane: ProcedureCanonicalOperation | None = None
     worker: ProcedureWorkerOperation | None = None
     recovery: ProcedureRecovery | None = None
     judgment: ProcedureJudgment | None = None
@@ -165,15 +185,15 @@ class ProcedureStep(ProcedureData):
 
     @model_validator(mode="after")
     def operation(self):
-        if sum(x is not None for x in (self.action, self.worker, self.judgment)) != 1:
-            raise ValueError("step requires exactly one registered action, isolated worker operation or judgment")
+        if sum(x is not None for x in (self.action, self.worker, self.judgment, self.control_plane)) != 1:
+            raise ValueError("step requires exactly one registered action, canonical operation, isolated worker operation or judgment")
         if (self.kind == "judgment") != (self.judgment is not None):
             raise ValueError("judgment must use a declared governed reasoning contract")
         if self.recovery and self.kind != "recovery":
             raise ValueError("provider rollback must be a recovery step")
         if self.judgment and self.judgment.max_calls != self.max_attempts:
             raise ValueError("judgment call limit must equal the bounded attempt limit")
-        if self.kind in {"mutation", "recovery"} and self.action is None:
+        if self.kind in {"mutation", "recovery"} and self.action is None and self.control_plane is None:
             raise ValueError("external mutation/recovery requires a registered ActionProvider operation")
         if self.kind in {"mutation", "recovery"} and (self.impact is None or self.verification_step_id is None):
             raise ValueError("mutation/recovery requires bounded impact and a verification step")
@@ -189,6 +209,8 @@ class ProcedureStep(ProcedureData):
     @model_serializer(mode="wrap")
     def serialize(self, handler):
         payload = handler(self)
+        if self.control_plane is None:
+            payload.pop("control_plane", None)
         if self.recovery is None:
             payload.pop("recovery", None)
         if self.judgment is None:
@@ -197,7 +219,7 @@ class ProcedureStep(ProcedureData):
 
 
 class OperationalProcedure(ProcedureData):
-    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = PROCEDURE_SCHEMA_VERSION
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4"] = PROCEDURE_SCHEMA_VERSION
     input_protocol: Literal["code-host-mr-procedure-input.v1", "code-host-mr-procedure-input.v2"] | None = None
     owner_identity_id: Identifier
     task_triggers: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
@@ -278,6 +300,12 @@ class OperationalProcedure(ProcedureData):
                     raise ValueError("verification must reference a later verification step")
                 if not any(c.source == "step" and c.name == step.id and c.predicate == "succeeded" for c in verification.preconditions):
                     raise ValueError("verification must be conditional on the referring step success")
+            if self.schema_version != "1.4" and (
+                    "control_plane" in step.model_fields_set
+                    or "escalation_owner_policy" in step.failure.model_fields_set):
+                raise ValueError("canonical operations and owner policy require procedure schema 1.4")
+            if step.control_plane and step.control_plane.resource_selector not in selectors:
+                raise ValueError("canonical operation references unknown resource selector")
             if step.action and step.action.resource_selector not in selectors:
                 raise ValueError("action references unknown resource selector")
             if step.worker and step.worker.resource_selector not in selectors:

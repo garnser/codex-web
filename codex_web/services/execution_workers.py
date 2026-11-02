@@ -1908,17 +1908,29 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
         now: float | None = None,
+        assignment_id: str | None = None,
+        expected_fence: int | None = None,
     ) -> list[str]:
         self._require_admin(actor)
+        if expected_fence is not None and (assignment_id is None or expected_fence < 0):
+            raise ValueError("expected fence requires an exact assignment identity")
         current = time.time() if now is None else now
         # Find candidates without holding the shared mutation lock. Each point
         # transition below rechecks its current lease/status under the writer.
         candidates: list[ExecutionAssignment] = []
+        if assignment_id is not None:
+            if not assignment_id:
+                raise ValueError("exact assignment identity is required")
+            selected = self.store.assignment(assignment_id)
+            pages = (([selected] if selected is not None else [], None),)
+        else:
+            pages = None
         cursor = None
         while True:
-            assignments, cursor = self.store.assignment_page(after=cursor)
+            assignments, cursor = pages[0] if pages is not None else self.store.assignment_page(after=cursor)
             candidates.extend(item for item in assignments if
-                self._same_scope(item, actor) and (
+                self._same_scope(item, actor)
+                and (expected_fence is None or item.fence == expected_fence) and (
                     (item.status == AssignmentStatus.PENDING
                      and item.deadline_at is not None and item.deadline_at <= current)
                     or (item.status in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
@@ -1933,7 +1945,9 @@ class ExecutionWorkerService:
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
             for index, assignment in enumerate(state.assignments):
-                if not self._same_scope(assignment, actor):
+                if (not self._same_scope(assignment, actor)
+                        or (assignment_id is not None and assignment.id != assignment_id)
+                        or (expected_fence is not None and assignment.fence != expected_fence)):
                     continue
                 if (
                     assignment.status == AssignmentStatus.PENDING
