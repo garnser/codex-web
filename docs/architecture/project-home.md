@@ -27,8 +27,10 @@ tombstone so an old initial-selection request cannot overwrite a newer choice.
 Concurrent fields and other Projects remain unchanged. This operation never modifies
 a profile, worker, lease, goal, queue, credential or thread settings.
 
-The Home card opens the existing conversation using its normal deep link and displays
-its current profile, sandbox and approval policy. Failed or uncertain selection saves
+The Home card opens the existing conversation directly on the canonical
+`/projects/home/chat?thread=...` page, preserving the selected thread without an
+Overview redirect or legacy workspace hash. It displays the current profile, sandbox
+and approval policy. Failed or uncertain selection saves
 are never automatically retried. Administrators select a different conversation only
 after refreshing the canonical revision. Normal conversation naming, creation, profile
 selection, runner inspection and goal controls remain in their existing surfaces.
