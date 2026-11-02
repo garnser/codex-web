@@ -4033,6 +4033,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
 )
 from codex_web.services.owner_routing import OwnerRoutingService
 execution_preflight_store.prepare_work_item_index()
+execution_preflight_store.prepare_home_followup_index()
 owner_routing_service = OwnerRoutingService(
     inspection_actor=identity_service.existing_local_trusted_actor,
     inspection_ready=lambda: (
@@ -5012,6 +5013,8 @@ async def _launch_home_event_run(run):
         organization_id=run.organization_id, workspace_id=run.workspace_id)
 
 home_operator_followup.launch_handler = _launch_home_event_run
+execution_preflight_service.queued_disposition_observer = home_operator_followup.observe_preinput_refusal
+automation_outcome_reconciliation_service.home_operator_reconciler = home_operator_followup.reconcile_preinput
 app.state.home_operator_followup = home_operator_followup
 app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
     home_operator_followup.on_schedule, event_types=("schedule.due",))

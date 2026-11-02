@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
@@ -11,6 +12,11 @@ from codex_web.services.automation_outcomes import (
 )
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.automation_runs import AutomationRunNotFoundError
+
+
+class AutomationReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    cancel_unknown_home: bool = Field(default=False, strict=True)
 
 
 def build_automation_outcomes_router(
@@ -29,10 +35,11 @@ def build_automation_outcomes_router(
         return actor
 
     @router.post("/{run_id}/reconcile")
-    async def reconcile(run_id: str, request: Request) -> dict[str, Any]:
+    async def reconcile(run_id: str, request: Request, payload: AutomationReconcileRequest | None = None) -> dict[str, Any]:
         try:
             actor = require_operator(request)
-            run = service.reconcile(run_id, actor=actor)
+            run = service.reconcile(run_id, actor=actor,
+                **({'cancel_unknown_home': True} if payload and payload.cancel_unknown_home else {}))
             await service.sync_attention(run, actor=actor)
             return {"run": run.model_dump(mode="json")}
         except AutomationRunNotFoundError as exc:

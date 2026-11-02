@@ -1782,3 +1782,38 @@ requeue it. Missing receipts, elapsed time and native idleness are not nonstart
 proof. The existing queue/preflight UI Retry and UNKNOWN displays remain the
 operator surfaces; no new recovery endpoint, outcome assertion or policy gate is
 introduced.
+
+
+### Home event run preinput reconciliation
+
+A Home event run does not own the bootstrap execution ID: its retained input
+uses the distinct `home-followup-{run_id}` identity. Generic assignment outcome
+lookup cannot settle a local refusal of that input. The Home owner projects a
+versioned controller witness from a committed typed first-attempt preinput
+refusal into the original Automation run as FAILED. A blocker code, missing
+receipt, idle process, expired clock, or provider detail is not such a witness.
+
+The existing operator Automation-run Reconcile API and Automations run history
+also offer explicit cancellation of **expired Home scheduling**. Its optional
+`cancel_unknown_home: true` request is accepted only for the exact canonical
+BLOCKED original, unchanged source/message/Profile/tenant/scope, and no positive
+START or unresolved resume. Current Home native activity prevents cancellation.
+The run becomes CANCELLED with an explicit UNKNOWN native outcome; the original
+snapshot, claim, refusal and history remain untouched. This neither interrupts
+a native turn nor renews or replays an expired input. Legacy rows without a
+typed witness never become automatic failures.
+
+Run settlement holds the canonical preflight namespace writer fence together
+with the run and active-turn guards. Retry or begin/START winning first prevents
+settlement. Cancellation winning first leaves normal Home final-send authority
+checking the now-terminal run. Partial or ambiguous exact-input inventory leaves the
+run unresolved. No new cancel endpoint, state schema, ledger, or runtime budget
+is introduced. The UI confirms scheduling cancellation and displays the
+canonical result reason; it cannot supply a native-outcome assertion.
+
+Exact Home inputs use derived tenant/execution aliases within the existing
+preflight collection, maintained before admission and backfilled by the normal
+resumable startup index preparation. The ready marker requires a complete pass
+through authoritative originals; reconciliation still rereads those originals
+under its namespace fence. The number of unrelated historical inputs in the
+permanent Home conversation does not bound its usable lifetime.
