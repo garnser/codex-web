@@ -16,6 +16,12 @@ from tests import test_gitlab_action_provider as existing
 HEAD = 'a' * 40
 
 
+def policy_ref():
+    from codex_web.definitions import DefinitionReference
+    return DefinitionReference(definition_id='execution-roles.default',kind='execution-role-catalog',revision=1,
+        record_id='policy-fixture',checksum='b'*64,definition_schema_version='1.1')
+
+
 def request():
     return NS(parameters=dict(pull_request_number=57, expected_head_sha=HEAD,
         environment='development', change_classification='shared-surface', work_item_ref='work57',
@@ -113,7 +119,7 @@ class CIProjectionTests(unittest.TestCase):
         self.assertFalse(result['privileged_operation_authorized'])
 
     def test_pending_failed_or_inconsistent_ci_never_ready(self):
-        self.raw['prerequisites'] = PrerequisiteResult(disposition='verified',verification_ids=tuple('verification-'+c*32 for c in 'abc'),next_owner_identity_id='owner').model_dump(mode='json')
+        self.raw['prerequisites'] = PrerequisiteResult(disposition='verified',verification_ids=tuple('verification-'+c*32 for c in 'abc'),next_owner_identity_id='owner',execution_target_kind='canonical-native-assignment',execution_target_requirement_ref=policy_ref()).model_dump(mode='json')
         for pipeline,job,expected in [('running','running','pending'),('failed','failed','failed'),('success','running','unknown')]:
             with self.subTest(pipeline=pipeline,job=job):
                 self.raw['runs'][0]['state'] = pipeline
@@ -129,6 +135,20 @@ class CIProjectionTests(unittest.TestCase):
                 self.project()
         self.raw = copy.deepcopy(original)
         self.raw['runs'][0]['checks'] *= 2
+        with self.assertRaises(ValueError):
+            self.project()
+
+    def test_projection_cannot_promote_native_report_to_external_runtime_attestation(self):
+        self.raw['prerequisites'] = dict(disposition='verified',verification_ids=[
+            'verification-'+c*32 for c in 'abc'],next_owner_identity_id='owner',
+            execution_target_kind='external-ci-job',external_ci_runtime_attested=False)
+        with self.assertRaises(ValueError):
+            self.project()
+        self.raw['prerequisites'].update(execution_target_kind='canonical-native-assignment',
+            execution_target_requirement_ref=policy_ref().model_copy(update={'definition_schema_version':'1.0'}).model_dump(mode='json'))
+        with self.assertRaises(ValueError):
+            self.project()
+        self.raw['prerequisites'].update(disposition='needs_input',external_ci_runtime_attested=True)
         with self.assertRaises(ValueError):
             self.project()
 
@@ -253,8 +273,8 @@ class CanonicalPrerequisiteTests(unittest.TestCase):
             'runtime':dict(assignment_id=self.assignment.id,execution_id=self.assignment.execution_id,
                 execution_workspace_id=self.assignment.execution_workspace_id,worker_id='fixture-worker',assignment_fence='1',
                 profile_reference_sha256=hashlib.sha256(json.dumps(profile.model_dump(mode='json'),sort_keys=True,separators=(',',':')).encode()).hexdigest(),
-                runtime_contract='1.0',python_abi='cp314',platform='linux_x86_64'),
-            'target':dict(target_identity_sha256='3'*64,ci_service_identity_id='fixture-service',purpose='isolated-ci-fixture',coordination_receipt_sha256='4'*64)}
+                runtime_contract='1.0',python_abi='cp314',platform='linux_x86_64',execution_target_kind='canonical-native-assignment'),
+            'target':dict(target_identity_sha256='3'*64,ci_service_identity_id=service.id,purpose='isolated-ci-fixture',coordination_receipt_sha256='4'*64)}
         self.proofs = []
         for kind,values in facts.items():
             body = dict(schema_version='1.0',kind=kind,repository_resource_id=repository.id,head_sha=HEAD,
@@ -276,7 +296,7 @@ class CanonicalPrerequisiteTests(unittest.TestCase):
             self.request.parameters[kind+'_verification_id'] = verification.id
             self.proofs.append((artifact,proof,verification))
         self.validator = CanonicalCIPrerequisiteValidator(self.fixture.service,self.identity,self.resources,
-            workers=NS(store=self.worker_store))
+            workers=NS(store=self.worker_store),execution_target_requirement=lambda request,binding:(NS(schema_version='1.0',execution_target_kind='canonical-native-assignment'),policy_ref()))
 
     def test_independent_exact_receipts_and_assignment_verify_without_host_grant(self):
         result = self.validator(self.request,None)
@@ -350,3 +370,52 @@ class CanonicalPrerequisiteTests(unittest.TestCase):
                 self.worker_store.update(replace)
                 with self.assertRaisesRegex(ValueError,'canonical assignment'):
                     self.validator(self.request,None)
+
+    def test_missing_or_external_declared_runtime_cannot_use_native_basis(self):
+        self.validator.execution_target_requirement = None
+        result = self.validator(self.request,None)
+        self.assertEqual(result.disposition,'needs_input')
+        self.assertIn('declared_execution_target_requirement_unavailable',result.reasons)
+        self.validator.execution_target_requirement = lambda request,binding:(NS(schema_version='1.0',execution_target_kind='external-ci-job'),policy_ref())
+        result = self.validator(self.request,None)
+        self.assertEqual(result.disposition,'needs_input')
+        self.assertIn('declared_execution_target_kind_mismatch',result.reasons)
+        self.assertFalse(result.external_ci_runtime_attested)
+
+    def _review_changed_report(self, index, change):
+        import json
+        from codex_web.artifact_evidence import EvidenceCreate, VerificationCreate, sha256_digest
+        artifact,_,_=self.proofs[index]
+        actor=self.identity.local_trusted_actor()
+        _,stream=self.fixture.service.open_artifact_content(artifact.id,actor=actor)
+        body=json.loads(b''.join(stream))
+        body['facts'].update(change)
+        data=json.dumps(body).encode()
+        fresh=self.fixture._artifact(project_id='home',artifact_type='report',resource_ids=self.request.resource_ids,
+            execution_id=self.assignment.execution_id,execution_workspace_id=self.assignment.execution_workspace_id,
+            revision=HEAD,digest=sha256_digest(data))
+        self.fixture.service.attach_artifact_content(fresh.id,(data,),actor=actor)
+        evidence=self.fixture.service.create_evidence(EvidenceCreate(project_id='home',work_item_ref=self.fixture.work_item.ref,
+            execution_id=self.assignment.execution_id,execution_workspace_id=self.assignment.execution_workspace_id,
+            resource_ids=self.request.resource_ids,artifact_ids=(fresh.id,),evidence_type='test_result',result='pass',
+            digest=sha256_digest(data)),actor=actor)
+        original=self.fixture.service.get_verification(self.request.parameters[body['kind']+'_verification_id'],actor=actor)
+        verifier=self.identity.actor_for_identity(original.verifier_identity_id,scope=actor.tenant)
+        review=self.fixture.service.create_verification(VerificationCreate(work_item_ref=self.fixture.work_item.ref,
+            execution_id=self.assignment.execution_id,artifact_ids=(fresh.id,),evidence_ids=(evidence.id,),
+            method='ci-dependency-readiness.v1',result='verified',findings=(
+                'ci_readiness_manifest_sha256:'+sha256_digest(data).value,)),actor=verifier)
+        self.request.parameters[body['kind']+'_verification_id']=review.id
+
+    def test_external_ci_report_does_not_attest_external_image_from_native_worker(self):
+        self._review_changed_report(1,{'execution_target_kind':'external-ci-job'})
+        result=self.validator(self.request,None)
+        self.assertEqual(result.disposition,'needs_input')
+        self.assertEqual(result.execution_target_kind,'external-ci-job')
+        self.assertIn('external_ci_runtime_attestation_unavailable',result.reasons)
+        self.assertFalse(result.external_ci_runtime_attested)
+
+    def test_unrelated_service_report_cannot_qualify_native_target(self):
+        self._review_changed_report(2,{'ci_service_identity_id':'unrelated-external-runner'})
+        with self.assertRaisesRegex(ValueError,'service identity'):
+            self.validator(self.request,None)

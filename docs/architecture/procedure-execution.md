@@ -570,3 +570,31 @@ or assigned automatically. Existing canonical procedure/run and evidence views
 expose the receipt, typed blockers and accountable next owner; this adds no
 operator control or parallel state. Diagnostic workers retain their existing
 network-off, secret-free sandbox.
+
+Native reviewers can use the existing `verification.create` operation with the
+fixed `ci-dependency-readiness.v1` request schema. It accepts only original
+Artifact/Evidence identities, exact source/digest/target and a request identity;
+the server reads the bounded report and derives the result and digest marker.
+Current Work ownership, requester/worker/Profile/lease, explicit target Resource
+admission and original rows are checked again under the canonical append writer.
+Repeated identical requests resolve the original review; response loss uses the
+exact method/Work/source read. An unknown lookup never authorizes replay.
+Actual verifier independence is calculated against all referenced producers.
+Two native roles sharing one service identity cannot independently review each
+other's records; genuinely distinct existing producer/reviewer principals or an
+authorized human review are needed. No actor, result, grant or approval can be
+provided in this request, and review never installs a helper or grants host use.
+
+
+Runtime receipts explicitly declare `execution_target_kind`. The supported
+`canonical-native-assignment` basis is the canonical native assignment, worker,
+profile reference and current lease/fence. Its target report must identify that
+same actual canonical worker service identity; labels cannot substitute. It
+does not attest a GitLab runner,
+container image or its Python ABI. `external-ci-job` has no registered runtime
+attestor in this slice and remains `needs_input` with an accountable owner and
+`external_ci_runtime_attested=false`. A trusted server-injected
+`execution_target_requirement` resolves the actual published workflow's required
+basis; missing requirements or a native report offered against an external
+requirement remain unready. This requirement is never taken from caller text or
+a weaker request option. No Workspace or operational grant is added by a report.
