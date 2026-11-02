@@ -187,3 +187,63 @@ Canonical Artifact/Evidence/Verification pointers and Governance commit together
 under the existing guarded transaction, including late authority/freshness
 checks. Blob persistence itself is not a filesystem transaction; a refused
 append can leave an unreferenced blob. Never delete a shared digest as rollback.
+
+## Canonical control-plane steps (procedure schema 1.4)
+
+An explicit `control_plane` step references a code-registered `operation_id`,
+`contract_version` and `resource_selector`. This fourth operation arm is mutually
+exclusive with ActionProvider, worker and judgment arms. Earlier schema versions
+reject it, including explicit null, and retain their serialized payload shape.
+No stored URL, actor, provider impersonation or arbitrary argument bag can register
+an operation or confer authority. Skill validation checks the registered typed
+input/output contracts, capabilities, Resource types, read/mutation kind and finite
+single-attempt bounds. Ordinary ActionProvider request keys and proof paths remain
+unchanged. Existing native preparation attestation remains required; a registered
+control-only contract does not substitute for a live session proof.
+
+The interpreter runs current identity, assignment/fence/lease, Resource, approval
+and policy checks before dispatch and again at the actual registered canonical
+owner boundary. Handler context contains server-resolved principals, including the
+existing worker actor, and only the selected step's already assigned Resources.
+A zero-resource orchestration assignment cannot acquire repository authority from
+a Work reference or a procedure selector. Provision a genuinely authorized scoped
+supervisor through normal admission or retain a missing-target-context blocker.
+An expired target cannot execute its own recovery procedure.
+
+The existing assignment checkpoint reserves RUNNING before an operation. A repeated
+or interrupted mutating step calls its registered reconciliation owner rather than
+executing again. Waiting, refusal and uncertain outcomes remain distinct; uncertainty
+blocks later effects and survives subsequent lease or authority failures. Bounded
+outputs use managed Artifacts and canonical Evidence, preserving original references
+without relabelling provider receipts or inferring native completion. A process-local
+original-intent capability is available only to a registered recovery owner and is
+never installable by Definition/input JSON; ordinary action matching is unchanged.
+
+Custody operations use exact current Work/Role/scope and handoff nonce, positively
+classify busy/unknown/idle/actually expired/terminal custody, and preserve old native
+UNKNOWNs. Exact-target expiry uses the normal worker expiry writer and clock rules;
+other assignments are untouched. Successor preparation and dispatch remain with the
+existing handoff owner and its durable reservation, process join, native admission
+and queue preservation guards. Final acceptance requires the actual matching scoped
+START claim/correlation/evidence/receipt plus legitimate recipient ACK. Sender
+responsibility is never transferred by interpreting instructions as acknowledgement.
+A policy-selected coordination Role is not an Identity: unresolved routing produces
+explicit Attention instead of a guessed person or a grant.
+
+These operations are executable through the interpreter once trusted application
+composition registers their owners and a reviewed procedure is published. They do
+not themselves install an automatic event consumer. Automatic deterministic
+start/advance must be wired through existing CanonicalEvent, AutomationRun and
+coordinator owners; no autonomous recovery claim follows from manual API coverage,
+and no poller, idle model turn or second execution ledger is introduced here.
+
+A resumed canonical mutation always enters its registered reconciliation owner.
+A truthful pre-effect waiting observation may permit that owner to make its
+first attempt after an actual material precondition changes. The interpreter
+supplies an immutable `previous_step` containing the previous status, failure
+code, verified diagnostic operation code and exact validated diagnostic Evidence references; input content cannot
+supply it. The existing RUNNING checkpoint reservation consumes that marker
+before reconciliation. An interruption therefore leaves no reusable waiting
+witness. Waiting alone, an absent receipt, or an UNKNOWN result never permits
+execution. The owner must still revalidate the exact original target, fence,
+nonce, authority and canonical reservation before any effect.
