@@ -403,7 +403,7 @@ function render() {
       const cancel = Boolean(button.dataset.homeCancelUnknown);
       const id = button.dataset.homeCancelUnknown || button.dataset.homeReconcile;
       if (cancel && !await confirmAction({ action: 'Cancel expired Home scheduling', target: id, risk: 'high',
-        consequence: 'Releases this expired run slot only when its exact original is durably blocked. The native outcome stays UNKNOWN; no input is replayed or interrupted.',
+        consequence: 'Cancels expired scheduling under canonical input, queue and custody guards. The native outcome stays UNKNOWN; original records are preserved and no input is replayed or interrupted.',
         recovery: 'All original claims, snapshots and refusals remain available. This does not renew the expired grant.' })) return;
       if (!context.current()) return;
       button.disabled = true;

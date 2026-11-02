@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -734,6 +735,9 @@ class AutomationExecutionService:
                     and current.status == AutomationRunStatus.RUNNING):
                 # The durable Home delivery claim precedes external queue effects.
                 # A lost response is not proof that nothing was delivered.
+                record = getattr(self.home_operator_followup, 'record_launch_unconfirmed', None)
+                if record is not None:
+                    return await asyncio.to_thread(record, current, type(exc).__name__)
                 return current
             if isinstance(exc, AutomationExecutionError):
                 reason = str(exc)

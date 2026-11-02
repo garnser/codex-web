@@ -1824,3 +1824,25 @@ membership with the Automation owner. Credential-free owner resolution is not an
 authentication assertion: its PRIMARY assurance must not be compared to, or replace,
 the HTTP operator's MFA/local-trusted session. Native and restart input authority
 comparisons remain unchanged.
+
+Home child terminal recording owns only its bounded checkpoint. After the canonical
+event and Automation Run admission are durable, the existing native-recovery keyed
+coordinator owns Home launch by exact Run ID. Its copied context clears only the
+retired storage-operation budget; actor, tenant and correlation context remain.
+The launch uses the unchanged Automation grant as its own finite operation budget,
+coalesces repeated wakes, and shares normal coordinator shutdown/join semantics.
+Fresh Definition, event, Home selection, custody and native-send checks remain
+mandatory. ADMITTED records survive a lost/stopped process and may be recovered;
+claimed RUNNING records are never automatically replayed. Joined owner failure
+records an unconfirmed launch, not success or NOT-SENT.
+
+The existing explicit expired-scheduling cancellation can also handle a claimed
+Home Run with no preflight. Complete exact-execution index, canonical Home queue,
+active-input and current bootstrap/assignment/worker/selection checks share the
+Run writer barrier. Missing namespaces, malformed/partial input inventory, a
+matching lazy queued original, any admission/capture/START, or active Home refuse
+that path. Current positively retired Home custody is sufficient for this
+scheduling-only action; warming a native session is not required. CANCELLED keeps
+the native outcome UNKNOWN and all original records. A late queued original stays
+retained and must fail the existing current-RUNNING native-input guard; cancellation
+never resends, interrupts a native turn, invents a preflight, or releases custody.
