@@ -746,8 +746,13 @@ class CodeHostActionContract:
             "--short",
             "HEAD",
         )
-        if actual_head != revision or actual_branch != member.branch_name:
+        if actual_head != revision:
             raise ValueError("workspace Git head does not match requested publication")
+        if actual_branch != member.branch_name:
+            raise ValueError(
+                "workspace Git branch does not match canonical workspace branch "
+                f"{member.branch_name!r}; keep the requested commit on that local branch"
+            )
         self.git(
             workspace_path,
             "merge-base",

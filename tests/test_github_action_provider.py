@@ -742,6 +742,51 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
 
+    async def test_branch_only_mismatch_reports_canonical_branch_before_publication(self) -> None:
+        subprocess.run(
+            ["git", "switch", "-c", "feature/local-repair"],
+            cwd=self.workspace_path, check=True, capture_output=True,
+        )
+        request = self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {
+            "execution_workspace_id": "workspace-a",
+            "branch": self.workspace_branch,
+            "head_revision": self.workspace_head,
+        })
+        with self.assertRaisesRegex(ValueError, "Git branch does not match") as caught:
+            await self.execution.prepare(self.binding.id, request, actor=self.actor)
+        self.assertIn(repr(self.workspace_branch), str(caught.exception))
+        self.assertNotIn("Git head does not match", str(caught.exception))
+        self.assertEqual(self.published_branches, [])
+        self.assertEqual(subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.workspace_path,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip(), self.workspace_head)
+        self.assertEqual(subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"], cwd=self.workspace_path,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip(), "feature/local-repair")
+
+    async def test_head_only_mismatch_reports_head_before_publication(self) -> None:
+        request = self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {
+            "execution_workspace_id": "workspace-a",
+            "branch": self.workspace_branch,
+            "head_revision": "a" * 40,
+        })
+        with self.assertRaisesRegex(ValueError, "Git head does not match") as caught:
+            await self.execution.prepare(self.binding.id, request, actor=self.actor)
+        self.assertNotIn("Git branch does not match", str(caught.exception))
+        self.assertEqual(self.published_branches, [])
+
+    async def test_matching_head_and_canonical_branch_still_attest(self) -> None:
+        request = self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {
+            "execution_workspace_id": "workspace-a",
+            "branch": self.workspace_branch,
+            "head_revision": self.workspace_head,
+        })
+        preparation = await self.execution.prepare(self.binding.id, request, actor=self.actor)
+        self.assertTrue(preparation.provider_plan["workspace_attested"])
+        self.assertEqual(self.published_branches, [])
+
     async def test_branch_publication_rejects_dirty_or_mismatched_workspace(self) -> None:
         (self.workspace_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
         request = self._request(
