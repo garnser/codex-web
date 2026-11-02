@@ -1137,6 +1137,14 @@ requester identity alone cannot grant administrative permission. Administrative 
 configuration does not replace independent review, required CI, provider receipts,
 reconciliation of unknown outcomes, or release/deployment requirements.
 
+Broker procedure admission uses the exact target in the canonical authority
+decision's request, including when the administrative scratch assignment has no
+repository execution resources. Repository action dispatch reuses that target;
+it does not resolve a second target after procedure admission. Environment and
+other operational facts still come from the canonical Resource. A repository
+query selects a declared target, but request parameters, names and paths cannot
+supply missing environmental facts or broaden the assignment's filesystem scope.
+
 Old readers do not understand catalog schema `1.1`; publishing that schema requires
 an explicitly qualified code upgrade before configuring the administrative profile.
 Do not publish a new administrative definition during mixed-version operation or
