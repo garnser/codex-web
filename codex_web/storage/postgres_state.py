@@ -952,12 +952,17 @@ class PostgresStateStore:
                 success=success,
             )
 
-    def record_mutate_many(self, selected, updater):
+    def record_mutate_many(self, selected, updater, *, guard_namespaces=()):
         """Bounded cross-collection rows; same advisory locks as update_many.
 
         Sorted namespace locks protect dynamic outbox index/receipt keys and
         serialize with existing per-record and bulk canonical transitions.
+        Additional guard_namespaces take the same phantom-protecting locks but
+        are not read, initialized or writable by this callback.
         """
+        if (not isinstance(guard_namespaces, tuple)
+                or any(not isinstance(name, str) or not name for name in guard_namespaces)):
+            raise ValueError('namespace guards require nonempty namespace names')
         if not selected:
             raise ValueError("record_mutate_many requires selected namespaces")
         started = time.perf_counter()
@@ -965,7 +970,7 @@ class PostgresStateStore:
         try:
             with self._connection() as connection:
                 with connection.cursor() as cursor:
-                    self._lock_many(cursor, tuple(selected))
+                    self._lock_many(cursor, tuple(dict.fromkeys((*selected, *guard_namespaces))))
                     current = {}
                     for namespace, keys in selected.items():
                         if None in keys:

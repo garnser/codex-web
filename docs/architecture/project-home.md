@@ -51,6 +51,34 @@ Goal lifecycle, delegated completion follow-up and deployment checkpoint/resume 
 their canonical execution/authority contracts and separate qualification. The feature
 issue remains open until its full UI and live acceptance is satisfied.
 
+## Positively unstarted scratch custody recovery
+
+A Home request with an empty repository set can use the existing exact-request
+fresh-bootstrap recovery after a controller-owned
+`native_session_prior_assignment_missing` refusal before provider resume. Empty
+scope must be affirmative: the retained Home request selects orchestration-only
+execution, an exact Agent Profile revision/requester and sandbox/approval, and
+its recorded repository scope is the same tenant's explicit orchestration-only
+scratch scope with no repositories or resource context. Empty fields on an
+ordinary repository request confer no recovery authority. Existing claim,
+snapshot, no-input-evidence, fenced source assignment and current admission
+checks still apply; a missing predecessor is never reconstructed or resumed.
+
+Fresh-bootstrap recovery creates a new provider conversation and records the
+canonical ThreadIndex replacement. It preserves the original conversation,
+request snapshot, outcomes and history, and submits no input. Home's selection
+is deliberately not transferred: an administrator explicitly selects the
+verified, named replacement using `PUT /api/home/operator` with the current
+binding revision and Home Agent Profile. This increments the existing Home
+binding revision; it is not another operator identity or an unchanged selection.
+Pinned follow-up Automation targets must be reviewed and normally republished
+for that new selection before use. Goal/session and host guards continue to
+refuse stale selections. Only then may the existing separate Retry restore the
+same positively unstarted request. Its original text and identity remain intact;
+current selection and authority guards still govern its eventual execution.
+The recovery UI explains this selection/subscription boundary and never selects,
+retries or grants privileges automatically.
+
 ## Explicit host metadata inspection
 
 The assignment-bound control-plane broker recognizes `operator.host.inspect`

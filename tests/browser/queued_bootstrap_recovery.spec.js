@@ -1,6 +1,6 @@
 const {test, expect} = require('@playwright/test');
 
-async function setup(page, {pending=false, denied=false, failed=false, deferred=false, successor=false}={}) {
+async function setup(page, {pending=false, denied=false, failed=false, deferred=false, successor=false, home=false}={}) {
   await page.goto('http://127.0.0.1:18766/static/queued_bootstrap_recovery_ui.js');
   await page.evaluate(async values => {
     document.body.innerHTML = '<main id="messages"></main>';
@@ -12,7 +12,7 @@ async function setup(page, {pending=false, denied=false, failed=false, deferred=
         window.calls.push({path, options});
         if (!options) {
           if (values.denied) throw Error('Administrator MFA required');
-          return {queued_turn_id:'original', project_id:'project', original_actor_id:'original-actor',
+          return {queued_turn_id:'original', project_id:values.home?'home':'project', original_actor_id:'original-actor',
             ...(values.successor ? {source_thread_id:'fenced-pending-destination'} : {}),
             agent_profile_id:'original-profile', agent_profile_revision:6,
             execution_profile_id:'repository-write', writable_repository_resource_ids:['repo'],
@@ -26,7 +26,7 @@ async function setup(page, {pending=false, denied=false, failed=false, deferred=
       loadThread:async thread=>window.loads.push(thread), scheduleRefresh:()=>{}});
     ui.attach({can_recover_bootstrap:true, bootstrap_recovery_href:'/fixture/bootstrap-recovery'},
       document.querySelector('#messages'));
-  }, {pending, denied, failed, deferred, successor});
+  }, {pending, denied, failed, deferred, successor, home});
 }
 
 test('successor submission pins the inspected pending destination', async({page})=>{
@@ -92,4 +92,19 @@ test('late response cannot reload another Project view', async({page})=>{
   await page.getByRole('button', {name:'Create fresh bootstrap', exact:true}).click();
   await page.evaluate(()=>{window.generation++; window.resolveRecovery({ok:true, threadId:'fresh'});});
   expect(await page.evaluate(()=>window.loads)).toEqual([]);
+});
+
+
+test('Home recovery explains explicit selection and subscription review without selecting or retrying', async({page})=>{
+  await setup(page, {home:true});
+  await page.getByRole('button', {name:'Inspect fresh bootstrap recovery'}).click();
+  await expect(page.getByRole('status')).toContainText('Home selection is not transferred');
+  await page.getByLabel('Fresh bootstrap recovery reason').fill('Recover exact Home scratch original');
+  await page.getByRole('button', {name:'Create fresh bootstrap', exact:true}).click();
+  await expect(page.getByRole('status')).toContainText('Explicitly select the verified new conversation');
+  await expect(page.getByRole('status')).toContainText('review pinned follow-up subscriptions before Retry');
+  const posts=await page.evaluate(()=>window.calls.filter(call=>call.options));
+  expect(posts).toHaveLength(1);
+  expect(posts[0].path).toBe('/fixture/bootstrap-recovery');
+  expect(await page.evaluate(()=>window.loads)).toEqual(['fresh']);
 });

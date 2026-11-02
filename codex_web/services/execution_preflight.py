@@ -413,6 +413,36 @@ class ExecutionPreflightService:
             and row.get('snapshot_sha256') == self.queued_snapshot_digest(snapshot)
             for row in (blocker.model_dump(mode='json') for blocker in attempt.blockers))
 
+    @staticmethod
+    def _recorded_home_scratch_scope(attempt, snapshot, row) -> bool:
+        # Empty repositories are affirmative scratch authority, not missing
+        # repository provenance. Broader/foreign scopes keep the existing path.
+        if row.get('code') != 'native_session_prior_assignment_missing':
+            return False
+        try:
+            queued = QueuedTurn.model_validate(snapshot)
+        except (ValueError, TypeError):
+            return False
+        return (
+            attempt.project_id == queued.project_id == 'home'
+            and queued.thread_id == attempt.thread_id
+            and queued.execution_profile_id == 'orchestration-only'
+            and bool(queued.agent_profile_id) and queued.agent_profile_revision is not None
+            and bool(queued.agent_profile_actor_id)
+            and queued.sandbox is not None and queued.approval_policy is not None
+            and queued.repository_resource_id is None and queued.resource_context is None
+            and not queued.writable_repository_resource_ids
+            and not queued.read_only_repository_resource_ids
+            and row.get('requested_resource_ids') == []
+            and row.get('requested_repository_scope') == {
+                'organization_id': attempt.organization_id,
+                'workspace_id': attempt.workspace_id, 'project_id': 'home',
+                'source': 'orchestration_only', 'source_ref': 'explicit',
+                'writable_repository_ids': [], 'read_only_repository_ids': [],
+                'write_mode': 'single', 'selection_evidence': [],
+            }
+        )
+
     def recorded_custody_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
         # Only a controller-owned, claim/snapshot-bound pre-resume refusal.
         # Historical resumed/unknown attempts never acquire recovery authority.
@@ -434,7 +464,9 @@ class ExecutionPreflightService:
                  or (row.get('original_resource_ids') == [] and row.get('original_repository_scope') is None
                      and row.get('previous_assignment_id') != row.get('assignment_id')))
             and isinstance(row.get('original_resource_ids'), list)
-            and isinstance(row.get('requested_resource_ids'), list) and bool(row['requested_resource_ids'])
+            and isinstance(row.get('requested_resource_ids'), list)
+            and (bool(row['requested_resource_ids'])
+                 or self._recorded_home_scratch_scope(attempt, snapshot, row))
             and 'requested_repository_scope' in row and 'original_repository_scope' in row
             and type(row.get('assignment_fence')) is int and row['assignment_fence'] >= 1
             and all(row.get(key) for key in ('bootstrap_id', 'assignment_id', 'previous_assignment_id', 'agent_session_id',
