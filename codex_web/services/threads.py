@@ -14,7 +14,7 @@ from codex_web.services.post_turn_readiness import PostTurnReadinessService
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSessionRequest
+from codex_web.agent_runtime import AgentRuntimeHistoryUnavailable, AgentRuntimeListRequest, AgentRuntimeSessionRequest
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.configuration import ConfigurationContext
@@ -1696,6 +1696,31 @@ class ThreadService:
             thread["status"] = {"type": "notLoaded" if runner["state"] == "unknown" else "idle"}
         return {**response, "thread": thread}
 
+    def _history_unavailable_response(self, thread_id: str, limit: int) -> dict[str, Any]:
+        response = self._canonical_history_response(thread_id)
+        source = "canonical_history"
+        if response is None:
+            response = self._transcript_response(thread_id)
+            source = "retained_transcript"
+        if response is None:
+            indexed = self.thread_index.get(thread_id) if self.thread_index is not None else None
+            # No native history was read. An indexed shell keeps the existing
+            # guarded controls reachable without inventing turns or turn status.
+            response = {"thread": {
+                "id": thread_id,
+                "name": indexed.name if indexed else "Untitled thread",
+                "turns": [],
+                "status": {"type": "unknown"},
+            }}
+            source = "none"
+        thread = {**response["thread"], "historyRead": {
+            "state": "unsupported", "code": "native_history_unsupported",
+            "source": source, "providerHistoryComplete": False,
+        }}
+        # read() independently attaches current runner/activity. This read-only
+        # limitation must not be presented as startup, timeout or session loss.
+        return self.trim_messages({**response, "runtimeReadDegraded": True, "thread": thread}, limit)
+
     async def runner(self, thread_id: str) -> dict[str, Any]:
         """Inspect custody without touching the provider or starting a session."""
         projection = await asyncio.to_thread(self._runner_projection, thread_id)
@@ -1747,6 +1772,8 @@ class ThreadService:
         try:
             runtime_result = await self._codex_adapter(thread_id).read_session(thread_id)
             response = runtime_result.payload
+        except AgentRuntimeHistoryUnavailable:
+            return self._history_unavailable_response(thread_id, limit)
         except Exception as exc:
             if (
                 getattr(exc, "status_code", None) == 503

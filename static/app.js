@@ -1197,10 +1197,7 @@ async function loadThread(threadId, { historyMode = "none", force = false } = {}
   renderTokenUsage();
   renderThreads();
   const history = threadHistoryController();
-  const readQs = new URLSearchParams();
-  const messageLimit = history?.messageLimit?.(threadId);
-  if (messageLimit) readQs.set("message_limit", String(messageLimit));
-  const query = readQs.toString();
+  const query = history?.readQuery?.(threadId) || "";
   const controller = new AbortController();
   state.threadLoadController = controller;
   let data;
@@ -1242,6 +1239,7 @@ async function loadThread(threadId, { historyMode = "none", force = false } = {}
   state.loadedThreadId = threadId;
   state.threadLoadTargetId = null;
   renderThread(thread);
+  history?.renderReadNotice?.(thread, addMessage);
   history?.afterThreadRendered?.(threadId, $("messages"));
   renderThreads();
   renderTokenUsage();

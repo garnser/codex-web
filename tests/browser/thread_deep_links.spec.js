@@ -72,7 +72,7 @@ test('the thread list omits rows explicitly belonging to another Project', async
   await expect(page.locator('#threads')).not.toContainText('Home thread');
 });
 
-async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false, queued = false, runners = {}, retainedTurns = {}, threadStatuses = {}, activities = {} } = {}) {
+async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false, queued = false, historyRead = null, runners = {}, retainedTurns = {}, threadStatuses = {}, activities = {} } = {}) {
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8')
@@ -195,6 +195,7 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
         thread: {
           ...thread,
           historySource: 'canonical',
+          ...(historyRead ? { historyRead } : {}),
           turns,
         },
       } });
@@ -787,4 +788,36 @@ test('live renewed assignment stays idle after completion, next send is ordinary
   socket.send(JSON.stringify({type:'codex.event',message:{method:'turn/completed',params:{threadId:'home-thread',turn:{id:'new-turn'}}}}));
   await expect(page.locator('#codex-status-text')).toHaveText('Idle',{timeout:10000});
   await expect(page.locator('#thread-meta')).toContainText('Runner live');
+});
+
+
+test('unsupported native history is explicit and keeps the original guarded Retry usable', async ({ page }) => {
+  const { threadTurns } = await mockChatApi(page, {
+    historyRead: { state: 'unsupported', code: 'native_history_unsupported', source: 'none', providerHistoryComplete: false },
+    retainedTurns: { 'home-thread': [] },
+  });
+  let retries = 0;
+  await page.route('**/api/threads/home-thread/preflight-attempts?*', route => route.fulfill({ json: {
+    items: [{ id: 'preflight-original', status: 'blocked', can_retry: true,
+      retry_href: '/api/threads/home-thread/preflight-attempts/preflight-original/retry',
+      blockers: [{ code: 'native_session_prior_assignment_missing', message: 'Original input retained' }] }],
+  } }));
+  await page.route(url => url.pathname === '/api/threads/home-thread/preflight-attempts/preflight-original/retry', route => {
+    expect(route.request().method()).toBe('POST');
+    expect(new URL(route.request().url()).searchParams.get('project_id')).toBe('home');
+    retries += 1;
+    return route.fulfill({ json: { threadId: 'home-thread' } });
+  });
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#messages')).toContainText('Native history unavailable');
+  await expect(page.locator('#messages')).toContainText('native history completeness is unknown');
+  await expect(page.locator('#thread-meta')).not.toContainText('Loading conversation');
+  const retry = page.getByRole('button', { name: 'Retry', exact: true });
+  await expect(retry).toBeEnabled();
+  expect(retries).toBe(0);
+  expect(threadTurns['home-thread']).toEqual([]);
+  await retry.click();
+  await expect.poll(() => retries).toBe(1);
+  await expect(page.locator('#messages')).toContainText('Native history unavailable');
+  expect(threadTurns['home-thread']).toEqual([]);
 });
