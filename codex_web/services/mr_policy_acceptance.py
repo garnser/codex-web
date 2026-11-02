@@ -30,6 +30,16 @@ class CurrentPolicyMRAcceptanceOwner:
         self.assignment_reviews = assignment_reviews
         self.require_principal_independence = require_principal_independence
 
+    def ci_requirement(self, scope: MRClosureScope, *, actor):
+        """Current optional CI readiness contract, never a missing-owner fallback."""
+        if (scope.organization_id, scope.workspace_id) != (actor.organization_id, actor.workspace_id):
+            raise MRPolicyAcceptanceError('mr_acceptance_actor_tenant_mismatch')
+        if self.roles is None:
+            raise MRPolicyAcceptanceError('mr_acceptance_current_ci_policy_owner_unavailable')
+        return self.roles.resolve_mr_ci_readiness_policy(
+            organization_id=scope.organization_id, workspace_id=scope.workspace_id,
+            project_id=scope.project_id)
+
     def _requirements(self, scope, actor):
         if (self.evidence is None or self.work_items is None
                 or self.evidence.work_item_host is None):

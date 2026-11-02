@@ -25,7 +25,9 @@ from codex_web.services.procedure_mr_closure import CONTRACT, MRClosurePrerequis
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.skill_procedures import OperationalProcedure
-from tests.test_code_host_ci_observation import policy_ref
+from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+from codex_web.services.execution_role_definitions import install_execution_role_definitions
+from codex_web.services.mr_policy_acceptance import CurrentPolicyMRAcceptanceOwner
 from tests.test_gitlab_action_provider import GitLabActionProviderTests
 
 
@@ -49,10 +51,14 @@ class MRClosureOwnerTests(unittest.IsolatedAsyncioTestCase):
             source_identity=TaskSourceIdentity(source_type='gitlab',source_instance=f.provider.api_base,external_id=self.ref),
             current_owner='orchestrator', last_meaningful_update_at=time.time(), created_at=time.time(),updated_at=time.time())
         self.write_work()
+        self.role_registry=DefinitionRegistryService(DefinitionRegistryStore(f.sqlite))
+        self.roles=install_execution_role_definitions(self.role_registry)
+        self.ci_policy_owner=CurrentPolicyMRAcceptanceOwner(execution_roles=self.roles,assignment_reviews=None)
+        self.publish_ci_policy('canonical-native-assignment')
         self.prerequisites = PrerequisiteResult(disposition='verified',
             verification_ids=tuple('verification-' + x * 32 for x in 'abc'),
             next_owner_identity_id=f.actor.identity_id,
-            execution_target_kind='canonical-native-assignment', execution_target_requirement_ref=policy_ref())
+            execution_target_kind='canonical-native-assignment', execution_target_requirement_ref=self.roles.reference())
         f.provider.ci_prerequisite_validator = lambda request, binding: self.prerequisites
         async def read(base, path, *, token, params=None):
             if '/merge_requests/' in path:
@@ -96,8 +102,39 @@ class MRClosureOwnerTests(unittest.IsolatedAsyncioTestCase):
             review_artifact_id='artifact-'+'d'*32, review_verification_id='verification-'+'e'*32)
         self.owner = MRClosurePrerequisiteOwner(self.intents,NS(state_machine=NS(_work_item_state=current_work)),
             acceptance=self.accept, read_requirements=self.requirements)
+        self.owner.ci_requirement=self.ci_policy_owner.ci_requirement
         self.review_identity = 'independent-human'
         self.meta_changes = {}
+
+    def publish_ci_policy(self, kind):
+        record=self.role_registry.get_record(self.roles.reference().record_id)
+        payload=dict(record.payload)
+        if kind is None:payload.pop('mr_ci_readiness_policy',None)
+        else:payload['mr_ci_readiness_policy']={'schema_version':'1.0','execution_target_kind':kind}
+        draft=self.role_registry.create_draft(DefinitionDraftCreate(definition_id=record.definition_id,
+            kind=record.kind,definition_schema_version='1.1',scope_type=record.scope_type,
+            scope_id=record.scope_id,payload=payload,actor='private-author'))
+        self.role_registry.approve_publication(draft.record_id,actor='private-reviewer',
+            reference='private-policy-review',reason='Canonical current CI requirement fixture')
+        return self.role_registry.publish(draft.record_id,DefinitionPublishRequest(
+            actor='private-author',expected_active_revision=record.revision))
+
+    async def observed_external_ci(self):
+        self.prerequisites=PrerequisiteResult(disposition='needs_input',
+            next_owner_identity_id=self.f.actor.identity_id,execution_target_kind='external-ci-job',
+            reasons=('external_ci_runtime_attestation_unavailable',))
+        request=self.original.request.model_copy(update={'idempotency_key':None,'correlation_id':None})
+        original=await self.run_action(request)
+        self.assertEqual(original.status,'succeeded',original.last_error)
+        return self.input.model_copy(update={'ci_intent_id':original.id,
+            'ci_receipt_id':original.last_receipt_id,'ci_verification_id':original.last_verification_id})
+
+    async def run_action(self, request, *, policy_decision=None):
+        created=self.intents.create(ActionIntentCreate(binding_id=self.f.binding.id,request=request,
+            work_item_ref=self.ref,**({'policy_decision':policy_decision}if policy_decision is not None else {})),actor=self.f.actor)
+        self.intents.claim(ActionIntentClaimRequest(worker_id='worker',lease_seconds=60),
+            actor=self.worker,intent_id=created.id)
+        return await self.intents.execute_claimed(created.id,'worker',actor=self.worker)
 
     def write_work(self):
         self.f.sqlite.record_apply('work_item_states', upserts={self.work.ref:self.work.model_dump(mode='json')})
@@ -137,6 +174,88 @@ class MRClosureOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.intents.store.load(intent_id=self.original.id).model_dump(),before)
         self.assertEqual(self.f.client.merge_request_merges,0)
         self.assertFalse(result.facts['privileged_operation_authorized'])
+
+    async def test_green_external_ci_absent_optional_policy_reaches_gate_and_normal_merge_verification(self):
+        self.publish_ci_policy(None)
+        typed=await self.observed_external_ci()
+        before=self.intents.store.load(intent_id=typed.ci_intent_id).model_dump()
+        result=await self.owner.execute(self.context,typed)
+        self.assertEqual(result.disposition,'succeeded')
+        self.assertEqual(result.outputs,{'expected_head_sha':HEAD,'expected_base_sha':BASE})
+        self.assertEqual(self.intents.store.load(intent_id=typed.ci_intent_id).model_dump(),before)
+        self.assertFalse(result.facts['external_ci_runtime_attested'])
+        self.f.client.merge_request_rows.append(dict(iid=57,state='opened',sha=HEAD,
+            source_branch='feature',target_branch='main',draft=False,merge_status='can_be_merged',
+            detailed_merge_status='mergeable',head_pipeline=dict(id=7,status='success',sha=HEAD)))
+        from codex_web.action_intents import ActionDecisionSnapshot
+        # Same controlled policy convention as ProcedureCodeHostResultTests;
+        # this is not a live policy/approval or native QA qualification.
+        policy=ActionDecisionSnapshot(outcome='allow',source='policy:private-procedure-result',
+            reason='Controlled canonical fixture permits this exact repository merge')
+        merge=await self.run_action(self.f._request('code-host.pull-request.merge',
+            {'pull_request_number':57,'merge_method':'merge','expected_head_sha':result.outputs['expected_head_sha']}
+            ).model_copy(update={'project_id':'project'}),policy_decision=policy)
+        self.assertEqual(merge.status,'succeeded',merge.last_error)
+        self.assertEqual(merge.security_decision.outcome,'allow')
+        self.assertEqual(merge.policy_decision.source,'policy:private-procedure-result')
+        self.assertEqual(merge.requested_by,self.f.actor.identity_id)
+        self.assertEqual(merge.resource_ids,(self.f.repository.id,))
+        self.assertEqual(merge.request.parameters['expected_head_sha'],HEAD)
+        self.assertEqual(merge.request.parameters['pull_request_number'],57)
+        receipt=self.intents.store.load(intent_id=merge.id).receipts[-1]
+        verified=await self.run_action(self.f._request('code-host.pull-request.verify-merge',
+            {k:receipt.result.output[k]for k in ('pull_request_number','head_sha','merge_commit_sha')}
+            ).model_copy(update={'project_id':'project'}))
+        self.assertEqual(verified.status,'succeeded',verified.last_error)
+        self.assertEqual(self.f.client.merge_request_merges,1)
+
+    async def test_absent_optional_policy_never_overrides_hard_actual_target_refusal(self):
+        self.publish_ci_policy(None)
+        self.prerequisites=PrerequisiteResult(disposition='blocked',
+            next_owner_identity_id=self.f.actor.identity_id,reasons=('actual_target_not_development',))
+        original=await self.run_action(self.original.request.model_copy(
+            update={'idempotency_key':None,'correlation_id':None}))
+        self.assertEqual(original.status,'succeeded',original.last_error)
+        typed=self.input.model_copy(update={'ci_intent_id':original.id,
+            'ci_receipt_id':original.last_receipt_id,'ci_verification_id':original.last_verification_id})
+        result=await self.owner.execute(self.context,typed)
+        self.assertEqual((result.disposition,result.code),('waiting','mr_closure_ci_not_ready'))
+        self.assertEqual(result.facts['readiness'],'blocked')
+        self.assertFalse(result.outputs)
+        self.assertEqual(self.acceptance_calls,0)
+        self.assertEqual(self.f.client.merge_request_merges,0)
+
+    async def test_explicit_external_runtime_policy_stays_waiting_without_attestor(self):
+        self.publish_ci_policy('external-ci-job')
+        result=await self.owner.execute(self.context,await self.observed_external_ci())
+        self.assertEqual((result.disposition,result.code),('waiting','mr_closure_ci_not_ready'))
+        self.assertFalse(result.outputs)
+        self.assertEqual(self.acceptance_calls,0)
+
+    async def test_missing_ci_policy_owner_is_not_absent_published_policy(self):
+        self.owner.ci_requirement=None
+        result=await self.owner.execute(self.context,self.input)
+        self.assertEqual((result.disposition,result.code),('waiting','mr_closure_canonical_owner_unavailable'))
+        self.owner.ci_requirement=self.ci_policy_owner.ci_requirement
+        self.ci_policy_owner.roles=None
+        with self.assertRaisesRegex(ValueError,'current_ci_policy_owner_unavailable'):
+            await self.owner.execute(self.context,self.input)
+
+    async def test_verified_receipts_wrong_current_policy_reference_or_target_still_wait(self):
+        # Original native verified receipts cannot satisfy a changed/current external policy.
+        self.publish_ci_policy('external-ci-job')
+        result=await self.owner.execute(self.context,self.input)
+        self.assertEqual((result.disposition,result.code),('waiting','mr_closure_ci_not_ready'))
+        self.publish_ci_policy('canonical-native-assignment')
+        result=await self.owner.execute(self.context,self.input)
+        self.assertEqual((result.disposition,result.code),('waiting','mr_closure_ci_not_ready'))
+
+    async def test_new_stricter_ci_policy_during_io_refuses_absent_policy_gate(self):
+        self.publish_ci_policy(None)
+        typed=await self.observed_external_ci()
+        self.read_hook=lambda:self.publish_ci_policy('external-ci-job')
+        with self.assertRaisesRegex(ValueError,'current_ci_policy_changed'):
+            await self.owner.execute(self.context,typed)
 
     async def test_other_requester_foreign_subject_or_resource_refuses(self):
         for update in ({'work_item_ref':'foreign'}, {'project_id':'foreign'}):

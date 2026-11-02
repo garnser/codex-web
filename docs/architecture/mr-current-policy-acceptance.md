@@ -50,3 +50,18 @@ Evidence evaluator, preserving each requirement's own independence semantics.
 Work scope/requirements and selected review headers are reread after receipt and
 Evidence content I/O; changes refuse acceptance. These checks grant no authority
 and cannot turn `independent: false` into principal independence.
+
+The same owner exposes `ci_requirement(scope, actor=...)` through the existing
+current execution Role resolver. A positively resolved absent
+`mr_ci_readiness_policy` is distinct from a missing/unavailable owner. Generic MR
+closure always requires complete exact-head green provider CI, current accepted
+QA and the full canonical Work Evidence contract. It additionally requires the
+three dependency/runtime/target readiness receipts only when the current
+published Role contract explicitly requires them. Its exact policy/reference
+must match the original typed observation and remain unchanged after I/O.
+External CI is never classified as a native assignment: an explicit external
+runtime requirement without an attestor remains `needs_input`. When no optional
+requirement is published, informational readiness may still say `needs_input`;
+closure does not rewrite that observation or claim runtime qualification. A hard
+`blocked` observation (including an actual non-Development target) remains a
+closure blocker even when the optional readiness policy is absent.

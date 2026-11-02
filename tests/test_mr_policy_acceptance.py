@@ -46,6 +46,17 @@ class CurrentPolicyMRAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         return f.e.registry.publish(draft.record_id,DefinitionPublishRequest(
             actor='private-policy-author',expected_active_revision=record.revision))
 
+    async def test_current_ci_requirement_absence_is_a_canonical_reference_not_missing_owner(self):
+        f=self.fixture
+        policy,reference=self.owner.ci_requirement(f.scope,actor=f.e.worker_actor)
+        self.assertIsNone(policy)
+        self.assertEqual(reference,f.e.roles.reference())
+        missing=CurrentPolicyMRAcceptanceOwner(execution_roles=None,assignment_reviews=None)
+        with self.assertRaisesRegex(MRPolicyAcceptanceError,'current_ci_policy_owner_unavailable'):
+            missing.ci_requirement(f.scope,actor=f.e.worker_actor)
+        with self.assertRaisesRegex(MRPolicyAcceptanceError,'actor_tenant_mismatch'):
+            self.owner.ci_requirement(f.scope.model_copy(update={'organization_id':'foreign'}),actor=f.e.worker_actor)
+
     async def test_explicit_assignment_policy_uses_canonical_receipt_without_independence_upgrade(self):
         manifest=self.accept()
         self.assertEqual(manifest.disposition,'accepted')

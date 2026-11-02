@@ -4191,6 +4191,7 @@ procedure_canonical_operations.register(
     MRClosurePrerequisiteOwner(
         action_intent_service, work_item_service,
         acceptance=mr_policy_acceptance_owner.acceptance,
+        ci_requirement=mr_policy_acceptance_owner.ci_requirement,
         read_requirements=_mr_closure_read_requirements,
     ),
 )

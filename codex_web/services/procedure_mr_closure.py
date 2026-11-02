@@ -8,12 +8,15 @@ and the existing assignment-authorized CodeHost merge-requirement read facade.
 from __future__ import annotations
 
 import inspect
+import json
 import math
 import time
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
+from codex_web.definitions import DefinitionReference
+from codex_web.execution_role_models import MRCIReadinessQualificationPolicy
 from codex_web.models import WorkItemState
 from codex_web.mr_closure_acceptance import MRClosureScope
 from codex_web.procedure_control_plane import CanonicalOperationContract, CanonicalOperationResult
@@ -57,15 +60,30 @@ class MRClosurePrerequisiteOwner:
     actual current-policy receipt owner and return its accepted MRClosureScope
     subclass. It must preserve stricter principal independence requirements.
     read_requirements(context, scope) must reuse the existing authorized CodeHost
-    metadata facade, returning a CodeHostMergeRequirementsFact. Neither callback
+    metadata facade, returning a CodeHostMergeRequirementsFact. ci_requirement
+    must resolve the actual current Role policy and exact DefinitionReference;
+    unavailable is never absent. None of these callbacks
     is selected by stored Definition/input data.
     """
-    def __init__(self, intents, work_items, *, acceptance=None, read_requirements=None, clock=time.time):
+    def __init__(self, intents, work_items, *, acceptance=None, read_requirements=None, ci_requirement=None, clock=time.time):
         self.intents = intents
         self.work_items = work_items
         self.acceptance = acceptance
         self.read_requirements = read_requirements
+        self.ci_requirement = ci_requirement
         self.clock = clock
+
+    async def _ci_requirement(self, scope, actor):
+        selected = await _resolved(self.ci_requirement(scope, actor=actor))
+        if (type(selected) is not tuple or len(selected) != 2
+                or not isinstance(selected[1], DefinitionReference)
+                or selected[1].kind != 'execution-role-catalog'
+                or selected[1].definition_id != 'execution-roles.default'
+                or selected[1].definition_schema_version not in {'1.0', '1.1'}
+                or selected[0] is not None and (type(selected[0]) is not MRCIReadinessQualificationPolicy
+                    or selected[1].definition_schema_version != '1.1')):
+            raise ValueError('mr_closure_current_ci_policy_invalid')
+        return selected
 
     def _original(self, context, request):
         context.validate_current()
@@ -138,7 +156,7 @@ class MRClosurePrerequisiteOwner:
 
     async def execute(self, context, request):
         request = MRClosurePrerequisites.model_validate(request, strict=True)
-        if self.acceptance is None or self.read_requirements is None:
+        if self.acceptance is None or self.read_requirements is None or self.ci_requirement is None:
             return CanonicalOperationResult(disposition='waiting', code='mr_closure_canonical_owner_unavailable')
         scope, intent, receipt, outputs, snapshot = self._original(context, request)
         references = (intent.id, receipt.id, request.ci_verification_id,
@@ -146,7 +164,15 @@ class MRClosurePrerequisiteOwner:
         facts = {'work_item_ref':scope.work_item_ref, 'ci_disposition':outputs['ci_disposition'],
             'readiness':outputs['readiness'], 'next_owner_identity_id':outputs['next_owner_identity_id'],
             'privileged_operation_authorized':False, 'external_ci_runtime_attested':False}
-        if outputs['ci_disposition'] != 'passed' or outputs['readiness'] != 'ready_for_validation':
+        requirement = await self._ci_requirement(scope, context.requester_actor)
+        policy, reference = requirement
+        # Exact-head green provider CI is always mandatory. Dependency/runtime
+        # readiness is a separate, explicitly published optional requirement.
+        ready = ((policy is None and outputs['readiness'] in {'needs_input', 'ready_for_validation'})
+            or (policy is not None and outputs['readiness'] == 'ready_for_validation'
+            and outputs.get('execution_target_kind') == policy.execution_target_kind
+            and json.loads(outputs['execution_target_requirement_ref_json']) == reference.model_dump(mode='json')))
+        if outputs['ci_disposition'] != 'passed' or not ready:
             return CanonicalOperationResult(disposition='waiting', code='mr_closure_ci_not_ready',
                 facts=facts, original_references=references)
         accepted = await _resolved(self.acceptance(scope, request.review_artifact_id,
@@ -184,6 +210,9 @@ class MRClosurePrerequisiteOwner:
         context.validate_current()
         if self._original(context, request)[4] != snapshot:
             raise ValueError('mr_closure_canonical_records_changed')
+        if await self._ci_requirement(scope, context.requester_actor) != requirement:
+            raise ValueError('mr_closure_current_ci_policy_changed')
+        context.validate_current()
         return CanonicalOperationResult(disposition='succeeded',
             outputs={'expected_head_sha':scope.head_sha, 'expected_base_sha':scope.base_sha},
             facts=facts, original_references=references)
