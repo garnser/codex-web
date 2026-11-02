@@ -1986,3 +1986,15 @@ predecessor and preserved files available for ordinary explicit recovery; no
 second successor is silently created by cleanup. Existing runner, preflight,
 worker-event and replacement surfaces expose the exact custody and refusal;
 no additional operator mutation or retention registry is introduced.
+
+### Native bootstrap Session resource custody
+
+Normal thread creation supplies the canonical bootstrap binding's admitted
+`resource_ids` to the provider-neutral Session request and Session adoption.
+The binding projects the actual assignment resources, including admitted
+read-only resources; caller hints and provider responses cannot add resources.
+This metadata exists before the first model input, so cancelling an unused
+bootstrap does not leave an incomplete native-custody resource join. Existing
+cancelled-recipient tenant, Profile, assignment, workspace, worker and resource
+checks remain authoritative. This producer correction does not backfill or
+rewrite historical Sessions, reinterpret UNKNOWN inputs, or grant new access.

@@ -145,6 +145,7 @@ class _BindingService:
             execution_id=kwargs["execution_id"],
             assignment_id="assignment-bootstrap",
             workspace_id="execws-bootstrap",
+            resource_ids=tuple(dict.fromkeys((target.mutable_repository_id, *target.read_only_repository_ids))),
             repository_resource_id=target.mutable_repository_id,
             repository_target=target,
         )
