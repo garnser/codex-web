@@ -4140,6 +4140,8 @@ from codex_web.services.procedure_mr_closure import (
 
 mr_policy_acceptance_owner = CurrentPolicyMRAcceptanceOwner(
     execution_roles=execution_role_definition_service,
+    evidence=artifact_evidence_service,
+    work_items=work_item_service,
     assignment_reviews=WorkerMRAssignmentReviewAdapter(
         WorkerVerificationAdapter(control_plane_broker_service),
         execution_roles=execution_role_definition_service,

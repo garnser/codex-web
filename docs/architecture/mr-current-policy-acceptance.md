@@ -38,3 +38,15 @@ Definition publication; schema1.0/default principal workflows are not implicitly
 converted. Tests use the real private canonical native-review and Definition
 owners, with synthetic historical publication/provider boundaries, and do not
 claim live native QA or production policy publication.
+
+The owner also requires the actual Artifact/Evidence and Work owners. It resolves
+requirements for the explicit MR Work even when the supervisor is a generic
+bootstrap with no assignment Work. The canonical Work's tenant, Project and
+repository must match, and an unavailable requirement owner is not an empty
+contract. Applicable independent review requirements (including artifact/provider
+filters) strengthen QA acceptance; unrelated independent CI requirements do not
+reclassify QA. The complete scoped contract is separately checked by the existing
+Evidence evaluator, preserving each requirement's own independence semantics.
+Work scope/requirements and selected review headers are reread after receipt and
+Evidence content I/O; changes refuse acceptance. These checks grant no authority
+and cannot turn `independent: false` into principal independence.
