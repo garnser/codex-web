@@ -1762,3 +1762,23 @@ It does not extend handoff/ACK deadlines, alter canonical replacement routing,
 weaken current authority or native custody checks, or claim delivery from an
 attempt. Existing event details remain the operator audit/UI source; the
 activity projection alone excludes explicitly unsuccessful attempts.
+
+### Detached queue ownership and admission recovery
+
+A scheduled queue drain owns its continuation independently of the request or
+completion event that wakes it. It copies that caller's context, preserving
+identity, correlation and admission controls, but drops the caller-owned storage
+operation budget. Storage work called directly still observes its existing
+budget; native admission, worker leases, execution limits and provider deadlines
+are unchanged. This is not permission to retry an uncertain native write.
+
+The existing normal preflight Retry can recover an original still in the durable
+`admitting` phase. Its atomic retry claim competes with `begin_queued_start` on the
+same canonical record. If Retry wins, it revokes the old admission token and
+restores the SAME retained input through the ordinary queue; the old owner cannot
+cross the begin gate or overwrite the new claim with a late disposition. If begin
+wins, the canonical phase is `reconciliation_required`; Retry cannot claim or
+requeue it. Missing receipts, elapsed time and native idleness are not nonstart
+proof. The existing queue/preflight UI Retry and UNKNOWN displays remain the
+operator surfaces; no new recovery endpoint, outcome assertion or policy gate is
+introduced.

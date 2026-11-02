@@ -4816,9 +4816,16 @@ class TurnExecutionService:
                 if self.queue_drain_tasks.get(thread_id) is current:
                     self.queue_drain_tasks.pop(thread_id, None)
 
+        # This is an independently owned continuation, not storage work owned
+        # by the request/event that scheduled it. Keep authority/correlation
+        # ContextVars, but never inherit that caller's retired storage budget.
+        from codex_web.storage.state_store import storage_operation_budget
+        context = contextvars.copy_context()
+        context.run(storage_operation_budget.set, None)
         self.queue_drain_tasks[thread_id] = asyncio.create_task(
             run(),
             name=f"turn-queue-drain-{thread_id}",
+            context=context,
         )
 
     def home_startup_control_retry_eligible(self, active: ActiveThreadTurn) -> bool:
