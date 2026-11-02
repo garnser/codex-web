@@ -274,6 +274,14 @@ concrete blockers, pause or exhausted budgets stop it. There is no idle model po
 Existing Goal controls and their canonical binding status/stop reason remain the
 operator surface; an exhausted budget is not a completed Goal.
 
+Thread-level idle/error/not-loaded notifications are not exact turn outcomes.
+Assignment-owned active records remain available for the matching terminal event
+to schedule the existing checkpoint/accounting owner, even when idle arrives
+first. Missing terminal events remain subject to existing stale-turn recovery;
+idle alone never settles usage or authorizes replay. The Goal workspace displays
+the canonical Home delivery phase, pending terminal accounting and usage totals
+separately from Goal completion.
+
 Goal execution binding state is **1.2**. Reads migrate legacy 1.0/1.1 in memory;
 ordinary bindings omit the optional Home proof. **Every binding-store write,
 including an ordinary binding write, persists 1.2.** Older readers must reject it.

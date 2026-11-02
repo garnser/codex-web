@@ -2035,7 +2035,14 @@ class TurnExecutionService:
                 status_type in {"idle", "systemError", "notLoaded"}
                 and not getattr(h, "IS_SHUTTING_DOWN", False)
             ):
-                self.clear_thread_active(thread_id)
+                # Thread status has no exact turn outcome. In particular idle
+                # can precede turn/completed; retain assignment custody until
+                # that event schedules checkpointing and retained accounting.
+                # A missing terminal event stays with existing stale recovery,
+                # never an invented successful completion or a replay here.
+                active = self._active_turn(thread_id) if thread_id else None
+                if active is None or not active.assignment_id:
+                    self.clear_thread_active(thread_id)
         elif thread_id and (active := self._active_turn(thread_id)) is not None:
             # Late events from a previous turn must not overwrite the current
             # turn identity or keep its assignment alive as a false heartbeat.
