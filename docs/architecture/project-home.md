@@ -841,3 +841,44 @@ binary rollback on retained and subsequently created plans; a previous compatibl
 rollout advertisement cannot override the new durable format. Historical outcomes
 and evidence remain unchanged. This fact
 does not impose a new blanket backup/restore deployment requirement.
+
+### Retained terminal ownership and provider status
+
+A provider `idle`, `systemError`, or `notLoaded` status is not a turn-terminal
+receipt. The existing active-turn record retains a complete native turn and
+assignment/workspace/worker/fence locator until its matching terminal event, so
+the normal checkpoint barrier and retained Goal usage owner can run exactly
+once. Current UI activity remains pending terminal ownership; it does not
+claim success from the provider status. Nonlive custody remains unknown through
+the existing runner projection. Unattributed status hints still clear normally,
+and worker-loss/stale-turn recovery remains authoritative. Foreign or duplicate
+terminal notifications cannot transfer ownership or account another turn.
+
+
+### Accounting an already completed retained Home Goal original
+
+The authenticated execution-binding `pause` operation attempts exact original
+terminal accounting before interrupting a Home Session. It accepts no outcome
+from the caller. The original immutable queued START and exact canonical runtime
+usage must agree with the retained Goal delivery. With unchanged live custody it
+uses the ordinary repository checkpoint and post-turn readiness completion owner;
+usage alone cannot make a failed checkpoint successful.
+
+After normal retirement and same-conversation recovery, this accounting is
+limited to the original orchestration-only Home assignment with no resources or
+repository target, plus its released empty scratch workspace. The original must
+be positively cancelled at exactly the START fence plus one, unleased, and its
+terminal usage must predate retirement. Current Home human-admin, selection,
+Profile, Definition and live Session authority are checked separately. The old
+worker is never resumed or used for a checkpoint. The existing guarded retirement
+check must still prove that the old origin has no unsettled readiness actions;
+otherwise accounting remains unresolved. Repository-bearing originals cannot
+use this empty-scope disposition.
+
+Accounting does not require an exclusive continuation reservation because it
+creates no native input or provider action. It never automatically dispatches
+another Goal input. A different current active turn, changed custody, missing
+START or unknown/mismatched usage refuses this repair before any native
+interrupt. A successful `pause` response retains the settled original delivery
+and measured usage and then records the normal operator pause. The existing
+`resume` contract remains separate and explicitly authorized.
