@@ -1513,8 +1513,8 @@ class TurnExecutionService:
         if clear_active:
             self.clear_thread_active(thread_id)
 
-    async def _record_retained_outcome(self, active, *, succeeded):
-        recorder = getattr(self, "retained_turn_outcome_recorder", None)
+    async def _record_retained_outcome(self, active, *, succeeded, recorder=None):
+        recorder = recorder or getattr(self, "retained_turn_outcome_recorder", None)
         if recorder is None:
             return
         async def observe():
@@ -1530,12 +1530,60 @@ class TurnExecutionService:
             self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
                 "thread_id": active.thread_id, "turn_id": active.turn_id})
 
+    async def reconcile_retained_terminal(self, active, *, succeeded, recorder, retired_disposition=None):
+        """Re-enter the same completion barrier for a proven retained original.
+
+        The domain owner validates canonical START and measured terminal usage;
+        this owner independently requires unchanged live bootstrap custody. No
+        active marker, provider event, native input or success proof is invented.
+        """
+        lock = self._turn_start_locks.setdefault(active.thread_id, asyncio.Lock())
+        async with lock:
+            if self._active_turn(active.thread_id) is not None or self.thread_handoff_in_progress(active.thread_id):
+                return False
+            pending = self.thread_completion_tasks.get(active.thread_id)
+            if pending is not None and not pending.done():
+                return False
+            binding = self._bootstrap_binding_for_thread(active.thread_id)
+            if retired_disposition is not None:
+                if binding is None or binding.assignment_id == active.assignment_id:
+                    raise ValueError('Retired terminal requires fresh current custody')
+                _manager, session = self._session_for_assignment(binding.assignment_id)
+                current = session.validate_current()
+                if (current.id, current.execution_id, current.execution_workspace_id) != (
+                        binding.assignment_id, binding.execution_id, binding.execution_workspace_id):
+                    raise ValueError('Current terminal accounting custody changed')
+                await asyncio.to_thread(retired_disposition, current)
+                await self._record_retained_outcome(active, succeeded=succeeded, recorder=recorder)
+                return True
+            if binding is None or (binding.assignment_id, binding.execution_id,
+                    binding.execution_workspace_id) != (active.assignment_id,
+                    active.execution_id, active.execution_workspace_id):
+                raise ValueError('Retained terminal bootstrap custody changed')
+            _manager, session = self._session_for_assignment(active.assignment_id)
+            current = session.validate_current()
+            if (current.id, current.execution_id, current.execution_workspace_id,
+                    current.assigned_worker_id, current.fence) != (active.assignment_id,
+                    active.execution_id, active.execution_workspace_id, active.worker_id, active.fence):
+                raise ValueError('Retained terminal assignment custody changed')
+            existing = self.assignment_completion_tasks.get(active.assignment_id)
+            if existing is not None and not existing.done():
+                return False  # Its original owner, not this repair, owns the callback.
+            self._schedule_assignment_completion(active, succeeded=succeeded,
+                message={}, retained_recorder=recorder)
+            task = self.assignment_completion_tasks.get(active.assignment_id)
+        if task is None:
+            return False
+        await asyncio.shield(task)  # Request cancellation never cancels owned checkpoint work.
+        return True
+
     def _schedule_assignment_completion(
         self,
         active: ActiveThreadTurn,
         *,
         succeeded: bool,
         message: dict[str, Any],
+        retained_recorder=None,
     ) -> None:
         assignment_id = active.assignment_id
         if not assignment_id:
@@ -1552,7 +1600,8 @@ class TurnExecutionService:
             # validation, checkpointing and completion remain unchanged.
             loop.call_soon_threadsafe(
                 lambda: self._schedule_assignment_completion(
-                    active, succeeded=succeeded, message=message
+                    active, succeeded=succeeded, message=message,
+                    retained_recorder=retained_recorder,
                 )
             )
             return
@@ -1631,10 +1680,10 @@ class TurnExecutionService:
                         await self._settle_post_turn_readiness(active, manager)
                         record_bootstrap_result(checkpoint_count=len(values),
                             checkpoint_error=checkpoint_error)
-                        await self._record_retained_outcome(active, succeeded=succeeded and checkpoint_error is None)
+                        await self._record_retained_outcome(active, succeeded=succeeded and checkpoint_error is None, recorder=retained_recorder)
                     except Exception as exc:
                         record_bootstrap_result(checkpoint_error=checkpoint_error or str(exc)[:500])
-                        await self._record_retained_outcome(active, succeeded=False)
+                        await self._record_retained_outcome(active, succeeded=False, recorder=retained_recorder)
                     finally:
                         current_task = asyncio.current_task()
                         if self.assignment_completion_tasks.get(assignment_id) is current_task:
@@ -2035,13 +2084,17 @@ class TurnExecutionService:
                 status_type in {"idle", "systemError", "notLoaded"}
                 and not getattr(h, "IS_SHUTTING_DOWN", False)
             ):
-                # Thread status has no exact turn outcome. In particular idle
-                # can precede turn/completed; retain assignment custody until
-                # that event schedules checkpointing and retained accounting.
-                # A missing terminal event stays with existing stale recovery,
-                # never an invented successful completion or a replay here.
-                active = self._active_turn(thread_id) if thread_id else None
-                if active is None or not active.assignment_id:
+                active = self._active_turn(thread_id)
+                # Provider idle/unloaded/error hints are not a terminal receipt.
+                # Keep the existing attributed locator until matching completion
+                # so checkpoint/retained accounting still owns the exact turn.
+                # Unattributed UI hints retain their previous clear behavior;
+                # worker-loss and stale-turn recovery remain separate owners.
+                attributed = (active is not None and active.turn_id
+                    and active.assignment_id and active.execution_id
+                    and active.execution_workspace_id and active.worker_id
+                    and type(active.fence) is int and active.fence > 0)
+                if not attributed:
                     self.clear_thread_active(thread_id)
         elif thread_id and (active := self._active_turn(thread_id)) is not None:
             # Late events from a previous turn must not overwrite the current

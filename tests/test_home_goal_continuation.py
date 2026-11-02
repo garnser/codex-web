@@ -22,7 +22,7 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         await super().asyncSetUp()
         self.goals = GoalService(GoalStore(self.f.sqlite), self.projects, _Graph())
         draft = self.goals.create(GoalCreate(title='Real bounded Home mission', description='Resolve current accepted bugs and prioritize existing VDO MRs.',
-            owner_identity_id=self.actor.identity_id, budget=GoalBudget(max_input_tokens=4000,max_output_tokens=1000,max_model_calls=getattr(self,'GOAL_MODEL_CALLS',2 if self._testMethodName=='test_fast_terminal_then_late_queue_response_preserves_next_delivery' else 1),max_retries=0,max_handoffs=1),
+            owner_identity_id=self.actor.identity_id, budget=GoalBudget(max_input_tokens=4000,max_output_tokens=1000,max_model_calls=getattr(self,'GOAL_MODEL_CALLS',2 if (self._testMethodName=='test_fast_terminal_then_late_queue_response_preserves_next_delivery' or self._testMethodName.startswith('test_stranded')) else 1),max_retries=0,max_handoffs=1),
             success_criteria=(GoalSuccessCriterion(description='Independent qualified acceptance'),),
             work_graph_bindings=(GoalWorkGraphBinding(project_id='home'),)),scope=self.actor.tenant,actor_id=self.actor.identity_id)
         self.goal = self.goals.transition(draft.id,GoalTransitionRequest(status='active',reason='Explicit purposeful user mission'),scope=self.actor.tenant,actor_id=self.actor.identity_id)
@@ -38,7 +38,7 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         self.sessions.procedure_admission = admission.agent_session_admission
         control = AutonomyControl(mode='active',exclusive_goal_scope=AutonomyExclusiveGoalScope(goal_id=self.goal.id,project_id='home',reason='Explicit bounded Home mission'))
         self.control=control
-        self.goal_continuation = GoalContinuationService(self.goal_bindings,self.goals,self.sessions,owner_id='goal-controller',autonomy=NS(store=NS(load=lambda:NS(control=control))))
+        self.goal_continuation = GoalContinuationService(self.goal_bindings,self.goals,self.sessions,owner_id='goal-controller',autonomy=NS(store=NS(load=lambda:NS(control=self.control))))
         from codex_web.services.home_goal_continuation import HomeGoalContinuation
         from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
         self.home_goal = HomeGoalContinuation(continuation=self.goal_continuation, home_host=self.service.home_operator_host,
@@ -154,6 +154,261 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         self.assertEqual(len(self.starts()),1)
         self.assertEqual(self.queue_store.get(self.thread),[])
         self.transport.request.assert_not_awaited()
+
+    async def test_idle_before_completed_preserves_owned_goal_terminal_accounting(self):
+        active = await self.start_home_goal_native()
+        usage = self.canonical_usage(active)
+        self.home_goal.usage.upsert(usage)
+        self.execution.record_thread_activity({'method': 'thread/status/changed',
+            'params': {'threadId': self.thread, 'status': {'type': 'idle'}}})
+        self.assertEqual(self.execution._active_turn(self.thread), active,
+            'Nonterminal idle must preserve the exact retained terminal locator')
+        self.assertEqual(self.execution.assignment_completion_tasks, {})
+        before = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.assertEqual(before.home_continuation.delivery.phase, 'started')
+        self.assertEqual(before.home_continuation.model_calls, 0)
+        event = {'method': 'turn/completed',
+            'params': {'threadId': self.thread, 'turn': {'id': active.turn_id}}}
+        self.execution.record_thread_activity(event)
+        await self.execution.assignment_completion_tasks[self.assignment.id]
+        self.assertIsNone(self.execution._active_turn(self.thread))
+        settled = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.assertEqual(settled.home_continuation.delivery.phase, 'settled')
+        self.assertEqual(settled.home_continuation.delivery.usage_id, usage.id)
+        self.assertEqual(settled.home_continuation.model_calls, 1)
+        self.assertEqual((settled.home_continuation.input_tokens,
+            settled.home_continuation.output_tokens), (17, 9))
+        self.assertEqual(settled.status, 'blocked')  # Exact one-call budget, no successor.
+        self.execution.record_thread_activity(event)
+        again = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.assertEqual(again, settled)
+        self.assertEqual(len(self.starts()), 1)
+        self.assertEqual(self.queue_store.get(self.thread), [])
+        self.transport.request.assert_not_awaited()
+
+    async def test_nonterminal_provider_states_never_manufacture_goal_terminal_or_usage(self):
+        active = await self.start_home_goal_native()
+        for status in ('idle', 'systemError', 'notLoaded'):
+            with self.subTest(status=status):
+                self.execution.record_thread_activity({'method': 'thread/status/changed',
+                    'params': {'threadId': self.thread, 'status': {'type': status}}})
+                self.assertEqual(self.execution._active_turn(self.thread), active)
+                self.assertEqual(self.execution.assignment_completion_tasks, {})
+                held = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+                self.assertEqual(held.home_continuation.delivery.phase, 'started')
+                self.assertIsNone(held.home_continuation.delivery.usage_id)
+                self.assertEqual(held.home_continuation.model_calls, 0)
+        self.assertEqual(len(self.starts()), 1)
+        self.transport.request.assert_not_awaited()
+
+    async def test_foreign_terminal_after_idle_cannot_settle_retained_goal(self):
+        active = await self.start_home_goal_native()
+        self.home_goal.usage.upsert(self.canonical_usage(active))
+        self.execution.record_thread_activity({'method': 'thread/status/changed',
+            'params': {'threadId': self.thread, 'status': {'type': 'idle'}}})
+        self.execution.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': self.thread, 'turn': {'id': 'foreign-old-turn'}}})
+        self.assertEqual(self.execution._active_turn(self.thread), active)
+        self.assertEqual(self.execution.assignment_completion_tasks, {})
+        held = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.assertEqual(held.home_continuation.delivery.phase, 'started')
+        self.assertEqual(held.home_continuation.model_calls, 0)
+        self.execution.record_thread_activity({'method': 'turn/completed',
+            'params': {'threadId': self.thread, 'turn': {'id': active.turn_id}}})
+        await self.execution.assignment_completion_tasks[self.assignment.id]
+        settled = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.assertEqual(settled.home_continuation.delivery.phase, 'settled')
+        self.assertEqual(settled.home_continuation.model_calls, 1)
+        self.assertEqual(len(self.starts()), 1)
+
+    async def test_unattributed_status_hints_clear_without_terminal_accounting(self):
+        for status in ('idle', 'systemError', 'notLoaded'):
+            with self.subTest(status=status):
+                self.execution.mark_thread_active('unattributed-hint', turn_id='hint-turn')
+                self.execution.record_thread_activity({'method': 'thread/status/changed',
+                    'params': {'threadId': 'unattributed-hint', 'status': {'type': status}}})
+                self.assertIsNone(self.execution._active_turn('unattributed-hint'))
+        self.assertEqual(self.execution.assignment_completion_tasks, {})
+        self.assertEqual(self.starts(), [])
+
+    async def test_pending_terminal_ui_is_active_only_for_matching_live_custody(self):
+        from codex_web.services.threads import ThreadService
+        active = await self.start_home_goal_native()
+        self.execution.record_thread_activity({'method': 'thread/status/changed',
+            'params': {'threadId': self.thread, 'status': {'type': 'idle'}}})
+        view = NS(active_turn_getter=self.execution._active_turn)
+        runner = {'live': True, 'assignmentId': active.assignment_id, 'fence': active.fence}
+        self.assertEqual(ThreadService._runner_activity(view, self.thread, runner),
+            {'state': 'active', 'turnId': active.turn_id, 'source': 'current_turn'})
+        for changed in ({**runner, 'live': False}, {**runner, 'fence': active.fence + 1},
+                        {**runner, 'assignmentId': 'foreign-assignment'}):
+            with self.subTest(custody=changed):
+                self.assertEqual(ThreadService._runner_activity(view, self.thread, changed)['state'], 'unknown')
+        held = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.assertIsNone(held.home_continuation.delivery.usage_id)
+        self.assertEqual(held.home_continuation.model_calls, 0)
+
+    async def strand_terminal(self, *, retire=False):
+        # Reproduce the already deployed old ordering without a fake provider
+        # terminal event: real START and canonical telemetry, lost active locator.
+        import time
+        active = await self.start_home_goal_native()
+        self.home_goal.usage.upsert(self.canonical_usage(active).model_copy(update={'completed_at':time.time()}))
+        self.execution.clear_thread_active(active.thread_id)
+        self.original_assignment = self.assignment
+        if retire:
+            from codex_web.execution_workers import AssignmentCancelRequest, AssignmentClaimRequest, AssignmentStartRequest
+            cancelled = self.f.workers.cancel_bootstrap(self.assignment.id,
+                AssignmentCancelRequest(expected_fence=self.assignment.fence,reason='Normal private planned restart'),actor=self.actor)
+            bound = self.f.service.prepare_bootstrap(bootstrap_id='new-home-after-retirement',
+                execution_id='new-home-after-retirement-execution',project_id='home',
+                sandbox=self.assignment.sandbox,approval_policy=self.assignment.approval_policy,
+                execution_profile_id=self.assignment.execution_profile_id,agent_profile=self.assignment.agent_profile)
+            claimed = self.f.workers.claim(self.f.worker.id,AssignmentClaimRequest(),
+                actor=self.worker_actor,assignment_id=bound.assignment_id)
+            current = self.f.workers.start(self.f.worker.id,bound.assignment_id,
+                AssignmentStartRequest(fence=claimed.fence,lease_token=claimed.lease.lease_token),actor=self.worker_actor)
+            self.bindings.assignment_store = self.f.workers.store
+            self.bindings.rebind(bootstrap_id='new-home-after-retirement',thread_id=self.thread,
+                execution_id=current.execution_id,assignment_id=current.id,execution_workspace_id=current.execution_workspace_id,
+                actor=self.actor,expected_assignment_id=self.assignment.id,expected_assignment_fence=cancelled.fence)
+            session = self.sessions.store.find_unique_by_native_id(self.thread,provider_id='openai',runtime_id='codex')
+            self.sessions.store.upsert(session.model_copy(update={'assignment_id':current.id,
+                'execution_id':current.execution_id,'execution_workspace_id':current.execution_workspace_id}))
+            self.target = current
+            await self.attach_native()
+        # Exclusive scope has already been restored in the actual stranded case.
+        self.control = self.control.model_copy(update={'exclusive_goal_scope':None})
+        return active
+
+    async def pause_over_http(self, *, project=True):
+        from fastapi import FastAPI, Request
+        import httpx
+        from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
+        app = FastAPI()
+        @app.middleware('http')
+        async def identity(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+        app.include_router(build_goal_execution_bindings_router(self.goal_bindings,
+            self.sessions,self.goals,self.goal_continuation))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://private') as client:
+            return await client.post('/api/goals/'+self.goal.id+'/execution-bindings/'+self.goal_binding.id+
+                '/pause'+('?project_id=home' if project else ''),json={'reason':'Account exact old terminal and pause; no new input'})
+
+    async def test_stranded_live_original_pause_runs_existing_checkpoint_before_accounting(self):
+        active = await self.strand_terminal()
+        calls = []
+        async def checkpoint(assignment_id):
+            calls.append(assignment_id)
+            return self.native_sessions[assignment_id].local_worker.checkpoint_assignment(assignment_id)
+        self.manager.checkpoint = checkpoint
+        self.sessions.interrupt = AsyncMock(side_effect=AssertionError('Accounting cannot interrupt native'))
+        response = await self.pause_over_http()
+        self.assertEqual(response.status_code,200,response.text)
+        row = self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(row.home_continuation.delivery.phase,'settled')
+        self.assertTrue(row.home_continuation.delivery.completion_succeeded)
+        self.assertEqual(row.home_continuation.model_calls,1)
+        self.assertEqual(calls,[active.assignment_id])
+        self.assertEqual(len(self.starts()),1)
+        self.sessions.interrupt.assert_not_awaited()
+
+    async def test_stranded_retired_home_original_accounts_without_resurrecting_worker(self):
+        active = await self.strand_terminal(retire=True)
+        old = self.f.workers.store.assignment(active.assignment_id)
+        new = self.f.workers.store.assignment(self.target.id)
+        self.manager.checkpoint = AsyncMock(side_effect=AssertionError('No retired or new worker checkpoint'))
+        self.sessions.interrupt = AsyncMock(side_effect=AssertionError('No current native interrupt'))
+        response = await self.pause_over_http(project=False)
+        self.assertEqual(response.status_code,200,response.text)
+        row = self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(row.home_continuation.delivery.phase,'settled')
+        self.assertEqual(row.home_continuation.model_calls,1)
+        self.assertTrue(row.home_continuation.delivery.completion_succeeded)
+        self.assertEqual(row.status,'blocked')
+        self.assertTrue(row.stop_reason.startswith('operator paused:'))
+        self.assertEqual(self.f.workers.store.assignment(old.id),old)
+        self.assertEqual(self.f.workers.store.assignment(new.id),new)
+        self.assertEqual(len(self.starts()),0)  # New external process received no native input.
+        self.assertEqual(self.queue_store.get(self.thread),[])
+        self.manager.checkpoint.assert_not_awaited()
+        self.sessions.interrupt.assert_not_awaited()
+        again = await self.pause_over_http()
+        self.assertEqual(again.status_code,200,again.text)
+        self.assertEqual(self.goal_bindings.get(row.id,scope=self.actor.tenant).home_continuation.model_calls,1)
+
+    async def test_stranded_busy_current_turn_refuses_pause_before_interrupt(self):
+        active = await self.strand_terminal(retire=True)
+        self.execution._save_active_turn(active.model_copy(update={
+            'turn_id':'different-current-turn','assignment_id':self.target.id,'execution_id':self.target.execution_id,
+            'execution_workspace_id':self.target.execution_workspace_id,'fence':self.target.fence}))
+        self.sessions.interrupt = AsyncMock(side_effect=AssertionError('Foreign current turn must not be interrupted'))
+        response = await self.pause_over_http()
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertEqual(self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant).home_continuation.delivery.phase,'started')
+        self.sessions.interrupt.assert_not_awaited()
+
+    async def test_stranded_checkpoint_failure_is_not_usage_success(self):
+        await self.strand_terminal()
+        self.manager.checkpoint = AsyncMock(side_effect=RuntimeError('Canonical checkpoint refused'))
+        self.sessions.interrupt = AsyncMock(side_effect=AssertionError('No interrupt after accounted failure'))
+        response = await self.pause_over_http()
+        self.assertEqual(response.status_code,200,response.text)
+        row = self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(row.home_continuation.delivery.phase,'settled')
+        self.assertFalse(row.home_continuation.delivery.completion_succeeded)
+        self.assertEqual(row.home_continuation.model_calls,1)
+        self.sessions.interrupt.assert_not_awaited()
+
+    async def test_stranded_missing_readiness_origin_proof_refuses_without_native_effect(self):
+        active = await self.strand_terminal(retire=True)
+        # A dangling canonical origin alias is UNKNOWN, never proof of no action.
+        from urllib.parse import quote
+        store = self.intents.store
+        store.store.record_apply(store.records_namespace,upserts={
+            'ready-origin:'+quote(active.assignment_id,safe='')+':missing':{'id':'missing'}})
+        self.sessions.interrupt = AsyncMock(side_effect=AssertionError('Unknown action cannot interrupt current native'))
+        response = await self.pause_over_http()
+        self.assertEqual(response.status_code,400,response.text)
+        row = self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(row.home_continuation.delivery.phase,'started')
+        self.assertEqual(row.home_continuation.model_calls,0)
+        self.sessions.interrupt.assert_not_awaited()
+
+    async def test_stranded_retired_original_scope_fence_and_usage_drift_refuse(self):
+        active = await self.strand_terminal(retire=True)
+        old = self.f.workers.store.assignment(active.assignment_id)
+        workspace = self.f.workspaces.get(old.execution_workspace_id,self.actor)
+        usage = self.home_goal.usage.get(self.canonical_usage(active).id)
+        self.sessions.interrupt = AsyncMock(side_effect=AssertionError('No interrupt on unproven barrier'))
+        variants = ({'fence':old.fence+1},{'lease':self.target.lease},
+            {'resource_ids':(self.repository.id,)},{'failure_code':'different-retirement'},
+            {'created_by':'foreign-owner'},{'execution_profile_id':'repository-write'},
+            {'repository_target':None},{'repository_scope':None},
+            {'repository_target':old.repository_target.model_copy(update={'organization_id':'foreign'})},
+            {'repository_target':old.repository_target.model_copy(update={'read_only_repository_ids':(self.core.id,)})},
+            {'repository_target':old.repository_target.model_copy(update={'source':'explicit','mutable_repository_id':self.repository.id})},
+            {'repository_scope':old.repository_scope.model_copy(update={'workspace_id':'foreign'})},
+            {'repository_scope':old.repository_scope.model_copy(update={'source':'explicit','writable_repository_ids':(self.repository.id,)})})
+        for change in variants:
+            with self.subTest(change=tuple(change)):
+                self.f.workers.store.update(lambda state:state.model_copy(update={'assignments':[
+                    old.model_copy(update=change) if item.id==old.id else item for item in state.assignments]}))
+                response=await self.pause_over_http()
+                self.assertEqual(response.status_code,400,response.text)
+        self.f.workers.store.update(lambda state:state.model_copy(update={'assignments':[
+            old if item.id==old.id else item for item in state.assignments]}))
+        self.f.workspaces.store.update(lambda state:state.model_copy(update={'workspaces':[
+            item.model_copy(update={'writable_repository_ids':(self.repository.id,), 'resource_ids':(self.repository.id,)})
+            if item.id==workspace.id else item for item in state.workspaces]}))
+        response=await self.pause_over_http(); self.assertEqual(response.status_code,400,response.text)
+        self.f.workspaces.store.update(lambda state:state.model_copy(update={'workspaces':[
+            workspace if item.id==workspace.id else item for item in state.workspaces]}))
+        self.home_goal.usage.upsert(usage.model_copy(update={'terminal_outcome':'unknown'}))
+        response=await self.pause_over_http();self.assertEqual(response.status_code,400,response.text)
+        self.assertEqual(self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant).home_continuation.model_calls,0)
+        self.sessions.interrupt.assert_not_awaited()
 
     def canonical_usage(self,active):
         import hashlib

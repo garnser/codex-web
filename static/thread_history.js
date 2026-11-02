@@ -26,6 +26,13 @@
     return requestedLimits.get(threadId) || INITIAL_LIMIT;
   }
 
+  function readQuery(threadId) {
+    const query = new URLSearchParams();
+    const limit = effectiveLimit(threadId);
+    if (limit) query.set("message_limit", String(limit));
+    return query.toString();
+  }
+
   function nearBottom(messages = messagesElement) {
     if (!messages) return true;
     return messages.scrollHeight - messages.clientHeight - messages.scrollTop <= STICKY_BOTTOM_THRESHOLD;
@@ -168,6 +175,13 @@
     if (!thread.messagesTruncated) locallyPruned.delete(threadId);
   }
 
+  function renderReadNotice(thread, addMessage) {
+    if (thread.historyRead?.state !== 'unsupported') return;
+    addMessage('Native history unavailable',
+      'This runtime cannot list native turns. Only retained application history is shown; native history completeness is unknown. Current runner status and guarded recovery actions are checked separately.',
+      'tool', new Date());
+  }
+
   function afterThreadRendered(threadId, messages = document.getElementById("messages")) {
     if (messages) attachMessages(messages);
     pruneLiveDom(threadId, messages);
@@ -186,7 +200,9 @@
   window.codexThreadHistory = Object.freeze({
     configure,
     messageLimit: effectiveLimit,
+    readQuery,
     recordThread,
+    renderReadNotice,
     afterThreadRendered,
     requestBottomScroll,
   });

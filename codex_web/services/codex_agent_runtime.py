@@ -8,6 +8,7 @@ from typing import Any
 from codex_web.agent_runtime import (
     AgentRuntimeEvent,
     AgentRuntimeHealth,
+    AgentRuntimeHistoryUnavailable,
     AgentRuntimeListRequest,
     AgentRuntimeObjectiveRequest,
     AgentRuntimeResult,
@@ -250,10 +251,19 @@ class CodexAgentRuntimeAdapter:
         self,
         provider_native_session_id: str,
     ) -> AgentRuntimeResult:
-        response = await self.transport.request(
-            "thread/read",
-            {"threadId": provider_native_session_id, "includeTurns": True},
-        )
+        try:
+            response = await self.transport.request(
+                "thread/read",
+                {"threadId": provider_native_session_id, "includeTurns": True},
+            )
+        except RuntimeError as exc:
+            error = exc.args[0] if exc.args else None
+            # Only this explicit returned protocol refusal is a known history
+            # limitation. Transport/auth/session failures retain their semantics.
+            if (isinstance(error, dict) and error.get("code") == -32601
+                    and error.get("message") == "list_turns is not supported yet"):
+                raise AgentRuntimeHistoryUnavailable() from exc
+            raise
         result = self._result(response)
         if result.provider_native_session_id is None:
             result = result.model_copy(

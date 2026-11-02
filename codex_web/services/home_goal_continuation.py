@@ -12,7 +12,7 @@ import uuid
 from codex_web.home_goal import SOURCE, HomeGoalDelivery, HomeGoalProgress
 from codex_web.goal_execution_bindings import GoalExecutionBindingEvent, GoalExecutionBindingStatus
 from codex_web.identity import TenantScope
-from codex_web.models import TurnCreate, QueuedTurn
+from codex_web.models import ActiveThreadTurn, TurnCreate, QueuedTurn
 from codex_web.services.identity import IdentityService
 from codex_web.services.goal_continuation import GoalContinuationDispatchResult
 from codex_web.services.queued_native_start import validate_attribution
@@ -42,7 +42,7 @@ class HomeGoalContinuation:
         state = self.goals.store.goal_state(goal_id, organization_id=scope.organization_id, workspace_id=scope.workspace_id)
         return self.goals._goal(state, goal_id, scope)
 
-    def context(self, binding, *, require_lease=True):
+    def context(self, binding, *, require_lease=True, accounting=False):
         scope = TenantScope(organization_id=binding.organization_id, workspace_id=binding.workspace_id)
         current = self.binding(binding.id, scope)
         goal = self.goal(current.goal_id, scope)
@@ -55,7 +55,7 @@ class HomeGoalContinuation:
                 or not any(row.project_id == 'home' for row in goal.work_graph_bindings)):
             raise ValueError('Current original HumanAdmin Home Goal authorization changed')
         reason = self.continuation._policy_stop_reason(current)
-        if reason:
+        if reason and not accounting:
             raise ValueError(reason)
         if require_lease and (current.lease_owner_id != self.continuation.owner_id
                 or current.lease_expires_at is None or current.lease_expires_at <= time.time()):
@@ -114,6 +114,10 @@ class HomeGoalContinuation:
         progress = binding.home_continuation
         if progress is None or progress.delivery is None or progress.delivery.phase == 'settled':
             return None
+        if progress.delivery.phase == 'started':
+            repaired = await self.reconcile_terminal(binding, scope=scope)
+            if repaired is not None:
+                return repaired
         if progress.delivery.phase == 'terminal_pending_usage':
             settled = await asyncio.to_thread(self._settle_usage, binding, scope)
             if settled:
@@ -127,6 +131,127 @@ class HomeGoalContinuation:
         # response was lost. Only canonical START/terminal/usage can settle it.
         return GoalContinuationDispatchResult(binding_id=binding.id, outcome='not_dispatched',
             reason='home_goal_original_input_requires_settlement:' + progress.delivery.id)
+
+    async def prepare_operator_pause(self, binding, *, scope):
+        """Settle a proven original before an operator pause can interrupt it.
+
+        A historical Session identifier never authorizes interrupting a different
+        current turn. This accounting-only path creates no continuation/input.
+        """
+        d = binding.home_continuation.delivery if binding.home_continuation else None
+        if d is None or d.phase != 'started':
+            return False
+        result = await self.reconcile_terminal(binding, scope=scope)
+        if result is not None:
+            fresh = self.binding(binding.id, scope).home_continuation.delivery
+            if fresh.id != d.id or fresh.phase != 'settled':
+                raise ValueError('Original Home Goal terminal accounting is unresolved')
+            return True
+        active = self.turns.execution._active_turn(binding.thread_id)
+        if active is None or (active.turn_id, active.assignment_id, active.fence) != (
+                d.native_turn_id, d.assignment_id, d.fence):
+            raise ValueError('Home Goal pause cannot interrupt foreign or unresolved current activity')
+        return False
+
+    async def reconcile_terminal(self, binding, *, scope):
+        """Account an already completed original through its normal checkpoint.
+
+        No caller-supplied outcome, synthetic provider notification, or native
+        input is accepted. Measured usage is a terminal observation, never a
+        substitute for repository checkpoint and post-turn readiness outcomes.
+        """
+        d = binding.home_continuation.delivery
+        usage = await asyncio.to_thread(self._observed_usage, binding, d, scope)
+        if usage is None:
+            return None
+        current, _goal, actor, current_assignment, selected = await asyncio.to_thread(
+            self.context, binding, require_lease=False, accounting=True)
+        fresh = current.home_continuation.delivery
+        if fresh != d or selected.revision != d.home_revision:
+            raise ValueError('Original Home Goal terminal selection changed')
+        historical = current_assignment.id != d.assignment_id
+        assignment = await asyncio.to_thread(
+            self.home.broker.execution_workers.store.assignment, d.assignment_id)
+        if assignment is None or (assignment.id, assignment.execution_id,
+                assignment.execution_workspace_id, assignment.assigned_worker_id) != (
+                d.assignment_id, d.execution_id, d.execution_workspace_id, d.worker_id):
+            raise ValueError('Original Home Goal terminal assignment unavailable')
+        if not historical and assignment.fence != d.fence:
+            raise ValueError('Original Home Goal terminal fence changed')
+        attempt = await asyncio.to_thread(self.preflight.store.get, d.admission_attempt_id)
+        if attempt is None:
+            raise ValueError('Original Home Goal terminal START unavailable')
+        self.project_native_start_proof(attempt, d, current)
+        if usage.completed_at < attempt.queued_start_receipt.observed_at:
+            raise ValueError('Original Home Goal usage precedes its START')
+        queued = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+        active = ActiveThreadTurn(thread_id=d.thread_id, turn_id=d.native_turn_id,
+            project_id='home', source='queued:' + queued.source,
+            queued_admission_attempt_id=attempt.id, assignment_id=d.assignment_id,
+            execution_id=d.execution_id, execution_workspace_id=d.execution_workspace_id,
+            worker_id=d.worker_id, fence=d.fence, sandbox=assignment.sandbox,
+            approval_policy=assignment.approval_policy, execution_profile_id=assignment.execution_profile_id,
+            agent_profile=assignment.agent_profile, agent_profile_actor_id=d.requested_by,
+            started_at=attempt.queued_start_receipt.observed_at, updated_at=usage.completed_at)
+        async def account(original, *, succeeded):
+            await self.record_terminal(original, succeeded=succeeded, allow_continuation=False)
+        repaired = await self.turns.execution.reconcile_retained_terminal(active,
+            succeeded=usage.terminal_outcome == 'succeeded', recorder=account,
+            retired_disposition=(lambda live: self._retired_terminal_disposition(
+                assignment, live, actor, d, usage)) if historical else None)
+        if not repaired:
+            raise ValueError('Original Home Goal terminal is owned by current activity')
+        # This call only reconciles the old original. Even a successful account
+        # never falls through to a fresh reservation or another native input.
+        return GoalContinuationDispatchResult(binding_id=binding.id, outcome='not_dispatched',
+            reason='home_goal_original_terminal_reconciliation')
+
+    def _retired_terminal_disposition(self, original, current, actor, delivery, usage):
+        """Prove only the empty Home completion barrier after normal retirement.
+
+        This does not checkpoint a retired worker or reconcile provider actions.
+        Cancellation fences readiness writers; its same canonical guard is read
+        again below. Repository-bearing originals require their normal barrier.
+        """
+        workers = self.home.broker.execution_workers
+        workspace = workers.workspaces.get(original.execution_workspace_id, actor)
+        target, scope = original.repository_target, original.repository_scope
+        tenant = (original.organization_id, original.workspace_id, 'home')
+        if (original.subject is None or original.subject.kind != 'thread_bootstrap'
+                or (original.organization_id, original.workspace_id, original.project_id,
+                original.created_by, original.execution_profile_id, original.execution_profile_definition,
+                original.agent_profile, original.runtime_binding) !=
+                (current.organization_id, current.workspace_id, 'home', actor.identity_id,
+                current.execution_profile_id, current.execution_profile_definition,
+                current.agent_profile, current.runtime_binding)
+                or original.execution_profile_id != 'orchestration-only'
+                or original.status != 'cancelled' or original.fence != delivery.fence + 1
+                or original.failure_code != 'thread_bootstrap_cancelled' or original.lease is not None
+                or original.completed_at is None or usage.completed_at > original.completed_at
+                or original.resource_ids or original.resource_context or original.network.enabled
+                or target is None or scope is None
+                or (target.organization_id, target.workspace_id, target.project_id) != tenant
+                or target.source != 'orchestration_only' or target.mutable_repository_id is not None
+                or target.read_only_repository_ids
+                or (scope.organization_id, scope.workspace_id, scope.project_id) != tenant
+                or scope.source != 'orchestration_only'
+                or scope.writable_repository_ids or scope.read_only_repository_ids
+                or (workspace.organization_id, workspace.workspace_id, workspace.project_id,
+                    workspace.execution_id, workspace.owner_identity_id, workspace.kind, workspace.status) !=
+                    (original.organization_id, original.workspace_id, 'home', original.execution_id,
+                    original.created_by, 'scratch', 'released')
+                or workspace.resource_ids or workspace.read_only_resource_ids or workspace.resource_context
+                or workspace.repository_resource_id or workspace.writable_repository_ids
+                or workspace.repository_members or workspace.repository_checkpoints):
+            raise ValueError('Retired Home terminal has no proven empty completion barrier')
+        intents = workers._prepare_readiness_retirement(original.id)
+        def inspect(state):
+            if len(state.assignments) != 1 or state.assignments[0] != original:
+                raise ValueError('Retired Home terminal assignment changed')
+            workers._require_settled_readiness_origin(intents, original)
+            return state  # Guarded observation only; no assignment/event delta.
+        workers.store.transition_assignment(original.assigned_worker_id, original.id, inspect,
+            guard_rows={intents.records_namespace: ()})
 
     def renew_known_not_sent(self,binding):
         """Renew owner lease only; the existing queue still owns SAME input."""
@@ -556,7 +681,7 @@ class HomeGoalContinuation:
                     d.thread_id,d.native_turn_id,d.execution_id,d.assignment_id,d.worker_id,d.fence)):
             raise ValueError('Original Home Goal terminal proof changed')
 
-    async def record_terminal(self, active, *, succeeded):
+    async def record_terminal(self, active, *, succeeded, allow_continuation=True):
         source=(active.source or '').removeprefix('queued:')
         if not source.startswith(SOURCE):
             return
@@ -594,7 +719,7 @@ class HomeGoalContinuation:
             self.mutate(binding.id,scope,terminal,'Original Home Goal native terminal '+d.id)
             return self._settle_usage(self.binding(binding.id,scope),scope)
         settled=await asyncio.to_thread(record)
-        if settled and scope is not None:
+        if allow_continuation and settled and scope is not None:
             current=await asyncio.to_thread(self.binding,source[len(SOURCE):],scope)
             if current.status=='idle':
                 # Same existing Goal owner, rechecking canonical stop/budget gates.

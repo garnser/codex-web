@@ -1141,3 +1141,19 @@ Every wake uses normal current actor, scope, profile and execution admission.
 No page size, worker authority, native replay, model budget or persisted schema
 changes. Existing queue state and bot events show the wait and whether a bounded
 continuation was scheduled; no separate UI action or new domain object is added.
+
+### Native history enumeration unavailable
+
+An explicit Codex `thread/read` refusal (`-32601`, `list_turns is not supported yet`)
+projects the existing runtime read limitation as `AgentRuntimeHistoryUnavailable`.
+Other protocol, authentication, authorization and transport failures retain their
+normal error behavior; a read never retries through a resume or starts input.
+
+The ordinary Thread read preserves canonical history or its durable transcript,
+with `thread.historyRead.state=unsupported`, its retained source and
+`providerHistoryComplete=false`. If neither exists, the indexed conversation can
+be inspected with no fabricated turns and unknown retained turn status. This is
+not a complete empty native history, a timeout, or proof of session loss. Current
+runner/activity remains independently derived from canonical custody and its
+exact native-turn marker. The chat labels the limitation while the existing
+preflight/queue recovery controls continue to use their normal guarded APIs.
