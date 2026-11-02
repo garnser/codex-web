@@ -474,7 +474,7 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
         )
         turn_start_call = session.request.await_args_list[1]
         self.assertEqual(
-            turn_start_call.args[1]["developerInstructions"],
+            turn_start_call.args[1]["additionalContext"]["codex-web:developer-instructions"]["value"],
             f"base instructions\n\n{security_boundary_instructions()}\n\ncontract"
             f"\n\n{assignment_control_plane_instructions()}",
         )
