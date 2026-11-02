@@ -1202,7 +1202,8 @@ class ControlPlaneBrokerService:
             operation = _OPERATION_BY_ID["repository.read.delivery-evidence"]
             if method != operation.method:
                 raise ControlPlaneBrokerDeniedError("delivery evidence lookup accepts GET only")
-            return _ResolvedOperation(operation=operation, target_ref=None, query=query)
+            return _ResolvedOperation(operation=operation, target_ref=None,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         action_intent_prefix = "/api/action-intents/"
         action_intent_suffix = (
             "/delivery-evidence" if path.endswith("/delivery-evidence") else "/reconcile"
@@ -1996,7 +1997,8 @@ class ControlPlaneBrokerService:
         if intent_id is None:
             if (set(query) - {"project_id", "repository_resource_id", "action_id", "idempotency_key"}
                     or any(len(values) != 1 for values in query.values())
-                    or not {"action_id", "idempotency_key"}.issubset(query)):
+                    or not {"action_id", "idempotency_key"}.issubset(query)
+                    or ("project_id" in query and query["project_id"] != [assignment.project_id])):
                 raise ControlPlaneBrokerRequestError("Exact action_id and idempotency_key selectors required")
             action_id = query["action_id"][0]
             key = query["idempotency_key"][0]

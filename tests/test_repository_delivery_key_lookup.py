@@ -109,6 +109,19 @@ class RepositoryDeliveryKeyLookupTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(status, (400, 403))
         self.assertEqual(self.f.calls, [])
 
+    async def test_blank_duplicate_extra_and_foreign_project_selectors_refuse(self):
+        original = await self.create_original()
+        before = list(self.f.calls)
+        for suffix in ('&idempotency_key=', '&action_id=', '&extra=',
+                       '&project_id=foreign', '&project_id='):
+            status, _, reply = await self.f._request('GET', self.path() + suffix)
+            self.assertEqual(status, 400, reply)
+            self.assertNotIn(original['id'], json.dumps(reply))
+        status, _, reply = await self.f._request('GET', self.path(project_id='project-a'))
+        self.assertEqual(status, 200, reply)
+        self.assertEqual(reply['intent']['id'], original['id'])
+        self.assertEqual(self.f.calls, before)
+
     async def test_mutating_lookup_method_refuses(self):
         status, _, _ = await self.f._request('POST', self.path(), payload={})
         self.assertEqual(status, 403)
