@@ -59,6 +59,86 @@ class ExecutionPreflightStore:
         return {cls._work_item_prefix(attempt.organization_id, attempt.workspace_id,
             attempt.project_id, ref) + attempt.id: {'attemptId': attempt.id}}
 
+    @staticmethod
+    def _home_followup_prefix(organization_id, workspace_id, execution_id):
+        scope = json.dumps([organization_id, workspace_id, 'home', execution_id], separators=(',', ':'))
+        return 'he/' + hashlib.sha256(scope.encode()).hexdigest() + '/'
+
+    @classmethod
+    def _home_followup_index(cls, attempt):
+        if (attempt.project_id != 'home' or not attempt.execution_id
+                or not str(attempt.source or '').startswith('home-operator-automation:')):
+            return {}
+        return {cls._home_followup_prefix(attempt.organization_id, attempt.workspace_id,
+            attempt.execution_id) + attempt.id: {'attemptId': attempt.id}}
+
+    def prepare_home_followup_index(self):
+        """Resumable derived aliases in the existing preflight collection.
+
+        Old writers must be drained, as for the WorkItem index. New writers
+        retain these aliases before admission. No snapshot, claim or outcome
+        changes; only exact scoped execution lookup replaces thread history.
+        """
+        marker = 'metadata/home-followup-index-1.0'
+        while True:
+            progress = self.store.record_get(self.NAMESPACE, marker)
+            if progress is None:
+                progress = {}
+            if not isinstance(progress, dict) or progress and progress.get('schema_version') != '1.0':
+                raise ValueError('incompatible Home preflight index schema')
+            if progress.get('complete') is True:
+                return
+            projection = getattr(self.store, 'record_page_projected', None)
+            if projection is not None:
+                rows, cursor = projection(self.NAMESPACE,
+                    fields=('id', 'organization_id', 'workspace_id', 'project_id', 'execution_id', 'source'),
+                    key_prefix='a/', after=progress.get('after'), limit=200)
+            else:
+                rows, cursor = self.store.record_page(self.NAMESPACE,
+                    key_prefix='a/', after=progress.get('after'), limit=200)
+            upserts = {}
+            for payload in rows.values():
+                if not isinstance(payload, dict):
+                    raise ValueError('invalid Home preflight index row')
+                if payload.get('project_id') == 'home' and str(payload.get('source') or '').startswith('home-operator-automation:'):
+                    if any(not isinstance(payload.get(key), str) or not payload[key]
+                            for key in ('id', 'organization_id', 'workspace_id', 'execution_id')):
+                        raise ValueError('incomplete Home preflight index row')
+                    upserts[self._home_followup_prefix(payload['organization_id'], payload['workspace_id'],
+                        payload['execution_id']) + payload['id']] = {'attemptId': payload['id']}
+            upserts[marker] = {'schema_version': '1.0', 'after': cursor, 'complete': cursor is None}
+            self.store.record_apply(self.NAMESPACE, upserts=upserts)
+
+    def for_home_followup(self, *, organization_id, workspace_id, execution_id):
+        """Complete exact-input aliases locate authoritative originals, never grant input."""
+        marker = self.store.record_get(self.NAMESPACE, 'metadata/home-followup-index-1.0')
+        if not isinstance(marker, dict) or marker.get('schema_version') != '1.0' or marker.get('complete') is not True:
+            raise ValueError('Home preflight index is incomplete')
+        rows, cursor = self.store.record_page(self.NAMESPACE,
+            key_prefix=self._home_followup_prefix(organization_id, workspace_id, execution_id), limit=200)
+        if cursor is not None:
+            raise ValueError('Home input has ambiguous truncated originals')
+        identifiers = []
+        prefix = self._home_followup_prefix(organization_id, workspace_id, execution_id)
+        for key, payload in rows.items():
+            if (not isinstance(payload, dict) or not isinstance(payload.get('attemptId'), str)
+                    or not payload['attemptId'] or key != prefix + payload['attemptId']):
+                raise ValueError('invalid Home preflight alias')
+            identifiers.append(payload['attemptId'])
+        keys = tuple(self._attempt_key(identifier) for identifier in identifiers)
+        originals = self.store.record_get_many(self.NAMESPACE, keys) if keys else {}
+        result = []
+        for key in keys:
+            payload = originals.get(key)
+            if not isinstance(payload, dict):
+                raise ValueError('Home preflight original is missing')
+            attempt = ExecutionPreflightAttempt.model_validate(payload)
+            if (attempt.organization_id, attempt.workspace_id, attempt.project_id, attempt.execution_id) != (
+                    organization_id, workspace_id, 'home', execution_id):
+                raise ValueError('Home preflight alias no longer matches its original')
+            result.append(attempt)
+        return result
+
     def prepare_work_item_index(self):
         """Derived index backfill before alias admission, never outcome migration.
 
@@ -224,6 +304,7 @@ class ExecutionPreflightStore:
             return {
                 self._attempt_key(attempt.id): payload,
                 **self._work_item_index(attempt),
+                **self._home_followup_index(attempt),
                 self._thread_key(attempt): {
                     "attemptId": attempt.id,
                 },
@@ -578,6 +659,7 @@ class ExecutionPreflightStore:
         # again repairs the existing domain's inspection index idempotently.
         self.store.record_apply(self.NAMESPACE, upserts={
             **self._work_item_index(retained),
+            **self._home_followup_index(retained),
             self._thread_key(retained): {"attemptId":retained.id},
             self._queued_identity_key(attempt.queued_turn_snapshot)+retained.id:
                 {"attemptId":retained.id}})
@@ -616,6 +698,9 @@ class ExecutionPreflightStore:
             default=None,
         )
         updated = ExecutionPreflightAttempt.model_validate(payload)
+        home_indexes = self._home_followup_index(updated)
+        if home_indexes:
+            self.store.record_apply(self.NAMESPACE, upserts=home_indexes)
         if updated.replacement_thread_id:
             target = updated.model_copy(update={"thread_id": updated.replacement_thread_id})
             indexes = {

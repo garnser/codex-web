@@ -44,6 +44,7 @@ class AutomationOutcomeReconciliationService:
         self.runtime_usage = runtime_usage
         self.scheduler = scheduler
         self.clock = clock
+        self.home_operator_reconciler = None
 
     def reconcile_for_execution(
         self,
@@ -373,6 +374,7 @@ class AutomationOutcomeReconciliationService:
         run_id: str,
         *,
         actor: AuthenticationActor,
+        cancel_unknown_home: bool = False,
     ) -> AutomationRun:
         run = self.runs.store.get(
             run_id,
@@ -382,6 +384,11 @@ class AutomationOutcomeReconciliationService:
         if run.status != AutomationRunStatus.RUNNING or not run.execution_ids:
             return run
 
+        if self.home_operator_reconciler is not None and run.target_kind == AutomationTargetKind.HOME_OPERATOR:
+            return self.home_operator_reconciler(run.id, actor=actor, cancel_unknown=cancel_unknown_home)
+
+        if cancel_unknown_home:
+            raise ValueError('Unknown scheduling cancellation requires the Home run owner')
         assignments = []
         for execution_id in run.execution_ids:
             try:

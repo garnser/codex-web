@@ -413,3 +413,34 @@ test('Saved Home event target exposes pins and disables manual event replay', as
   await expect(card).toContainText('unknown deliveries retain their original run');
   await expect(card.locator('[data-automation-run-now]')).toBeDisabled();
 });
+
+test('Home run reconciliation confirms unknown scheduling without replay or native outcome assertion', async ({ page }) => {
+  const writes = [];
+  let status = 'running';
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'POST') {
+      writes.push({ path: url.pathname, body: request.postDataJSON() });
+      status = 'cancelled';
+      await route.fulfill({ json: { run: { id: 'home-run', status } } });
+      return;
+    }
+    const items = url.pathname === '/api/automations' ? [scopedAutomation('project-a')]
+      : url.pathname.endsWith('/runs') ? [{ id: 'home-run', status, target_kind: 'home_operator',
+          result_reason: status === 'cancelled' ? 'Native outcome remains UNKNOWN' : '' }] : [];
+    await route.fulfill({ json: { items } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+  await switchAutomationProject(page, 'project-a');
+  const row = page.locator('[data-automation-run="home-run"]');
+  await expect(row.locator('[data-home-cancel-unknown]')).toBeVisible();
+  expect(writes).toEqual([]);
+  await row.locator('[data-home-cancel-unknown]').click();
+  expect(writes).toEqual([]);
+  await resolveAction(page);
+  await expect(row).toContainText('UNKNOWN');
+  expect(writes).toEqual([{ path: '/api/automation-runs/home-run/reconcile', body: { cancel_unknown_home: true } }]);
+  await expect(row.locator('[data-home-cancel-unknown]')).toHaveCount(0);
+});

@@ -105,6 +105,9 @@ function runRow(run) {
       </div>
       <span class="product-status-badge ${statusClass(run.status)}">${esc(run.status)}</span>
       <small>${esc(refs.join(" · ") || run.block_reason || "No linked execution yet")}</small>
+      <small>${esc(run.result_reason || run.result_code || "")}</small>
+      ${run.status === 'running' && run.target_kind === 'home_operator' ? `<button type="button" class="ghost-button" data-home-reconcile="${esc(run.id)}">Reconcile Home run</button>
+      <button type="button" class="ghost-button" data-home-cancel-unknown="${esc(run.id)}">Cancel expired Home scheduling (outcome unknown)</button>` : ''}
     </article>`;
 }
 
@@ -394,6 +397,25 @@ function render() {
     });
   });
   card.querySelector("[data-automation-run-now]")?.addEventListener("click", runNow);
+  card.querySelectorAll('[data-home-reconcile],[data-home-cancel-unknown]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const context = projectContext();
+      const cancel = Boolean(button.dataset.homeCancelUnknown);
+      const id = button.dataset.homeCancelUnknown || button.dataset.homeReconcile;
+      if (cancel && !await confirmAction({ action: 'Cancel expired Home scheduling', target: id, risk: 'high',
+        consequence: 'Releases this expired run slot only when its exact original is durably blocked. The native outcome stays UNKNOWN; no input is replayed or interrupted.',
+        recovery: 'All original claims, snapshots and refusals remain available. This does not renew the expired grant.' })) return;
+      if (!context.current()) return;
+      button.disabled = true;
+      try {
+        await api(`/api/automation-runs/${encodeURIComponent(id)}/reconcile`, {
+          method: 'POST', body: JSON.stringify({ cancel_unknown_home: cancel }) });
+        await loadRuns(state.selectedId);
+      } catch (error) {
+        if (context.current()) state.error = error.message;
+      } finally { if (context.current()) render(); }
+    });
+  });
   card.querySelector("[data-automation-edit]")?.addEventListener("click", () => {
     state.editing = true;
     state.creating = false;

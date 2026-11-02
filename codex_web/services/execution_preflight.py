@@ -268,7 +268,20 @@ class ExecutionPreflightService:
                     'threadId':current.replacement_thread_id or current.thread_id,
                     'execution_id':current.execution_id,
                     'snapshot_sha256':self.queued_snapshot_digest(current.queued_turn_snapshot)}
-            blockers = self._blockers(retained_detail) if retained_detail else ()
+            witness = None
+            if (preinput_refusal and disposition == 'blocked' and claim_id
+                    and current.queued_admission_claim_id == claim_id
+                    and current.status in {'admitting', 'reconciliation_required'}
+                    and current.attempt_number == 1 and not current.queued_resume_history
+                    and str(current.source or '').startswith('home-operator-automation:')
+                    and all(value is None for value in (
+                        current.queued_start_correlation, current.queued_start_evidence,
+                        current.queued_start_receipt, current.queued_resume_correlation,
+                        current.queued_resume_evidence, current.started_at))):
+                witness = {'version': '1.0', 'attempt_id': current.id,
+                    'claim_id': claim_id, 'attempt_number': current.attempt_number,
+                    'snapshot_sha256': self.queued_snapshot_digest(current.queued_turn_snapshot)}
+            blockers = self._blockers(retained_detail, local_preinput_refusal=witness) if retained_detail else ()
             history = current.blocker_history
             if (disposition == 'blocked' and preinput_refusal
                     and (detail or {}).get('code') in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'}
@@ -635,7 +648,7 @@ class ExecutionPreflightService:
         return self.store.update(attempt_id, update)
 
     @staticmethod
-    def _blockers(detail: Any) -> tuple[ExecutionPreflightBlocker, ...]:
+    def _blockers(detail: Any, *, local_preinput_refusal=None) -> tuple[ExecutionPreflightBlocker, ...]:
         if not isinstance(detail, dict):
             return (
                 ExecutionPreflightBlocker(
@@ -651,6 +664,10 @@ class ExecutionPreflightService:
             if not isinstance(item, dict):
                 continue
             value = dict(item)
+            # Reserved controller witness cannot be supplied by provider/HTTP detail.
+            value.pop('local_preinput_refusal', None)
+            if local_preinput_refusal is not None:
+                value['local_preinput_refusal'] = local_preinput_refusal
             value.setdefault(
                 "code",
                 str(detail.get("code") or "execution_preflight_blocked"),
