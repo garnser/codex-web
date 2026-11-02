@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.services.code_host_ci_observation import CI_OBSERVATION_ACTION_ID, CI_OBSERVATION_EVIDENCE
+
 import hashlib
 import re
 import subprocess
@@ -221,6 +223,19 @@ class CodeHostActionContract:
                 expected_evidence=(CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,),
                 timeout_seconds=float(GUARDED_OBSERVATION_SECONDS),retry_max_attempts=1,network_access=True,
             ),) if self.provider_type == "gitlab" else ()),
+            *((ActionDefinition(
+                action_id=CI_OBSERVATION_ACTION_ID,
+                title="Observe exact-head CI and dependency readiness",
+                description="Read complete bounded pipeline/job facts and original prerequisite receipts; never rerun CI, install dependencies or grant host authority.",
+                capabilities=ActionCapability(read=True, prepare=True, execute=True,
+                    idempotency=True, verification=True, evidence=True),
+                risk_class=ActionRiskClass.LOW,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.read.metadata",), required_authority_level="read",
+                credential_required=True, credential_purpose=self.credential_purpose,
+                expected_evidence=(CI_OBSERVATION_EVIDENCE,), timeout_seconds=30.0,
+                retry_max_attempts=1, network_access=True,
+            ),) if self.provider_type == "gitlab" else ()),
             # Readiness is additive and implemented by the declared code-host adapters.
             # Registration never grants an execution profile this capability.
             *((ActionDefinition(
@@ -258,6 +273,7 @@ class CodeHostActionContract:
     @staticmethod
     def evidence_type(action_id: str) -> str:
         evidence_types = {
+            CI_OBSERVATION_ACTION_ID: CI_OBSERVATION_EVIDENCE,
             CODE_HOST_ISSUE_COMMENT_ACTION_ID: CODE_HOST_ISSUE_COMMENT_EVIDENCE,
             CODE_HOST_ISSUE_CREATE_ACTION_ID: CODE_HOST_ISSUE_CREATE_EVIDENCE,
             CODE_HOST_ISSUE_UPDATE_ACTION_ID: CODE_HOST_ISSUE_STATE_EVIDENCE,

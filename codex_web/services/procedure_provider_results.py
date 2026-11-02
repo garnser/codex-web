@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import re
 
+from codex_web.services.code_host_ci_observation import (
+    CI_OBSERVATION_ACTION_ID, CI_OBSERVATION_EVIDENCE, project_observation, parameters as ci_parameters,
+)
+
 from codex_web.services.code_host_action_contract import (
     READINESS_OBSERVATION_ACTION_IDS,
-    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
     CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
@@ -24,7 +27,7 @@ from codex_web.services.code_host_action_contract import (
 class CodeHostProcedureResultAdapter:
     provider_type = "gitlab"
     contract_version = "1.2"
-    action_ids = (CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    action_ids = (CI_OBSERVATION_ACTION_ID, CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
                   CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS)
 
     def __init__(self, *, provider_instance=None):
@@ -41,7 +44,12 @@ class CodeHostProcedureResultAdapter:
         number = raw.get("pull_request_number")
         if type(number) is not int or number < 1 or str(number) != result.external_id:
             raise ValueError("procedure_code_host_result_number_invalid")
-        if request.action_id in READINESS_OBSERVATION_ACTION_IDS:
+        if request.action_id == CI_OBSERVATION_ACTION_ID:
+            parameters = ci_parameters(request).model_dump(mode="json")
+            outputs = project_observation(raw, request=request, binding_id=result.provider_binding_id,
+                provider_instance=self.provider_instance)
+            evidence_type = CI_OBSERVATION_EVIDENCE
+        elif request.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from codex_web.services.code_host_readiness_observation import observation_outputs
             parameters = CodeHostActionContract.pull_request_observe_readiness(request)
             outputs = observation_outputs(raw, binding_id=result.provider_binding_id,
