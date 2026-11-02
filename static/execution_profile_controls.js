@@ -1,3 +1,4 @@
+import { dependencySummary } from './execution_profile_dependency.js';
 import { request as apiRequest } from "./api_client.js";
 
 let activeProjectId = "";
@@ -111,9 +112,7 @@ export function render(profileId, escapeHtml) {
     const administrative = administrativeTargets.length
       ? ` Administrative repository targets: ${administrativeTargets.join(", ")}. Declared operations: ${escapeHtml((profile.controlPlaneOperations || []).join(", "))}. Effective access requires a live assignment and authority checks.`
       : "";
-    const downloads = profile.dependencyEgress
-      ? ` Approved HTTPS dependency hosts: ${profile.dependencyEgress.allowed_hosts.map(escapeHtml).join(", ")}. Private OS network; no host/container socket access. No-egress procedures are unavailable.`
-      : " Dependency egress disabled.";
+    const downloads = dependencySummary(profile, escapeHtml);
     summary.innerHTML = `<strong>${escapeHtml(profile.name)}</strong>: ${escapeHtml(profile.repositoryAccess)} repository access · ${escapeHtml(profile.workspaceMode)} workspace · capabilities ${escapeHtml(capabilities)}.${scratch ? " No mutable Git worktree is created." : ""}${administrative}${downloads}${provenance} <a id="manage-execution-profiles" class="ghost-button" href="${escapeHtml(definitionsPath)}">Manage profiles in Definitions</a>`;
   } else {
     summary.textContent = "Execution profile metadata unavailable.";
