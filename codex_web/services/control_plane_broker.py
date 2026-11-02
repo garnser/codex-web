@@ -668,6 +668,12 @@ class ControlPlaneBrokerService:
             )
         if item.id == "repository.read.delivery-evidence":
             result["supported_action_ids"] = sorted(_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS)
+            result["key_lookup"] = {
+                "path_template": "/api/action-intents/delivery-evidence",
+                "required_query_parameters": ["action_id", "idempotency_key"],
+                "max_key_characters": 500,
+                "absence_is_not_permission_to_replay": True,
+            }
             result["inspection"] = {
                 "read_only": True,
                 "superseded_execution_receipts": True,
@@ -1192,6 +1198,12 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
+        if path == "/api/action-intents/delivery-evidence":
+            operation = _OPERATION_BY_ID["repository.read.delivery-evidence"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError("delivery evidence lookup accepts GET only")
+            return _ResolvedOperation(operation=operation, target_ref=None,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         action_intent_prefix = "/api/action-intents/"
         action_intent_suffix = (
             "/delivery-evidence" if path.endswith("/delivery-evidence") else "/reconcile"
@@ -1980,8 +1992,34 @@ class ControlPlaneBrokerService:
         self, assignment: ExecutionAssignment, requester_actor: AuthenticationActor,
         intent_id: str | None, query: dict[str, list[str]],
     ) -> dict[str, Any]:
-        if self.action_intents is None or intent_id is None:
+        if self.action_intents is None:
             raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
+        if intent_id is None:
+            if (set(query) - {"project_id", "repository_resource_id", "action_id", "idempotency_key"}
+                    or any(len(values) != 1 for values in query.values())
+                    or not {"action_id", "idempotency_key"}.issubset(query)
+                    or ("project_id" in query and query["project_id"] != [assignment.project_id])):
+                raise ControlPlaneBrokerRequestError("Exact action_id and idempotency_key selectors required")
+            action_id = query["action_id"][0]
+            key = query["idempotency_key"][0]
+            if (action_id not in _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS
+                    or not 1 <= len(key) <= 500 or key != key.strip()):
+                raise ControlPlaneBrokerRequestError("Invalid delivery evidence action or bounded original key")
+            if action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                self._ready_declaration(assignment)
+            repository_id = self._operation_repository_id(
+                assignment, "repository.read.delivery-evidence", query, actor=requester_actor)
+            binding = self._repository_action_binding(
+                action_registry=self.action_intents.execution.registry,
+                actor=requester_actor, project_id=assignment.project_id,
+                repository_id=repository_id, action_id=action_id)
+            intent = self.action_intents.store.find_idempotent(
+                assignment.organization_id, assignment.workspace_id, binding.id, action_id, key)
+            if intent is None:
+                return {"outcome": "unknown", "absence_is_not_permission_to_replay": True}
+            # The index locates identity only; reuse every ordinary by-ID
+            # record disclosure and READY origin check below.
+            intent_id = intent.id
         intent = self.action_intents.get(intent_id, requester_actor)
         if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             self._ready_declaration(assignment)
