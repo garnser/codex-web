@@ -1,3 +1,4 @@
+import { dependencyFields, dependencyEditor } from './execution_profile_dependency.js';
 import { formValidation } from './form_validation.js';
 import { trackDirtyEditor } from './dirty_editor.js';
 import { projectPath } from './reference_navigation.js';
@@ -37,6 +38,7 @@ export function editorShell(host) {
           <label><input name="cap-container" type="checkbox"> Container execution</label>
           <label><input name="cap-artifact_upload" type="checkbox"> Artifact upload</label>
         </fieldset>
+        ${dependencyFields}
         <details><summary>Broker operations and platform constraints</summary>
           <label>Requested control-plane operations (one per line)<textarea name="profile-operations" rows="4"></textarea></label>
           <label>orchestration-admin repository resource IDs<textarea name="profile-administrative-targets" rows="4"></textarea></label>
@@ -59,14 +61,7 @@ export function editorShell(host) {
   const validation = formValidation(form);
   const dirty = trackDirtyEditor(form, { label: 'Execution Profile' });
   const field = name => form.elements.namedItem(name);
-  function constraints() {
-    const scratch = field('profile-workspace').value === 'scratch';
-    if (scratch) field('profile-access').value = 'none';
-    else if (field('profile-access').value === 'none') field('profile-access').value = 'read-only';
-    field('profile-access').disabled = scratch;
-    field('cap-git').checked = !scratch;
-  }
-  field('profile-workspace').addEventListener('change', constraints);
+  const dependency = dependencyEditor(field);
   return { form, field, dirty, validation,
     fill(profile, { fresh = false, isDefault = false } = {}) {
       validation.clear(); form.hidden = false;
@@ -79,15 +74,18 @@ export function editorShell(host) {
       field('profile-default').checked = isDefault;
       field('profile-default').disabled = isDefault && !fresh;
       for (const capability of ['container', 'artifact_upload']) field(`cap-${capability}`).checked = (profile.required_worker_capabilities || []).includes(capability);
-      constraints(); dirty.markSaved();
+      dependency.fill(profile);
+      dependency.constrain(); dirty.markSaved();
     },
     capture() {
       const targets = field('profile-administrative-targets').value.split('\n').map(line => line.trim()).filter(Boolean);
-      return { ...(targets.length ? { administrative_repository_ids: targets } : {}),
+      const downloads = dependency.capture();
+      return { ...downloads.envelope,
+        ...(targets.length ? { administrative_repository_ids: targets } : {}),
         id: field('profile-id').value.trim(), name: field('profile-name').value.trim(),
         description: field('profile-description').value.trim(), workspace_mode: field('profile-workspace').value,
         repository_access: field('profile-access').value,
-        required_worker_capabilities: ['command_execution', 'git', 'container', 'artifact_upload'].filter(cap => field(`cap-${cap}`).checked),
+        required_worker_capabilities: [...['command_execution', 'git', 'container', 'artifact_upload'].filter(cap => field(`cap-${cap}`).checked), ...downloads.capabilities],
         control_plane_operations: field('profile-operations').value.split('\n').map(line => line.trim()).filter(Boolean),
         network_enabled: false, host_mutation: false };
     },

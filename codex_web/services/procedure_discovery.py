@@ -453,6 +453,11 @@ class NativeProcedureAdmissionService:
             if ref != assignment.execution_profile_definition:
                 return "native_tools", "canonical:execution-profile-pin-changed"
             source = f"definition:{ref.record_id}@{ref.revision}#{ref.checksum}"
+            if profile.dependency_egress:
+                # No-match preparation may use its separately governed HTTPS
+                # transport. Selected procedures still require the original
+                # no-egress session attestor and remain unsupported here.
+                source += ";dependency-egress:1.0"
             observed = time.time()
             if ((assignment.organization_id, assignment.workspace_id, assignment.project_id) !=
                     (actor.organization_id, actor.workspace_id, project.id)

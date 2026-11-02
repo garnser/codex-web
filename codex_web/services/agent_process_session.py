@@ -52,6 +52,7 @@ from codex_web.services.agent_model_egress import (
     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
     AgentRuntimeModelEgressEndpoint,
     AssignmentBoundAgentModelEgressBroker,
+    AssignmentBoundDependencyEgressBroker,
 )
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationStaleError
 from codex_web.services.local_execution_worker import (
@@ -151,6 +152,24 @@ def _with_execution_python_environment(
     return tuple(updated)
 
 
+def _with_dependency_proxy(command, proxy_url):
+    updated = list(command)
+    for index, argument in enumerate(updated):
+        prefix = "shell_environment_policy.set={"
+        if argument.startswith(prefix) and argument.endswith("}"):
+            entries = [item for item in argument[len(prefix):-1].split(",")
+                       if not item.startswith(("HTTP_PROXY=", "HTTPS_PROXY=", "http_proxy=", "https_proxy=", "ALL_PROXY=", "all_proxy=", "NO_PROXY=", "no_proxy="))]
+            entries.extend(f"{name}={json.dumps(value)}" for name, value in {
+                "HTTPS_PROXY": proxy_url, "https_proxy": proxy_url,
+                "HTTP_PROXY": proxy_url, "http_proxy": proxy_url,
+                "ALL_PROXY": "", "all_proxy": "", "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
+            }.items())
+            updated[index] = prefix + ",".join(entries) + "}"
+            return tuple(updated)
+    raise AssignmentBoundAgentProcessSessionError("runtime has no explicit child environment policy")
+
+
 class _OneShotProcessFactory:
     """Return one already-authenticated process and never restart it implicitly."""
 
@@ -232,6 +251,7 @@ class AssignmentBoundAgentProcessSession:
         self.last_disk_bytes: int | None = None
         self._disk_validation_lock = threading.Lock()
         self.watchdog_task: asyncio.Task[None] | None = None
+        self.dependency_egress_broker: AssignmentBoundDependencyEgressBroker | None = None
         self.egress_broker: AssignmentBoundAgentModelEgressBroker | None = None
         self.control_plane_broker: AssignmentBoundControlPlaneBroker | None = None
         self._start_lock = asyncio.Lock()
@@ -397,6 +417,7 @@ class AssignmentBoundAgentProcessSession:
         workspace_path: Path,
         broker: AssignmentBoundAgentModelEgressBroker | None,
         control_broker: AssignmentBoundControlPlaneBroker | None,
+        dependency_broker: AssignmentBoundDependencyEgressBroker | None = None,
     ):
         if getattr(assignment,'resource_context',None) is not None:
             guard=getattr(self.local_worker.worker_service,'resource_context_validator',None)
@@ -528,6 +549,16 @@ class AssignmentBoundAgentProcessSession:
                 environment["CODEX_WRITABLE_REPOSITORIES"] = ":".join(
                     str(destination) for destination in writable_destinations
                 )
+            if dependency_broker is not None:
+                # Only this capability enters untrusted shell children. Trusted
+                # app-server HTTP(S)_PROXY below remains the model-only broker.
+                command = _with_dependency_proxy(command, dependency_broker.proxy_url)
+                command = (
+                    "/usr/bin/python3", "-u", "-c", AGENT_MODEL_EGRESS_RELAY_SCRIPT,
+                    str(dependency_broker.sandbox_socket_path), "8789", *command,
+                )
+                trusted_mounts = (*trusted_mounts,
+                    (dependency_broker.mount_source, dependency_broker.mount_destination))
             model_egress_port: int | None = None
             if broker is not None:
                 model_egress_port = (
@@ -619,12 +650,19 @@ class AssignmentBoundAgentProcessSession:
                 bufsize=1,
             )
             self._native_preparation_backend = launch_backend
+            # Runtime.command is diagnostic and may be logged. The real process
+            # already owns the unredacted argv via OneShotProcessFactory.
+            display_command = tuple(command)
+            if dependency_broker is not None:
+                display_command = tuple(str(argument).replace(
+                    dependency_broker.capability, "[dependency-capability]")
+                    for argument in command)
             # The returned tuple contains no credential value. SecretBroker.use()
             # still performs its boundary escape check before returning it.
             return (
                 process,
                 launch_input.delegation,
-                tuple(command),
+                display_command,
             )
 
         return delegation_service.use(
@@ -640,6 +678,77 @@ class AssignmentBoundAgentProcessSession:
         # catalog. The independent session watchdog owns heartbeats and lease
         # renewal, so model connection bursts cannot amplify durable writes.
         return self.validate_current()
+
+    def _dependency_policy(self, assignment):
+        profiles = getattr(self.local_worker, "execution_profiles", None)
+        if not assignment.execution_profile_definition:
+            return None
+        if profiles is None:
+            return None  # Embeddings without a resolver cannot grant dependency egress.
+        profile, reference = profiles.resolve(
+            assignment.execution_profile_id,
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id, project_id=assignment.project_id,
+        )
+        if reference != assignment.execution_profile_definition:
+            raise AssignmentBoundAgentProcessSessionStaleError("execution profile policy changed")
+        if profile.dependency_egress:
+            self._validate_dependency_requester(assignment, profiles)
+        if profile.dependency_egress and (
+            assignment.runtime_binding is None
+            or assignment.runtime_binding.provider_id != "openai"
+            or assignment.runtime_binding.runtime_id != "codex"
+            or assignment.network.enabled or assignment.sandbox != "danger-full-access"
+            or "network" not in {value.value for value in assignment.required_capabilities}
+        ):
+            raise AssignmentBoundAgentProcessSessionStaleError("dependency egress isolation/capability mismatch")
+        return profile.dependency_egress
+
+    def _validate_dependency_requester(self, assignment, execution_profiles):
+        from codex_web.identity import TenantScope
+        identity = getattr(self.local_worker.worker_service, "identity", None)
+        if identity is None:
+            raise AssignmentBoundAgentProcessSessionStaleError("dependency requester authority unavailable")
+        requester = identity.actor_for_identity(assignment.created_by, scope=TenantScope(
+            organization_id=assignment.organization_id, workspace_id=assignment.workspace_id))
+        binding = assignment.agent_profile
+        if binding is not None:
+            profiles = execution_profiles.agent_profiles
+            if profiles is None:
+                raise AssignmentBoundAgentProcessSessionStaleError("dependency AgentProfile authority unavailable")
+            # Canonical invocation checks current logical lifecycle/access while
+            # allowing an explicitly pinned older configuration revision.
+            current, _ = profiles.resolve_for_execution(binding.profile_id,
+                revision=binding.profile_revision, actor=requester, project_id=assignment.project_id)
+            selection_fields = ("selected_provider_id", "selected_runtime_id",
+                "selected_provider_revision", "selected_runtime_capability_revision",
+                "selected_worker_id", "model_provider_id", "model_id")
+            expected = profiles.binding_for(current, **{
+                name: getattr(binding, name) for name in selection_fields})
+            if expected != binding:
+                raise AssignmentBoundAgentProcessSessionStaleError("dependency AgentProfile pin changed")
+
+    def _validate_dependency_egress(self):
+        assignment = self._validate_current_authority()
+        policy = self._dependency_policy(assignment)
+        broker = self.dependency_egress_broker
+        if policy is None or broker is None or tuple(
+                f"{host}:443" for host in sorted(policy.allowed_hosts)) != broker.allowed_destinations:
+            raise AssignmentBoundAgentProcessSessionStaleError("dependency egress policy changed")
+        return assignment
+
+    async def _start_dependency_egress_broker(self, assignment):
+        policy = await asyncio.to_thread(self._dependency_policy, assignment)
+        if policy is None:
+            return None
+        broker = AssignmentBoundDependencyEgressBroker(
+            policy.allowed_hosts, validator=self._validate_dependency_egress)
+        try:
+            await broker.start()
+        except BaseException:
+            await broker.stop()
+            raise
+        return broker
 
     async def _start_egress_broker(
         self,
@@ -698,6 +807,7 @@ class AssignmentBoundAgentProcessSession:
             process = None
             broker = None
             control_broker = None
+            dependency_broker = None
             try:
                 self.fence = lease.fence
                 self._bound_assignment = assignment
@@ -708,6 +818,8 @@ class AssignmentBoundAgentProcessSession:
                     self.managed_validation = ManagedValidationCustody(evidence, assignment, workspace_path,
                         self.local_worker.worker_actor)
                     await asyncio.to_thread(self.managed_validation.prepare)
+                dependency_broker = await self._start_dependency_egress_broker(assignment)
+                self.dependency_egress_broker = dependency_broker
                 broker = await self._start_egress_broker()
                 self.egress_broker = broker
                 control_broker = await self._start_control_plane_broker(
@@ -720,6 +832,7 @@ class AssignmentBoundAgentProcessSession:
                     workspace_path,
                     broker,
                     control_broker,
+                    *((dependency_broker,) if dependency_broker is not None else ()),
                 )
                 self.delegation = delegation
                 self._owned_process = process
@@ -758,13 +871,19 @@ class AssignmentBoundAgentProcessSession:
                 )
                 return self
             except Exception as exc:
-                self.last_error = str(exc)
+                raw_error = str(exc)
+                self.last_error = (raw_error.replace(dependency_broker.capability,
+                    "[dependency-capability]") if dependency_broker is not None else raw_error)
                 if self.runtime is not None:
                     with contextlib.suppress(Exception):
                         await self.runtime.stop()
                 elif process is not None and process.poll() is None:
                     with contextlib.suppress(Exception):
                         self.local_worker.backend.terminate_process(process)
+                if dependency_broker is not None:
+                    with contextlib.suppress(Exception):
+                        await dependency_broker.stop()
+                    self.dependency_egress_broker = None
                 if broker is not None:
                     with contextlib.suppress(Exception):
                         await broker.stop()
@@ -775,6 +894,8 @@ class AssignmentBoundAgentProcessSession:
                         await control_broker.stop()
                     if self.control_plane_broker is control_broker:
                         self.control_plane_broker = None
+                if self.last_error != raw_error:
+                    raise AssignmentBoundAgentProcessSessionError(self.last_error) from None
                 raise
 
     @contextlib.contextmanager
@@ -926,6 +1047,8 @@ class AssignmentBoundAgentProcessSession:
     def validate_current(self) -> ExecutionAssignment:
         identity_started = time.monotonic()
         assignment = self._validate_current_authority()
+        if self.dependency_egress_broker is not None:
+            self._dependency_policy(assignment)
         self._supervision_timings["identity_seconds"] = round(time.monotonic() - identity_started, 6)
         resource_started = time.monotonic()
         try:
@@ -949,7 +1072,8 @@ class AssignmentBoundAgentProcessSession:
                 or assignment.repository_scope != expected.repository_scope
                 or assignment.runtime_binding != expected.runtime_binding
                 or assignment.resource_context != expected.resource_context
-                or assignment.network.enabled or not status.running or not status.ready
+                or assignment.network.enabled or self.dependency_egress_broker is not None
+                or not status.running or not status.ready
                 or type(backend) is not BubblewrapExecutionBackend
                 or getattr(self, "_native_preparation_backend", None) is not backend
                 or broker is None or broker._stopping or broker.server is None
@@ -1459,7 +1583,7 @@ class AssignmentBoundAgentProcessSession:
                         future.cancel()
             # Attempt every owned broker even if process cleanup/another broker
             # fails. A failed cleanup is retained, never reported as successful.
-            for name in ('egress_broker','control_plane_broker'):
+            for name in ('egress_broker','dependency_egress_broker','control_plane_broker'):
                 broker = getattr(self,name)
                 setattr(self,name,None)
                 if broker is not None:

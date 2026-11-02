@@ -639,6 +639,19 @@ class TurnExecutionBindingService:
         runtime_binding: ExecutionRuntimeBinding | None,
         execution_profile: ExecutionProfileContract | None,
     ) -> LeaseMode:
+        if execution_profile is not None and execution_profile.dependency_egress and (
+            runtime_binding is None or runtime_binding.provider_id != "openai"
+            or runtime_binding.runtime_id != "codex"
+        ):
+            raise TurnExecutionBindingError(
+                "dependency egress currently requires the assignment-bound Codex runtime",
+                code="execution_profile_incompatible",
+            )
+        if execution_profile is not None and execution_profile.dependency_egress and sandbox != "danger-full-access":
+            raise TurnExecutionBindingError(
+                "dependency egress requires danger-full-access inside the isolated worker",
+                code="execution_profile_incompatible",
+            )
         lease_mode = self._lease_mode(sandbox)
         if (
             runtime_binding is not None

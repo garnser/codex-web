@@ -111,7 +111,9 @@ class LocalExecutionWorkerRuntime:
         heartbeat_interval_seconds: float = 30.0,
         renew_margin_seconds: float = 45.0,
         trusted_host_backend=None,
+        execution_profiles=None,
     ) -> None:
+        self.execution_profiles = execution_profiles
         self.worker_service = worker_service
         self.workspace_service = workspace_service
         self.backend = backend

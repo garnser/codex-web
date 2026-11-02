@@ -14,6 +14,8 @@ from codex_web.execution_profiles import (
     ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION,
     COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION,
     HOME_OPERATOR_EXECUTION_PROFILE_SCHEMA_VERSION,
+    DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION,
+    validate_dependency_execution_profile_catalog,
     EXECUTION_PROFILE_CATALOG_ID,
     EXECUTION_PROFILE_CATALOG_KIND,
     EXECUTION_PROFILE_CATALOG_SCHEMA_VERSION,
@@ -106,20 +108,27 @@ class ExecutionProfileDefinitionService:
             record.scope_type != DefinitionScope.PROJECT
             or not project_id or record.scope_id != project_id
             or record.definition_schema_version not in {ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION,
-                                                       COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION}
+                                                       COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION,
+                                                       DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION}
         ):
             raise ValueError("administrative execution targets require an exact Project-scoped schema 1.1 definition")
         if profile.project_coordination and (
             record.scope_type != DefinitionScope.PROJECT or record.scope_id != project_id
-            or record.definition_schema_version != COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION
+            or record.definition_schema_version not in {COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION, DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION}
         ):
             raise ValueError("project coordination requires an exact Project-scoped schema 1.2 definition")
         if profile.home_operator and (
             project_id != "home" or record.scope_type != DefinitionScope.PROJECT
             or record.scope_id != "home"
-            or record.definition_schema_version != HOME_OPERATOR_EXECUTION_PROFILE_SCHEMA_VERSION
+            or record.definition_schema_version not in {HOME_OPERATOR_EXECUTION_PROFILE_SCHEMA_VERSION, DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION}
         ):
             raise ValueError("Home operator requires an exact Home-scoped schema 1.3 definition")
+        if profile.dependency_egress and (
+            record.scope_type != DefinitionScope.PROJECT or not project_id
+            or record.scope_id != project_id
+            or record.definition_schema_version != DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION
+        ):
+            raise ValueError("dependency egress requires an exact Project-scoped schema 1.4 definition")
         return profile, reference_for(record)
 
     def authorize_administrative_target(
@@ -249,6 +258,14 @@ def install_execution_profile_definitions(
             kind=EXECUTION_PROFILE_CATALOG_KIND,
             schema_version=HOME_OPERATOR_EXECUTION_PROFILE_SCHEMA_VERSION,
             validate=validate_home_execution_profile_catalog,
+        ))
+    if not any(item["kind"] == EXECUTION_PROFILE_CATALOG_KIND
+               and item["schema_version"] == DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION
+               for item in registry.schemas.metadata()):
+        registry.register_schema(DefinitionKindSchema(
+            kind=EXECUTION_PROFILE_CATALOG_KIND,
+            schema_version=DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION,
+            validate=validate_dependency_execution_profile_catalog,
         ))
     service = ExecutionProfileDefinitionService(registry)
     service.bootstrap()

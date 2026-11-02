@@ -2129,7 +2129,10 @@ class ControlPlaneBrokerService:
             payload = decoded
 
         if self.procedure_admission is not None:
-            procedure_targets = tuple(getattr(state, "resource_ids", ()) or assignment.resource_ids)
+            # The immutable authority request retains the target resolved for
+            # this operation, including administrative scratch assignments.
+            procedure_targets = tuple(authority_decision.request.resource_ids
+                or getattr(state, "resource_ids", ()) or assignment.resource_ids)
             from codex_web.procedure_reconciliation import current_reconciliation_scope
             recovery = current_reconciliation_scope()
             if recovery is not None:
@@ -2531,15 +2534,14 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
             result = {"item": recovered.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
+            repository_id, = authority_decision.request.resource_ids
             result = await self._execute_repository_action(
                 assignment=assignment,
                 worker_actor=actor,
                 requester_actor=requester_actor,
                 operation=operation,
                 payload=payload,
-                repository_id=self._operation_repository_id(
-                    assignment, operation.id, resolved.query, actor=requester_actor
-                ),
+                repository_id=repository_id,
             )
         elif operation.id == "action_intent.reconcile":
             if self.action_intents is None:

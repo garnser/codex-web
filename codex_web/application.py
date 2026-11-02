@@ -1927,6 +1927,7 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
     execution_workspace_service,
     local_execution_backend,
+    execution_profiles=execution_profile_definition_service,
     worker=local_execution_worker,
     trusted_host_backend=(TrustedHostActionBackend(worker_id=local_execution_worker.id,
         **_home_host_options) if _home_host_options is not None else None),

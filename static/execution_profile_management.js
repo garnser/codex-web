@@ -120,8 +120,8 @@ function bind() {
       }
       const response = await op.request('/api/definitions/drafts', { method: 'POST', body: JSON.stringify({
         definition_id: source.definition_id, kind: source.kind,
-        definition_schema_version: payload.profiles.some(item => item.administrative_repository_ids?.length)
-          ? "1.1" : source.definition_schema_version,
+        definition_schema_version: payload.profiles.some(item => item.dependency_egress)
+          ? "1.4" : String(Math.max(Number(source.definition_schema_version), payload.profiles.some(item => item.administrative_repository_ids?.length) ? 1.1 : 1.0)).padEnd(3, ".0"),
         scope_type: 'project', scope_id: project, payload,
         derived_from_record_id: source.scope_type === 'project' && source.scope_id === project ? source.record_id : null,
         reason: `${editor.field('profile-reason').value.trim()} · based on ${source.record_id} r${source.revision} checksum ${source.checksum}`,

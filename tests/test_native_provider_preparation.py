@@ -195,6 +195,7 @@ class NativeProviderPreparationTests(unittest.IsolatedAsyncioTestCase):
             session.local_worker=NS(backend=backend,worker=f.procedure_worker)
             session._native_preparation_backend=backend
             session.control_plane_broker=broker
+            session.dependency_egress_broker=None
             service.assignment_reasoning=NS(procedures=self.owner)
             session.validate_current=Mock(return_value=f.native_assignment)
             session.status=Mock(return_value=NS(running=True,ready=True))
