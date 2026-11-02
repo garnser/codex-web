@@ -636,6 +636,12 @@ class ControlPlaneBrokerService:
                     "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
+                from codex_web.services.worker_ci_verifications import CI_METHOD, CIPrerequisiteReviewRequest
+                result["request_body"]["methods"].append(CI_METHOD)
+                result["request_body"]["CI_prerequisite_review"] = {
+                    "method":CI_METHOD,"schema":CIPrerequisiteReviewRequest.model_json_schema(),
+                    "effect":"Review original managed current-scope CI prerequisite facts using the actual independent worker identity; no caller result, source facts, approval or host grant",
+                    "same_identity_roles":"Not independent; require an actually distinct canonical producer/verifier principal"}
                 from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD, MR_METHODS, MRObservationRequest
                 result["request_body"]["methods"].extend(MR_METHODS)
                 result["request_body"]["MR_observation"] = {
@@ -647,6 +653,10 @@ class ControlPlaneBrokerService:
                     "continuation": "Use v1 Artifact with published procedure1.2/input.v1; v2 requires procedure1.3/input.v2 and canonical server Configuration. Original policy snapshot is immutable; new same-head facts may start a settled next run. Reconcile exact original source after response loss; never blind replay."}
             if item.id == "verification.read":
                 result["required_query_parameters"] = ["work_item_ref", "source"]
+                from codex_web.services.worker_ci_verifications import CI_METHOD
+                result["CI_prerequisite_review_query"] = {"required":["method","work_item_ref","source"],
+                    "method":CI_METHOD,"source":"sha256:<original reviewer assignment/request digest>",
+                    "effect":"Read same original review; unknown lookup never authorizes replay"}
                 from codex_web.services.worker_mr_verifications import METHOD, MR_METHODS
                 result["MR_observation_query"] = {"required": ["method", "source"],
                     "method": METHOD, "methods": list(MR_METHODS), "source": "sha256:<original assignment/request digest>",
@@ -2224,7 +2234,11 @@ class ControlPlaneBrokerService:
                 if resolved.query:
                     raise ControlPlaneBrokerRequestError('Verification write does not accept query parameters')
                 from codex_web.services.worker_mr_verifications import MR_METHODS, WorkerMRVerificationAdapter
-                if payload.get('method') in MR_METHODS:
+                from codex_web.services.worker_ci_verifications import CI_METHOD, WorkerCIPrerequisiteVerificationAdapter
+                if payload.get('method') == CI_METHOD:
+                    result = await asyncio.to_thread(WorkerCIPrerequisiteVerificationAdapter(adapter).create,
+                        assignment, worker_actor, resolved, payload, assignment_validator)
+                elif payload.get('method') in MR_METHODS:
                     result = await WorkerMRVerificationAdapter(adapter).create(
                         assignment, worker_actor, resolved, payload, assignment_validator)
                 else:
