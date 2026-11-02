@@ -1112,8 +1112,23 @@ class ExecutionPreflightService:
         def update(value):
             if value.status != 'retrying' or value.retry_claim_id != claim_id:
                 return value
-            return value.model_copy(update={'status': 'blocked' if known else 'reconciliation_required',
-                'blockers': (blocker,), 'last_error': message, 'updated_at': float(self.clock())})
+            # The retry reservation retains the original typed exhaustion. A
+            # failed renewal must report its current guard without discarding
+            # the assignment prerequisite used by the ordinary retained Retry.
+            # Possible native observations still require reconciliation.
+            unstarted = known and not any((value.started_at is not None,
+                value.queued_start_receipt, value.queued_start_correlation,
+                value.queued_start_evidence, value.queued_resume_correlation,
+                value.queued_resume_evidence, value.queued_resume_history,
+                value.scheduling_retirement))
+            blockers = (blocker,)
+            if unstarted:
+                exhausted = tuple(item for item in value.blockers
+                    if item.code == 'procedure_assignment_exhausted')
+                renewal = self._blockers(detail)
+                blockers = exhausted + tuple(item for item in renewal if item not in exhausted)
+            return value.model_copy(update={'status': 'blocked' if unstarted else 'reconciliation_required',
+                'blockers': blockers, 'last_error': message, 'updated_at': float(self.clock())})
         return self.store.update(attempt_id, update)
 
     @staticmethod

@@ -1737,6 +1737,14 @@ retry claim is reserved before renewal, and only the same positively unstarted
 original is requeued after success. Possible resume/start observations, custody
 uncertainty, changed claims, later attempts and automation never authorize this
 automatic renewal. Failed or interrupted renewal stays in canonical recovery.
+A known pre-input renewal refusal retains both the original typed exhaustion
+and its exact assignment target and the current structured renewal blockers.
+The existing retained Retry rechecks the normal renewal guards; it does not
+reset history or bypass pending executor work. Cancellation or possible native
+resume/start evidence remains reconciliation-required. Older generic blocked
+records without typed history can use ordinary same-original Retry to obtain a
+fresh canonical admission refusal, then retry its recorded typed prerequisite;
+absence of evidence alone never upgrades an unknown outcome.
 The existing queue and preflight inspector represent these states; no new UI
 authority or alternative native transport is introduced.
 
