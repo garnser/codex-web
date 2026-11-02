@@ -269,7 +269,11 @@ class PublicationRecoveryOperations:
         if operation != RECOVER:
             self._deny('publication_recovery_operation_unavailable')
         if (not facts['same_origin'] or not facts['known_preprovider_failure']):
-            return await self.reconcile(context, values)
+            return await self._read_only_reconcile(context, values, observed)
+        return await self._recover_known(context, values, observed)
+
+    async def _recover_known(self, context, values, observed):
+        current, intent, expected, receipt, verification, facts, verified = observed
         if not all(facts[k] for k in ('head_matches', 'branch_matches', 'clean', 'base_ancestry')):
             return self._result('waiting', intent, expected, receipt, verification, facts, False,
                 'publication_worker_owned_workspace_repair_required')
@@ -284,7 +288,7 @@ class PublicationRecoveryOperations:
         fresh = await asyncio.to_thread(self._observe, context, values)
         if (not fresh[5]['known_preprovider_failure'] or fresh[1].last_receipt_id != values.expected_original_receipt_id
                 or fresh[1].attempt != intent.attempt):
-            return await self.reconcile(context, values)
+            return await self._read_only_reconcile(context, values, fresh)
         with self._original(context, values):
             retried = await self.intents.reconcile(intent.id,
                 ActionIntentReconcileRequest(retry_if_idempotent=True), actor=context.worker_actor)
@@ -309,6 +313,59 @@ class PublicationRecoveryOperations:
         if context.step.control_plane.operation_id != RECOVER:
             self._deny('publication_recovery_operation_unavailable')
         observed = await asyncio.to_thread(self._observe, context, values)
+        if observed[-1]:
+            return self._result('succeeded', *observed[1:5], observed[5], True)
+        # The interpreter consumes this immutable prior diagnostic before its
+        # RUNNING CAS. A crash/unknown reservation cannot reuse an old waiting
+        # marker. Even a valid marker never replaces fresh original-state CAS,
+        # current origin/custody, real remediation, idempotency or retry bounds.
+        if (observed[5]['same_origin'] and observed[5]['known_preprovider_failure']
+                and await asyncio.to_thread(self._previous_waiting, context, values, observed)):
+            return await self._recover_known(context, values, observed)
+        return await self._read_only_reconcile(context, values, observed)
+
+    def _previous_waiting(self, context, values, observed):
+        previous = getattr(context, 'previous_step', None)
+        code = 'publication_worker_owned_workspace_repair_required'
+        if (previous is None or previous.status != 'waiting'
+                or previous.operation_code != code or len(previous.diagnostic_evidence_ids) != 1):
+            return False
+        service = self.intents.artifact_evidence
+        if service is None or not getattr(context.checkpoint, 'id', None):
+            return False
+        proof = service.get_evidence(previous.diagnostic_evidence_ids[0], actor=context.requester_actor)
+        intent, expected = observed[1], observed[2]
+        if (expected is None or proof.lifecycle != 'valid' or proof.result != 'info'
+                or (proof.organization_id, proof.workspace_id, proof.project_id, proof.work_item_ref)
+                    != (intent.organization_id, intent.workspace_id, intent.project_id, context.assignment.work_item_ref)
+                or proof.producer_identity_id != context.requester_actor.identity_id
+                or proof.execution_id != context.assignment.execution_id
+                or proof.execution_workspace_id != context.assignment.execution_workspace_id
+                or proof.resource_ids != context.assignment.resource_ids
+                or proof.provider != 'canonical-procedure-owner'
+                or proof.source != f'procedure:{context.assignment.id}:{context.checkpoint.id}:{context.step.id}'
+                or proof.metadata.get('canonical_operation') != RECOVER
+                or not expected.received_at <= proof.observed_at <= self.clock()
+                or proof.retention_expires_at is not None and proof.retention_expires_at <= self.clock()):
+            return False
+        raw = proof.metadata.get('canonical_result')
+        if not isinstance(raw, str) or len(raw.encode()) > 262144:
+            return False
+        try:
+            diagnostic = json.loads(raw)
+        except ValueError:
+            return False
+        if not isinstance(diagnostic, dict):
+            return False
+        facts = diagnostic.get('facts')
+        return bool(isinstance(facts, dict) and diagnostic.get('operation') == RECOVER
+            and diagnostic.get('disposition') == 'waiting' and diagnostic.get('code') == code
+            and diagnostic.get('original_references') == [intent.id, expected.id]
+            and facts.get('known_preprovider_failure') is True and facts.get('same_origin') is True
+            and facts.get('original_status') == 'failed' and facts.get('original_attempt') == intent.attempt
+            and facts.get('original_max_attempts') == intent.retry_policy.max_attempts)
+
+    async def _read_only_reconcile(self, context, values, observed):
         with self._original(context, values):
             await self.intents.reconcile(observed[1].id,
                 ActionIntentReconcileRequest(retry_if_idempotent=False), actor=context.worker_actor)

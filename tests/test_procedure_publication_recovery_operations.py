@@ -6,6 +6,9 @@ composition, native provider, live repository or network is used by this fixture
 from dataclasses import replace
 from types import SimpleNamespace
 import subprocess
+import json
+import time
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -17,7 +20,7 @@ from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.failures import FailureReason
 from codex_web.models import WorkItemState
 from codex_web.procedure_control_plane import (
-    CanonicalOperationError, CanonicalProcedureContext, CanonicalOperationRegistry,
+    CanonicalOperationError, CanonicalProcedureContext, CanonicalOperationRegistry, CanonicalPreviousStep,
     current_original_intent, original_intent_scope,
 )
 from codex_web.resources import ResourceUpdate
@@ -105,7 +108,7 @@ class PublicationProcedureOperationTests(unittest.IsolatedAsyncioTestCase):
 
     def context_for(self, operation):
         step = SimpleNamespace(id='recover', control_plane=SimpleNamespace(operation_id=operation))
-        checkpoint = SimpleNamespace(steps={'recover': SimpleNamespace(status='running')})
+        checkpoint = SimpleNamespace(id='private-procedure', steps={'recover': SimpleNamespace(status='running')})
         registration = self.registry.resolve(operation, '1.0')
         return CanonicalProcedureContext(assignment=self.a, checkpoint=checkpoint, step=step,
             requester_actor=self.f.actor, worker_actor=self.worker_actor,
@@ -270,3 +273,178 @@ class PublicationProcedureOperationTests(unittest.IsolatedAsyncioTestCase):
             changed = self.original.request.model_copy(update={'idempotency_key': 'new-key'})
             with self.assertRaises(CanonicalOperationError):
                 self.owner.admit_original(self.context, self.original, changed, 'execute')
+
+    def previous_waiting(self, result):
+        from codex_web.artifact_evidence import EvidenceCreate
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        service = self.intents.artifact_evidence
+        if service is None:
+            service = self.intents.artifact_evidence = ArtifactEvidenceService(ArtifactEvidenceStore(self.f.sqlite),
+                resources=self.f.resources, work_item_host=self.intents.work_item_host)
+        proof = service.create_evidence(EvidenceCreate(project_id=self.a.project_id,
+            work_item_ref=self.a.work_item_ref, execution_id=self.a.execution_id,
+            execution_workspace_id=self.a.execution_workspace_id, resource_ids=self.a.resource_ids,
+            evidence_type='policy_evaluation', result='info', provider='canonical-procedure-owner',
+            source=f'procedure:{self.a.id}:{self.context.checkpoint.id}:{self.context.step.id}',
+            metadata={'canonical_operation':RECOVER, 'canonical_result':json.dumps({
+                'operation':RECOVER, 'facts':result.facts,'original_references':result.original_references,
+                'disposition':result.disposition,'code':result.code})}), actor=self.f.actor)
+        return CanonicalPreviousStep(status='waiting', failure_code=result.code,
+            diagnostic_evidence_ids=(proof.id,), operation_code=result.code)
+
+    async def test_resumed_known_waiting_requires_consumable_exact_diagnostic_and_real_repair(self):
+        waiting = await self.owner.execute(self.context, self.values)
+        previous = self.previous_waiting(waiting)
+        context = replace(self.context, previous_step=previous)
+        self.git('switch', self.f.branch)
+        result = await self.owner.reconcile(context, self.values)
+        self.assertEqual(result.disposition, 'succeeded', result)
+        self.assertEqual(self.intents.get(self.original.id,self.f.actor).attempt,self.original.attempt+1)
+        self.assertIsNotNone(self.f.published)
+        before = self.intents.history(self.original.id,self.f.actor)
+        self.assertEqual((await self.owner.reconcile(context,self.values)).disposition,'succeeded')
+        self.assertEqual(self.intents.history(self.original.id,self.f.actor),before)
+
+    async def test_resumed_unknown_or_consumed_marker_never_reexecutes_publication(self):
+        waiting = await self.owner.execute(self.context,self.values)
+        previous = self.previous_waiting(waiting)
+        self.git('switch',self.f.branch)
+        for marker in (None, replace(previous,status='running',diagnostic_evidence_ids=(),operation_code=None)):
+            context = replace(self.context,previous_step=marker)
+            result = await self.owner.reconcile(context,self.values)
+            self.assertNotEqual(result.disposition,'succeeded')
+            self.assertIsNone(self.f.published)
+        self.update_intent(status=ActionIntentStatus.UNCERTAIN)
+        result = await self.owner.reconcile(replace(self.context,previous_step=previous),self.values)
+        self.assertEqual(result.disposition,'reconciliation_required')
+        unresolved=self.intents.get(self.original.id,self.f.actor)
+        self.assertEqual(unresolved.status,'requires_reconciliation')
+        self.assertEqual((unresolved.id,unresolved.request,unresolved.attempt),
+            (self.original.id,self.original.request,self.original.attempt))
+        self.assertIsNone(self.f.published)
+
+    async def test_foreign_waiting_diagnostic_cannot_borrow_known_failure(self):
+        waiting = await self.owner.execute(self.context,self.values)
+        previous = self.previous_waiting(waiting)
+        service = self.intents.artifact_evidence
+        ident = previous.diagnostic_evidence_ids[0]
+        original = service.get_evidence(ident,actor=self.f.actor)
+        self.git('switch',self.f.branch)
+        for change in ({'source':'foreign-step'},{'producer_identity_id':'foreign'},
+                {'execution_id':'foreign'},{'resource_ids':('foreign',)},{'work_item_ref':'foreign/repo!7'},
+                {'metadata':{**original.metadata,'canonical_result':'{}'}}):
+            service.store.update(lambda s:s.model_copy(update={'evidence':[
+                original.model_copy(update=change) if p.id==ident else p for p in s.evidence]}))
+            result = await self.owner.reconcile(replace(self.context,previous_step=previous),self.values)
+            self.assertNotEqual(result.disposition,'succeeded')
+            self.assertIsNone(self.f.published)
+
+    def real_engine(self):
+        """Actual shared1977 interpreter and canonical owners in this SAME store."""
+        from unittest.mock import AsyncMock
+        from codex_web.artifact_evidence import ArtifactCreate,sha256_digest
+        from codex_web.definitions import DefinitionReference
+        from codex_web.skills import SkillCreate,SkillPublish
+        from codex_web.services.skills import SkillService
+        from codex_web.services.skill_security import SkillSecurityService,SkillScannerRegistry
+        from codex_web.storage.skill_security import SkillSecurityStore
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from codex_web.services.artifact_content import ArtifactContentService,ArtifactContentRegistry
+        from codex_web.services.local_artifact_content import LocalArtifactContentStore
+        from codex_web.services.data_governance import DataGovernanceService
+        from codex_web.storage.data_governance import DataGovernanceStore
+        from codex_web.services.procedure_discovery import ProcedureDiscoveryService,ProcedureExecutionCapabilityService
+        from codex_web.services.procedure_execution import ProcedureExecutionService
+        from codex_web.services.canonical_events import CanonicalEventBus,CanonicalEventIngestionService
+        from codex_web.storage.canonical_events import CanonicalEventStore
+        from codex_web.services.attention import AttentionService
+        from codex_web.storage.attention import AttentionStore
+        from codex_web.services.approval_requests import ApprovalRequestService
+        from codex_web.storage.approval_requests import ApprovalRequestStore
+        from tests.test_skill_security import FakeScanner
+        registry = self.intents.authority.registry
+        service = ArtifactEvidenceService(ArtifactEvidenceStore(self.f.sqlite), resources=self.f.resources,
+            work_item_host=self.intents.work_item_host)
+        content = ArtifactContentRegistry()
+        content.register(LocalArtifactContentStore(Path(self.env.workspace.path).parent/'procedure-content'))
+        service.content = ArtifactContentService(content)
+        service.governance = DataGovernanceService(DataGovernanceStore(self.f.sqlite))
+        self.intents.artifact_evidence = service
+        skills = SkillService(registry)
+        skills.bind_procedure_contracts(actions=self.intents.execution.registry,resources=self.f.resources,
+            scope_actor=lambda ref:self.f.actor,control_plane=self.registry)
+        scanners=SkillScannerRegistry();scanners.register(FakeScanner())
+        skills.bind_security(SkillSecurityService(SkillSecurityStore(self.f.sqlite),registry,scanners))
+        body = json.loads((Path(__file__).resolve().parents[1]/'examples/procedures/workspace-publication-recovery.INACTIVE.json').read_text())['payload']
+        active = body['operational_procedure']
+        active['owner_identity_id']=self.f.actor.identity_id
+        active.update(reviewed_at=time.time()-1,review_due_at=time.time()+3600,expires_at=time.time()+7200)
+        for step in active['steps']:
+            step['failure']['escalation_owner_identity_id']=self.f.actor.identity_id
+        fields={key:value for key,value in body.items() if key in SkillCreate.model_fields}
+        fields['operational_procedure']=active
+        draft=skills.create(SkillCreate(skill_id='private-original-publication',**fields),actor=self.f.actor)
+        published=skills.publish(draft['skillId'],draft['recordId'],SkillPublish(),actor=self.f.actor)
+        pin=DefinitionReference.model_validate(published['definitionReference'])
+        # Complete three-step contract exceeds the deployment default12k; use
+        # the existing explicit finite guidance-capacity contract, never truncate.
+        discovery=ProcedureDiscoveryService(skills,self.f.resources,max_context_characters=32000)
+        discovery.execution_capabilities=ProcedureExecutionCapabilityService(self.workers,None,None)
+        events=CanonicalEventIngestionService(CanonicalEventBus(CanonicalEventStore(self.f.sqlite)))
+        self.real_runner=ProcedureExecutionService(workers=self.workers,skills=skills,discovery=discovery,
+            intents=self.intents,evidence=service,identity=self.f.identity,authority=self.intents.authority,
+            approvals=ApprovalRequestService(ApprovalRequestStore(self.f.sqlite),self.f.identity,events,
+                authority_roles=self.intents.authority),attention=AttentionService(AttentionStore(self.f.sqlite),events,
+                identity=self.f.identity),control_actor=self.f.actor,worker_actor=self.worker_actor,
+            models=SimpleNamespace(invoke=AsyncMock(side_effect=AssertionError('zero model calls'))),control_plane=self.registry)
+        self.intents.procedure_execution=self.real_runner
+        self.intents.procedure_discovery=discovery
+        self.intents.execution.procedure_admission=self.intents.procedure_provider_admission
+        data=json.dumps(self.values.model_dump(exclude_none=True)).encode()
+        snapshot=service.create_artifact(ArtifactCreate(project_id=self.a.project_id,work_item_ref=self.env.ref,
+            execution_id=self.a.execution_id,resource_ids=self.a.resource_ids,artifact_type='report',
+            name='Exact original recovery inputs',digest=sha256_digest(data)),actor=self.f.actor)
+        snapshot=service.attach_artifact_content(snapshot.id,(data,),actor=self.f.actor)
+        self.real_runner.start(self.a.id,definition=pin,input_snapshot_id=snapshot.id,actor=self.f.actor)
+        return self.real_runner
+
+    async def test_actual_interpreter_waiting_material_repair_uses_same_original_once(self):
+        runner=self.real_engine()
+        inspected=await runner.advance(self.a.id,actor=self.f.actor)
+        self.assertEqual(inspected.procedure_checkpoint.steps['inspect'].status,'succeeded')
+        waiting=await runner.advance(self.a.id,actor=self.f.actor)
+        self.assertEqual(waiting.procedure_checkpoint.status,'waiting')
+        self.assertIsNone(self.f.published)
+        self.git('switch',self.f.branch)
+        with patch.object(self.owner,'reconcile',wraps=self.owner.reconcile) as resumed:
+            recovered=await runner.advance(self.a.id,actor=self.f.actor)
+        resumed_context=resumed.call_args.args[0]
+        diagnostic=[runner.evidence.get_evidence(ident,actor=self.f.actor).model_dump(mode='json')
+            for ident in resumed_context.previous_step.diagnostic_evidence_ids]
+        self.assertEqual(recovered.procedure_checkpoint.steps['reconcile-original'].status,'succeeded',
+            {'checkpoint':recovered.procedure_checkpoint,'previous':resumed_context.previous_step,'diagnostic':diagnostic})
+        self.assertIsNotNone(self.f.published)
+        self.assertEqual(self.intents.get(self.original.id,self.f.actor).attempt,self.original.attempt+1)
+        verified=await runner.advance(self.a.id,actor=self.f.actor)
+        self.assertEqual(verified.procedure_checkpoint.steps['verify-original'].status,'succeeded')
+        completed=await runner.advance(self.a.id,actor=self.f.actor)
+        self.assertEqual(completed.procedure_checkpoint.status,'completed')
+        runner.models.invoke.assert_not_called()
+
+    async def test_actual_interpreter_unknown_after_waiting_preserves_no_effect(self):
+        runner=self.real_engine()
+        await runner.advance(self.a.id,actor=self.f.actor)
+        waiting=await runner.advance(self.a.id,actor=self.f.actor)
+        self.assertEqual(waiting.procedure_checkpoint.status,'waiting')
+        self.update_intent(status=ActionIntentStatus.UNCERTAIN)
+        self.git('switch',self.f.branch)
+        current=await runner.advance(self.a.id,actor=self.f.actor)
+        self.assertEqual(current.procedure_checkpoint.status,'reconciliation_required')
+        unresolved=self.intents.get(self.original.id,self.f.actor)
+        self.assertEqual(unresolved.status,'requires_reconciliation')
+        self.assertEqual((unresolved.id,unresolved.request,unresolved.attempt),
+            (self.original.id,self.original.request,self.original.attempt))
+        self.assertIsNone(self.f.published)
+        runner.models.invoke.assert_not_called()
