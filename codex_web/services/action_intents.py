@@ -2619,10 +2619,20 @@ class ActionIntentService:
         if intent.attempt >= intent.retry_policy.max_attempts:
             raise ActionIntentConflictError("action intent retry limit reached")
         not_before = time.time() + intent.retry_policy.backoff_seconds
+        original_guard = None
+        if self.procedure_execution is not None:
+            guard_factory = getattr(self.procedure_execution, "canonical_original_retry_guard", None)
+            if guard_factory is not None:
+                original_guard = guard_factory(intent)
+        # Only the admitted canonical original-intent owner adds this strict
+        # observed-state CAS. Ordinary idempotent reconciliation is unchanged.
+        guarded = self._publication_execution_guard(intent) if original_guard is not None else {}
 
         def apply(state):
             for index, item in enumerate(state.intents):
                 if item.id == intent.id:
+                    if original_guard is not None:
+                        original_guard(item)  # pure checks; no nested store access
                     state.intents[index] = item.model_copy(
                         update={
                             "status": ActionIntentStatus.PENDING,
@@ -2636,7 +2646,7 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply, intent_ids=(intent.id,))
+        updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
         return next(item for item in updated.intents if item.id == intent.id)
 
     def retry(
