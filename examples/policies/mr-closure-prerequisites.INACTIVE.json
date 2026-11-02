@@ -1,0 +1,387 @@
+{
+  "ready": false,
+  "published": false,
+  "template_only": true,
+  "required_bindings": [
+    "actual owner identity",
+    "actual registered provider instance",
+    "current review policy callback",
+    "current authorized CodeHost reader",
+    "actual current canonical CI original IDs",
+    "actual approved freshness dates",
+    "existing provider/authority approval requirements"
+  ],
+  "limitations": [
+    "CI original is referenced, never executed or reconciled.",
+    "Current Work may differ from supervisor assignment Work=null; canonical original Work remains mandatory.",
+    "Existing principal independence requirements remain strict; assignment-role receipt only under explicit current Role1.1 opt-in.",
+    "Native runtime receipt never attests external CI ABI.",
+    "Gate observation is not atomic with later merge; existing mutation authority/provider checks remain mandatory.",
+    "Do not publish this expired/unbound template."
+  ],
+  "operational_procedure": {
+    "schema_version": "1.4",
+    "owner_identity_id": "UNBOUND_OWNER_IDENTITY",
+    "task_triggers": [
+      "mr.closure.requested"
+    ],
+    "operation_triggers": [
+      "mr.closure.qualify"
+    ],
+    "resource_selectors": [
+      {
+        "id": "repository",
+        "resource_types": [
+          "repository"
+        ]
+      }
+    ],
+    "environments": [
+      "development"
+    ],
+    "service_versions": [],
+    "inputs": [
+      {
+        "name": "pull_request_number",
+        "type": "integer",
+        "required": true,
+        "description": "Canonical pull_request_number; no authority grant."
+      },
+      {
+        "name": "expected_head_sha",
+        "type": "string",
+        "required": true,
+        "description": "Canonical expected_head_sha; no authority grant."
+      },
+      {
+        "name": "expected_base_sha",
+        "type": "string",
+        "required": true,
+        "description": "Canonical expected_base_sha; no authority grant."
+      },
+      {
+        "name": "ci_intent_id",
+        "type": "string",
+        "required": true,
+        "description": "Canonical ci_intent_id; no authority grant."
+      },
+      {
+        "name": "ci_receipt_id",
+        "type": "string",
+        "required": true,
+        "description": "Canonical ci_receipt_id; no authority grant."
+      },
+      {
+        "name": "ci_verification_id",
+        "type": "string",
+        "required": true,
+        "description": "Canonical ci_verification_id; no authority grant."
+      },
+      {
+        "name": "review_artifact_id",
+        "type": "string",
+        "required": true,
+        "description": "Canonical review_artifact_id; no authority grant."
+      },
+      {
+        "name": "review_verification_id",
+        "type": "string",
+        "required": true,
+        "description": "Canonical review_verification_id; no authority grant."
+      },
+      {
+        "name": "merge_method",
+        "type": "string",
+        "required": true,
+        "description": "Canonical merge_method; no authority grant."
+      }
+    ],
+    "reviewed_at": 0,
+    "review_due_at": 1,
+    "expires_at": 2,
+    "required_provider_capabilities": [],
+    "required_worker_capabilities": [],
+    "conflict_group": "mr-closure",
+    "precedence": 10,
+    "on_conflict": "fail_closed",
+    "max_duration_seconds": 180,
+    "steps": [
+      {
+        "id": "closure-prerequisites",
+        "kind": "verification",
+        "description": "Use existing canonical owners for closure-prerequisites.",
+        "inputs": [
+          {
+            "name": "pull_request_number",
+            "type": "integer",
+            "required": true,
+            "description": "Canonical pull_request_number; no authority grant."
+          },
+          {
+            "name": "expected_head_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical expected_head_sha; no authority grant."
+          },
+          {
+            "name": "expected_base_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical expected_base_sha; no authority grant."
+          },
+          {
+            "name": "ci_intent_id",
+            "type": "string",
+            "required": true,
+            "description": "Canonical ci_intent_id; no authority grant."
+          },
+          {
+            "name": "ci_receipt_id",
+            "type": "string",
+            "required": true,
+            "description": "Canonical ci_receipt_id; no authority grant."
+          },
+          {
+            "name": "ci_verification_id",
+            "type": "string",
+            "required": true,
+            "description": "Canonical ci_verification_id; no authority grant."
+          },
+          {
+            "name": "review_artifact_id",
+            "type": "string",
+            "required": true,
+            "description": "Canonical review_artifact_id; no authority grant."
+          },
+          {
+            "name": "review_verification_id",
+            "type": "string",
+            "required": true,
+            "description": "Canonical review_verification_id; no authority grant."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "expected_head_sha",
+            "type": "string",
+            "required": true,
+            "description": "Exact qualified MR head; no merge grant."
+          },
+          {
+            "name": "expected_base_sha",
+            "type": "string",
+            "required": true,
+            "description": "Exact freshly observed target tip."
+          }
+        ],
+        "preconditions": [],
+        "expected_evidence": [
+          {
+            "name": "verification",
+            "kind": "verification",
+            "description": "Original canonical completion proof."
+          }
+        ],
+        "timeout_seconds": 120,
+        "max_attempts": 1,
+        "retry_backoff_seconds": 0,
+        "failure": {
+          "outcome": "stop",
+          "escalation_owner_policy": "current_work_action_owner",
+          "attention_reason": "Stop with exact original references; resolve missing facts through the current canonical Work owner.",
+          "unknown_outcome": "reconcile_before_retry"
+        },
+        "control_plane": {
+          "operation_id": "code-host.mr-closure.prerequisites",
+          "contract_version": "1.0",
+          "resource_selector": "repository"
+        },
+        "permissions": [
+          {
+            "capability": "repository.read.metadata",
+            "level": "read",
+            "resource_selector": "repository"
+          }
+        ]
+      },
+      {
+        "id": "merge",
+        "kind": "mutation",
+        "description": "Use existing canonical owners for merge.",
+        "inputs": [
+          {
+            "name": "pull_request_number",
+            "type": "integer",
+            "required": true,
+            "description": "Canonical pull_request_number; no authority grant."
+          },
+          {
+            "name": "merge_method",
+            "type": "string",
+            "required": true,
+            "description": "Canonical merge_method; no authority grant."
+          },
+          {
+            "name": "expected_head_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical expected_head_sha; no authority grant."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "pull_request_number",
+            "type": "integer",
+            "required": true,
+            "description": "Canonical pull_request_number; no authority grant."
+          },
+          {
+            "name": "head_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical head_sha; no authority grant."
+          },
+          {
+            "name": "merge_commit_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical merge_commit_sha; no authority grant."
+          }
+        ],
+        "preconditions": [
+          {
+            "source": "step",
+            "name": "closure-prerequisites",
+            "predicate": "succeeded"
+          }
+        ],
+        "expected_evidence": [
+          {
+            "name": "verification",
+            "kind": "verification",
+            "description": "Original canonical completion proof."
+          }
+        ],
+        "timeout_seconds": 30,
+        "max_attempts": 1,
+        "retry_backoff_seconds": 0,
+        "failure": {
+          "outcome": "stop",
+          "escalation_owner_policy": "current_work_action_owner",
+          "attention_reason": "Stop with exact original references; resolve missing facts through the current canonical Work owner.",
+          "unknown_outcome": "reconcile_before_retry"
+        },
+        "action": {
+          "provider_type": "gitlab",
+          "provider_instance": "UNBOUND_PROVIDER_INSTANCE",
+          "action_id": "code-host.pull-request.merge",
+          "provider_contract_version": "1.2",
+          "resource_selector": "repository"
+        },
+        "permissions": [
+          {
+            "capability": "repository.pull-request.merge",
+            "level": "execute",
+            "resource_selector": "repository"
+          }
+        ],
+        "impact": {
+          "resource_selector": "repository",
+          "change": "configuration",
+          "description": "Merge exact reviewed head under existing provider authority and approvals.",
+          "max_unavailable_seconds": 0,
+          "reversible": false
+        },
+        "verification_step_id": "verify-merge"
+      },
+      {
+        "id": "verify-merge",
+        "kind": "verification",
+        "description": "Use existing canonical owners for verify-merge.",
+        "inputs": [
+          {
+            "name": "pull_request_number",
+            "type": "integer",
+            "required": true,
+            "description": "Canonical pull_request_number; no authority grant."
+          },
+          {
+            "name": "head_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical head_sha; no authority grant."
+          },
+          {
+            "name": "merge_commit_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical merge_commit_sha; no authority grant."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "pull_request_number",
+            "type": "integer",
+            "required": true,
+            "description": "Canonical pull_request_number; no authority grant."
+          },
+          {
+            "name": "head_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical head_sha; no authority grant."
+          },
+          {
+            "name": "merge_commit_sha",
+            "type": "string",
+            "required": true,
+            "description": "Canonical merge_commit_sha; no authority grant."
+          },
+          {
+            "name": "merge_verified",
+            "type": "boolean",
+            "required": true,
+            "description": "Canonical merge_verified; no authority grant."
+          }
+        ],
+        "preconditions": [
+          {
+            "source": "step",
+            "name": "merge",
+            "predicate": "succeeded"
+          }
+        ],
+        "expected_evidence": [
+          {
+            "name": "verification",
+            "kind": "verification",
+            "description": "Original canonical completion proof."
+          }
+        ],
+        "timeout_seconds": 30,
+        "max_attempts": 1,
+        "retry_backoff_seconds": 0,
+        "failure": {
+          "outcome": "stop",
+          "escalation_owner_policy": "current_work_action_owner",
+          "attention_reason": "Stop with exact original references; resolve missing facts through the current canonical Work owner.",
+          "unknown_outcome": "reconcile_before_retry"
+        },
+        "action": {
+          "provider_type": "gitlab",
+          "provider_instance": "UNBOUND_PROVIDER_INSTANCE",
+          "action_id": "code-host.pull-request.verify-merge",
+          "provider_contract_version": "1.2",
+          "resource_selector": "repository"
+        },
+        "permissions": [
+          {
+            "capability": "repository.read.metadata",
+            "level": "read",
+            "resource_selector": "repository"
+          }
+        ]
+      }
+    ]
+  }
+}
