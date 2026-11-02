@@ -667,10 +667,11 @@ class TurnExecutionService:
         )
 
     def _assignment_session_managers(self):
-        managers = tuple(dict.fromkeys((self.session_managers or {}).values()))
-        if self.session_manager is not None and self.session_manager not in managers:
-            managers = (*managers, self.session_manager)
-        return managers
+        managers = []
+        for manager in (*(self.session_managers or {}).values(), self.session_manager):
+            if manager is not None and all(manager is not existing for existing in managers):
+                managers.append(manager)
+        return tuple(managers)
 
     def _session_for_assignment(
         self,

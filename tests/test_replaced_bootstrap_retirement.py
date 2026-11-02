@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
@@ -267,3 +268,21 @@ class LegacyQueuedReplacementPreservationTests(unittest.IsolatedAsyncioTestCase)
                 if not isinstance(error, asyncio.CancelledError):
                     self.assertEqual(host.events[-1]['type'], 'queued_thread_replacement_held')
                     self.assertFalse(host.events[-1]['native_outcome_changed'])
+
+
+class ManagerOwnerEnumerationTests(unittest.TestCase):
+    def test_unhashable_equal_managers_remain_distinct_and_aliases_are_visited_once(self):
+        lookup = Mock(return_value=None)
+        first = SimpleNamespace(get=lookup)
+        second = SimpleNamespace(get=lookup)
+        fallback = SimpleNamespace(get=lookup)
+        self.assertEqual(first, second)  # Equal metadata is not shared custody.
+        service = TurnExecutionService(SimpleNamespace(), session_manager=fallback,
+            session_managers={('openai', 'codex'): first, ('alias', 'first'): first,
+                              ('other', 'runtime'): second})
+        with self.assertRaises(HTTPException) as caught:
+            service._session_for_assignment('absent-assignment')
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(lookup.call_count, 3)
+        self.assertEqual([id(owner) for owner in service._assignment_session_managers()],
+                         [id(first), id(second), id(fallback)])
