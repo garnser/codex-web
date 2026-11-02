@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -507,72 +508,63 @@ class ExecutionWorkerStore:
         self,
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
     ) -> ExecutionWorkerState:
+        from codex_web.storage.assignment_retention import (
+            REFERENCE_NAMESPACES, ReferenceInventoryUnavailable, referenced_assignments,
+        )
         with operation_lock(self._lock):
-            current = self._load_unlocked()
-            before = {
-                self.worker_namespace: {
-                    item.id: item.model_dump(mode="json") for item in current.workers
-                },
-                self.assignment_namespace: {
-                    item.id: item.model_dump(mode="json") for item in current.assignments
-                },
-                self.event_namespace: {
-                    item.id: item.model_dump(mode="json") for item in current.events
-                },
-                self.enrollment_namespace: {
-                    item.id: item.model_dump(mode="json") for item in current.enrollments
-                },
-            }
-            state = updater(current)
-            active_statuses = {
-                AssignmentStatus.PENDING,
-                AssignmentStatus.CLAIMED,
-                AssignmentStatus.RUNNING,
-            }
-            terminal = [
-                item
-                for item in state.assignments
-                if item.status not in active_statuses
-            ]
-            retained_terminal_ids = {
-                item.id
-                for item in terminal[
-                    -self.max_retained_terminal_assignments:
-                ]
-            }
-            state.assignments = [
-                item
-                for item in state.assignments
-                if item.status in active_statuses
-                or item.id in retained_terminal_ids
-            ]
-            state.events = state.events[-self.max_retained_events :]
-            after = {
-                self.worker_namespace: {
-                    item.id: item.model_dump(mode="json") for item in state.workers
-                },
-                self.assignment_namespace: {
-                    item.id: item.model_dump(mode="json") for item in state.assignments
-                },
-                self.event_namespace: {
-                    item.id: item.model_dump(mode="json") for item in state.events
-                },
-                self.enrollment_namespace: {
-                    item.id: item.model_dump(mode="json") for item in state.enrollments
-                },
-            }
-            for namespace, items in after.items():
-                previous = before[namespace]
-                self.store.record_apply(
-                    namespace,
-                    upserts={
-                        key: value
-                        for key, value in items.items()
-                        if previous.get(key) != value
-                    },
-                    deletes=tuple(set(previous) - set(items)),
-                )
-            return state
+            self._ensure_records()
+            mutate = getattr(self.store, 'record_mutate_many', None)
+            # Custom/older stores retain worker writes but cannot safely GC.
+            try:
+                guarded = (callable(mutate) and 'guard_namespaces' in inspect.signature(mutate).parameters)
+            except (TypeError, ValueError):
+                guarded = False  # An opaque custom callable cannot attest namespace guards.
+            namespaces = (self.worker_namespace, self.assignment_namespace,
+                self.event_namespace, self.enrollment_namespace)
+            result = []
+
+            def apply(_rows):
+                # Read AFTER canonical writer/namespace locks, including roots.
+                current = self._load_unlocked()
+                before = {name: {v.id: v.model_dump(mode='json') for v in values}
+                    for name, values in zip(namespaces,
+                        (current.workers, current.assignments, current.events, current.enrollments))}
+                state = updater(current)
+                active_statuses = {AssignmentStatus.PENDING, AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
+                terminal = [a for a in state.assignments if a.status not in active_statuses]
+                if guarded and len(terminal) > self.max_retained_terminal_assignments:
+                    try:
+                        protected = referenced_assignments(self.store)
+                    except ReferenceInventoryUnavailable:
+                        # Optional GC cannot turn partial diagnostic data into
+                        # deletion authority or a worker-registration failure.
+                        protected = None
+                    if protected is not None:
+                        unreferenced = [a for a in terminal if a.id not in protected]
+                        retained = protected | {a.id for a in
+                            unreferenced[-self.max_retained_terminal_assignments:]}
+                        state.assignments = [a for a in state.assignments
+                            if a.status in active_statuses or a.id in retained]
+                state.events = state.events[-self.max_retained_events:]
+                after = {name: {v.id: v.model_dump(mode='json') for v in values}
+                    for name, values in zip(namespaces,
+                        (state.workers, state.assignments, state.events, state.enrollments))}
+                result.append(state)
+                return {name: {**{k: v for k, v in values.items() if before[name].get(k) != v},
+                    **{k: None for k in before[name].keys() - values.keys()}}
+                    for name, values in after.items()}
+
+            if guarded:
+                mutate({name: () for name in namespaces}, apply,
+                    guard_namespaces=REFERENCE_NAMESPACES)
+            else:
+                # No pruning on unsupported backends. Retain existing custom
+                # store behavior without claiming cross-domain atomicity.
+                for name, delta in apply({}).items():
+                    self.store.record_apply(name,
+                        upserts={k: v for k, v in delta.items() if v is not None},
+                        deletes=tuple(k for k, v in delta.items() if v is None))
+            return result[0]
 
 
 _CANONICAL_ASSIGNMENT_LIST = ExecutionWorkerStore.list_assignments

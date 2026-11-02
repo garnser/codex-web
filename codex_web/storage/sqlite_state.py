@@ -604,13 +604,18 @@ class SQLiteStateStore:
                 success=success,
             )
 
-    def record_mutate_many(self, selected, updater):
+    def record_mutate_many(self, selected, updater, *, guard_namespaces=()):
         """Inspect bounded rows across canonical collections under one writer lock.
 
         Dynamic output keys (outbox indexes and receipts) share the same lock;
         unselected records are neither decoded nor rewritten. This serializes
-        with both record_mutate and cross-domain update_many.
+        with both record_mutate and cross-domain update_many. Additional
+        guard_namespaces share this writer fence without reads, initialization
+        or writes; existing empty selected tuples retain their semantics.
         """
+        if (not isinstance(guard_namespaces, tuple)
+                or any(not isinstance(name, str) or not name for name in guard_namespaces)):
+            raise ValueError('namespace guards require nonempty namespace names')
         if not selected:
             raise ValueError("record_mutate_many requires selected namespaces")
         started = time.perf_counter()

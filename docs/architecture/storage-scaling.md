@@ -916,3 +916,43 @@ composition does not execute or verify the provider action again, renew its
 deadline, or turn a successful action into a completed procedure. Canonical
 intent, receipt, verification and procedure states remain distinct, including
 when result projection fails after the action has succeeded.
+
+### Referenced assignment retention
+
+The worker store's terminal cache applies to **unreferenced** assignments: keep
+at most 128 such rows, while retaining predecessors named by canonical native
+sessions, bootstrap bindings, retained Goal deliveries, active/recovery records,
+queued/preflight originals and planned Home checkpoint metadata. These are the
+original rows in the existing assignment namespace, not a second history or a
+new execution grant. Retention changes neither a lease/fence nor any recovery,
+Profile, scope, UNKNOWN-outcome or native-input check. Missing historical rows
+are never synthesized.
+
+The compatibility bulk worker update reads its current rows and optional GC
+roots only after acquiring the canonical writer and namespace guards. The
+existing `record_mutate_many` primitive accepts additional `guard_namespaces`:
+PostgreSQL locks those namespaces in its existing sorted advisory-lock order;
+SQLite's `BEGIN IMMEDIATE` fences other writers, including separate facades.
+Guard-only namespaces are neither initialized nor written. Existing empty
+selected tuples still initialize their own collections and permit dynamic
+output keys. PostgreSQL callback readers reuse the owning connection; SQLite
+reference readers see committed rows while that writer fence is held. Reference
+creation committed before the prune's writer acquisition is therefore observed,
+including new record keys absent from any earlier inventory.
+
+Native session enumeration uses narrow keyed projections, including complete
+pagination and alias completeness checks. Planned Home metadata is read through
+exact Upgrade checkpoint/preservation references and the scoped Artifact reader;
+no model content is opened or decrypted and the Artifact catalog is not scanned.
+A missing diagnostic, unsupported schema, malformed root or incomplete bounded
+inventory suppresses optional pruning while allowing the normal worker mutation.
+The inspection ceiling is not permission to treat an unseen page as empty.
+Unsupported custom backends likewise retain rows rather than pretend to fence
+reference writers. Programming errors and canonical write errors still propagate.
+The root inspection bounds are 16,384 records per inspected collection and
+131,072 structured nodes; protected rows are bounded by retained canonical roots,
+not by an additional unbounded assignment-history cache.
+
+No new operator action, schema, Definition, permission or UI-owned state is
+introduced. Existing worker/session/Goal/Home inspectors continue to display the
+preserved canonical predecessor metadata and existing typed recovery refusals.
