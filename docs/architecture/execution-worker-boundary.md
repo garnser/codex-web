@@ -1941,3 +1941,21 @@ offline profile for procedures requiring that seal; do not weaken the seal or
 reuse old custody. Real acceptance requires an explicitly published opt-in
 profile, fresh canonical assignment and bounded dependency download/check under
 that assignment. A host DNS lookup or a unit-test proxy is not that acceptance.
+
+
+### Explicit dependency HTTPS scratch transport qualification
+
+Run `CODEX_WEB_TEST_DEPENDENCY_HTTPS=1 python -m unittest tests.test_dependency_egress_transport`
+to test the existing dependency broker/relay through the real Bubblewrap backend
+in a temporary workspace. The test downloads the pinned pip 25.3 wheel without
+installing it and checks the exact size and SHA-256 independently of registry
+metadata. It also checks that direct public and host-loopback connections remain
+isolated and that the child has no model credentials. The fixture uses only the
+separate dependency capability and approved exact package hosts; it publishes no
+Definition, creates no canonical assignment, and changes no live worker or queue.
+
+The ordinary deterministic suite skips this explicit Internet qualification.
+Passing it establishes scratch package transport, not live native/managed-session
+adoption, Definition publication or production acceptance. Those remain with the
+existing operator workflow using a separately approved qualification Project and
+fresh custody; preserve existing pins, active assignments and uncertain actions.
