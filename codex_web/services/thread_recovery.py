@@ -66,6 +66,7 @@ class ThreadRecoveryService:
         )
         self.thread_creator = thread_creator
         self.agent_profile_resolver: Callable[[BotBinding], Any] | None = None
+        self.predecessor_retirement = None
         self.stale_active_turn_reconciler = None
         self.historical_replacement_events = None
         self.historical_bootstrap_binding = None
@@ -319,29 +320,30 @@ class ThreadRecoveryService:
             lock = asyncio.Lock()
             self._replacement_locks[key] = lock
         async with lock:
-            replacement_id = self.replacement_thread_id(binding.thread_id)
-            if replacement_id:
-                matches = [
-                    item
-                    for item in self.host._load_bot_bindings()
-                    if item.thread_id == replacement_id
-                    and self.same_logical_binding(item, binding)
-                ]
-                if matches:
-                    durable_lookup = getattr(self.thread_index, "replacement_thread_id", None)
-                    if callable(durable_lookup) and durable_lookup(binding.thread_id):
-                        self.host._retarget_bot_thread_state(binding.thread_id, replacement_id)
-                        await self.host._archive_replaced_bot_thread(binding.thread_id, replacement_id)
-                    return self.preferred_binding_for_replacement(binding, matches)
-                # A crash can leave the verified bootstrap/link intact but
-                # occur before binding/state transfer. Finish that transfer;
-                # never create a conflicting second successor.
-                old_thread_id = binding.thread_id
-                replacement = self.host._retarget_logical_bot_bindings(binding, replacement_id)
-                self.host._retarget_bot_thread_state(old_thread_id, replacement_id)
-                await self.host._archive_replaced_bot_thread(old_thread_id, replacement_id)
-                return replacement
-            return await self._replace_stale_bot_thread(binding, error)
+            async with self._retire_predecessor(binding.thread_id, self.projects.get(binding.project_id)):
+                replacement_id = self.replacement_thread_id(binding.thread_id)
+                if replacement_id:
+                    matches = [
+                        item
+                        for item in self.host._load_bot_bindings()
+                        if item.thread_id == replacement_id
+                        and self.same_logical_binding(item, binding)
+                    ]
+                    if matches:
+                        durable_lookup = getattr(self.thread_index, "replacement_thread_id", None)
+                        if callable(durable_lookup) and durable_lookup(binding.thread_id):
+                            self.host._retarget_bot_thread_state(binding.thread_id, replacement_id)
+                            await self.host._archive_replaced_bot_thread(binding.thread_id, replacement_id)
+                        return self.preferred_binding_for_replacement(binding, matches)
+                    # A crash can leave the verified bootstrap/link intact but
+                    # occur before binding/state transfer. Finish that transfer;
+                    # never create a conflicting second successor.
+                    old_thread_id = binding.thread_id
+                    replacement = self.host._retarget_logical_bot_bindings(binding, replacement_id)
+                    self.host._retarget_bot_thread_state(old_thread_id, replacement_id)
+                    await self.host._archive_replaced_bot_thread(old_thread_id, replacement_id)
+                    return replacement
+                return await self._replace_stale_bot_thread(binding, error)
 
     async def _replace_stale_bot_thread(
         self,
@@ -431,7 +433,19 @@ class ThreadRecoveryService:
         )
         return replacement
 
-    async def replace_stale_web_thread(
+    @contextlib.asynccontextmanager
+    async def _retire_predecessor(self, thread_id, project):
+        if self.predecessor_retirement is None:
+            yield  # Legacy/unbound integrations do not own worker sessions.
+        else:
+            async with self.predecessor_retirement(thread_id, project=project):
+                yield
+
+    async def replace_stale_web_thread(self, thread_id, project, error, **kwargs):
+        async with self._retire_predecessor(thread_id, project):
+            return await self._replace_stale_web_thread(thread_id, project, error, **kwargs)
+
+    async def _replace_stale_web_thread(
         self, thread_id: str, project: Project, error: str, *,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,

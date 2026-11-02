@@ -1715,8 +1715,8 @@ class AssignmentBoundAgentProcessSessionManager:
                 ),
                 actor=self.local_worker.control_actor,
             )
-            self.sessions.pop(assignment_id, None)
             await session.stop()
+            self.sessions.pop(assignment_id, None)
             return cancelled
 
     async def checkpoint(self, assignment_id: str):
@@ -1842,11 +1842,22 @@ class AssignmentBoundAgentProcessSessionManager:
                 ))
         return completed
 
-    async def stop(self, assignment_id: str) -> None:
+    async def stop(self, assignment_id: str, *, expected_terminal: ExecutionAssignment | None = None) -> None:
         async with self._assignment_lock(assignment_id):
-            session = self.sessions.pop(assignment_id, None)
+            if expected_terminal is not None:
+                current = self.local_worker._pending_assignment(assignment_id)
+                if (current != expected_terminal or current.lease is not None
+                        or current.status not in {AssignmentStatus.CANCELLED, AssignmentStatus.LOST,
+                            AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}):
+                    raise AssignmentBoundAgentProcessSessionStaleError(
+                        'terminal assignment changed before registered process cleanup')
+            session = self.sessions.get(assignment_id)
             if session is not None:
+                # Keep the owner discoverable until cleanup positively joins.
+                # A cancelled/failed caller must not make a live process look
+                # absent to replacement or a later stop owner.
                 await session.stop()
+                self.sessions.pop(assignment_id, None)
 
     async def stop_all(self) -> None:
         for assignment_id in set(self.sessions) | set(self._assignment_locks):

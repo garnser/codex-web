@@ -666,14 +666,18 @@ class TurnExecutionService:
             actor=self.control_actor,
         )
 
+    def _assignment_session_managers(self):
+        managers = []
+        for manager in (*(self.session_managers or {}).values(), self.session_manager):
+            if manager is not None and all(manager is not existing for existing in managers):
+                managers.append(manager)
+        return tuple(managers)
+
     def _session_for_assignment(
         self,
         assignment_id: str,
     ) -> tuple[AssignmentBoundAgentSessionManager, Any]:
-        managers = tuple(dict.fromkeys(self.session_managers.values()))
-        if self.session_manager is not None and self.session_manager not in managers:
-            managers = (*managers, self.session_manager)
-        for manager in managers:
+        for manager in self._assignment_session_managers():
             session = manager.get(assignment_id)
             if session is not None:
                 return manager, session
@@ -2504,6 +2508,11 @@ class TurnExecutionService:
             start_lock = asyncio.Lock()
             self._turn_start_locks[thread_id] = start_lock
         async with start_lock:
+            # A request may have waited behind predecessor retirement. Recheck
+            # its canonical route after owning the same admission lock.
+            replacement_guard = getattr(h, '_raise_if_thread_replaced', None)
+            if callable(replacement_guard):
+                replacement_guard(thread_id)
             if self.thread_is_active(thread_id) and not (
                 preserve_active_handoff and self.thread_handoff_in_progress(thread_id)
             ):
@@ -4286,6 +4295,26 @@ class TurnExecutionService:
 
         queued.attempts += 1
         reschedule_queue = operator_original is None
+        async def replace_or_preserve(operation):
+            nonlocal reschedule_queue
+            try:
+                return True, await operation()
+            except asyncio.CancelledError:
+                reschedule_queue = False
+                restore_original_position()
+                raise
+            except Exception as error:
+                # Legacy queues without retained admission rows still own a
+                # complete original. A failed/refused replacement must not lose
+                # it or silently spin/replay it after the pop above.
+                reschedule_queue = False
+                restore_original_position()
+                detail = error.detail if isinstance(error, HTTPException) else None
+                h._append_bot_event({'type': 'queued_thread_replacement_held',
+                    'thread_id': thread_id, 'queued_id': original_queued.id,
+                    'code': detail.get('code') if isinstance(detail, dict) else 'replacement_unavailable',
+                    'native_outcome_changed': False})
+                return False, None
         queued_actor = None
         try:
             await asyncio.to_thread(self._require_automated_admission, queued.source, operator_admission_validator)
@@ -4685,10 +4714,16 @@ class TurnExecutionService:
             if h._is_stale_thread_error(exc):
                 bindings = h._bindings_for_thread(thread_id)
                 if bindings:
-                    replacement = await h._replace_stale_bot_thread(bindings[0], str(exc))
+                    replaced, replacement = await replace_or_preserve(
+                        lambda error=exc: h._replace_stale_bot_thread(bindings[0], str(error)))
+                    if not replaced:
+                        return
                     replacement_id = replacement.thread_id
                 elif queued.source == "web":
-                    replacement_id = await h._replace_stale_web_thread(thread_id, project, str(exc))
+                    replaced, replacement_id = await replace_or_preserve(
+                        lambda error=exc: h._replace_stale_web_thread(thread_id, project, str(error)))
+                    if not replaced:
+                        return
                 else:
                     replacement_id = None
                 if replacement_id:
@@ -4716,13 +4751,11 @@ class TurnExecutionService:
             if h._is_codex_timeout_error(exc):
                 bindings = h._bindings_for_thread(thread_id)
                 if bindings and queued.attempts >= 2:
-                    replacement = await h._replace_stale_bot_thread(
-                        bindings[0],
-                        (
-                            "repeated runtime resume timeout: "
-                            f"{str(getattr(exc, 'detail', exc))[:500]}"
-                        ),
-                    )
+                    replaced, replacement = await replace_or_preserve(
+                        lambda error=exc: h._replace_stale_bot_thread(bindings[0],
+                            'repeated runtime resume timeout: ' + str(getattr(error, 'detail', error))[:500]))
+                    if not replaced:
+                        return
                     queued.thread_id = replacement.thread_id
                     if (
                         queued.reply_target
@@ -5069,7 +5102,7 @@ class TurnExecutionService:
                 self.schedule_queue_drain(thread_id)
 
     def _assignment_record(self, assignment_id: str):
-        for manager in dict(self.session_managers or {}).values():
+        for manager in self._assignment_session_managers():
             local_worker = getattr(manager, "local_worker", None)
             if local_worker is None:
                 continue
@@ -5329,6 +5362,89 @@ class TurnExecutionService:
             return await asyncio.to_thread(prepare_and_rebind)
         except TurnExecutionBindingError as exc:
             raise _execution_preflight_blocked(exc) from exc
+
+    @contextlib.asynccontextmanager
+    async def retire_replacement_predecessor(self, thread_id, *, project):
+        """Settle owned idle custody before a replacement can erase its marker.
+
+        Hold ordinary admission until replacement provenance/routing commits.
+        This retires no input or native outcome and never discards workspace
+        bytes. Provider archival alone is deliberately not a retirement grant.
+        """
+        lock = self._turn_start_locks.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            binding = self._bootstrap_binding_for_thread(thread_id)
+            if binding is None:
+                yield  # Legacy native conversations have no worker custody.
+                return
+
+            def blocked(message):
+                return ExecutionPrestartRefusal(status_code=409, detail={
+                    'code': 'thread_replacement_predecessor_unsettled',
+                    'message': message, 'threadId': thread_id,
+                    'assignment_id': binding.assignment_id, 'retryable': True})
+
+            if self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id):
+                raise blocked('Preserve the current native turn/completion or steering handoff before replacement.')
+            assignment = await asyncio.to_thread(self._assignment_record, binding.assignment_id)
+            if assignment is None:
+                raise blocked('Predecessor assignment custody is unavailable.')
+            if (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
+                    assignment.organization_id, assignment.workspace_id, assignment.project_id) != (
+                    binding.assignment_id, binding.execution_id, binding.execution_workspace_id,
+                    project.organization_id, project.workspace_id, project.id):
+                raise blocked('Predecessor scope or bootstrap attribution changed.')
+            if assignment.status in {AssignmentStatus.CANCELLED, AssignmentStatus.LOST,
+                    AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED} and assignment.lease is None:
+                # The public worker API can fence a claim before its local
+                # watchdog joins. Stop through every existing manager owner;
+                # this also waits for a concurrent stop holding that id's lock.
+                # No handle/record is reconstructed, and no second cancel runs.
+                try:
+                    for manager in self._assignment_session_managers():
+                        await manager.stop(assignment.id, expected_terminal=assignment)
+                except AssignmentBoundAgentSessionStaleError as exc:
+                    raise blocked('Terminal predecessor custody changed before process cleanup.') from exc
+                if (self._bootstrap_binding_for_thread(thread_id) != binding
+                        or await asyncio.to_thread(self._assignment_record, assignment.id) != assignment):
+                    raise blocked('Terminal predecessor changed before replacement publication.')
+                yield
+                return
+            manager, session = self._session_for_assignment(assignment.id)
+            current = await self._settle_custody_call(session.validate_current, work_owner=session)
+            if current != assignment:
+                # Watchdog renewal may update a lease; compare the immutable
+                # custody, not the lease's naturally moving expiry timestamp.
+                if (current.id, current.fence, current.execution_id, current.execution_workspace_id) != (
+                        assignment.id, assignment.fence, assignment.execution_id, assignment.execution_workspace_id):
+                    raise blocked('Predecessor claim changed during inspection.')
+            status = session.status()
+            if (not status.running or not status.ready or status.fence != current.fence
+                    or status.pending_executor_work != 0):
+                raise blocked('Predecessor process/executor custody is not settled.')
+            validation = getattr(session, 'managed_validation', None)
+            if validation is not None and await self._settle_custody_call(
+                    validation.blocks_assignment_renewal, work_owner=session):
+                raise blocked('Managed validation has a running or unknown outcome.')
+            fresh = self._bootstrap_binding_for_thread(thread_id)
+            if (fresh != binding or self.thread_is_active(thread_id)
+                    or self.thread_handoff_in_progress(thread_id)
+                    or session.status().pending_executor_work != 0):
+                raise blocked('Predecessor binding or activity changed before retirement.')
+            # The existing owner rechecks the assignment fence and READY origin
+            # under canonical writers, retains files and joins its process.
+            from codex_web.services.execution_workers import AssignmentReadinessOriginError
+            try:
+                retired = await manager.cancel_bootstrap(current.id,
+                    reason='idle predecessor retired before native thread replacement; preserve history and files')
+            except AssignmentReadinessOriginError as exc:
+                raise ExecutionPrestartRefusal(status_code=409, detail={**exc.detail(),
+                    'phase': 'before_native_thread_replacement', 'threadId': thread_id}) from exc
+            if (retired.id != current.id or retired.status != AssignmentStatus.CANCELLED
+                    or retired.fence != current.fence + 1 or retired.lease is not None
+                    or manager.get(current.id) is not None):
+                raise blocked('Predecessor cleanup did not settle; inspect without creating another successor.')
+            yield
 
     async def renew_exhausted_assignment(self, thread_id, *, project, actor, expected_assignment_id):
         try:
