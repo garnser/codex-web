@@ -472,7 +472,18 @@ class HomeOperatorFollowup:
                 or run.home_terminal is not None or run.home_custody is None
                 or run.execution_ids != (f'home-followup-{run.id}',)):
             return run
-        automation, current_actor, _ = self.context(run, actor, check_controls=False)
+        membership_actor = actor
+        if actor is not None:
+            # The operator HTTP boundary authenticates/steps up the request.
+            # Revalidate that original origin, then compare current membership
+            # with the credential-free Automation owner observation. PRIMARY
+            # from actor_for_identity is not a new authentication assertion.
+            try:
+                self.identity.revalidate_authenticated_origin(actor)
+            except AuthenticationError as error:
+                raise AuthorizationError('Original authenticated operator authority is unavailable') from error
+            membership_actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+        automation, current_actor, _ = self.context(run, membership_actor, check_controls=False)
         preflight = getattr(self.turns, 'preflight', None)
         if preflight is None or preflight.store.store is not self.runs.store.store:
             return run

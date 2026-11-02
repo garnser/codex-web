@@ -1817,3 +1817,10 @@ resumable startup index preparation. The ready marker requires a complete pass
 through authoritative originals; reconciliation still rereads those originals
 under its namespace fence. The number of unrelated historical inputs in the
 permanent Home conversation does not bound its usable lifetime.
+
+Home follow-up operator reconciliation revalidates the original authenticated
+origin (including session revocation and step-up) before comparing fresh canonical
+membership with the Automation owner. Credential-free owner resolution is not an
+authentication assertion: its PRIMARY assurance must not be compared to, or replace,
+the HTTP operator's MFA/local-trusted session. Native and restart input authority
+comparisons remain unchanged.
