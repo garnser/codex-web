@@ -2008,3 +2008,17 @@ cleanup. An absent session is a no-op only after that validation. Registered
 owners and CLI private HOME state remain discoverable until cleanup joins; a
 failed or cancelled cleanup preserves them for a later owner. This changes no
 queue, native outcome, workspace retention, or replacement authority (#1967).
+
+### Codex per-turn instruction delivery
+
+The pinned Codex0.160 app-server protocol accepts `developerInstructions` on
+`thread/start` and `thread/resume`, but not `turn/start`. The Codex adapter
+forwards supplied creation instructions and delivers each turn's already
+composed instructions through `additionalContext`, an object with the stable
+`codex-web:developer-instructions` key and `kind: application`. This includes
+fresh initial turns that correctly skip resume and reused native sessions.
+The existing bounded Skill selection and explicit untrusted/non-authority
+wrapper remain intact; the adapter neither parses instruction markers nor
+changes their trust, scope or permission rules. It does not inject assignment
+broker authority into unbound sessions or depend on resume overriding a loaded
+thread. Other runtime adapters and native START/custody guards are unchanged.

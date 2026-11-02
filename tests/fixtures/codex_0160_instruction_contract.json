@@ -1,0 +1,122 @@
+{
+  "ThreadStartParams": {
+    "full_schema_sha256": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de",
+    "accepted_properties": [
+      "allowProviderModelFallback",
+      "approvalPolicy",
+      "approvalsReviewer",
+      "baseInstructions",
+      "config",
+      "cwd",
+      "daybreakEnabled",
+      "developerInstructions",
+      "dynamicTools",
+      "environments",
+      "ephemeral",
+      "experimentalRawEvents",
+      "historyMode",
+      "mockExperimentalField",
+      "model",
+      "modelProvider",
+      "multiAgentMode",
+      "permissions",
+      "personality",
+      "projectId",
+      "runtimeWorkspaceRoots",
+      "sandbox",
+      "selectedCapabilityRoots",
+      "serviceName",
+      "serviceTier",
+      "sessionStartSource",
+      "threadSource"
+    ]
+  },
+  "ThreadResumeParams": {
+    "full_schema_sha256": "cc5bb3b25f82073d24af5b6c09e4804ac307467f8400ba5f263fa86f9f0349e6",
+    "accepted_properties": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "baseInstructions",
+      "config",
+      "cwd",
+      "developerInstructions",
+      "excludeTurns",
+      "history",
+      "initialTurnsPage",
+      "model",
+      "modelProvider",
+      "path",
+      "permissions",
+      "personality",
+      "runtimeWorkspaceRoots",
+      "sandbox",
+      "serviceTier",
+      "threadId"
+    ]
+  },
+  "TurnStartParams": {
+    "full_schema_sha256": "07771223642e1b61bd9aac0069fc0f98143a1c047724ca02c7ceb13653442738",
+    "accepted_properties": [
+      "additionalContext",
+      "approvalPolicy",
+      "approvalsReviewer",
+      "clientUserMessageId",
+      "collaborationMode",
+      "cwd",
+      "cyberAccessProgram",
+      "disabledPluginIds",
+      "effort",
+      "environments",
+      "input",
+      "model",
+      "multiAgentMode",
+      "outputSchema",
+      "permissions",
+      "personality",
+      "responsesapiClientMetadata",
+      "runtimeWorkspaceRoots",
+      "sandboxPolicy",
+      "serviceTier",
+      "serviceTierForTurn",
+      "summary",
+      "threadId",
+      "toolOutput",
+      "turnTrigger"
+    ],
+    "additionalContext": {
+      "additionalProperties": {
+        "$ref": "#/definitions/AdditionalContextEntry"
+      },
+      "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "definitions": {
+    "AdditionalContextEntry": {
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/AdditionalContextKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
+    },
+    "AdditionalContextKind": {
+      "enum": [
+        "untrusted",
+        "application"
+      ],
+      "type": "string"
+    }
+  },
+  "provenance": "codex-cli0.160.0 app-server generate-json-schema --experimental; projected metadata only; no provider/network/config/credentials"
+}
