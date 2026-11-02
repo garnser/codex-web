@@ -1316,11 +1316,6 @@ def _mr_ci_execution_target_requirement(request, binding):
     )
 
 
-gitlab_action_provider.ci_prerequisite_validator = CanonicalCIPrerequisiteValidator(
-    artifact_evidence_service, identity_service, resource_catalog_service,
-    workers=execution_worker_service,
-    execution_target_requirement=_mr_ci_execution_target_requirement,
-)
 # Reconcile persisted worker/lease state before ensuring the process-owned
 # worker. On a slow application import, doing this after ensure_local_worker()
 # can age its fresh heartbeat past the stale threshold and offline the worker
@@ -1638,6 +1633,11 @@ app.state.local_artifact_content_store = local_artifact_content_store
 app.state.artifact_content_service = artifact_content_service
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
+gitlab_action_provider.ci_prerequisite_validator = CanonicalCIPrerequisiteValidator(
+    artifact_evidence_service, identity_service, resource_catalog_service,
+    workers=execution_worker_service,
+    execution_target_requirement=_mr_ci_execution_target_requirement,
+)
 
 evaluation_store = EvaluationStore(state_store)
 install_evaluation_rubric_schema(definition_registry_service)
@@ -4131,6 +4131,67 @@ register_publication_operations(
         work_items=work_item_service,
     ),
 )
+from codex_web.services.worker_verifications import WorkerVerificationAdapter
+from codex_web.services.worker_mr_assignment_reviews import WorkerMRAssignmentReviewAdapter
+from codex_web.services.mr_policy_acceptance import CurrentPolicyMRAcceptanceOwner
+from codex_web.services.procedure_mr_closure import (
+    CONTRACT as MR_CLOSURE_PREREQUISITES_CONTRACT, MRClosurePrerequisiteOwner,
+)
+
+mr_policy_acceptance_owner = CurrentPolicyMRAcceptanceOwner(
+    execution_roles=execution_role_definition_service,
+    assignment_reviews=WorkerMRAssignmentReviewAdapter(
+        WorkerVerificationAdapter(control_plane_broker_service),
+        execution_roles=execution_role_definition_service,
+        preflights=execution_preflight_service,
+    ),
+)
+app.state.mr_policy_acceptance_owner = mr_policy_acceptance_owner
+
+
+async def _mr_closure_read_requirements(context, scope):
+    from urllib.parse import urlencode
+    from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
+    from codex_web.procedure_control_plane import CanonicalOperationError
+    from codex_web.services.broker_merge_requirements import read_merge_requirements
+
+    context.validate_current()
+    resolved = control_plane_broker_service._resolve_operation(
+        'GET', '/api/repository-facts/pull-requests/' + str(scope.pull_request_number)
+        + '/merge-requirements?' + urlencode({'repository_resource_id': scope.repository_resource_id}),
+    )
+
+    def current_assignment():
+        context.validate_current()
+        current = execution_worker_service.store.assignment(context.assignment.id)
+        if current is None:
+            raise CanonicalOperationError('mr_closure_current_assignment_unavailable')
+        return current
+
+    observed = await read_merge_requirements(
+        control_plane_broker_service, context.assignment, context.worker_actor,
+        resolved, current_assignment,
+    )
+    context.validate_current()
+    attribution = observed['scope']
+    if (attribution['requester_identity_id'] != context.requester_actor.identity_id
+            or attribution['assignment_id'] != context.assignment.id
+            or attribution['execution_id'] != context.assignment.execution_id
+            or attribution['fence'] != context.assignment.fence
+            or attribution['project_id'] != scope.project_id
+            or attribution['repository_id'] != scope.repository_resource_id):
+        raise CanonicalOperationError('mr_closure_current_read_attribution_changed')
+    return CodeHostMergeRequirementsFact.model_validate(observed['item'])
+
+
+procedure_canonical_operations.register(
+    MR_CLOSURE_PREREQUISITES_CONTRACT,
+    MRClosurePrerequisiteOwner(
+        action_intent_service, work_item_service,
+        acceptance=mr_policy_acceptance_owner.acceptance,
+        read_requirements=_mr_closure_read_requirements,
+    ),
+)
 turn_execution_service.handoff_delivery_recorder = work_item_continuity_service.record_handoff_delivery
 app.state.canonical_work_item_continuity_service = (
     canonical_work_item_continuity_service
@@ -4384,6 +4445,27 @@ native_recovery_service = NativeRecoveryService(
     append_event=bot_runtime_telemetry.append,
 )
 app.state.native_recovery_service = native_recovery_service
+from codex_web.services.procedure_automation import ProcedureAutomationService
+
+procedure_automation_service = ProcedureAutomationService(
+    runs=automation_run_service,
+    engine=procedure_execution_service,
+    identity=identity_service,
+    routing=owner_routing_service,
+    threads=thread_service,
+    continuity=canonical_work_item_continuity_service,
+    get_work=work_item_state_machine._work_item_state,
+    events=canonical_event_store,
+    event_triggers=automation_event_trigger_service,
+    controller=autonomy_controller,
+    coordinator=native_recovery_service.coordinator,
+    automation_execution=automation_execution_service,
+)
+automation_trigger_admission_bridge.procedure_handler = procedure_automation_service.handle_match
+autonomy_service.procedure_event_handler = procedure_automation_service.handle_event
+automation_execution_service.procedure_automation = procedure_automation_service
+automation_outcome_reconciliation_service.procedure_reconciler = procedure_automation_service.reconcile
+app.state.procedure_automation_service = procedure_automation_service
 work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
@@ -4839,6 +4921,7 @@ runtime_supervisor = install_runtime_supervisor(
     local_worker_heartbeat=_heartbeat_local_execution_worker,
     recover_expired_assignments=_recover_expired_execution_assignments,
     recover_deferred_repository_actions=deferred_repository_action_recovery.run_once,
+    recover_procedure_automations=procedure_automation_service.recover_pending,
     flush_compatibility_state=_flush_compatibility_state,
 )
 
