@@ -35,6 +35,17 @@ class AgentRuntimeHealth(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class AgentRuntimeHistoryUnavailable(RuntimeError):
+    """The runtime explicitly cannot enumerate this session's native history.
+
+    This is a read limitation, never evidence of an empty history or of current
+    execution/authority. Callers must label any retained projection incomplete.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Native turn history is unsupported by this runtime")
+
+
 class AgentRuntimeAccountingMode(StrEnum):
     """Authoritative resource boundary used to admit runtime sessions."""
 
