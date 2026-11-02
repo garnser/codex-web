@@ -3654,6 +3654,7 @@ thread_service = ThreadService(
     authentication_preparation=_refresh_local_codex_session,
 )
 thread_recovery_service.bind_thread_creator(thread_service.create)
+thread_recovery_service.predecessor_retirement = turn_execution_service.retire_replacement_predecessor
 execution_preflight_service = ExecutionPreflightService(
     execution_preflight_store,
     replacement_resolver=thread_index_repository.replacement_thread_id,

@@ -1959,3 +1959,30 @@ Passing it establishes scratch package transport, not live native/managed-sessio
 adoption, Definition publication or production acceptance. Those remain with the
 existing operator workflow using a separately approved qualification Project and
 fresh custody; preserve existing pins, active assignments and uncertain actions.
+
+### Replaced native predecessor retirement
+
+Stale-thread replacement enters the existing turn-admission lock before fresh
+bootstrap creation or routing/active-marker transfer. A live predecessor must
+have exact current bootstrap/session custody, no active turn, completion or
+steering handoff, zero pending executor work, and no running/unknown managed
+validation. The existing process-session cancellation owner rechecks its fence
+and READY origins under canonical writers, releases workspace ownership while
+preserving every file/Git reference, and joins the owned process. Only then can
+replacement creation and graph/routing publication proceed under that same
+admission lock. An input that waited on the lock rechecks the replacement route
+before any resume/input. Unknown admission/native outcomes and retained queue
+records are not terminalized, erased, replayed, or treated as NOT-SENT.
+
+Terminal lease-free predecessors remain historical evidence; any registered or
+concurrently stopping process is joined through its existing manager before
+successor creation. A failed/cancelled stop retains its registered owner so
+absence cannot be mistaken for successful cleanup. Missing, foreign,
+changed or unowned live custody fails visibly before creating a successor;
+legacy conversations without assignment custody retain their existing path.
+Provider archive remains a separate discovery/provider action and never grants
+permission to cancel active work. A failed successor creation leaves the fenced
+predecessor and preserved files available for ordinary explicit recovery; no
+second successor is silently created by cleanup. Existing runner, preflight,
+worker-event and replacement surfaces expose the exact custody and refusal;
+no additional operator mutation or retention registry is introduced.
