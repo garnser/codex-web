@@ -12,7 +12,8 @@ export function readyRequestHtml(intent) {
     return `<small>Ready for review · PR ${number} · expected head ${mergeSha(params.expected_head_sha)} · expected base ${mergeSha(params.expected_base_sha)}</small>
       <small>Repository ${origin ? esc(origin.repository) : 'not recorded'} · base ref ${params.expected_base_ref ? esc(params.expected_base_ref) : 'not recorded'}</small>
       <small>Canonical readiness origin: ${origin ? `${esc(origin.assignment_id)} · fence ${esc(origin.fence)} · worker ${esc(origin.worker_id)} · Definition ${esc(origin.execution_profile_definition?.definition_id)}@${esc(origin.execution_profile_definition?.revision)}` : 'not recorded; do not infer or adopt ownership'}.</small>
-      <small>Requires explicit current execution-profile declaration and canonical readiness authority. Inspect the guarded worker broker result; this inspector grants no execution permission. No approval or merge is requested.</small>`;
+      <small>Requires explicit current execution-profile declaration and canonical readiness authority. Inspect the guarded worker broker result; this inspector grants no execution permission. No approval or merge is requested.</small>
+      <small>Lost READY response: use the originating live worker broker GET /api/action-intents/by-key/delivery-evidence with repository_resource_id, action_id=code-host.pull-request.ready and the exact retained idempotency_key. The current unique binding is resolved canonically; optional binding_id must match. Unknown grants no replacement or replay permission. Reconcile only the returned original intent ID with retry_if_idempotent=false.</small>`;
 }
 
 export function readyReceiptHtml(result) {

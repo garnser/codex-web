@@ -663,6 +663,14 @@ class ControlPlaneBrokerService:
             )
         if item.id == "repository.read.delivery-evidence":
             result["supported_action_ids"] = sorted(_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS)
+            result["exact_key_lookup"] = {
+                "path_template": "/api/action-intents/by-key/delivery-evidence",
+                "required_query_parameters": ["repository_resource_id", "action_id", "idempotency_key"],
+                "optional_query_parameters": ["binding_id"],
+                "supported_action_ids": [CODE_HOST_PULL_REQUEST_READY_ACTION_ID],
+                "binding_selection": "Unique current eligible repository/action binding; optional binding_id must match",
+                "guidance": "Read the original intent and receipts after a lost response. Unknown never authorizes replacement or replay; reconcile only the returned original ID without retry.",
+            }
             result["inspection"] = {
                 "read_only": True,
                 "superseded_execution_receipts": True,
@@ -1187,6 +1195,12 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
+        if path == "/api/action-intents/by-key/delivery-evidence":
+            operation = _OPERATION_BY_ID["repository.read.delivery-evidence"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError("exact-key delivery evidence requires GET")
+            return _ResolvedOperation(operation=operation, target_ref="by-key",
+                query=parse_qs(parsed.query, keep_blank_values=True))
         action_intent_prefix = "/api/action-intents/"
         action_intent_suffix = (
             "/delivery-evidence" if path.endswith("/delivery-evidence") else "/reconcile"
@@ -1977,7 +1991,38 @@ class ControlPlaneBrokerService:
     ) -> dict[str, Any]:
         if self.action_intents is None or intent_id is None:
             raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
-        intent = self.action_intents.get(intent_id, requester_actor)
+        exact_key_lookup = intent_id == "by-key"
+        if exact_key_lookup:
+            allowed = {"repository_resource_id", "action_id", "idempotency_key", "binding_id"}
+            required = allowed - {"binding_id"}
+            if (set(query) - allowed or not required.issubset(query)
+                    or any(len(values) != 1 or not values[0] or len(values[0]) > 500
+                           for values in query.values())):
+                raise ControlPlaneBrokerRequestError("exact-key lookup requires single nonempty bounded selectors", status_code=400)
+            if query["action_id"][0] != CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                raise ControlPlaneBrokerDeniedError("exact-key lookup supports only pull-request readiness")
+            # Check current declaration and target even when no original exists.
+            self._ready_declaration(assignment)
+            repository_id = self._operation_repository_id(assignment,
+                "repository.read.delivery-evidence", query, actor=requester_actor)
+            binding = self._repository_action_binding(action_registry=self.action_intents.execution.registry,
+                actor=requester_actor, project_id=assignment.project_id, repository_id=repository_id,
+                action_id=CODE_HOST_PULL_REQUEST_READY_ACTION_ID)
+            if "binding_id" in query and query["binding_id"][0] != binding.id:
+                raise ControlPlaneBrokerDeniedError("exact-key binding does not match current repository binding")
+            intent = self.action_intents.store.find_idempotent(assignment.organization_id,
+                assignment.workspace_id, binding.id, query["action_id"][0], query["idempotency_key"][0])
+            if intent is None:
+                return {"lookup_status": "unknown", "intent": None, "receipts": [],
+                    "verifications": [], "replay_authorized": False}
+            # Revalidate the point result as well as its index; never trust an
+            # alias alone to establish canonical binding/action/key ownership.
+            if (intent.binding_id != binding.id or intent.action_id != query["action_id"][0]
+                    or intent.idempotency_key != query["idempotency_key"][0]):
+                raise ControlPlaneBrokerDeniedError("exact-key original record conflicts with selector")
+            intent_id = intent.id
+        else:
+            intent = self.action_intents.get(intent_id, requester_actor)
         if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             self._ready_declaration(assignment)
             if (intent.execution_id != assignment.execution_id or intent.readiness_origin is None
@@ -2021,6 +2066,8 @@ class ControlPlaneBrokerService:
             result["intent"]["readiness_origin"] = intent.readiness_origin.model_dump(mode="json")
             result["parameters"] = select(intent.request.parameters,
                 ("pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"))
+        if exact_key_lookup:
+            result.update(lookup_status="found", replay_authorized=False)
         return result
 
     async def dispatch(self, *, assignment, worker_actor, method, raw_target, body, assignment_validator=None):
@@ -2218,6 +2265,10 @@ class ControlPlaneBrokerService:
                 self._read_delivery_evidence, assignment, requester_actor,
                 resolved.target_ref, resolved.query,
             )
+            if resolved.target_ref == "by-key" and result.get("lookup_status") == "found":
+                # Correlate the existing broker audit to the recovered original;
+                # the retained key never enters audit paths or response metadata.
+                resolved = _ResolvedOperation(operation, result["intent"]["id"], resolved.query)
         elif operation.id == 'repository.read.merge-requirements':
             if body:
                 raise ControlPlaneBrokerRequestError("Merge-requirement reads accept no body")

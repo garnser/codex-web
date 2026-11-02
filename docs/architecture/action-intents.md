@@ -534,3 +534,33 @@ action Work attribution while retaining the original execution/workspace and
 provider receipt provenance. This introduces no caller-supplied scope, input
 relabel, worker-read exception, replay or new public/persisted contract. Existing
 procedure, intent and Evidence inspectors expose these canonical references.
+
+## Assignment-bound READY recovery by exact key
+
+The existing `repository.read.delivery-evidence` operation also advertises
+`GET /api/action-intents/by-key/delivery-evidence`. Its required single query
+selectors are `repository_resource_id`, `action_id=code-host.pull-request.ready`,
+and the exact original `idempotency_key`. An optional `binding_id` is an assertion,
+not a provider selector: it must match the unique current eligible repository/action
+binding resolved through the existing registry. Ambiguous or unavailable bindings
+fail closed. No new operation Definition, persisted schema or ledger is introduced.
+
+The canonical tenant/binding/action/key point index locates at most one original.
+The broker repeats requester, tenant/workspace/Project/repository, binding/action/key,
+execution, originating assignment/fence and current READY declaration checks.
+Existing live lease, Profile, authority and procedure admission gates still apply.
+The result reuses the bounded delivery projection with original receipt and
+verification references and `lookup_status=found`. Absence returns
+`lookup_status=unknown`, a null intent and empty receipt/verification lists. Both
+responses explicitly set `replay_authorized=false`. Neither response executes a
+provider call, creates/claims an intent, changes an outcome or authorizes replacement.
+Pending, executing, uncertain and reconciliation-required records retain their
+original states. Only the returned original ID may enter normal separately
+authorized reconciliation, with retries disabled for READY.
+
+The operation catalog, broker scope inspector and READY ActionIntent inspector
+expose these selectors and recovery guidance. Existing by-ID inspection and
+reconciliation paths retain their contracts. The additive selector is implemented
+by the engine, not a mutable domain catalog; existing published delivery-evidence
+declarations remain required. Older engines refuse the new path, so workers must
+use their advertised catalog rather than infer support. No model calls are added.

@@ -102,6 +102,9 @@ for (const status of ['failed', 'uncertain', 'requires_reconciliation', 'succeed
     await expect(row).toContainText('Repository acme/app · base ref main');
     await expect(row).toContainText('assignment-ready · fence 3 · worker worker-ready · Definition execution.profiles.ready@2');
     await expect(row).toContainText('Requires explicit current execution-profile declaration');
+    await expect(row).toContainText('/api/action-intents/by-key/delivery-evidence');
+    await expect(row).toContainText('Unknown grants no replacement or replay permission');
+    await expect(row).toContainText('retry_if_idempotent=false');
     if (status==='failed') await expect(row).toContainText('not explicitly declared');
     await row.getByRole('button',{name:'Load side-effect timeline'}).click();
     await expect(row).toContainText(`Readiness verification · expected head ${A} · observed head ${verified?A:C}`);
