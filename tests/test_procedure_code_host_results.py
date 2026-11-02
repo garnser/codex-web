@@ -54,7 +54,7 @@ class ProcedureCodeHostResultTests(GitLabActionProviderTests):
         self.client.merge_request_rows.append({"id": 42, "iid": 33, "state": "opened",
             "sha": "a" * 40, "source_branch": "delivery", "target_branch": "main", "draft": False,
             "merge_status": "can_be_merged", "detailed_merge_status": "mergeable",
-            "head_pipeline": {"id": 9, "status": "success"}})
+            "head_pipeline": {"id": 9, "status": "success", "sha": "a" * 40}})
         workers = ExecutionWorkerService(ExecutionWorkerStore(self.sqlite), identity=self.identity)
         worker = workers.register(ExecutionWorkerRegister(service_identity_id=self.worker.identity_id,
             pool="private", version="fixture", capabilities=("command_execution",)), actor=self.actor)
