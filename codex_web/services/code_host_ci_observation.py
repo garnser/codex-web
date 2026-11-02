@@ -344,7 +344,10 @@ def project_observation(raw, *, request, binding_id, provider_instance):
             'prerequisite_reasons_json': json.dumps(prerequisite.reasons),
             'pipeline_ids_json': json.dumps(sorted(ids)),
             'privileged_operation_authorized': False,
-            'execution_target_kind': prerequisite.execution_target_kind,
+            # Procedure scalars have no nullable type. Absent target facts stay
+            # absent; the original provider prerequisite remains unchanged.
+            **({'execution_target_kind': prerequisite.execution_target_kind}
+               if prerequisite.execution_target_kind is not None else {}),
             'external_ci_runtime_attested': False,
             'execution_target_requirement_ref_json': json.dumps(prerequisite.execution_target_requirement_ref.model_dump(mode='json')
                 if prerequisite.execution_target_requirement_ref else None, sort_keys=True, separators=(',', ':'))}
