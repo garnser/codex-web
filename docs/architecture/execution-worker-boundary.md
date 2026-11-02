@@ -1846,3 +1846,26 @@ scheduling-only action; warming a native session is not required. CANCELLED keep
 the native outcome UNKNOWN and all original records. A late queued original stays
 retained and must fail the existing current-RUNNING native-input guard; cancellation
 never resends, interrupts a native turn, invents a preflight, or releases custody.
+
+
+### Persisted runtime-usage recovery notifications
+
+EventHub synchronous telemetry listeners run on worker threads. After canonical
+terminal usage has been persisted, the application requests a thread-safe wake
+from the existing NativeRecoveryService. RuntimeSupervisor binds that service to
+its lifecycle loop before native runtimes start; workers never discover or create
+a global loop. A single pending callback coalesces worker bursts and dispatches
+only the explicitly bound Home recovery cycle, on its existing bounded keyed
+coordinator key. Other recovery cycles are unchanged. Terminal usage bypasses the ordinary
+recovery cooldown so a completed one-shot Home settlement wake cannot consume a
+later usage event. Nonterminal telemetry does not request this recovery wake.
+
+The handoff preserves correlation and other ContextVars, clearing only the
+publisher's storage-operation budget. Shutdown disables/cancels pending callbacks
+and joins the existing recovery coordinator. Generic physical-execution outcome
+reconciliation cannot suppress Home's independent wake; Home still validates its
+exact logical Run, native terminal, tenant, assignment/fence and canonical usage
+before accounting. Missing usage remains pending. Notifications create no native
+input, retry, fabricated outcome, new ledger or periodic poll. Existing Automation
+history and Operations diagnostics expose the resulting canonical settlement;
+no new UI control or response contract is required.
