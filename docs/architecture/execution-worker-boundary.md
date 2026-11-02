@@ -1882,3 +1882,46 @@ budget checks, and final same-Run/same-terminal CAS, remain authoritative. This
 read-only join needs no current lease and confers no input or replay authority;
 missing, ambiguous or mismatched evidence remains pending. Existing Automation
 history displays settlement; no new UI, ledger, schema or polling is introduced.
+
+#### Governed public dependency HTTPS egress
+
+Execution Profile catalog schema `1.4` adds an optional `dependency_egress`
+envelope with exact `allowed_hosts` (ASCII FQDNs, at most 32). It requires an
+exact Project-scoped published Definition and the worker `network` capability.
+Schemas `1.0`–`1.3` reject the envelope; seeds and existing pins remain unchanged.
+Operators edit this policy through Execution Profiles in Definitions, validate
+and publish normally, then explicitly select the profile for a fresh assignment.
+Publication does not repin existing assignments.
+
+This transport supports the assignment-bound OpenAI Codex runtime with the inner
+`danger-full-access` mode. Bubblewrap still enforces `network.enabled=false` and
+its private network namespace. There is no generic DNS, host-network interface,
+resolver-file mount, container socket, or host-mutation grant. Other runtime
+adapters refuse the profile until they provide an equivalent explicit child
+environment contract.
+
+A separate assignment-owned CONNECT broker checks the current lease, fence,
+requester authority and exact published profile pin. It permits only declared
+hosts on port 443, rejects the entire DNS answer set if any route is non-public,
+and connects validated numeric addresses without a second DNS resolution. It
+revalidates after connection and before exposing the tunnel. Existing session
+supervision revokes connections when authority/policy changes; shutdown joins
+all owned broker handlers. HTTP redirects to another host require that host to
+be independently declared and public. This is bounded public HTTPS egress,
+not a domain-content firewall or a general-purpose network grant.
+
+Only the separate dependency capability enters the explicit repository child
+`HTTPS_PROXY`/`https_proxy` policy (and HTTP proxy variables for clients that use
+CONNECT for HTTPS). Trusted model proxy credentials never enter this policy.
+Managed validation subprocesses inherit this approved child environment, so
+ordinary pip HTTPS downloads use the same governed transport. Model-provider
+and control-plane sockets, credentials and authorities remain separate.
+
+Preparation without a selected operational procedure records the explicit
+`dependency-egress:1.0` policy source. Existing no-egress native procedure
+attestation refuses a session with this broker. Use the preparation profile to
+acquire approved inputs and run download-dependent checks, then a fresh existing
+offline profile for procedures requiring that seal; do not weaken the seal or
+reuse old custody. Real acceptance requires an explicitly published opt-in
+profile, fresh canonical assignment and bounded dependency download/check under
+that assignment. A host DNS lookup or a unit-test proxy is not that acceptance.

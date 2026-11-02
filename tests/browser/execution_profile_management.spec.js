@@ -192,3 +192,24 @@ test('Project identifier in catalog provenance remains literal text', async ({ p
   await expect(page.locator('[data-profile-source] img')).toHaveCount(0);
   expect(await page.evaluate(() => window.codeScanningXss)).toBeUndefined();
 });
+
+
+test('dependency HTTPS policy is an explicit Project draft with private networking', async ({ page }) => {
+  const writes = await mount(page);
+  await page.locator('[name=profile-workspace]').selectOption('repository');
+  await page.getByLabel('Allow approved public HTTPS dependency hosts').check();
+  await page.getByLabel('Exact hostnames (one per line; HTTPS port 443 only)').fill('pypi.org\nfiles.pythonhosted.org');
+  await page.getByLabel('Change reason').fill('Approved dependency acquisition');
+  await page.getByRole('button', { name: 'Save new Project draft' }).click();
+  await expect(page.locator('[data-profile-draft]')).toBeVisible();
+  const draft = writes.find(write => write.path === '/api/definitions/drafts').body;
+  expect(draft.definition_schema_version).toBe('1.4');
+  expect(draft.scope_type).toBe('project');
+  const value = draft.payload.profiles.find(profile => profile.id === 'custom');
+  expect(value.dependency_egress.allowed_hosts).toEqual(['pypi.org', 'files.pythonhosted.org']);
+  expect(value.required_worker_capabilities).toContain('network');
+  expect(value.repository_access).toBe('mutable');
+  expect(value.network_enabled).toBe(false);
+  expect(value.host_mutation).toBe(false);
+  expect(writes.some(write => write.path.endsWith('/publish'))).toBe(false);
+});
