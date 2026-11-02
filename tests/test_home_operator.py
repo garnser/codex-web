@@ -65,6 +65,35 @@ class HomeOperatorTests(unittest.TestCase):
         self.settings['operator'] = ThreadRunSettings(execution_profile_id='orchestration-only')
         self.assertEqual(self.service.status(self.actor)['thread']['execution_profile_id'], 'orchestration-only')
 
+    def test_shortcut_opens_existing_chat_without_overview_redirect_at_both_mounts(self):
+        from urllib.parse import parse_qs, urlsplit
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from codex_web.api.ui import build_ui_router
+
+        selected = self.select()
+        before = self.projects.get('home').model_dump(mode='json')
+        href = selected['thread']['href']
+        target = urlsplit(href)
+        self.assertEqual(target.path, '/projects/home/chat')
+        self.assertEqual(parse_qs(target.query), {'thread': ['operator']})
+        self.assertEqual(target.fragment, '')
+        for prefix in ('', '/codex'):
+            with self.subTest(prefix=prefix):
+                app = FastAPI()
+                app.include_router(build_ui_router(SimpleNamespace(
+                    index_html=lambda **kwargs: '<html>existing shell</html>')))
+                parent = FastAPI()
+                parent.mount(prefix or '/', app)
+                with TestClient(parent) as client:
+                    response = client.get(prefix + href, follow_redirects=False)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertNotIn('location', response.headers)
+                    self.assertEqual(response.url.path, prefix + '/projects/home/chat')
+                    self.assertEqual(response.url.params['thread'], 'operator')
+        self.assertEqual(self.projects.get('home').model_dump(mode='json'), before)
+        self.assertEqual(self.service.status(self.actor)['binding'], selected['binding'])
+
     def test_member_cannot_select_and_read_does_not_confer_admin(self):
         member = self.actor.model_copy(update={'roles': (MembershipRole.MEMBER,)})
         before = self.store.get('projects')

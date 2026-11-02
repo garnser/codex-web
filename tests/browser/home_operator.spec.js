@@ -5,7 +5,7 @@ const configured = {
   binding: { thread_id: 'same-thread', revision: 4, selected_by: 'admin' },
   thread: { id: 'same-thread', name: 'Local operator', execution_profile_id: 'orchestration-admin',
     sandbox: 'workspace-write', approval_policy: 'on-request',
-    href: '/projects/home?thread=same-thread#workspace/threads' },
+    href: '/projects/home/chat?thread=same-thread' },
 };
 
 test('Home goal inspection shows retained checkpoint and opens existing Goal controls without mutation', async ({ page }) => {
@@ -66,7 +66,7 @@ test('Home shortcut opens the same thread and saves with canonical revision with
   }));
   await page.goto('http://127.0.0.1:18766/tests/browser/home_operator_fixture.html');
   await expect(page.getByRole('link', { name: 'Open operator conversation' })).toHaveAttribute(
-    'href', '/projects/home?thread=same-thread#workspace/threads');
+    'href', '/projects/home/chat?thread=same-thread');
   await expect(page.getByText(/This shortcut grants no host access/)).toBeVisible();
   await page.getByRole('button', { name: 'Choose conversation' }).click();
   await page.getByLabel('Existing Home conversation').selectOption('same-thread');

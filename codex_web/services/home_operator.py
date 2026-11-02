@@ -54,7 +54,7 @@ class HomeOperatorService:
                 'execution_profile_id': settings.execution_profile_id,
                 'sandbox': settings.sandbox,
                 'approval_policy': settings.approval_policy,
-                'href': f'/projects/home?thread={quote(row.id, safe="")}#workspace/threads',
+                'href': f'/projects/home/chat?thread={quote(row.id, safe="")}',
             }
             result['status'] = 'configured' if settings.execution_profile_id else 'profile_required'
             if binding.agent_profile_id:
