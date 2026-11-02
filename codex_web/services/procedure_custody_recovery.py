@@ -161,11 +161,15 @@ class CustodyOperation:
         # This marker is generated only before calling any mutation owner, is
         # backed by the engine's exact diagnostic Evidence, and is consumed by
         # its RUNNING CAS. Waiting/absence of START alone is never this witness.
-        if (previous is not None and previous.status == 'waiting'
-                and previous.diagnostic_evidence_ids and state.handoff.status == 'pending'
-                and previous.operation_code in {
-                    'custody_before_effect:busy_or_completion_pending',
-                    'custody_before_effect:native_unknown'}
+        known_no_effect = (previous is not None and previous.status == 'waiting'
+            and previous.diagnostic_evidence_ids and state.handoff.status == 'pending'
+            and previous.operation_code in {'custody_before_effect:busy_or_completion_pending',
+                'custody_before_effect:native_unknown'})
+        if known_no_effect and classification in {'busy_or_completion_pending','native_unknown'}:
+            # This reconciliation also called no mutation owner. Refresh the
+            # positive witness rather than strand a still-busy original.
+            return self._result('waiting','custody_before_effect:'+classification,facts=facts)
+        if (known_no_effect
                 and classification in {'positively_idle_live', 'real_expired_lease', 'terminal_retired'}):
             # Same immutable input/nonce/target fence and current routing guards
             # were rechecked above. The normal canonical dispatch/expiry owner

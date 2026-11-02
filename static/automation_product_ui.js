@@ -1,3 +1,4 @@
+import { procedureTargetFields, readProcedureTarget, procedureRunSummary } from './automation_procedure_target.js';
 import { confirmAction } from './action_confirmation.js';
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
@@ -106,6 +107,7 @@ function runRow(run) {
       <span class="product-status-badge ${statusClass(run.status)}">${esc(run.status)}</span>
       <small>${esc(refs.join(" · ") || run.block_reason || "No linked execution yet")}</small>
       <small>${esc(run.result_reason || run.result_code || "")}</small>
+      ${procedureRunSummary(run, esc)}
       ${run.status === 'running' && run.target_kind === 'home_operator' ? `<button type="button" class="ghost-button" data-home-reconcile="${esc(run.id)}">Reconcile Home run</button>
       <button type="button" class="ghost-button" data-home-cancel-unknown="${esc(run.id)}">Cancel expired Home scheduling (outcome unknown)</button>` : ''}
     </article>`;
@@ -179,6 +181,7 @@ function editorMarkup(item) {
           <select name="target_kind">
             <option value="agent_profile" ${target.kind === "agent_profile" ? "selected" : ""}>Agent Profile</option>
             <option value="team" ${target.kind === "team" ? "selected" : ""}>Team</option>
+            <option value="canonical_procedure" ${target.kind === "canonical_procedure" ? "selected" : ""}>Canonical procedure (Work events)</option>
             <option value="home_operator" ${target.kind === "home_operator" ? "selected" : ""}>Saved Home operator (event follow-up)</option>
           </select>
         </label>
@@ -191,6 +194,7 @@ function editorMarkup(item) {
           <label>Home selection revision<input name="home_binding_revision" type="number" min="1" value="${esc(numberValue(target.home_binding_revision))}" /></label>
           <label>Home Agent Profile revision<input name="agent_profile_revision" type="number" min="1" value="${esc(numberValue(target.agent_profile_revision))}" /></label>
         </fieldset>
+        ${procedureTargetFields(target, esc)}
         <label>Owner identity
           <input name="owner_identity_id" value="${esc(definition.owner_identity_id || "")}" />
         </label>
@@ -260,6 +264,7 @@ function definitionFromEditor(form, existing) {
     lifecycle: form.elements.lifecycle.value,
     trigger,
     target: {
+      ...readProcedureTarget(form),
       kind: form.elements.target_kind.value,
       id: form.elements.target_id.value.trim(),
       ...(form.elements.target_kind.value === "home_operator" ? {
@@ -330,7 +335,7 @@ function detailMarkup(item) {
         </dl>
       </details>
        <div class="automation-actions">
-         <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" || target.kind === "home_operator" || state.runPendingId === item.id ? "disabled" : ""}>${state.runPendingId === item.id ? "Starting…" : "Run now"}</button>
+         <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" || ["home_operator", "canonical_procedure"].includes(target.kind) || state.runPendingId === item.id ? "disabled" : ""}>${state.runPendingId === item.id ? "Starting…" : "Run now"}</button>
         <button type="button" class="ghost-button" data-automation-edit>Edit</button>
         <button type="button" class="ghost-button" data-automation-refresh>Refresh</button>
        </div>

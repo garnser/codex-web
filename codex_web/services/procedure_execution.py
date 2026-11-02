@@ -607,18 +607,21 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_rollback_unavailable_or_incompatible")
         return binding, provider, definition, request
 
-    def start(self, assignment_id, *, definition, input_snapshot_id, actor):
+    def start(self, assignment_id, *, definition, input_snapshot_id, actor, expected_fence=None):
         try:
-            return self._start(assignment_id, definition=definition, input_snapshot_id=input_snapshot_id, actor=actor)
+            return self._start(assignment_id, definition=definition, input_snapshot_id=input_snapshot_id, actor=actor,
+                **({"expected_fence":expected_fence} if expected_fence is not None else {}))
         except (ProcedureExecutionError, ProcedureAdmissionError):
             raise
         except Exception as exc:
             raise ProcedureExecutionError(getattr(exc, "code", "procedure_start_boundary_failure:" + type(exc).__name__)) from exc
 
-    def _start(self, assignment_id, *, definition, input_snapshot_id, actor):
+    def _start(self, assignment_id, *, definition, input_snapshot_id, actor, expected_fence=None):
         actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
         assignment = self.get(assignment_id, actor)
         self._live(assignment)
+        if expected_fence is not None and assignment.fence != expected_fence:
+            raise ProcedureExecutionError('procedure_expected_fence_changed')
         custody = assignment.native_credential_custody
         if custody is not None:
             if custody.admitted_at is None:
@@ -1776,18 +1779,20 @@ class ProcedureExecutionService:
         except (ArtifactEvidenceError, ArtifactContentError, IdentityError, ApiAuthorizationError) as exc:
             raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
 
-    async def advance(self, assignment_id, *, actor, run_id=None, current_input_snapshot_id=None):
+    async def advance(self, assignment_id, *, actor, run_id=None, current_input_snapshot_id=None, expected_fence=None):
         token = _current_input_witness.set((assignment_id, run_id, current_input_snapshot_id)
             if current_input_snapshot_id is not None else None)
         try:
             from codex_web.services.async_operations import run_settled
             await run_settled(lambda: self._admit_current_input(assignment_id, actor, run_id))
-            return await self._advance_with_outcomes(assignment_id, actor=actor, run_id=run_id)
+            return await self._advance_with_outcomes(assignment_id, actor=actor, run_id=run_id,
+                **({"expected_fence":expected_fence} if expected_fence is not None else {}))
         finally:
             _current_input_witness.reset(token)
 
-    async def _advance_with_outcomes(self, assignment_id, *, actor, run_id=None):
-        assignment = await self._advance(assignment_id, actor=actor, run_id=run_id)
+    async def _advance_with_outcomes(self, assignment_id, *, actor, run_id=None, expected_fence=None):
+        assignment = await self._advance(assignment_id, actor=actor, run_id=run_id,
+            **({"expected_fence":expected_fence} if expected_fence is not None else {}))
         if self.outcome_drafts is not None and assignment.procedure_checkpoint.status in {
             "completed", "recovered", "recovery_required"
         }:
@@ -1797,8 +1802,10 @@ class ProcedureExecutionService:
             await self.outcome_drafts.on_completion(assignment, actor)
         return assignment
 
-    async def _advance(self, assignment_id, *, actor, run_id=None):
+    async def _advance(self, assignment_id, *, actor, run_id=None, expected_fence=None):
         assignment = self.get(assignment_id, actor)
+        if expected_fence is not None and assignment.fence != expected_fence:
+            raise ProcedureExecutionError('procedure_expected_fence_changed')
         self._require_current_run(assignment, run_id)
         self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if assignment.procedure_checkpoint is None:

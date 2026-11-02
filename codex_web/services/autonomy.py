@@ -61,6 +61,7 @@ class AutonomyService:
         self.action_intents = action_intents
         self.controller = controller
         self.canonical_events = canonical_events
+        self.procedure_event_handler = None
 
     def _actions(self) -> ActionExecutionService:
         if self.action_execution is None:
@@ -228,6 +229,15 @@ class AutonomyService:
             tenant_id=organization_id,
             workspace_id=workspace_id,
         )
+        if self.procedure_event_handler is not None:
+            handled = await self.procedure_event_handler(delivery.event)
+            if handled and handled.get('handled'):
+                cycle = await self.controller.process(delivery.event,
+                    AutonomyObservation(deterministic_resolved=True, reasoning_score=0,
+                        reason='Canonical procedure observation: '+str(handled.get('code') or handled.get('status') or 'retained')[:200]),
+                    cycle_key=cycle_key)
+                return {**handled, 'ok':True, 'ignored':True,
+                    'reason':'canonical_procedure_owned', 'autonomyCycleId':cycle.id}
         if not delivery.inserted:
             return {
                 "ok": True,

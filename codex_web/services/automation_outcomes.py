@@ -45,6 +45,7 @@ class AutomationOutcomeReconciliationService:
         self.scheduler = scheduler
         self.clock = clock
         self.home_operator_reconciler = None
+        self.procedure_reconciler = None
 
     def reconcile_for_execution(
         self,
@@ -384,6 +385,10 @@ class AutomationOutcomeReconciliationService:
         if run.status != AutomationRunStatus.RUNNING or not run.execution_ids:
             return run
 
+        if run.target_kind == 'canonical_procedure':
+            if self.procedure_reconciler is None:
+                raise ValueError('Canonical procedure outcome owner is unavailable')
+            return self.procedure_reconciler(run.id,actor=actor,cancel_unknown=cancel_unknown_home)
         if self.home_operator_reconciler is not None and run.target_kind == AutomationTargetKind.HOME_OPERATOR:
             return self.home_operator_reconciler(run.id, actor=actor, cancel_unknown=cancel_unknown_home)
 

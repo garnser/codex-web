@@ -93,7 +93,10 @@ class ExactCustodyExpiryTests(unittest.TestCase):
     def test_unknown_previous_owner_never_expires_target(self):
         self._waiting_expiry_case(known=False)
 
-    def _waiting_expiry_case(self, *, known):
+    def test_repeated_positive_busy_observation_retains_witness_until_real_expiry(self):
+        self._waiting_expiry_case(known=True, repeat_busy=True)
+
+    def _waiting_expiry_case(self, *, known, repeat_busy=False):
         import asyncio
         import time
         from types import SimpleNamespace
@@ -125,6 +128,12 @@ class ExactCustodyExpiryTests(unittest.TestCase):
         first = asyncio.run(owner.execute(context,value))
         self.assertEqual(first.disposition,'waiting')
         self.assertEqual(first.code,'custody_before_effect:busy_or_completion_pending')
+        if repeat_busy:
+            context.previous_step = CanonicalPreviousStep(status='waiting',failure_code=first.code,
+                diagnostic_evidence_ids=('engine-validated-diagnostic',),operation_code=first.code)
+            first = asyncio.run(owner.reconcile(context,value))
+            self.assertEqual(first.code,'custody_before_effect:busy_or_completion_pending')
+            self.assertEqual(f.service.store.assignment(target.id).status,'running')
         def expire(store):
             for index,item in enumerate(store.assignments):
                 if item.id == target.id:
