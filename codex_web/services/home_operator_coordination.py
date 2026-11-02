@@ -20,12 +20,16 @@ from codex_web.authority import AuthorityEvaluationRequest, AuthorityLevel
 from codex_web.control_plane_broker import ControlPlaneBrokerOperation
 from codex_web.models import HomeOperatorCoordinationDispatch, TurnCreate
 from codex_web.services.project_coordination import ProjectCoordinationService
+from codex_web.services.home_delegation_status import READ, read_delegation
 
 
 SOURCE = "home-operator-coordination"
 MESSAGE_ACTION = "operator.project.thread.message"
 PROVIDER = "home-operator-coordination"
 OPERATIONS = (
+    ControlPlaneBrokerOperation(id=READ, method="GET",
+        path_template="/api/operator/projects/delegation", capability="operator.project.coordinate",
+        authority_level=AuthorityLevel.READ),
     ControlPlaneBrokerOperation(id="operator.project.threads.list", method="GET",
         path_template="/api/operator/projects/threads", capability="operator.project.threads.list",
         authority_level=AuthorityLevel.READ),
@@ -64,7 +68,7 @@ def denied(message):
 
 class HomeOperatorCoordinationService:
     def __init__(self, *, broker, origin_guard, thread_scope, bootstrap_bindings,
-                 project_coordination, turns=None):
+                 project_coordination, turns=None, preflight=None, events=None, usage=None, sessions=None):
         self.broker = broker
         # Shared Home execution/identity/profile/worker/workspace guard. Caller
         # must return current assignment, requester, Home binding and envelope.
@@ -73,6 +77,7 @@ class HomeOperatorCoordinationService:
         self.bindings = bootstrap_bindings
         self.coordination = project_coordination
         self.turns = turns
+        self.preflight, self.events, self.usage, self.sessions = preflight, events, usage, sessions
 
     def origin(self, assignment_id, fence, operation):
         snapshot = self.broker.execution_workers.store.assignment(assignment_id)
@@ -172,6 +177,9 @@ class HomeOperatorCoordinationService:
             denied("Home selection or declaration changed during inspection")
         return {**result, "home_revision": home.revision, "project_id": project_id,
                 "assignment_id": current.id, "observed_at": self.broker._clock()}
+
+    def delegation_status(self, *, assignment_id, fence, query):
+        return read_delegation(self, assignment_id=assignment_id, fence=fence, query=query)
 
     def validate_queued_delegation(self, queued):
         proof = queued.project_coordination_dispatch

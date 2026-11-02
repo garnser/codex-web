@@ -601,6 +601,11 @@ class ControlPlaneBrokerService:
             result['query_parameters'] = {'allowed': False}
             result['effect'] = 'One retained input in an existing explicitly declared project thread; queue acceptance does not verify native start or task completion'
             result['response_loss'] = 'Inspect the original canonical intent and retained input; no replacement key or automatic replay'
+        if item.id == 'operator.project.delegation.read':
+            result['required_query_parameters'] = ['intent_id']
+            result['optional_query_parameters'] = ['event_id']
+            result['scope'] = 'Exact original Home delegation under current Home declaration and Project authority; historical metadata, no execution grant'
+            result['effect'] = 'Bounded parent receipt and exact child admission, START and terminal facts; missing outcomes remain unknown; no task bodies or transcripts'
         if item.id == 'operator.project.threads.list':
             result['required_query_parameters'] = ['project_id']
             result['optional_query_parameters'] = ['limit', 'cursor']
@@ -2146,7 +2151,13 @@ class ControlPlaneBrokerService:
             adapter = self.home_operator_coordination
             if adapter is None:
                 raise ControlPlaneBrokerDeniedError('Home coordination is unavailable')
-            if operation.id == 'operator.project.threads.list':
+            if operation.id == 'operator.project.delegation.read':
+                if body or set(resolved.query) - {'intent_id', 'event_id'} or 'intent_id' not in resolved.query or any(
+                        len(v) != 1 or not v[0] for v in resolved.query.values()):
+                    raise ControlPlaneBrokerRequestError('Home delegation read requires exact identifiers and no body')
+                result = await run_settled(lambda: adapter.delegation_status(assignment_id=assignment.id,
+                    fence=assignment.fence, query={k:v[0] for k,v in resolved.query.items()}))
+            elif operation.id == 'operator.project.threads.list':
                 if body or set(resolved.query) - {'project_id', 'limit', 'cursor'} or any(
                         len(v) != 1 or not v[0] for v in resolved.query.values()) or 'project_id' not in resolved.query:
                     raise ControlPlaneBrokerRequestError('Home inspection requires one explicit target Project and no body')

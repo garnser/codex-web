@@ -1680,6 +1680,15 @@ automation_outcome_reconciliation_service.runtime_usage = agent_runtime_usage_st
 def _notify_automation_runtime_usage(record):
     if not record.execution_id:
         return
+    # Terminal usage is already persisted. Home uses logical execution IDs;
+    # generic reconciliation/identity failure must not consume its own wake.
+    if record.completed_at is not None and record.terminal_outcome != "unknown":
+        recovery = getattr(app.state, "native_recovery_service", None)
+        if recovery is not None:
+            try:
+                recovery.notify_runtime_usage()
+            except Exception:
+                pass  # Observational wake cannot roll back telemetry.
     try:
         actor = identity_service.bootstrap_service_actor(
             identity_id="service-automation-budget-reconciler",
@@ -1701,9 +1710,6 @@ def _notify_automation_runtime_usage(record):
         except RuntimeError:
             loop = None
         if loop is not None:
-            recovery = getattr(app.state, "native_recovery_service", None)
-            if recovery is not None:
-                recovery.schedule(reason="home-runtime-usage-observed")
             for automation_run in outcome_runs:
                 if automation_run.status.value in {"succeeded", "failed"}:
                     loop.create_task(
@@ -4317,6 +4323,7 @@ async def _recover_home_event_runs():
 
 native_recovery_service = NativeRecoveryService(
     policy=runtime_policy,
+    usage_cycle=_recover_home_event_runs,
     cycles=(
         _recover_home_event_runs,
         _reconcile_native_goal_runners,
@@ -4996,6 +5003,8 @@ home_operator_coordination_service = HomeOperatorCoordinationService(
     broker=control_plane_broker_service, origin_guard=_home_coordination_origin,
     thread_scope=thread_scope_service, bootstrap_bindings=thread_bootstrap_binding_service,
     project_coordination=project_coordination_service, turns=turn_service,
+    preflight=execution_preflight_service, events=canonical_event_store, usage=agent_runtime_usage_store,
+    sessions=agent_session_store,
 )
 control_plane_broker_service.home_operator_coordination = home_operator_coordination_service
 turn_execution_service.home_operator_coordination_admission = home_operator_coordination_service.validate_queued_delegation

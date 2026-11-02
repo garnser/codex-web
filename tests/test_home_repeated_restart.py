@@ -262,7 +262,8 @@ class RepeatedHomeRestartTests(HomeRestartRecoveryTests):
             workspace_id=self.actor.workspace_id,provider_id='openai',runtime_id='codex')
         def record(turn):
             return usage.upsert(AgentRuntimeUsage(id='runtime-usage-'+hashlib.sha256(f'{session.id}\n{turn}'.encode()).hexdigest()[:32],
-                organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id,assignment_id=self.assignment.id,
+                organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id,project_id=session.project_id,
+                agent_session_id=session.id,execution_workspace_id=session.execution_workspace_id,assignment_id=self.assignment.id,
                 execution_id=self.assignment.execution_id,provider_id='openai',runtime_id='codex',runtime_type='native',
                 provider_native_session_id='operator-thread',provider_native_turn_id=turn,input_tokens=10,output_tokens=5,
                 terminal_outcome='succeeded',started_at=time.time()-2,completed_at=time.time()))
