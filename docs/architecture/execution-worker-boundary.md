@@ -1998,3 +1998,13 @@ bootstrap does not leave an incomplete native-custody resource join. Existing
 cancelled-recipient tenant, Profile, assignment, workspace, worker and resource
 checks remain authoritative. This producer correction does not backfill or
 rewrite historical Sessions, reinterpret UNKNOWN inputs, or grant new access.
+
+### Terminal cleanup across runtime managers
+
+Replacement visits every registered process or CLI manager with the exact
+canonical terminal assignment witness. Each implementation, including the
+Mammouth CLI adapter, rejects a changed terminal row or remaining lease before
+cleanup. An absent session is a no-op only after that validation. Registered
+owners and CLI private HOME state remain discoverable until cleanup joins; a
+failed or cancelled cleanup preserves them for a later owner. This changes no
+queue, native outcome, workspace retention, or replacement authority (#1967).
