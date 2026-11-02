@@ -438,6 +438,17 @@ class HomeOperatorFollowup:
         if scope is not None:
             await self.recover_pending(scope=scope)
 
+    def attach_preinput_observer(self, preflight):
+        """Compose after earlier Executive registration; neither owner replaces the other."""
+        previous = preflight.queued_disposition_observer
+        def observe(attempt):
+            try:
+                if previous is not None:
+                    previous(attempt)
+            finally:
+                self.observe_preinput_refusal(attempt)
+        preflight.queued_disposition_observer = observe
+
     def observe_preinput_refusal(self, attempt):
         """Project only a committed typed local refusal, never a blocker code."""
         source = str(attempt.source or '')

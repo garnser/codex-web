@@ -15,6 +15,7 @@ from codex_web.services.turns import TurnService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from tests import test_home_operator_followup as home_fixture
 from tests import test_turn_execution as turn_fixture
+from tests import test_native_reasoning_registration as registration_fixture
 
 
 class HomePreinputReconciliationTests(unittest.IsolatedAsyncioTestCase):
@@ -316,3 +317,53 @@ class HomePreinputReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.followup.reconcile_preinput = unexpected
         with self.assertRaisesRegex(RuntimeError, 'synthetic infrastructure failure'):
             await self.followup.recover_pending()
+
+    def register_executive_then_attach_home(self):
+        # Real opt-in registration used by application startup; only registry,
+        # provider/bridge transport edges come from its existing small fixture.
+        registration = registration_fixture.NativeReasoningRegistrationTests(methodName='runTest')
+        registration.setUp()
+        registration.execution = self.runtime
+        self.runtime.procedure_admission = NS(reasoning_preparation=None)
+        registration.register()
+        self.followup.attach_preinput_observer(self.preflight)
+        return registration.components.bridge.observe_admission
+
+    async def test_real_executive_registration_then_home_attach_preserves_both_observers(self):
+        await self.queued_run()
+        previous = self.register_executive_then_attach_home()
+        saved = self.disposition()
+        previous.assert_called_once_with(saved)
+        self.assertEqual(self.current_run().status, 'failed')
+        self.assertEqual(self.preflight.store.get(saved.id), saved)
+
+    async def test_registered_executive_failure_does_not_drop_home_projection(self):
+        await self.queued_run()
+        previous = self.register_executive_then_attach_home()
+        previous.side_effect = RuntimeError('synthetic Executive observation failure')
+        saved = self.disposition()
+        previous.assert_called_once_with(saved)
+        self.assertEqual(self.current_run().status, 'failed')
+        self.assertEqual(saved.status, 'blocked')
+
+    async def test_home_projection_failure_does_not_drop_registered_executive(self):
+        await self.queued_run()
+        previous = self.register_executive_then_attach_home()
+        self.followup.observe_preinput_refusal = Mock(side_effect=ValueError('expected Home authority refusal'))
+        saved = self.disposition()
+        previous.assert_called_once_with(saved)
+        self.followup.observe_preinput_refusal.assert_called_once_with(saved)
+        self.assertEqual(self.current_run().status, 'running')
+
+    async def test_non_home_disposition_still_reaches_registered_executive(self):
+        await self.queued_run()
+        previous = self.register_executive_then_attach_home()
+        other = self.original.model_copy(update={'id': 'non-home-original',
+            'execution_id': 'non-home-execution', 'source': 'web'})
+        attempt = self.preflight.retain_queued(other, organization_id='local', workspace_id='default')
+        _, claim = self.preflight.claim_queued_admission(attempt.id)
+        self.assertTrue(self.preflight.begin_queued_start(attempt.id, claim_id=claim))
+        saved = self.preflight.queued_disposition(attempt.id, status='blocked', claim_id=claim,
+            preinput_refusal=True, detail={'code': 'synthetic_local_refusal', 'message': 'No native write'})
+        previous.assert_called_once_with(saved)
+        self.assertEqual(self.current_run().status, 'running')

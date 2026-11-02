@@ -5013,7 +5013,7 @@ async def _launch_home_event_run(run):
         organization_id=run.organization_id, workspace_id=run.workspace_id)
 
 home_operator_followup.launch_handler = _launch_home_event_run
-execution_preflight_service.queued_disposition_observer = home_operator_followup.observe_preinput_refusal
+home_operator_followup.attach_preinput_observer(execution_preflight_service)
 automation_outcome_reconciliation_service.home_operator_reconciler = home_operator_followup.reconcile_preinput
 app.state.home_operator_followup = home_operator_followup
 app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
