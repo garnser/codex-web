@@ -534,3 +534,22 @@ action Work attribution while retaining the original execution/workspace and
 provider receipt provenance. This introduces no caller-supplied scope, input
 relabel, worker-read exception, replay or new public/persisted contract. Existing
 procedure, intent and Evidence inspectors expose these canonical references.
+
+## Original-key delivery evidence recovery
+
+An assignment-bound caller that lost the intent ID can use the existing
+`repository.read.delivery-evidence` operation with
+`GET /api/action-intents/delivery-evidence?action_id=...&idempotency_key=...`
+and its normal repository selector. The exact original key is bounded to 500
+characters. The server resolves the current unique eligible canonical provider
+binding and uses the tenant/binding/action/key index; it never lists intents or
+calls a provider. A match passes the same requester, Project, repository and
+record disclosure checks as by-ID inspection. READY additionally requires the
+current explicit declaration and exact originating assignment/execution/fence.
+The existing broker inspector advertises the selector and no-replay guidance.
+
+A match returns the original bounded intent/receipt/verification projection,
+including pending or uncertain outcomes. An unknown key returns `outcome: unknown`
+with `absence_is_not_permission_to_replay: true`. Neither response authorizes
+claim, execute, replacement, retry or provider mutation. By-ID receipt inspection
+and explicit same-intent reconciliation remain unchanged.
