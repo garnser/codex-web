@@ -561,16 +561,30 @@ class AssignmentBoundCliSessionManager:
                 )
         return completed
 
-    async def stop(self, assignment_id: str) -> None:
+    async def stop(
+        self,
+        assignment_id: str,
+        *,
+        expected_terminal: ExecutionAssignment | None = None,
+    ) -> None:
         async with self._lock:
-            session = self.sessions.pop(assignment_id, None)
-        if session is not None:
-            await session.stop()
+            if expected_terminal is not None:
+                current = self.local_worker._pending_assignment(assignment_id)
+                if (current != expected_terminal or current.lease is not None
+                        or current.status not in {AssignmentStatus.CANCELLED, AssignmentStatus.LOST,
+                            AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}):
+                    raise AssignmentBoundCliSessionStaleError(
+                        "terminal assignment changed before registered CLI cleanup"
+                    )
+            session = self.sessions.get(assignment_id)
+            if session is not None:
+                # Keep custody discoverable until the actual cleanup joins.
+                # A failed/cancelled stop must not permit replacement or start
+                # to treat a still-owned runtime as absent.
+                await session.stop()
+                self.sessions.pop(assignment_id, None)
 
     async def stop_all(self) -> None:
-        async with self._lock:
-            sessions = list(self.sessions.values())
-            self.sessions.clear()
-        for session in sessions:
+        for assignment_id in tuple(self.sessions):
             with contextlib.suppress(Exception):
-                await session.stop()
+                await self.stop(assignment_id)
