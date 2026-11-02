@@ -468,7 +468,14 @@ def build_goal_execution_bindings_router(
                 raise GoalExecutionBindingNotFoundError(
                     "goal execution binding not found"
                 )
-            if existing.status == GoalExecutionBindingStatus.ACTIVE:
+            accounted = False
+            home = getattr(continuation, "home_continuation", None)
+            if (existing.status == GoalExecutionBindingStatus.ACTIVE
+                    and home is not None and home.handles(existing)):
+                # A retained original may already have canonical terminal usage.
+                # Reconcile it before touching the current Session/native turn.
+                accounted = await home.prepare_operator_pause(existing, scope=actor.tenant)
+            if existing.status == GoalExecutionBindingStatus.ACTIVE and not accounted:
                 await agent_sessions.interrupt(existing.agent_session_id, actor=actor)
             item = service.operator_stop(
                 binding_id,
