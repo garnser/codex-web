@@ -29,15 +29,31 @@ def wait_input_sha256(state):
         ensure_ascii=False).encode()).hexdigest()
 
 
+def wait_state_ineligibility(state):
+    """State-only prerequisites; actor/hash/admission checks remain canonical."""
+    if state.closed_at or state.current_stage == 'closed':
+        return 'closed'
+    if state.handoff and state.handoff.status == 'pending':
+        return 'pending_handoff'
+    # Ordinary progress in this lane clears its blocker before validating waits.
+    if state.current_stage == 'implementation_active':
+        return 'active_lane'
+    if not state.blocker:
+        return 'missing_blocker'
+    if not state.next_action:
+        return 'missing_next_action'
+    return None
+
+
 def current_unchanged_wait(state):
     witness = getattr(state, 'wait_checkpoint', None)
-    return bool(witness is not None and not state.closed_at and state.current_stage != 'closed'
-        and not (state.handoff and state.handoff.status == 'pending')
-        and state.blocker and state.next_action
+    return bool(witness is not None and wait_state_ineligibility(state) is None
         and witness.expected_input_sha256 == wait_input_sha256(state))
 
 
 def wait_context(state):
     return {'schema_version': '1.0', 'input_sha256': wait_input_sha256(state),
+        'state_eligible': wait_state_ineligibility(state) is None,
+        'state_ineligibility_reason': wait_state_ineligibility(state),
         'unchanged_wait_active': current_unchanged_wait(state),
         'remote_prerequisites_verified': False}
