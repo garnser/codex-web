@@ -6,6 +6,7 @@ from codex_web.automation_runs import (
     AUTOMATION_RUN_STATE_CONTRACT,
     AutomationRun,
     AutomationRunState,
+    AutomationRunStatus,
 )
 from codex_web.compatibility import MigrationRegistry
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -232,3 +233,26 @@ class AutomationRunStore:
 
         self.update(apply)
         return run
+
+    def cancel_retired_procedure(self, run, assignment, *, workers, validate, now, operator_identity_id):
+        """CAS scheduling only, under the canonical assignment/Run writer fence."""
+        if self.store is not workers.store:
+            raise ValueError('procedure_retirement_canonical_store_required')
+        result = []
+        def apply(rows):
+            state = self._decode(rows[self.namespace][None])
+            current = next((row for row in state.runs if row.id == run.id), None)
+            if (current != run or current.status != 'running'
+                    or rows[workers.assignment_namespace][assignment.id] != assignment.model_dump(mode='json')):
+                raise ValueError('procedure_retirement_original_changed')
+            validate()
+            cancelled = run.model_copy(update={'status': AutomationRunStatus.CANCELLED, 'completed_at': now, 'updated_at': now,
+                'result_code': 'procedure_retired_custody_cancelled',
+                'result_reason': f'Operator {operator_identity_id} cancelled scheduling after exact original bootstrap retirement; '
+                    'the retained checkpoint and historical effects are not completed, rolled back or replayed.'})
+            state.runs = [cancelled if row.id == run.id else row for row in state.runs]
+            result.append(cancelled)
+            return {self.namespace: {None: state.model_dump(mode='json')}}
+        self.store.record_mutate_many({self.namespace: (None,),
+            workers.assignment_namespace: (assignment.id,)}, apply)
+        return result[0]

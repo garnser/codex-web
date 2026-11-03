@@ -444,3 +444,69 @@ test('Home run reconciliation confirms unknown scheduling without replay or nati
   expect(writes).toEqual([{ path: '/api/automation-runs/home-run/reconcile', body: { cancel_unknown_home: true } }]);
   await expect(row.locator('[data-home-cancel-unknown]')).toHaveCount(0);
 });
+
+for (const disposition of ['cancelled', 'unresolved']) {
+  test(`Retired procedure scheduling ${disposition} preserves checkpoint truth`, async ({ page }) => {
+    const writes = [];
+    let status = 'running';
+    await page.route('**/api/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === 'POST') {
+        writes.push({path, body: request.postDataJSON()});
+        if (disposition === 'unresolved') {
+          await route.fulfill({status:409, json:{detail:'procedure_retirement_effect_unresolved'}});
+        } else {
+          status = 'cancelled';
+          await route.fulfill({json:{run:{id:'retired-run',status}}});
+        }
+        return;
+      }
+      const items = path === '/api/automations' ? [scopedAutomation('project-a')]
+        : path.endsWith('/runs') ? [{id:'retired-run',status,target_kind:'canonical_procedure',
+          procedure_custody:{checkpoint_id:'original-checkpoint',advances_started:1},
+          result_reason:'Original checkpoint is not completed'}] : [];
+      await route.fulfill({json:{items}});
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+    await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+    await switchAutomationProject(page, 'project-a');
+    const row = page.locator('[data-automation-run="retired-run"]');
+    await row.locator('[data-procedure-retirement]').click();
+    expect(writes).toEqual([]);
+    const message = await resolveAction(page);
+    expect(message).toContain('checkpoint and historical effects remain unchanged');
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes).toEqual([{path:'/api/automation-runs/retired-run/reconcile',body:{cancel_retired_procedure:true}}]);
+    await expect(row).toContainText('original-checkpoint');
+    if (disposition === 'unresolved') {
+      await expect(page.locator('[data-automation-product]')).toContainText('procedure_retirement_effect_unresolved');
+      await expect(row.locator('[data-procedure-retirement]')).toBeEnabled();
+    } else {
+      await expect(row.locator('[data-procedure-retirement]')).toHaveCount(0);
+      await expect(row).toContainText('not completed');
+    }
+  });
+}
+
+test('Retired procedure confirmation cannot cross a Project switch', async ({ page }) => {
+  const writes = [];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'POST') writes.push(url.pathname);
+    const project = url.searchParams.get('project_id');
+    const items = url.pathname === '/api/automations' ? [scopedAutomation(project)]
+      : url.pathname.endsWith('/runs') ? [{id:'retired-'+project,status:'running',target_kind:'canonical_procedure'}] : [];
+    await route.fulfill({json:{items}});
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+  await switchAutomationProject(page, 'project-a');
+  await page.locator('[data-procedure-retirement]').click();
+  await switchAutomationProject(page, 'project-b');
+  // Existing Project-switch ownership dismisses the pending confirmation.
+  await expect(page.locator('[data-action-confirmation]')).toHaveCount(0);
+  await expect(page.locator('[data-automation-run="retired-project-b"]')).toBeVisible();
+  expect(writes).toEqual([]);
+});

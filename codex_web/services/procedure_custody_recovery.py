@@ -177,8 +177,69 @@ class CustodyOperation:
             return await self.execute(context, value)
         return self._result('waiting', 'custody_original_owner_reconciliation_required', facts=facts)
 
+    def settled_retired_dispatch(self, assignment, value):
+        """Observe an original dispatch after supervisor retirement, without effects.
+
+        This is not execute/reconcile: it neither validates a fabricated LIVE
+        context nor prepares, queues or advances any native/procedure work.
+        """
+        if self.operation != 'work.handoff.dispatch-existing.v1':
+            raise ValueError('custody_historical_dispatch_owner_required')
+        state = self.get_work(value.work_item_ref)
+        if ((state.organization_id, state.workspace_id, state.project_id) !=
+                (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                or state.ref != value.work_item_ref or not state.resource_ids
+                or set(state.resource_ids) - set(assignment.resource_ids)):
+            raise ValueError('custody_historical_work_scope_changed')
+        self.routing.require_resolved_originals(state)
+        candidates = [h for h in (*state.handoff_history, state.handoff) if h is not None
+            and h.requested_at == value.expected_handoff_requested_at and h.status == 'accepted']
+        # Canonical ACK and later archive may append the identical accepted
+        # snapshot twice. Conflicting accepted facts are not a unique witness.
+        if not candidates or any(h != candidates[0] for h in candidates[1:]):
+            raise ValueError('custody_historical_ack_unavailable_or_conflicting')
+        handoff = candidates[0]
+        if (handoff.delivery is None or handoff.delivery.started_at is None
+                or handoff.acknowledged_at is None
+                or not handoff.requested_at <= handoff.delivery.started_at <= handoff.acknowledged_at):
+            raise ValueError('custody_historical_ack_order_invalid')
+        result = self._delivery_observation(assignment, assignment.resource_ids, state, handoff, {})
+        if result.disposition != 'succeeded':
+            raise ValueError(result.code or 'custody_historical_start_unavailable')
+        attempt = self.preflight.store.get(result.original_references[0])
+        correlation = attempt.queued_start_correlation if attempt is not None else None
+        recipient = self.workers.store.assignment(correlation.assignment_id) if correlation is not None else None
+        snapshot = attempt.queued_turn_snapshot or {} if attempt is not None else {}
+        binding = recipient.agent_profile if recipient is not None else None
+        if (attempt is None or attempt.status != 'started' or correlation is None or recipient is None
+                or (correlation.assignment_id, correlation.fence) !=
+                   (value.target_assignment_id, value.expected_target_fence)
+                or attempt.queued_start_receipt.observed_at != handoff.delivery.started_at
+                or attempt.queued_start_evidence.observed_at != handoff.delivery.started_at
+                or (snapshot.get('work_item_ref'), snapshot.get('handoff_requested_at'), snapshot.get('thread_id')) !=
+                   (value.work_item_ref, value.expected_handoff_requested_at, handoff.delivery.thread_id)
+                or (recipient.organization_id, recipient.workspace_id, recipient.project_id,
+                    recipient.execution_id, recipient.assigned_worker_id, recipient.created_by,
+                    recipient.execution_profile_id, recipient.resource_ids) !=
+                   (correlation.organization_id, correlation.workspace_id, correlation.project_id,
+                    correlation.execution_id, correlation.worker_id, correlation.actor_identity_id,
+                    correlation.execution_profile_id, correlation.assignment_resource_ids)
+                or binding is None or (binding.profile_id, binding.profile_revision) !=
+                   (correlation.agent_profile_id, correlation.agent_profile_revision)
+                or not (recipient.fence == correlation.fence or recipient.fence == correlation.fence + 1
+                    and recipient.status == 'cancelled' and recipient.lease is None)):
+            raise ValueError('custody_historical_recipient_changed')
+        from codex_web.services.queued_native_start import validate_attribution
+        validate_attribution(self.preflight, attempt, correlation)
+        return result
+
     def _verify_delivery(self, context, value, state, facts):
-        h = state.handoff
+        return self._delivery_observation(context.assignment, context.resource_ids, state,
+            state.handoff, facts)
+
+    def _delivery_observation(self, assignment, resource_ids, state, h, facts):
+        # Shared read-only receipt matcher. Historical scheduling disposition
+        # uses a canonical retained handoff, never a fabricated current Work.
         delivery = h.delivery
         if (h.status != 'accepted' or h.acknowledged_at is None or delivery is None
                 or delivery.status != 'delivered' or not delivery.scope_verified):
@@ -188,9 +249,9 @@ class CustodyOperation:
         # thread history cannot hide this Work's delivery.
         try:
             attempts = self.preflight.store.for_work_item(
-                organization_id=context.assignment.organization_id,
-                workspace_id=context.assignment.workspace_id,
-                project_id=context.assignment.project_id, ref=state.ref)
+                organization_id=assignment.organization_id,
+                workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id, ref=state.ref)
         except ValueError:
             return self._result('waiting', 'custody_start_inventory_incomplete', facts=facts)
         matching = []
@@ -210,9 +271,9 @@ class CustodyOperation:
                     == c.admission_claim_id and r.provider_native_turn_id == delivery.turn_id
                     and r.execution_id == c.execution_id == delivery.execution_id
                     and r.thread_id == c.thread_id == delivery.thread_id
-                    and c.fence > 0 and set(c.assignment_resource_ids).issubset(context.resource_ids)
+                    and c.fence > 0 and set(c.assignment_resource_ids).issubset(resource_ids)
                     and (c.organization_id, c.workspace_id, c.project_id)
-                        == (context.assignment.organization_id, context.assignment.workspace_id, context.assignment.project_id)):
+                        == (assignment.organization_id, assignment.workspace_id, assignment.project_id)):
                 matching.append((attempt, c))
         if len(matching) != 1:
             return self._result('waiting', 'custody_exact_start_proof_unavailable', facts=facts)

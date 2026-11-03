@@ -601,10 +601,13 @@ class ProcedureAutomationService:
                 return
         await asyncio.to_thread(self._note,run,'procedure_automation_advance_budget_exhausted')
 
-    def reconcile(self, run_id, *, actor, cancel_unknown=False):
+    def reconcile(self, run_id, *, actor, cancel_unknown=False, cancel_retired_procedure=False):
         run=self.runs.store.get(run_id,organization_id=actor.organization_id,workspace_id=actor.workspace_id)
         if cancel_unknown:
             raise ProcedureAutomationError('procedure_automation_unknown_cancellation_unavailable')
+        if cancel_retired_procedure:
+            from codex_web.services.procedure_run_disposition import cancel_retired_run
+            return cancel_retired_run(self, run, actor)
         custody=run.procedure_custody
         if run.target_kind!='canonical_procedure' or run.status!='running' or custody is None:
             return run

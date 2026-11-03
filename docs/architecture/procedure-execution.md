@@ -678,3 +678,45 @@ than replayed. Accepted-owner workflow is not suppressed by an existing-Run wake
 and an observation failure cannot prevent committed ACK owner continuation.
 Retired or changed custody refuses; a checkpoint is never transferred to a new
 supervisor. These notifications add no polling, model traffic or stored format.
+
+
+### Explicit retired supervisor scheduling disposition
+
+A legitimately cancelled bootstrap does not complete its retained procedure.
+An authenticated administrator (MFA, or the existing administrative service
+scopes) may explicitly request `cancel_retired_procedure: true` through
+`POST /api/automation-runs/{run_id}/reconcile` or the existing Run inspector.
+The original authenticated origin is revalidated; a credential-free identity
+lookup is not authentication. This operation is separate from Home unknown
+cancellation and from native cancellation or replacement (#2001).
+
+The canonical owner requires the exact original bootstrap, worker, execution,
+workspace and tenant; cancellation must have removed its lease and advanced its
+original fence exactly once. The current published Automation and procedure
+references, governed original input and checkpoint must still agree. Completed
+steps retain normal proof checks. Unstarted steps must have no reservations.
+A waiting/refused canonical READ may retain its exact valid diagnostic. The
+existing handoff-dispatch owner can also positively settle its original waiting
+mutation from canonical retained Work history: identical accepted snapshots of
+the exact original nonce must agree, with qualified delivery and its original
+canonical preflight START/correlation/Evidence, current original recipient
+identity/Profile/custody, and immutable input target/fence. The same existing
+read-only delivery matcher and native attribution validator own this observation;
+no execute, reconcile, dispatch, preparation, or fake LIVE context is called.
+A newer current handoff is not substituted for this historical original. Missing,
+conflicting or truncated canonical originals cannot be replaced by an operator
+journal. Other waiting mutation, running, reconciliation-required, judgment
+invocation, unsettled provider receipt, or unresolved native Work originals refuse disposition.
+Historical known effects and all diagnostic references are preserved: waiting
+is never described as proof that no historical effects occurred.
+
+Under the existing canonical SQLite writer fence the owner compares the full
+original Run and assignment and revalidates current authority and references.
+Only Run scheduling becomes `cancelled`, with an explicit result reason and
+completion timestamp for that scheduling disposition. The original custody,
+checkpoint, input, nonce, trigger, dedupe key, attempts, execution and Evidence
+references are not changed. No schema, automatic retry, owner transfer, native
+input, ActionIntent execution, rollback or checkpoint success is introduced.
+A later genuine event may undergo ordinary admission; this action neither
+creates that event nor authorizes it. Missing or uncertain originals remain
+visible for their existing reconciliation owner instead of being erased.

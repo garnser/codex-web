@@ -19,3 +19,37 @@ export function procedureRunSummary(run, esc) {
   const pin = run.procedure_custody;
   return pin ? `<p>Procedure checkpoint ${esc(pin.checkpoint_id || 'not yet started')} · ${esc(pin.advances_started)} advance(s) · ${esc(run.result_code || run.status)}</p>` : '';
 }
+
+
+export function retiredProcedureAction(run, esc) {
+  return run.status === 'running' && run.target_kind === 'canonical_procedure'
+    ? `<button type="button" class="ghost-button" data-procedure-retirement="${esc(run.id)}">Cancel retired procedure scheduling</button>` : '';
+}
+
+const retiringRuns = new Set();
+
+export function wireRetiredProcedureActions(card, {projectContext, confirmAction, api, refresh, error, render}) {
+  card.querySelectorAll('[data-procedure-retirement]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const context = projectContext();
+      const id = button.dataset.procedureRetirement;
+      const key = `${context.projectId}:${id}`;
+      if (button.disabled || retiringRuns.has(key)) return;
+      retiringRuns.add(key);
+      button.disabled = true;
+      try {
+        if (!await confirmAction({action: 'Cancel retired procedure scheduling', target: id, risk: 'high',
+          consequence: 'The server must prove the original bootstrap is cancelled and its effects are settled. This cancels scheduling only; the checkpoint and historical effects remain unchanged.',
+          recovery: 'This does not complete, roll back, transfer or replay the procedure. Unknown effects require their original owner.'}) || !context.current()) return;
+        await api(`/api/automation-runs/${encodeURIComponent(id)}/reconcile`, {
+          method: 'POST', body: JSON.stringify({cancel_retired_procedure: true})});
+        if (context.current()) await refresh();
+      } catch (failure) {
+        if (context.current()) error(failure.message);
+      } finally {
+        retiringRuns.delete(key);
+        if (context.current()) { button.disabled = false; render(); }
+      }
+    });
+  });
+}
