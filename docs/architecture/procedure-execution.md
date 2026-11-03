@@ -257,7 +257,7 @@ interpreter does not claim arbitrary existing operational adapters are supported
 
 An optional implementation adapter registered with the existing ActionProvider
 registry can project an exact provider/action/contract's legacy result into this
-contract. GitLab contract 1.2 supports typed READY and merge receipt projections;
+contract. GitLab contract 1.2 supports typed branch-publication, READY and merge receipt projections;
 the stored flat `ActionResult` remains unchanged for verification/reconciliation.
 The procedure owner requires the same succeeded canonical intent, current receipt,
 attempt, request/key, tenant/Project/execution and Resource attribution. Supported
@@ -310,6 +310,19 @@ Role authority and canonical approval quorum are required separately, including
 at ActionIntent creation and provider dispatch. Provider binding security policy
 still constrains filesystem, process and network effects. Expired fences, revoked
 worker identities or changed scope cannot be overridden by a stored policy allow.
+
+Initial branch publication uses an ordinary current durable action step with
+`code-host.branch.publish`. Its pure result projection binds the original
+resource, workspace, normalized branch/head, remote-absence mode, existing MR
+identity and idempotency key; the existing provider still owns workspace
+attestation, remote compare-and-swap and fresh branch verification. Original
+receipt and ActionIntent verification produce separate canonical Evidence.
+Projection does not read a later checkout or repeat publication. A later declared
+read-only exact-head MR observation can verify continuation without marking READY,
+approving QA or merging. The publication-recovery procedure remains restricted to
+its original admitted failure witnesses; it is not initial-publication coverage.
+Existing procedure/ActionIntent/Evidence inspectors expose these proofs; no new UI
+control or privilege is introduced (#2014).
 
 ### Assignment-bound procedure and Executive adapters
 

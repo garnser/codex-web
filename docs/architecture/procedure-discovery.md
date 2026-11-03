@@ -453,3 +453,27 @@ operation as requiring fresh canonical checks. The new availability observation
 is visible in the programmatic/native GET response itself. Copying it into an
 operator assignment projection would falsely relabel the caller/context and is
 outside this fix; no existing web consumer hides a field from this response.
+
+
+### Assignment-bound Project portfolio metadata
+
+`GET /api/work-items` is a bounded observation of the current assignment's
+Project coordination metadata. The broker retains current worker/requester
+identity, Profile, custody/fence and `work_item.read` authority checks. Its closed
+query accepts `project_id` (defaulting to the assignment Project), `owner`,
+`stage`, `q`, `limit` (1–100, default 50) and `cursor`. Duplicate fields, bodies,
+foreign Projects and unsupported selectors such as `kind` or `view` refuse
+before procedure inspection; an ignored selector is never claimed as applied.
+The existing indexed Work list owner preserves tenant/Project filtering, cursor
+binding and its coordination projection, without returning full notes, execution
+history or Artifact contents.
+
+Like the operation catalog, this metadata read returns `procedure_availability`
+as an observation of actual canonical discovery. An inaccessible repository
+procedure remains visibly inaccessible; no repository/environment is inferred,
+no procedure is admitted and no execution authority or history capacity is
+claimed. Concrete Work reads, progress/handoff mutations, registered actions and
+procedure start/advance retain ordinary procedure admission/history guards.
+Existing Work portfolio and native JSON consumers use the canonical bounded
+response; the existing operation descriptor advertises the exact query schema.
+No new UI object or privileged control is introduced.
