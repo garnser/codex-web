@@ -2350,6 +2350,9 @@ class ControlPlaneBrokerService:
             result = {"edge": edge.model_dump(mode="json")}
         elif operation.id == "control_plane.operations.list":
             result = self.public_assignment_capability(assignment)
+            # This route is worker-facing. Keep the operator audit inspection
+            # link on the operator assignment projection, not this allowlist.
+            result.pop("audit_href", None)
             if catalog_discovery is not None:
                 result["procedure_availability"] = {
                     "discovery": catalog_discovery.model_dump(mode="json"),
