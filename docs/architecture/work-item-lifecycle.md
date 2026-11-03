@@ -618,3 +618,26 @@ ordinary worker/native admission; scope incompatibility is reported without
 creating a replacement. Existing ordinary Work/operator and Executive context
 reads do not invoke this potentially expensive inspection. The actionable-owner
 projection retains its existing `work_item_handoff_pending` semantics.
+
+## Bound native Work coordination transport
+
+The code-owned developer contract for a routing-enabled bound bot Thread uses
+`CODEX_WEB_CONTROL_PLANE_URL` from the current native execution environment.
+Operation discovery and Work reads/progress use that assignment-bound HTTP broker;
+relative handoff/ACK/progress paths and exact encoded Work references retain their
+existing canonical ownership and authority checks. A descriptor is not a grant.
+The contract does not interpolate the server's internal base URL or a host port:
+host loopback may be intentionally unreachable inside native isolation.
+
+Missing broker environment, missing advertised capability, denial or unknown
+mutation outcome is reported truthfully without raw provider/host-admin fallback,
+credential discovery, mutation replay, new network access or Profile changes.
+Unbound Threads and routing-disabled projects retain their existing absence of a
+bound Work contract. Existing server/internal URL configuration remains unchanged;
+it no longer selects transport instructions for an isolated bound worker.
+
+UI impact: the existing thread settings/native developer-guidance composition
+receives this corrected text through its existing owner. No new UI control,
+endpoint, permission catalog or mutable Definition is introduced. Retained historic
+Work text is not authority to reuse an old Profile, assignment or transport; current
+canonical execution and broker guards remain authoritative.
