@@ -537,6 +537,11 @@ canonical service identity, operation/capability, target, authority decision and
 Definition revision, response class and denial reason. Request bodies and secret
 material are never stored in broker audit state. Operators inspect the effective
 broker scope and audit linkage through the existing execution-worker surface.
+The worker-facing operations catalog omits the operator-only `audit_href`;
+that link remains on the operator assignment projection (#2026). Audit inspection
+still requires the existing admin/MFA API path and is not a worker allowlisted
+operation. This presentation boundary grants no new capability and needs no
+operator UI change: the existing audit inspector and its guarded link remain.
 
 ### Network policy
 
