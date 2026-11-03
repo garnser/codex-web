@@ -4104,6 +4104,7 @@ bot_event_dispatch_service.owner_routing_context = owner_routing_service.context
 bot_event_dispatch_service.owner_routing_repository_scope = owner_routing_service.repository_scope_for_pin
 turn_execution_service.owner_routing_validator = owner_routing_service.validate_native
 app.state.owner_routing_service = owner_routing_service
+turn_service.owner_routing = owner_routing_service
 work_item_continuity_service.bind(
     canonical_work_item_continuity_service
 )

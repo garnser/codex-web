@@ -43,8 +43,17 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
         )
 
     @router.post("/api/threads/{thread_id}/replace")
-    async def replace_thread(thread_id: str) -> dict[str, Any]:
-        return await service.replace(thread_id)
+    async def replace_thread(thread_id: str, request: Request, work_item_ref: str | None = None) -> dict[str, Any]:
+        return await service.replace(thread_id, **({
+            'work_item_ref': work_item_ref, 'actor': request_actor(request),
+            'project': request.state.thread_project} if work_item_ref is not None else {}))
+
+    @router.get('/api/threads/{thread_id}/replacement-eligibility')
+    async def replacement_eligibility(thread_id: str, request: Request, work_item_ref: str) -> dict[str, Any]:
+        _, result = await asyncio.to_thread(service.replacement_eligibility,
+            thread_id, work_item_ref=work_item_ref,
+            actor=request_actor(request), project=request.state.thread_project)
+        return result
 
     @router.post("/api/threads/{thread_id}/turns")
     async def start_turn(

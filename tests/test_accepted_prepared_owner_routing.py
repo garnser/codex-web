@@ -140,7 +140,7 @@ class AcceptedPreparedOwnerRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(f.f.f.preflight.get(uncertain.id), uncertain)
         f.n.threads.create.assert_awaited_once()
 
-    async def test_incomplete_retained_index_and_foreign_source_native_custody_refuse(self):
+    async def test_incomplete_retained_index_and_foreign_recipient_native_custody_refuse(self):
         state = await self.accepted()
         f = self.fixture
         store = f.f.f.preflight.store
@@ -150,7 +150,16 @@ class AcceptedPreparedOwnerRoutingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OwnerRoutingError):
             self.select(state)
         store.record_apply(f.f.f.preflight.NAMESPACE, upserts={key: marker})
-        source = f.fixture.current_session
+        # Accepted generation zero authenticates the delivered recipient;
+        # the logical Role anchor remains reply/provenance, not its executor.
+        assignment = f.f.assignments['fresh-recipient-assignment']
+        source = f.fixture.current_session.model_copy(deep=True, update={
+            'id': 'accepted-recipient-session',
+            'provider_native_session_id': state.handoff.delivery.thread_id,
+            'assignment_id': assignment.id, 'execution_id': assignment.execution_id,
+            'execution_workspace_id': assignment.execution_workspace_id,
+            'worker_id': assignment.assigned_worker_id, 'resource_ids': assignment.resource_ids})
+        f.n.store.upsert(source)
         for update in ({'assignment_id': 'foreign'}, {'project_id': 'foreign'}):
             f.n.store.upsert(source.model_copy(update=update))
             with self.assertRaises(OwnerRoutingError):
