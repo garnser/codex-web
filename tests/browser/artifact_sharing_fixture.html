@@ -1,0 +1,26 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Governed shared input inspector</title>
+<body data-project-id="project-a"><details id="developer-panel" open><summary>Canonical inspector</summary>
+<button id="refresh-artifact-evidence">Refresh</button><div id="artifact-evidence-status" role="status"></div>
+<div id="artifact-list"></div><div id="evidence-list"></div><div id="verification-list"></div></details>
+<script>
+window.requests=[];
+const reference={kind:'artifact-sharing-policy',definition_id:'artifact.sharing.default',revision:2,
+  record_id:'policy-creation',checksum:'a'.repeat(64),definition_schema_version:'1.0'};
+const metadata={source_artifact_id:'artifact-original',source_evidence_id:'evidence-original',
+  source_work_item_ref:'team/source!7',sharing_policy_ref:JSON.stringify(reference),sharing_rule_id:'source-to-target'};
+const common={provider:'governed-artifact-sharing.v1',project_id:'project-a',work_item_ref:'team/target!8',
+  producer_identity_id:'producer',resource_ids:['target-repository'],metadata};
+window.records={artifacts:[{...common,id:'artifact-shared',artifact_type:'report',name:'Shared source',lifecycle:'active'},
+  {id:'artifact-ordinary',artifact_type:'report',name:'Ordinary report',lifecycle:'active',metadata:{}}],
+  evidence:[{...common,id:'evidence-shared',evidence_type:'artifact_verification',result:'info',lifecycle:'valid',artifact_ids:['artifact-shared']}]};
+window.fetch=async (path,options={}) => {
+  window.requests.push({path:String(path),method:options.method||'GET'});
+  const url=new URL(path,location.origin);
+  const bodies={'/api/artifacts':{items:window.records.artifacts},'/api/evidence':{items:window.records.evidence},
+    '/api/verifications':{items:[]},'/api/data-governance/records':{items:[]},
+    '/api/identity/me':{identity_id:'viewer',principal_kind:'service',service_scopes:[]}};
+  const body=bodies[url.pathname];
+  return new Response(JSON.stringify(body||{detail:'Unexpected fixture request'}),{status:body?200:404,
+    headers:{'Content-Type':'application/json'}});
+};
+</script><script src="/static/artifact_evidence_admin.js"></script></body></html>

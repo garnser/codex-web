@@ -5,7 +5,7 @@
   const { referenceAttributes, focusReference, esc: escapeHtml } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
-  const { timeText, listText, safeLink, governanceHtml, researchLinks, observationPolicyHtml, continuationInputHtml } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
+  const { timeText, listText, safeLink, governanceHtml, researchLinks, observationPolicyHtml, continuationInputHtml, artifactSharingHtml } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
   await import(`${BASE}/static/derived_artifact_admission.js`);
   let refreshGeneration = 0;
   let actor = null;
@@ -120,6 +120,7 @@
         <small>Supersedes: ${escapeHtml(item.supersedes_id || "none")} · superseded by: ${escapeHtml(item.superseded_by_id || "none")} · retention: ${timeText(item.retention_expires_at)}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${continuationInputHtml(item)}
+        ${artifactSharingHtml(item)}
         ${governanceHtml(governanceFor(item.id))}
         ${invalidateButton("artifact", item)}
       </details>`;
@@ -143,6 +144,7 @@
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${observationPolicyHtml(item)}
         ${continuationInputHtml(item)}
+        ${artifactSharingHtml(item)}
         ${governanceHtml(governanceFor(item.id))}
         ${invalidateButton("evidence", item)}
       </details>`;

@@ -114,6 +114,9 @@ class WorkerVerificationAdapter:
             self.denied('Original Resource-context requester is no longer authorized')
 
     def visible(self, record, assignment, actor):
+        if record.provider == 'governed-artifact-sharing.v1':
+            from codex_web.services.artifact_sharing_reads import validate_shared_input
+            validate_shared_input(self.broker,record,assignment,actor)
         self.scope(assignment, record.work_item_ref)
         if (getattr(record, 'project_id', None) not in (None, assignment.project_id)
                 or not set(record.resource_ids).issubset(set(assignment.resource_ids))):
@@ -160,7 +163,7 @@ class WorkerVerificationAdapter:
             requester=self.context_requester(current)
             decision=self.broker._authorize(current,resolved.operation,actor=requester,
                 resource_ids=(self.broker._operation_repository_id(current,resolved.operation.id,resolved.query,actor=requester)
-                    if resolved.operation.id == 'repository.source.capture' else self.broker._writable_repository_id(current),))
+                    if resolved.operation.id in {'repository.source.capture','verification.artifact.share'} else self.broker._writable_repository_id(current),))
 
         if worker.service_token_id is not None:
             token = next((t for t in self.broker.identity.store.load().service_tokens
@@ -200,7 +203,7 @@ class WorkerVerificationAdapter:
         try:
             # These exact broker-only operations have no public HTTP handler.
             # Their authenticated transport and scoped capability were checked above.
-            if resolved.operation.id not in {'upgrade.approval.request','repository.source.capture'}:
+            if resolved.operation.id not in {'upgrade.approval.request','repository.source.capture','verification.artifact.share'}:
                 ApiAuthorizationService(self.broker.authority).authorize_operation(
                     resolved.operation.method, api_path, worker)
         except ApiAuthorizationError:
@@ -210,9 +213,9 @@ class WorkerVerificationAdapter:
             self.denied('Current canonical procedure admission unavailable')
         discovery = procedures.inspect_current(assignment=current, actor=requester,
             operation=resolved.operation, resource_ids=current.resource_ids, payload=payload)
-        # Source INFO is not a Verification: selected governing instructions
+        # Source and shared INFO are not Verifications: governing instructions
         # remain admitted normally, without claiming action/QA proof.
-        if not discovery.admitted or (discovery.selected and resolved.operation.id != 'repository.source.capture'):
+        if not discovery.admitted or (discovery.selected and resolved.operation.id not in {'repository.source.capture','verification.artifact.share'}):
             self.denied('Verification requires current admitted unmediated procedure scope')
         return worker, requester, decision
 
