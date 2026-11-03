@@ -2102,3 +2102,27 @@ that fixed timestamp is not a separate session cutoff. Continued runtime use
 revalidates the current canonical assignment lease/fence and assignment deadline,
 including leases renewed by the existing session watchdog. Renewal neither
 changes the configured ambient HOME nor reissues credential authority.
+
+### Replacement of admitted READ repository custody
+
+Fresh thread settings retain the actual admitted READ primary and all READ
+contexts with zero writable repositories. Preference/resume/next-turn settings
+writes preserve that existing tuple only when repository and execution-profile
+selection is absent or exactly unchanged; explicit writes are never discarded. A read-only inner sandbox alone does
+not normalize repository access or change legacy mutable settings semantics.
+
+Normal web and bot replacement may repair the historical primary-as-writable
+settings alias only from the existing predecessor retirement owner's canonical
+READ target/scope, exact current execution Definition, actual READ workspace
+members and original READ lease modes. That proof remains valid after normal
+terminal retirement has released its lease and joined the owned process. The
+selected Profile/revision, creator tenant, primary and secondary repository set
+must still agree; extra explicit writable IDs or conflicting metadata refuse.
+The ordinary creator independently performs fresh Profile and worker admission.
+The same effective tuple supplies replacement provenance and successor settings.
+
+This does not mutate historical settings, native outcomes, retained requests or
+workspace bytes, copy sealed preparation, widen authority, or permit READ plus
+explicit WRITE. Existing WRITE and orchestration replacement behavior remains
+unchanged. No durable DTO/schema/state version changes are introduced; existing
+settings and scope inspectors expose the canonical READ versus WRITE values.

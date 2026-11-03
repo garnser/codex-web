@@ -6,6 +6,7 @@ import os
 import time
 import weakref
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
@@ -17,6 +18,18 @@ from codex_web.services.thread_execution_settings import ThreadExecutionSettings
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.storage.thread_index import ThreadIndexRepository
+from codex_web.execution_workers import ExecutionAssignment
+from codex_web.execution_workspaces import ExecutionWorkspace, ExecutionWorkspaceLease
+from codex_web.definitions import DefinitionReference
+
+
+@dataclass(frozen=True, slots=True)
+class ReadOnlyReplacementScope:
+    """Ephemeral canonical predecessor metadata, never request/stored authority."""
+    assignment: ExecutionAssignment
+    workspace: ExecutionWorkspace
+    lease: ExecutionWorkspaceLease
+    execution_definition: DefinitionReference
 
 
 class ThreadRecoveryService:
@@ -81,6 +94,59 @@ class ThreadRecoveryService:
         """Bind the assignment-scoped thread bootstrap after service composition."""
         self.thread_creator = thread_creator
 
+    @staticmethod
+    def _replacement_settings(settings, proof, *, project, sandbox, approval_policy, profile_kwargs):
+        """Repair only the legacy primary alias proven by owned READ custody.
+
+        An additional writable id is an explicit incompatible request, never a
+        read context. The source row remains historical; ordinary creator
+        admission independently resolves the selected current Profile/policy.
+        """
+        if proof is None:
+            return settings
+        def refuse():
+            raise HTTPException(status_code=409, detail={
+                'code': 'readonly_replacement_scope_unverified',
+                'message': 'Remembered scope or selected Profile differs from canonical READ custody.'})
+        if not isinstance(proof, ReadOnlyReplacementScope):
+            refuse()
+        assignment = proof.assignment
+        target, scope = assignment.repository_target, assignment.repository_scope
+        primary = target.read_only_primary_repository_id
+        selected_actor = profile_kwargs.get('actor')
+        selected_profile = assignment.agent_profile
+        if (sandbox != assignment.sandbox or approval_policy != assignment.approval_policy
+                or settings.execution_profile_id != assignment.execution_profile_id
+                or settings.repository_resource_id != primary
+                or tuple(settings.writable_repository_resource_ids) not in ((), (primary,))
+                or set(settings.read_only_repository_resource_ids) not in (
+                    set(scope.read_only_repository_ids), set(scope.read_only_repository_ids) - {primary})
+                or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    != (project.organization_id, project.workspace_id, project.id)
+                or proof.execution_definition != assignment.execution_profile_definition
+                or (selected_profile is None and profile_kwargs.get('agent_profile_id') is not None)
+                or (selected_profile is not None and (
+                    profile_kwargs.get('agent_profile_id') != selected_profile.profile_id
+                    or profile_kwargs.get('agent_profile_revision') != selected_profile.profile_revision
+                    or selected_actor is None or selected_actor.identity_id != assignment.created_by
+                    or (selected_actor.organization_id, selected_actor.workspace_id)
+                        != (assignment.organization_id, assignment.workspace_id)))):
+            refuse()
+        return settings.model_copy(update={
+            'writable_repository_resource_ids': (),
+            'read_only_repository_resource_ids': scope.read_only_repository_ids})
+
+    def _remember_successor(self, thread_id, settings, evidence, proof, *, sandbox, approval_policy):
+        self.settings.remember(thread_id, sandbox=sandbox, approval_policy=approval_policy,
+            model=settings.model, reasoning_effort=settings.reasoning_effort,
+            developer_instructions=settings.developer_instructions,
+            repository_resource_id=evidence['repository_resource_id'],
+            writable_repository_resource_ids=tuple(evidence['writable_repository_resource_ids']),
+            read_only_repository_resource_ids=tuple(evidence['read_only_repository_resource_ids']),
+            execution_profile_id=settings.execution_profile_id, skill_refs=settings.skill_refs,
+            **({'admitted_repository_target': proof.assignment.repository_target,
+                'admitted_repository_scope': proof.assignment.repository_scope} if proof is not None else {}))
+
     async def _create_replacement_thread(
         self,
         *,
@@ -93,6 +159,7 @@ class ThreadRecoveryService:
         agent_profile_revision: int | None = None,
         actor: AuthenticationActor | None = None,
         replacement_evidence: dict[str, Any] | None = None,
+        predecessor_scope: ReadOnlyReplacementScope | None = None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -123,6 +190,8 @@ class ThreadRecoveryService:
                     "agent_profile_revision": profile.revision,
                     "actor": actor,
                 }
+        settings = self._replacement_settings(settings, predecessor_scope, project=project,
+            sandbox=sandbox, approval_policy=approval_policy, profile_kwargs=profile_kwargs)
         if replacement_evidence is not None:
             admitted_actor = profile_kwargs.get("actor") or actor
             replacement_evidence.update({
@@ -320,7 +389,7 @@ class ThreadRecoveryService:
             lock = asyncio.Lock()
             self._replacement_locks[key] = lock
         async with lock:
-            async with self._retire_predecessor(binding.thread_id, self.projects.get(binding.project_id)):
+            async with self._retire_predecessor(binding.thread_id, self.projects.get(binding.project_id)) as predecessor_scope:
                 replacement_id = self.replacement_thread_id(binding.thread_id)
                 if replacement_id:
                     matches = [
@@ -343,12 +412,14 @@ class ThreadRecoveryService:
                     self.host._retarget_bot_thread_state(old_thread_id, replacement_id)
                     await self.host._archive_replaced_bot_thread(old_thread_id, replacement_id)
                     return replacement
-                return await self._replace_stale_bot_thread(binding, error)
+                return await self._replace_stale_bot_thread(binding, error,
+                    **({'predecessor_scope': predecessor_scope} if predecessor_scope is not None else {}))
 
     async def _replace_stale_bot_thread(
         self,
         binding: BotBinding,
         error: str,
+        *, predecessor_scope: ReadOnlyReplacementScope | None = None,
     ) -> BotBinding:
         h = self.host
         old_thread_id = binding.thread_id
@@ -366,24 +437,10 @@ class ThreadRecoveryService:
             approval_policy=approval_policy,
             binding=binding,
             replacement_evidence=replacement_evidence,
+            predecessor_scope=predecessor_scope,
         )
-        self.settings.remember(
-            new_thread_id,
-            sandbox=sandbox,
-            approval_policy=approval_policy,
-            model=settings.model,
-            reasoning_effort=settings.reasoning_effort,
-            developer_instructions=settings.developer_instructions,
-            repository_resource_id=settings.repository_resource_id,
-            writable_repository_resource_ids=(
-                settings.writable_repository_resource_ids
-            ),
-            read_only_repository_resource_ids=(
-                settings.read_only_repository_resource_ids
-            ),
-            execution_profile_id=settings.execution_profile_id,
-            skill_refs=settings.skill_refs,
-        )
+        self._remember_successor(new_thread_id, settings, replacement_evidence,
+            predecessor_scope, sandbox=sandbox, approval_policy=approval_policy)
         if thread_name:
             with contextlib.suppress(Exception):
                 await self.naming.set_name(new_thread_id, thread_name)
@@ -438,15 +495,17 @@ class ThreadRecoveryService:
         if self.predecessor_retirement is None:
             yield  # Legacy/unbound integrations do not own worker sessions.
         else:
-            async with self.predecessor_retirement(thread_id, project=project):
-                yield
+            async with self.predecessor_retirement(thread_id, project=project) as proof:
+                yield proof
 
     async def replace_stale_web_thread(self, thread_id, project, error, **kwargs):
-        async with self._retire_predecessor(thread_id, project):
-            return await self._replace_stale_web_thread(thread_id, project, error, **kwargs)
+        async with self._retire_predecessor(thread_id, project) as predecessor_scope:
+            return await self._replace_stale_web_thread(thread_id, project, error,
+                predecessor_scope=predecessor_scope, **kwargs)
 
     async def _replace_stale_web_thread(
         self, thread_id: str, project: Project, error: str, *,
+        predecessor_scope: ReadOnlyReplacementScope | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         actor: AuthenticationActor | None = None,
@@ -470,24 +529,10 @@ class ThreadRecoveryService:
             agent_profile_revision=agent_profile_revision,
             actor=actor,
             replacement_evidence=replacement_evidence,
+            predecessor_scope=predecessor_scope,
         )
-        self.settings.remember(
-            new_thread_id,
-            sandbox=sandbox,
-            approval_policy=approval_policy,
-            model=settings.model,
-            reasoning_effort=settings.reasoning_effort,
-            developer_instructions=settings.developer_instructions,
-            repository_resource_id=settings.repository_resource_id,
-            writable_repository_resource_ids=(
-                settings.writable_repository_resource_ids
-            ),
-            read_only_repository_resource_ids=(
-                settings.read_only_repository_resource_ids
-            ),
-            execution_profile_id=settings.execution_profile_id,
-            skill_refs=settings.skill_refs,
-        )
+        self._remember_successor(new_thread_id, settings, replacement_evidence,
+            predecessor_scope, sandbox=sandbox, approval_policy=approval_policy)
         indexed = next((item for item in self.thread_index.load() if item.id == thread_id), None)
         thread_name = indexed.name if indexed else None
         if thread_name:
