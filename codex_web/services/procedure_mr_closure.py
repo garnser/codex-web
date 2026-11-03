@@ -28,6 +28,18 @@ from codex_web.skill_procedures import ProcedureValueContract
 OPERATION = 'code-host.mr-closure.prerequisites'
 
 
+def provider_pull_request_is_open(fact: CodeHostMergeRequirementsFact) -> bool:
+    """Recognize exact provider protocol states, not an arbitrary casefold.
+
+    Readers preserve GitLab OPENED and GitHub OPEN. The lower-case forms
+    remain supported for existing typed observations; none of these spellings
+    represents closed, merged or an unknown provider's state. This predicate
+    supplies no CI, review, policy, scope or merge authority.
+    """
+    return ((fact.provider_type == 'gitlab' and fact.pull_request_state in ('OPENED', 'opened'))
+        or (fact.provider_type == 'github' and fact.pull_request_state in ('OPEN', 'open')))
+
+
 class MRClosurePrerequisites(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
     pull_request_number: StrictInt = Field(ge=1, le=2147483647)
@@ -189,7 +201,7 @@ class MRClosurePrerequisiteOwner:
                 or fact.provider_type != intent.provider_type or fact.provider_instance != intent.provider_instance
                 or fact.external_id != str(scope.pull_request_number)
                 or fact.head_revision != scope.head_sha or fact.base_revision != scope.base_sha
-                or fact.pull_request_state != 'opened' or fact.draft or fact.changed
+                or not provider_pull_request_is_open(fact) or fact.draft or fact.changed
                 or not fact.observed_at <= self.clock() < fact.expires_at):
             return CanonicalOperationResult(disposition='waiting', code='mr_closure_current_mr_changed',
                 facts=facts, original_references=references)

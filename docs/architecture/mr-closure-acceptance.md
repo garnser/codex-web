@@ -26,6 +26,13 @@ invalidated records, a different binding, head or base, or generic PASS Evidence
 must stop closure. Referenced managed content is limited to 16 KiB and must match
 the current Artifact digest and the immutable review finding.
 
+The closure owner recognizes the exact provider-specific open-state vocabulary
+in current typed facts: GitLab `OPENED`/`opened` and GitHub `OPEN`/`open`.
+The lowercase forms preserve existing observations. No case folding, unknown
+provider, closed/merged state, or immutable fact rewrite is used. Recognizing an
+open state does not establish complete provider policy or extend the existing
+CI/provider support of the closure owner.
+
 This predicate is one gate. Integration must load content through the existing
 Artifact/Evidence owner with content verification, re-read canonical records
 after content I/O, and retain actual current authority and custody checks. It
