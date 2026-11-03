@@ -44,6 +44,19 @@ class ControlPlaneBrokerLimits(BaseModel):
     max_requests_per_minute: int = Field(default=60, ge=1, le=10000)
 
 
+class WorkItemPortfolioQuery(BaseModel):
+    """Same-Project coordination metadata; no repository execution context."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    project_id: str = Field(min_length=1, max_length=200)
+    owner: str | None = Field(default=None, max_length=200)
+    stage: str | None = Field(default=None, max_length=200)
+    q: str | None = Field(default=None, max_length=2000)
+    limit: int = Field(default=50, ge=1, le=100)
+    cursor: str | None = Field(default=None, max_length=8192)
+
+
 class WorkItemOwnerDispatchRequest(BaseModel):
     """Bounded preconditions for waking one canonical work-item owner."""
 

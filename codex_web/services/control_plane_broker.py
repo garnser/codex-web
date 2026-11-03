@@ -45,6 +45,7 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerLimits,
     ControlPlaneBrokerOperation,
     WorkItemOwnerDispatchRequest,
+    WorkItemPortfolioQuery,
 )
 from codex_web.code_hosts import (
     PULL_REQUEST_QUERY_STATES,
@@ -569,6 +570,12 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        if item.id == "work_item.list":
+            result["query_parameters"] = WorkItemPortfolioQuery.model_json_schema()
+            result["query_parameters"]["description"] = (
+                "Bounded current-Project coordination metadata. project_id defaults to the "
+                "assignment Project; kind/view/resource selectors are not supported. "
+                "Procedure availability is observational and grants no execution.")
         reasoning_model = {"procedure.start": ProcedureStart, "procedure.advance": ProcedureAdvance,
             "executive.activation.create": ExecutiveActivationCreate}.get(item.id)
         if reasoning_model is not None:
@@ -1297,7 +1304,8 @@ class ControlPlaneBrokerService:
             operation = _OPERATION_BY_ID["work_item.list"]
             if method != operation.method:
                 raise ControlPlaneBrokerDeniedError("method is not allowed for work-item list")
-            return _ResolvedOperation(operation=operation, target_ref=None, query=query)
+            return _ResolvedOperation(operation=operation, target_ref=None,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         prefix = "/api/work-items/"
         if not path.startswith(prefix):
             raise ControlPlaneBrokerDeniedError("control-plane path is not allowlisted")
@@ -2178,6 +2186,21 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
+        portfolio_query = None
+        if operation.id == "work_item.list":
+            # Reject unsupported/foreign queries before inspecting any procedure.
+            # No metadata request may nominate a repository or environment.
+            if body or any(len(values) != 1 for values in resolved.query.values()):
+                raise ControlPlaneBrokerRequestError("Work portfolio requires one value per query field and no body")
+            query = {key: values[0] for key, values in resolved.query.items()}
+            query.setdefault("project_id", assignment.project_id)
+            if query["project_id"] != assignment.project_id:
+                raise ControlPlaneBrokerDeniedError("work-item list project differs from assignment scope")
+            try:
+                portfolio_query = WorkItemPortfolioQuery.model_validate(query)
+            except ValidationError as exc:
+                raise ControlPlaneBrokerRequestError("invalid bounded Work portfolio query (limit must be an integer from 1 to 100); supported fields are project_id, owner, stage, q, limit, cursor") from exc
+
         catalog_discovery = None
         if self.procedure_admission is not None:
             # The immutable authority request retains the target resolved for
@@ -2192,8 +2215,8 @@ class ControlPlaneBrokerService:
                 source_state = self._state_for_target(assignment, str(payload.get("source_ref") or ""))
                 target_state = self._state_for_target(assignment, str(payload.get("target_ref") or ""))
                 procedure_targets = tuple(dict.fromkeys((*source_state.resource_ids, *target_state.resource_ids)))
-            if operation.id == "control_plane.operations.list":
-                # Catalog inspection is not an operational admission. Keep the
+            if operation.id in {"control_plane.operations.list", "work_item.list"}:
+                # Catalog/Project portfolio inspection is not an operational admission. Keep the
                 # authenticated/Profile-filtered descriptors readable even when
                 # a procedure cannot run; this observation grants no execution
                 # and cannot consume the assignment's admission history.
@@ -2684,32 +2707,17 @@ class ControlPlaneBrokerService:
                     requester_actor=requester_actor,
                 )
         elif operation.id == "work_item.list":
-            requested_project = (
-                resolved.query.get("project_id", [assignment.project_id])[0]
-                if resolved.query
-                else assignment.project_id
-            )
-            if requested_project != assignment.project_id:
-                raise ControlPlaneBrokerDeniedError(
-                    "work-item list project differs from assignment scope"
-                )
-            raw_limit = (resolved.query.get("limit") or [None])[0]
-            try:
-                limit = int(raw_limit) if raw_limit is not None else None
-            except ValueError as exc:
-                raise ControlPlaneBrokerRequestError(
-                    "work-item list limit must be an integer"
-                ) from exc
+            assert portfolio_query is not None
             result = await self.work_items.list(
-                project_id=assignment.project_id,
-                owner=(resolved.query.get("owner") or [None])[0],
-                stage=(resolved.query.get("stage") or [None])[0],
-                q=(resolved.query.get("q") or [None])[0],
-                limit=limit,
-                cursor=(resolved.query.get("cursor") or [None])[0],
-                release_gate=None,
-                scope=actor.tenant,
+                **portfolio_query.model_dump(), release_gate=None, scope=actor.tenant,
             )
+            if catalog_discovery is not None:
+                result["procedure_availability"] = {
+                    "discovery": catalog_discovery.model_dump(mode="json"),
+                    "execution_authorized": False,
+                    "assignment_history_recorded": False,
+                    "history_capacity_checked": False,
+                }
         elif operation.id == "work_item.read":
             assert resolved.target_ref is not None
             assert state is not None
