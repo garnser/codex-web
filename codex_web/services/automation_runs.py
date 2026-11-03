@@ -123,6 +123,7 @@ class AutomationRunService:
         dedupe_key_override: str | None = None,
         attempt: int = 1,
         work_item_ref: str | None = None,
+        canonical_invocation_prefix: str | None = None,
     ) -> AutomationAdmissionResult:
         if definition_ref is None:
             automation, reference = self.definitions.resolve(
@@ -217,7 +218,8 @@ class AutomationRunService:
             updated_at=now,
             completed_at=now if status == AutomationRunStatus.BLOCKED else None,
         )
-        saved = self.store.append(run)
+        saved = (self.store.append(run, canonical_invocation_prefix=canonical_invocation_prefix)
+                 if canonical_invocation_prefix is not None else self.store.append(run))
         inserted = saved.id == run.id
         return AutomationAdmissionResult(
             run=saved,

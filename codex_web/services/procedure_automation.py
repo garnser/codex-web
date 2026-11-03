@@ -35,7 +35,7 @@ class ProcedureSelection:
 
 
 class ProcedureAutomationService:
-    """No native input, assignment creation, authority grant or polling owner."""
+    """No direct native input/model/grant/poller; preparation uses its existing owner."""
     def __init__(self, *, runs, engine, identity, routing, threads, continuity,
                  get_work, events, event_triggers, controller, coordinator,
                  automation_execution, startup_limit=64, native_preparation=None):
@@ -77,7 +77,7 @@ class ProcedureAutomationService:
                 raise ProcedureAutomationError('procedure_automation_duration_exhausted')
         return automation, actor, event
 
-    async def _select(self, automation, actor, event, *, original_values=None):
+    async def _select_context(self, automation, actor, event):
         ref = str(event.payload.get('work_item_ref') or event.payload.get('workItemRef') or '')
         state = await asyncio.to_thread(self.get_work, ref)
         if ((state.organization_id, state.workspace_id, state.project_id)
@@ -127,6 +127,10 @@ class ProcedureAutomationService:
                 or runner.get('pendingExecutorWork') != 0 or activity.get('state') != 'idle'
                 or activity.get('turnId') is not None or self.continuity.thread_is_active(binding.thread_id)):
             raise ProcedureAutomationError('procedure_automation_supervisor_not_idle')
+        return state, snapshot, binding, supervisor
+
+    async def _select(self, automation, actor, event, *, original_values=None):
+        state, snapshot, binding, supervisor = await self._select_context(automation, actor, event)
         recipient_role = snapshot.owner(state.handoff.to_agent)
         recipient_binding = await asyncio.to_thread(self.routing.existing_binding, state, recipient_role)
         from codex_web.services.work_item_dependencies import work_item_repository_scope
@@ -199,45 +203,87 @@ class ProcedureAutomationService:
     def _key(reference, procedure, values):
         return reference.record_id + ':procedure:' + digest({'definition':procedure.model_dump(mode='json'), 'inputs':values})
 
+    @staticmethod
+    def _preparation_prefix(reference, automation, state):
+        # Custody/Definition drift must retain this invocation, not mint another.
+        return 'procedure-handoff:' + digest({'automation_id':reference.definition_id,
+            'procedure_id':automation.target.procedure_ref.definition_id,
+            'work_item_ref':state.ref,'handoff_requested_at':state.handoff.requested_at}) + ':'
+
+    @classmethod
+    def _preparation_key(cls, reference, automation, state, supervisor):
+        fields = ('id','organization_id','workspace_id','project_id','execution_id',
+            'execution_workspace_id','assigned_worker_id','fence','created_by',
+            'agent_profile','execution_profile_id','execution_profile_definition',
+            'resource_ids','repository_target','repository_scope','runtime_binding',
+            'sandbox','approval_policy','network')
+        # Lease observations and native credential sealing are not original
+        # identity. The pinned Profile, Definition, resources and fence are.
+        original = supervisor.model_dump(mode='json',include=set(fields))
+        return cls._preparation_prefix(reference,automation,state) + digest({
+            'automation':reference.model_dump(mode='json'),
+            'procedure':automation.target.procedure_ref.model_dump(mode='json'),
+            'supervisor':original,'handoff_from':state.handoff.from_agent,
+            'handoff_to':state.handoff.to_agent,'work_resources':sorted(state.resource_ids)})
+
     async def handle_match(self, event, match):
         if match.automation.target.kind != AutomationTargetKind.CANONICAL_PROCEDURE:
             return None
         if event.event_type != 'work.transition' or not str(event.source).startswith('autonomy-watchdog:'):
             return {'handled':True,'code':'procedure_automation_event_source_unavailable'}
-        actor = await asyncio.to_thread(self.identity.actor_for_identity, match.automation.owner_identity_id,
-            scope=TenantScope(organization_id=event.tenant_id, workspace_id=event.workspace_id))
+        actor = await asyncio.to_thread(self.identity.actor_for_identity,match.automation.owner_identity_id,
+            scope=TenantScope(organization_id=event.tenant_id,workspace_id=event.workspace_id))
         retained = []
+        ref = str(event.payload.get('work_item_ref') or event.payload.get('workItemRef') or '')
         try:
-            ref = str(event.payload.get('work_item_ref') or event.payload.get('workItemRef') or '')
-            state = await asyncio.to_thread(self.get_work, ref)
+            state,_,_,supervisor = await self._select_context(match.automation,actor,event)
             retained = await asyncio.to_thread(self.runs.store.list,
-                organization_id=event.tenant_id, workspace_id=event.workspace_id, automation_id=match.automation_id)
-            same = [r for r in retained if r.definition_ref == match.definition_ref and r.work_item_ref == ref
-                and r.procedure_custody is not None and state.handoff is not None
-                and r.procedure_custody.handoff_requested_at == state.handoff.requested_at]
+                organization_id=event.tenant_id,workspace_id=event.workspace_id,automation_id=match.automation_id)
+            prefix = self._preparation_prefix(match.definition_ref,match.automation,state)
+            same = [r for r in retained if r.work_item_ref == ref and r.target_kind == 'canonical_procedure'
+                and r.target_id == match.automation.target.id
+                and ((r.procedure_custody is not None
+                      and r.procedure_custody.handoff_requested_at == state.handoff.requested_at)
+                     or r.dedupe_key.startswith(prefix))]
             if len(same)>1:
                 raise ProcedureAutomationError('procedure_automation_original_ambiguous')
             existing = same[0] if same else None
-            values = await asyncio.to_thread(self._original_values, existing, actor) if existing else None
-            selection = await self._select(match.automation, actor, event, original_values=values)
+            if existing is not None:
+                if existing.definition_ref != match.definition_ref:
+                    raise ProcedureAutomationError('procedure_automation_definition_changed')
+                if existing.dedupe_key.startswith(prefix) and existing.dedupe_key != self._preparation_key(
+                        existing.definition_ref,match.automation,state,supervisor):
+                    raise ProcedureAutomationError('procedure_automation_preparation_custody_changed')
+                if existing.status in {AutomationRunStatus.ADMITTED,AutomationRunStatus.RUNNING}:
+                    self.schedule_launch(existing,event_id=event.event_id,revision=event.event_id)
+                return {'handled':True,'run_id':existing.id,'status':str(existing.status),
+                    'code':existing.result_code or existing.block_code}
+            # Durable admission only. Pure selection never prepares a recipient.
+            admission = await asyncio.to_thread(self.runs.admit,match.automation_id,
+                AutomationRunTrigger(kind='canonical_event',source_id=event.event_id,event_id=event.event_id,
+                    occurred_at=event.occurred_at,correlation_id=event.correlation_id,causation_id=event.causation_id),
+                organization_id=event.tenant_id,workspace_id=event.workspace_id,
+                project_id=state.project_id,definition_ref=match.definition_ref,
+                dedupe_key_override=self._preparation_key(match.definition_ref,match.automation,state,supervisor),
+                work_item_ref=state.ref,canonical_invocation_prefix=prefix)
+            run = admission.run
+            if run.status in {AutomationRunStatus.ADMITTED,AutomationRunStatus.RUNNING}:
+                self.schedule_launch(run,event_id=event.event_id,revision=event.event_id)
+            return {'handled':True,'run_id':run.id,'status':str(run.status),'code':run.result_code or run.block_code}
         except Exception as exc:
-            # Explicit procedure policy refuses; never fall through to an LLM.
-            code = getattr(exc,'code','procedure_automation_selection_unavailable')
+            code = self._error_code(exc,'procedure_automation_selection_unavailable')
             for current in retained:
                 if current.work_item_ref == ref and current.status in {'admitted','running'}:
                     await asyncio.to_thread(self._note,current,code)
             return {'handled':True,'code':code}
-        admission = await asyncio.to_thread(self.runs.admit, match.automation_id,
-            AutomationRunTrigger(kind='canonical_event', source_id=event.event_id, event_id=event.event_id,
-                occurred_at=event.occurred_at, correlation_id=event.correlation_id, causation_id=event.causation_id),
-            organization_id=event.tenant_id, workspace_id=event.workspace_id,
-            project_id=selection.assignment.project_id, definition_ref=match.definition_ref,
-            dedupe_key_override=self._key(match.definition_ref, match.automation.target.procedure_ref, selection.values),
-            work_item_ref=selection.values['work_item_ref'])
-        run = admission.run
-        if run.status in {AutomationRunStatus.ADMITTED, AutomationRunStatus.RUNNING}:
-            self.schedule_launch(run, event_id=event.event_id, revision=selection.observation)
-        return {'handled':True,'run_id':run.id,'status':str(run.status),'code':run.result_code or run.block_code}
+
+    @staticmethod
+    def _error_code(exc, fallback):
+        from codex_web.owner_routing import OwnerRoutingError
+        import re
+        if isinstance(exc,OwnerRoutingError) and re.fullmatch(r'(?:owner_|work_item_)[a-z0-9_]{1,112}',str(exc)):
+            return str(exc)
+        return getattr(exc,'code',fallback)
 
     async def handle_event(self, event):
         matches = [m for m in self.event_triggers.matches(event)
@@ -281,7 +327,7 @@ class ProcedureAutomationService:
             context = contextvars.copy_context()
             context.run(storage_operation_budget.set,None)
             task = context.run(asyncio.create_task,asyncio.to_thread(self._note,run,
-                getattr(exc,'code','procedure_automation_owner:'+type(exc).__name__)))
+                self._error_code(exc,'procedure_automation_owner:'+type(exc).__name__)))
             try:
                 await asyncio.shield(task)
             except asyncio.CancelledError:
@@ -308,7 +354,7 @@ class ProcedureAutomationService:
                         return state
                     state.runs[index] = row.model_copy(update={'status':AutomationRunStatus.RUNNING,
                         'procedure_custody':custody,'execution_ids':(a.execution_id,),
-                        'started_at':self.runs.clock(),'updated_at':self.runs.clock()})
+                        'started_at':row.started_at if row.started_at is not None else self.runs.clock(),'updated_at':self.runs.clock()})
             return state
         self.runs.store.update(update)
         return self._get(run)
@@ -338,15 +384,89 @@ class ProcedureAutomationService:
                 or custody.input_snapshot_sha256!=digest(selection.values)):
             raise ProcedureAutomationError('procedure_automation_original_custody_or_handoff_changed')
 
+    def _begin_preparation(self, run):
+        def update(state):
+            for index,row in enumerate(state.runs):
+                if (row.id == run.id and row.definition_ref == run.definition_ref
+                        and row.dedupe_key == run.dedupe_key and row.status == 'admitted'
+                        and row.procedure_custody is None and row.started_at is None):
+                    state.runs[index] = row.model_copy(update={'started_at':self.runs.clock(),
+                        'updated_at':self.runs.clock(),'result_code':'procedure_recipient_preparation_pending'})
+            return state
+        self.runs.store.update(update)
+        return self._get(run)
+
+    async def _preparation_context(self, run):
+        current = await asyncio.to_thread(self._get,run)
+        if (current.status not in {'admitted','running'} or current.definition_ref != run.definition_ref
+                or current.dedupe_key != run.dedupe_key):
+            raise ProcedureAutomationError('procedure_automation_run_claim_changed')
+        automation,actor,event = await asyncio.to_thread(self._definition,current)
+        if automation.approval_required:
+            from codex_web.services.automation_execution import AutomationExecutionService
+            request = (self.automation_execution.approvals.get(current.approval_request_id,actor=actor)
+                if current.approval_request_id is not None else None)
+            if (request is None or request.status != 'consumed'
+                    or request.target != AutomationExecutionService._approval_target(current)):
+                raise ProcedureAutomationError('procedure_automation_approval_required')
+        state,snapshot,binding,supervisor = await self._select_context(automation,actor,event)
+        if (current.work_item_ref != state.ref or current.dedupe_key != self._preparation_key(
+                current.definition_ref,automation,state,supervisor)):
+            raise ProcedureAutomationError('procedure_automation_preparation_custody_changed')
+        return current,automation,actor,event,state,snapshot,binding,supervisor
+
+    async def _prepare_recipient(self, run):
+        from codex_web.owner_routing import OwnerRoutingError
+        run,automation,actor,event,state,_,_,_ = await self._preparation_context(run)
+        values = await asyncio.to_thread(self._original_values,run,actor)
+        try:
+            return run,automation,actor,event,await self._select(automation,actor,event,original_values=values)
+        except OwnerRoutingError:
+            # The canonical preparer below retains its own narrow eligible
+            # scope/cancelled cases. UNKNOWN/ambiguous custody never creates.
+            if run.procedure_custody is not None or state.handoff.status != 'pending':
+                raise
+        run = await asyncio.to_thread(self._begin_preparation,run)
+        run,automation,actor,event,state,snapshot,_,_ = await self._preparation_context(run)
+        if run.status != 'admitted' or run.procedure_custody is not None:
+            raise ProcedureAutomationError('procedure_automation_run_claim_changed')
+        role = snapshot.owner(state.handoff.to_agent)
+        binding = await asyncio.to_thread(self.routing.existing_binding,state,role)
+        from codex_web.services.work_item_dependencies import work_item_repository_scope
+        _,writable = work_item_repository_scope(state)
+        # Existing reservation owner prepares native custody, never input/ACK.
+        await self.routing.prepare_compatible_pin(state,binding,state.handoff.to_agent,
+            writable_repository_ids=writable)
+        current,automation,actor,event,_,_,_,_ = await self._preparation_context(run)
+        if (current.status != 'admitted' or current.procedure_custody is not None
+                or current.started_at != run.started_at):
+            raise ProcedureAutomationError('procedure_automation_run_claim_changed')
+        selection = await self._select(automation,actor,event)
+        return current,automation,actor,event,selection
+
     async def _drive(self, original, *, event_id, revision):
         run = await asyncio.to_thread(self._get,original)
         if run.status not in {'admitted','running'}:
             return
         automation,actor,event = await asyncio.to_thread(self._definition,run)
-        values = await asyncio.to_thread(self._original_values,run,actor)
-        selection = await self._select(automation,actor,event,original_values=values)
-        if run.dedupe_key!=self._key(run.definition_ref,automation.target.procedure_ref,selection.values):
-            raise ProcedureAutomationError('procedure_automation_original_input_changed')
+        preparing = run.dedupe_key.startswith('procedure-handoff:')
+        if preparing:
+            # Consumed required approval must precede native preparation too.
+            if automation.approval_required:
+                if run.approval_request_id is None:
+                    await self.automation_execution._wait_for_approval(run,automation,actor=actor,
+                        work_item_ref=run.work_item_ref)
+                    return
+                request = self.automation_execution.approvals.get(run.approval_request_id,actor=actor)
+                if request.status != 'consumed':
+                    raise ProcedureAutomationError('procedure_automation_approval_required')
+            run,automation,actor,event,selection = await self._prepare_recipient(run)
+        else:
+            # Existing Runs retain their original target/input dedupe key.
+            values = await asyncio.to_thread(self._original_values,run,actor)
+            selection = await self._select(automation,actor,event,original_values=values)
+            if run.dedupe_key!=self._key(run.definition_ref,automation.target.procedure_ref,selection.values):
+                raise ProcedureAutomationError('procedure_automation_original_input_changed')
         if automation.approval_required:
             if run.approval_request_id is None:
                 await self.automation_execution._wait_for_approval(run,automation,actor=actor,

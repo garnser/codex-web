@@ -178,7 +178,13 @@ class AutomationRunStore:
             None,
         )
 
-    def append(self, run: AutomationRun) -> AutomationRun:
+    def append(self, run: AutomationRun, *, canonical_invocation_prefix: str | None = None) -> AutomationRun:
+        if canonical_invocation_prefix is not None:
+            import re
+            if (run.target_kind != 'canonical_procedure' or not run.work_item_ref
+                    or not re.fullmatch(r'procedure-handoff:[0-9a-f]{64}:', canonical_invocation_prefix)
+                    or not run.dedupe_key.startswith(canonical_invocation_prefix)):
+                raise ValueError('invalid canonical procedure invocation prefix')
         result: dict[str, AutomationRun] = {}
 
         def apply(state: AutomationRunState) -> AutomationRunState:
@@ -188,7 +194,11 @@ class AutomationRunStore:
                     for item in state.runs
                     if item.organization_id == run.organization_id
                     and item.workspace_id == run.workspace_id
-                    and item.dedupe_key == run.dedupe_key
+                    and (item.dedupe_key == run.dedupe_key
+                         or (canonical_invocation_prefix is not None
+                             and (item.project_id,item.automation_id,item.target_kind,item.target_id,item.work_item_ref)
+                                 == (run.project_id,run.automation_id,run.target_kind,run.target_id,run.work_item_ref)
+                             and item.dedupe_key.startswith(canonical_invocation_prefix)))
                 ),
                 None,
             )
