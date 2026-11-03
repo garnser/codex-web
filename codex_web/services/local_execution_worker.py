@@ -746,8 +746,8 @@ class LocalExecutionWorkerRuntime:
         )
         return evidence.id
 
-    def inspect_git_metadata(self, assignment, *, workspace_path: Path, source_path: Path):
-        """Inspect only this live worker's existing assignment; never claim/start/complete it."""
+    def _live_inspection_assignment(self, assignment):
+        """Validate this worker's current immutable assignment and live lease."""
         current = self._pending_assignment(assignment.id)
         now = time.time()
         if (current.assigned_worker_id != self.worker.id or current.fence != assignment.fence
@@ -762,7 +762,47 @@ class LocalExecutionWorkerRuntime:
                 or current.lease.worker_id != self.worker.id or current.lease.fence != current.fence
                 or current.lease.expires_at <= now or (current.deadline_at is not None and current.deadline_at <= now)):
             raise LocalExecutionWorkerRuntimeError('Git inspection assignment ownership/lease/fence is stale')
+        return current
+
+    def inspect_git_metadata(self, assignment, *, workspace_path: Path, source_path: Path):
+        """Inspect only this live worker's existing assignment; never claim/start/complete it."""
+        current = self._live_inspection_assignment(assignment)
         return self.backend.inspect_git_metadata(current, workspace_path=workspace_path, source_path=source_path)
+
+    def source_capture_member(self, assignment, request):
+        """Read exact existing member custody; no claim, admission or creation."""
+        current = self._live_inspection_assignment(assignment)
+        workspace = self._workspace(current)
+        lease = self.workspace_service.store.lease(workspace.lease_id)
+        scope, target = current.repository_scope, current.repository_target
+        allowed = set(scope.writable_repository_ids) | set(scope.read_only_repository_ids) if scope else (
+            ({target.primary_repository_id} | set(target.read_only_repository_ids)) if target else set())
+        members = [m for m in workspace.repository_members if m.resource_id == request.repository_resource_id]
+        expected_mode = ('write' if scope and request.repository_resource_id in scope.writable_repository_ids else 'read')
+        if (request.repository_resource_id not in allowed or request.repository_resource_id not in current.resource_ids
+                or len(members) != 1 or lease is None or not lease.active
+                or (workspace.organization_id,workspace.workspace_id,workspace.project_id) !=
+                    (current.organization_id,current.workspace_id,current.project_id)
+                or (lease.organization_id,lease.workspace_id,lease.execution_workspace_id,lease.execution_id,
+                    lease.subject,lease.owner_identity_id) != (current.organization_id,current.workspace_id,
+                    workspace.id,current.execution_id,workspace.subject,workspace.owner_identity_id)
+                or members[0].access_mode != expected_mode
+                or lease.resource_modes.get(request.repository_resource_id) != members[0].access_mode):
+            raise LocalExecutionWorkerRuntimeError('Source capture repository member/lease changed')
+        return current, members[0]
+
+    def capture_repository_source(self, assignment, request, *, validate_current):
+        """Use only the exact canonical admitted member, never caller paths."""
+        validate_current()
+        current, member = self.source_capture_member(assignment,request)
+        def guard():
+            validate_current()
+            observed, fresh = self.source_capture_member(assignment,request)
+            if fresh != member:
+                raise LocalExecutionWorkerRuntimeError('Source capture repository member changed')
+            return observed
+        return self.backend.capture_repository_source(current,workspace_path=Path(member.workspace_path),
+            source_path=Path(member.source_path),request=request,poll_hook=guard)
 
     def execute(
         self,

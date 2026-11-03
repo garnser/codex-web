@@ -159,7 +159,8 @@ class WorkerVerificationAdapter:
             # substitute for the original context requester's current API authority.
             requester=self.context_requester(current)
             decision=self.broker._authorize(current,resolved.operation,actor=requester,
-                resource_ids=(self.broker._writable_repository_id(current),))
+                resource_ids=(self.broker._operation_repository_id(current,resolved.operation.id,resolved.query,actor=requester)
+                    if resolved.operation.id == 'repository.source.capture' else self.broker._writable_repository_id(current),))
 
         if worker.service_token_id is not None:
             token = next((t for t in self.broker.identity.store.load().service_tokens
@@ -197,9 +198,9 @@ class WorkerVerificationAdapter:
             self.denied('Pinned execution/Agent Profile no longer effective')
         api_path = resolved.operation.path_template.replace('{id}', resolved.target_ref or '')
         try:
-            # This one broker-only operation has no public HTTP handler. Its
-            # authenticated transport and scoped capability were checked above.
-            if resolved.operation.id != 'upgrade.approval.request':
+            # These exact broker-only operations have no public HTTP handler.
+            # Their authenticated transport and scoped capability were checked above.
+            if resolved.operation.id not in {'upgrade.approval.request','repository.source.capture'}:
                 ApiAuthorizationService(self.broker.authority).authorize_operation(
                     resolved.operation.method, api_path, worker)
         except ApiAuthorizationError:
@@ -209,7 +210,9 @@ class WorkerVerificationAdapter:
             self.denied('Current canonical procedure admission unavailable')
         discovery = procedures.inspect_current(assignment=current, actor=requester,
             operation=resolved.operation, resource_ids=current.resource_ids, payload=payload)
-        if not discovery.admitted or discovery.selected:
+        # Source INFO is not a Verification: selected governing instructions
+        # remain admitted normally, without claiming action/QA proof.
+        if not discovery.admitted or (discovery.selected and resolved.operation.id != 'repository.source.capture'):
             self.denied('Verification requires current admitted unmediated procedure scope')
         return worker, requester, decision
 

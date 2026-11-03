@@ -919,6 +919,36 @@ class BubblewrapExecutionBackend:
             raise LocalExecutionPolicyError('Isolated Git inspection returned incompatible metadata')
         return observation
 
+    def capture_repository_source(self, assignment, *, workspace_path: Path, source_path: Path,
+                                  request, poll_hook):
+        """Fixed immutable-file capture through the existing worker sandbox."""
+        from codex_web.source_capture import CAPTURE_PROGRAM
+        workspace = workspace_path.resolve(strict=True)
+        metadata = self.discover_git_metadata(workspace) or (workspace / '.git').resolve(strict=True)
+        if not metadata.is_relative_to(workspace):
+            canonical = self.discover_git_metadata(source_path) or (source_path / '.git').resolve(strict=True)
+            if not metadata.is_relative_to(canonical):
+                raise LocalExecutionPolicyError('Source capture Git metadata escapes canonical repository')
+        restricted = assignment.model_copy(update={
+            'sandbox':'read-only',
+            'network':assignment.network.model_copy(update={'enabled':False,'allowed_hosts':()}),
+            'limits':assignment.limits.model_copy(update={'wall_seconds':min(30,assignment.limits.wall_seconds)}),
+        })
+        environment = {'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null',
+            'GIT_OPTIONAL_LOCKS':'0','GIT_NO_REPLACE_OBJECTS':'1','GIT_NO_LAZY_FETCH':'1'}
+        result = self.run(restricted, argv=('/usr/bin/env','-i','PATH=/usr/bin:/bin',
+            *(key+'='+value for key,value in environment.items()),
+            '/usr/bin/python3','-I','-S','-c',CAPTURE_PROGRAM,
+            request.model_dump_json()), workspace_path=workspace, git_metadata_path=metadata,
+            environment=environment, poll_hook=poll_hook)
+        poll_hook()
+        if not result.succeeded or result.output_truncated:
+            raise LocalExecutionPolicyError('Isolated source capture refused; no content acceptance')
+        try:
+            return json.loads(result.stdout)
+        except (TypeError,ValueError) as exc:
+            raise LocalExecutionPolicyError('Isolated source capture returned invalid content') from exc
+
     def run(
         self,
         assignment: ExecutionAssignment,

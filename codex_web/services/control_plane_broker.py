@@ -109,6 +109,7 @@ from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmis
 from codex_web.services.home_host_output import OUTPUT_READ
 from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS, HomeProjectMessage
 
+from codex_web.services.worker_source_capture import OPERATION as SOURCE_CAPTURE_OPERATION
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
     WorkerVerificationAdapter,
@@ -165,6 +166,7 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
+    SOURCE_CAPTURE_OPERATION,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
         path_template="/api/agent-upgrade-approvals", capability="upgrade.approval.request",
         authority_level=AuthorityLevel.PREPARE),
@@ -569,6 +571,9 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        if item.id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import public_contract
+            result.update(public_contract())
         reasoning_model = {"procedure.start": ProcedureStart, "procedure.advance": ProcedureAdvance,
             "executive.activation.create": ExecutiveActivationCreate}.get(item.id)
         if reasoning_model is not None:
@@ -852,6 +857,16 @@ class ControlPlaneBrokerService:
                 pass
         operations = [op for op in operations if op["id"] not in CONTEXT_READ_IDS or op["id"] in declared_reads]
         for item in operations:
+            if item['id'] == SOURCE_CAPTURE_OPERATION.id:
+                scope = assignment.repository_scope
+                repositories = sorted((set(scope.writable_repository_ids) | set(scope.read_only_repository_ids))
+                    & set(assignment.resource_ids)) if scope is not None else []
+                item['admitted_repository_resource_ids'] = repositories
+                item['metadata_compatible'] = bool(repositories and self.local_execution_worker is not None)
+                item['admission_checked'] = False
+                item['requires'] = 'Current authenticated worker, exact Work owner, Profile, lease, fence and member proof'
+                if not item['metadata_compatible']:
+                    item['blocked_reason'] = 'source_capture_admitted_repository_context_or_worker_missing'
             if item['id'] == 'repository.read.merge-requirements':
                 declared = False
                 try:
@@ -1089,6 +1104,11 @@ class ControlPlaneBrokerService:
                 "absolute-form/control-plane proxy targets are not allowed"
             )
         path = parsed.path
+        if path == SOURCE_CAPTURE_OPERATION.path_template:
+            if method != SOURCE_CAPTURE_OPERATION.method:
+                raise ControlPlaneBrokerRequestError('Source capture requires POST')
+            return _ResolvedOperation(operation=SOURCE_CAPTURE_OPERATION,target_ref=None,
+                query=parse_qs(parsed.query,keep_blank_values=True))
         reasoning = resolve_reasoning_operation(method, path)
         if reasoning is not None:
             operation, target = reasoning
@@ -1392,6 +1412,9 @@ class ControlPlaneBrokerService:
             ) from exc
 
     def _operation_repository_id(self, assignment, operation_id, query, *, actor=None):
+        if operation_id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import repository_id
+            return repository_id(assignment,query)
         if assignment.execution_profile_id != "orchestration-admin":
             return (self._read_repository_id(assignment, query)
                     if operation_id.startswith("repository.read.")
@@ -1984,6 +2007,7 @@ class ControlPlaneBrokerService:
         repository_read = operation.id.startswith("repository.read.")
         if ("repository_resource_id" in resolved.query and not repository_read
                 and not operation.id.startswith("project.")
+                and operation.id != SOURCE_CAPTURE_OPERATION.id
                 and assignment.execution_profile_id != "orchestration-admin"):
             raise ControlPlaneBrokerRequestError(
                 "repository_resource_id is only supported for repository fact reads"
@@ -2268,6 +2292,10 @@ class ControlPlaneBrokerService:
             from codex_web.services.worker_upgrade_approvals import WorkerUpgradeApprovalAdapter
             result = await WorkerUpgradeApprovalAdapter(self).request(
                 assignment, worker_actor, resolved, payload, assignment_validator)
+        elif operation.id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import WorkerSourceCaptureAdapter
+            result = await run_settled(lambda: WorkerSourceCaptureAdapter(self).capture(
+                assignment,worker_actor,resolved,payload,assignment_validator))
         elif operation.id.startswith("verification."):
             adapter = WorkerVerificationAdapter(self)
             if operation.id == 'verification.create':
