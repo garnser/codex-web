@@ -422,9 +422,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             audit=ControlPlaneBrokerAuditStore(self.sqlite),
             limits=ControlPlaneBrokerLimits(
                 max_request_bytes=1024,
-                # Discovery includes the publication parameter contract. Keep
-                # the fixture bounded while allowing that supported response.
-                max_response_bytes=32768,
+                # Ordinary catalogs use the same finite response budget as
+                # application/native brokers. Limit tests retain explicit bounds.
                 max_concurrent_requests=2,
                 max_requests_per_minute=8,
             ),
@@ -1153,6 +1152,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         requester_actor.assert_called_once_with(self.assignment)
         self.assertIn("x-correlation-id", headers)
         self.assertTrue(payload["enabled"])
+        self.assertEqual(self.service.limits.max_response_bytes,
+                         ControlPlaneBrokerLimits().max_response_bytes)
+        wire = self.broker._response(status, payload,
+                                    correlation_id=headers["x-correlation-id"])
+        self.assertLessEqual(len(wire), self.service.limits.max_response_bytes)
         self.assertEqual(payload["project_id"], "project-a")
         self.assertEqual(payload["transport"], "assignment-bound-unix-socket")
         context = payload["assignment_context"]
@@ -1971,7 +1975,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "GET", f"/api/work-items/{quote(self.other_ref, safe='')}?view=coordination"
         )
         self.assertEqual(denied, 403)
-        current = {"ref": self.ref, "next_action": "x" * 20000}
+        current = {"ref": self.ref,
+                   "next_action": "x" * self.service.limits.max_response_bytes}
         with patch.object(self.work_items, "get", AsyncMock(return_value=current)):
             status, _, payload = await self._request(
                 "GET", f"/api/work-items/{quote(self.ref, safe='')}?view=coordination"
