@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from codex_web.work_item_wait import current_unchanged_wait
 from codex_web.models import WorkItemState
 
 
@@ -66,6 +67,8 @@ class WorkItemWatchdogCandidatePolicy:
             return None
         if self.split_brain_findings(state):
             return ("split_brain", now - state.updated_at)
+        if current_unchanged_wait(state):
+            return None
         if state.handoff and state.handoff.status == "pending":
             delivery = state.handoff.delivery
             if delivery is not None:

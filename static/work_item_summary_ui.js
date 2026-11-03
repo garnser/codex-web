@@ -57,6 +57,11 @@ export function workItemSummaryHtml({ item = {}, diagnostics = [], esc }) {
         <span>${esc(item.blocker || findings[0] || 'Blocking finding recorded')}</span>
         ${findings.length && item.blocker ? `<small>${esc(findings.join(' · '))}</small>` : (findings.length > 1 ? `<small>${esc(findings.slice(1).join(' · '))}</small>` : '')}
       </section>` : ''}
+    ${item.wait_checkpoint ? `<section class="work-detail-card" aria-label="Unchanged prerequisite wait">
+      <strong>${item.wait_checkpoint_context?.unchanged_wait_active ? 'Waiting for changed inputs' : 'Previous wait inputs changed'}</strong>
+      <small>Receipt by ${esc(item.wait_checkpoint.actor)} · ${esc(item.wait_checkpoint.acknowledged_at)}. Notes are preserved; no remote readiness proof or permission is granted.</small>
+      <small>Input SHA-256: ${esc(item.wait_checkpoint.expected_input_sha256)}</small>
+    </section>` : ''}
     ${failure ? `
       <section class="work-failure-banner" role="alert">
         <strong>${esc(failure.code || 'execution_failure')}</strong>

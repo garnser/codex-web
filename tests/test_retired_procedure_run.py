@@ -430,8 +430,13 @@ class HistoricalDispatchDispositionTests(unittest.IsolatedAsyncioTestCase):
         state = machine._structured_ack(state.ref, WorkItemAckCreate(actor='recipient',
             expected_handoff_requested_at=10, artifact_state='merge_request'))
         self.assertEqual(state.handoff.status, 'accepted')
-        machine._archive_active_handoff(state, now=now+5, status='accepted')
-        self.assertEqual(state.handoff_history[-1], state.handoff_history[-2])
+        machine._archive_active_handoff(state, now=now+5, status='accepted',
+            reason_code='new_canonical_handoff')
+        self.assertNotEqual(state.handoff_history[-1], state.handoff_history[-2])
+        self.assertEqual(state.handoff_history[-2].reason_code, None)
+        self.assertEqual(state.handoff_history[-1].reason_code, 'new_canonical_handoff')
+        self.assertEqual(state.handoff_history[-1].model_dump(exclude={'reason_code'}),
+            state.handoff_history[-2].model_dump(exclude={'reason_code'}))
         state.handoff = WorkItemHandoff(from_agent='recipient', to_agent='sender', requested_at=now+6)
         self.f.host._save_work_item_state(state)
 
@@ -445,13 +450,15 @@ class HistoricalDispatchDispositionTests(unittest.IsolatedAsyncioTestCase):
         actual = self.f.workers.store.assignment(self.recipient.id)
         self.assertEqual(actual.fence, self.recipient.fence + 1)
         self.assertIsNone(actual.lease)
+        history_before = self.f.host._work_item_state(self.run.work_item_ref).model_copy(deep=True)
         result = None
         refusal = None
         try:
             result = self.dispose()
-        except ProcedureAutomationError as exc:
+        except ValueError as exc:
             refusal = str(exc)
         self.assertIsNotNone(result, f'Original settled dispatch stranded Run: {refusal}')
+        self.assertEqual(self.f.host._work_item_state(self.run.work_item_ref), history_before)
         self.assertEqual(result.status, 'cancelled')
         self.assertEqual(self.b.current(), self.retired)
         self.assertEqual(self.b.current().procedure_checkpoint, self.original_checkpoint)
@@ -464,6 +471,48 @@ class HistoricalDispatchDispositionTests(unittest.IsolatedAsyncioTestCase):
         self.f.host._save_work_item_state(state)
         with self.assertRaisesRegex(ValueError, 'historical_ack_unavailable_or_conflicting'):
             self.dispose()
+
+    async def test_non_archival_handoff_facts_remain_conflicting(self):
+        state = self.f.host._work_item_state(self.run.work_item_ref)
+        original = state.model_copy(deep=True)
+        for field, value in (('from_agent', 'other-sender'),
+                ('reason', 'Different business reason'), ('expected_action', 'Different requested action'),
+                ('artifact_state', 'branch' if original.handoff_history[-1].artifact_state != 'branch' else 'merge_request'),
+                ('stage', 'implementation_active' if original.handoff_history[-1].stage != 'implementation_active' else 'ready_for_validation')):
+            with self.subTest(field=field):
+                changed = original.model_copy(deep=True)
+                setattr(changed.handoff_history[-1], field, value)
+                self.f.host._save_work_item_state(changed)
+                with self.assertRaisesRegex(ValueError, 'historical_ack_unavailable_or_conflicting'):
+                    self.dispose()
+                self.assertEqual(self.b.service._get(self.run).status, 'running')
+                self.assertEqual(self.b.current(), self.retired)
+        self.f.host._save_work_item_state(original)
+        self.transport.assert_awaited_once()
+
+    async def test_delivery_identity_scope_and_start_facts_remain_conflicting(self):
+        from codex_web.models import WorkItemHandoffDelivery
+        state = self.f.host._work_item_state(self.run.work_item_ref)
+        original = state.model_copy(deep=True)
+        delivery = original.handoff_history[-1].delivery
+        changes = ({'started_at':delivery.started_at + 0.5},
+            {'thread_id':'other-thread'}, {'turn_id':'other-turn'}, {'execution_id':'other-execution'},
+            {'scope_verified':False},
+            {'repository_resource_id':'other-repository',
+             'writable_repository_resource_ids':['other-repository']},
+            {'read_only_repository_resource_ids':['other-read-only-repository']})
+        for update in changes:
+            with self.subTest(fields=tuple(update)):
+                changed = original.model_copy(deep=True)
+                changed.handoff_history[-1].delivery = WorkItemHandoffDelivery.model_validate(
+                    {**delivery.model_dump(mode='json'), **update})
+                self.f.host._save_work_item_state(changed)
+                with self.assertRaisesRegex(ValueError, 'historical_ack_unavailable_or_conflicting'):
+                    self.dispose()
+                self.assertEqual(self.b.service._get(self.run).status, 'running')
+                self.assertEqual(self.b.current(), self.retired)
+        self.f.host._save_work_item_state(original)
+        self.transport.assert_awaited_once()
 
     async def test_missing_canonical_history_cannot_be_replaced_by_old_operator_journal(self):
         state = self.f.host._work_item_state(self.run.work_item_ref)
