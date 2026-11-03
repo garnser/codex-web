@@ -5363,6 +5363,62 @@ class TurnExecutionService:
         except TurnExecutionBindingError as exc:
             raise _execution_preflight_blocked(exc) from exc
 
+    def _replacement_read_scope(self, assignment, project):
+        scope = assignment.repository_scope
+        if scope is None or scope.write_mode != 'read_only':
+            return None
+        from codex_web.services.thread_recovery import ReadOnlyReplacementScope
+        def refuse():
+            raise ExecutionPrestartRefusal(status_code=409,detail={
+                'code':'readonly_replacement_scope_unverified',
+                'message':'Canonical READ predecessor scope, workspace or current Definition changed.'})
+        target = assignment.repository_target
+        service = self.binding_service
+        if (target is None or target.read_only_primary_repository_id is None
+                or target.mutable_repository_id is not None or scope.writable_repository_ids
+                or assignment.sandbox != 'read-only' or service is None
+                or service.execution_profiles is None or assignment.execution_profile_definition is None
+                or (assignment.organization_id,assignment.workspace_id,assignment.project_id)
+                    != (project.organization_id,project.workspace_id,project.id)
+                or (target.organization_id,target.workspace_id,target.project_id)
+                    != (scope.organization_id,scope.workspace_id,scope.project_id)
+                or (scope.organization_id,scope.workspace_id,scope.project_id)
+                    != (project.organization_id,project.workspace_id,project.id)
+                or (target.source, target.source_ref, target.selection_evidence)
+                    != (scope.source, scope.source_ref, scope.selection_evidence)
+                or set(target.read_only_repository_ids) != set(scope.read_only_repository_ids)
+                or set(assignment.resource_ids) != set(scope.read_only_repository_ids)):
+            refuse()
+        try:
+            profile,reference = service.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id,workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+        except (ValueError, LookupError, RuntimeError):
+            refuse()
+        if reference != assignment.execution_profile_definition or profile.repository_access not in {'read-only','mutable'}:
+            refuse()
+        workspace = service.workspaces.get(assignment.execution_workspace_id,service.control_actor)
+        lease = service.workspaces.store.lease(workspace.lease_id)
+        primary = target.read_only_primary_repository_id
+        if ((workspace.organization_id,workspace.workspace_id,workspace.project_id,workspace.execution_id)
+                != (assignment.organization_id,assignment.workspace_id,assignment.project_id,assignment.execution_id)
+                or workspace.id != assignment.execution_workspace_id
+                or workspace.read_only_primary_repository_id != primary
+                or workspace.repository_resource_id != primary or workspace.writable_repository_ids
+                or set(workspace.resource_ids) != set(scope.read_only_repository_ids)
+                or {m.resource_id for m in workspace.repository_members} != set(scope.read_only_repository_ids)
+                or any(m.access_mode != 'read' for m in workspace.repository_members)
+                or lease is None or lease.mode != 'read'
+                or (lease.organization_id,lease.workspace_id,lease.execution_id,lease.execution_workspace_id)
+                    != (assignment.organization_id,assignment.workspace_id,assignment.execution_id,workspace.id)
+                or set(lease.resource_ids) != set(scope.read_only_repository_ids)
+                or lease.resource_modes != {resource_id: 'read' for resource_id in scope.read_only_repository_ids}):
+            refuse()
+        # Normal retirement releases the READ lease; expiry/release does not
+        # erase its actual original access mode or repository member metadata.
+        return ReadOnlyReplacementScope(assignment.model_copy(deep=True),workspace.model_copy(deep=True),
+            lease.model_copy(deep=True),reference)
+
     @contextlib.asynccontextmanager
     async def retire_replacement_predecessor(self, thread_id, *, project):
         """Settle owned idle custody before a replacement can erase its marker.
@@ -5408,7 +5464,7 @@ class TurnExecutionService:
                 if (self._bootstrap_binding_for_thread(thread_id) != binding
                         or await asyncio.to_thread(self._assignment_record, assignment.id) != assignment):
                     raise blocked('Terminal predecessor changed before replacement publication.')
-                yield
+                yield await asyncio.to_thread(self._replacement_read_scope, assignment, project)
                 return
             manager, session = self._session_for_assignment(assignment.id)
             current = await self._settle_custody_call(session.validate_current, work_owner=session)
@@ -5444,7 +5500,7 @@ class TurnExecutionService:
                     or retired.fence != current.fence + 1 or retired.lease is not None
                     or manager.get(current.id) is not None):
                 raise blocked('Predecessor cleanup did not settle; inspect without creating another successor.')
-            yield
+            yield await asyncio.to_thread(self._replacement_read_scope, retired, project)
 
     async def renew_exhausted_assignment(self, thread_id, *, project, actor, expected_assignment_id):
         try:

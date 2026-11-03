@@ -1570,6 +1570,10 @@ class ThreadService:
             read_only_repository_resource_ids=(
                 binding.repository_target.read_only_repository_ids
             ),
+            **({'admitted_repository_target':binding.repository_target,
+                'admitted_repository_scope':binding.repository_scope}
+               if getattr(binding, 'repository_scope', None) is not None
+                and binding.repository_scope.write_mode == 'read_only' else {}),
             **({"resource_context":resource_context} if resource_context is not None else {}),
             execution_profile_id=getattr(binding, "execution_profile_id", None),
         )
