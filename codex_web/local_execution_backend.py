@@ -37,6 +37,20 @@ class LocalExecutionPolicyError(LocalExecutionBackendError):
 
 
 @dataclass(frozen=True, slots=True)
+class TrustedLocalRuntimeHome:
+    """Ephemeral credential-owner mount, never an assignment/request field.
+
+    The existing trusted-local provider supplies its configured ambient HOME;
+    repository write authority remains exclusively in repository mount inputs.
+    """
+
+    path: Path
+    assignment_id: str
+    worker_id: str
+    fence: int
+
+
+@dataclass(frozen=True, slots=True)
 class LocalIsolationStatus:
     backend: str
     ready: bool
@@ -547,6 +561,7 @@ class BubblewrapExecutionBackend:
         git_metadata_path: Path | None = None,
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
         trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
+        trusted_local_runtime_home: TrustedLocalRuntimeHome | None = None,
     ) -> list[str]:
         self.validate_assignment(assignment)
         if not argv or not str(argv[0]).strip():
@@ -635,6 +650,39 @@ class BubblewrapExecutionBackend:
                 )
         command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
+
+        if trusted_local_runtime_home is not None:
+            home = trusted_local_runtime_home
+            lease = assignment.lease
+            binding = assignment.runtime_binding
+            if (type(home) is not TrustedLocalRuntimeHome
+                    or home.assignment_id != assignment.id
+                    or home.worker_id != assignment.assigned_worker_id
+                    or home.fence != assignment.fence
+                    or lease is None or lease.worker_id != home.worker_id
+                    or lease.fence != home.fence
+                    or binding is None or binding.provider_id != "openai"
+                    or binding.runtime_id != "codex"
+                    or binding.authentication_mode != "trusted_local_session"):
+                raise LocalExecutionPolicyError("trusted-local runtime HOME custody mismatch")
+            path = home.path
+            if (not isinstance(path, Path) or not path.is_absolute() or path == Path("/")
+                    or path.resolve(strict=True) != path or not path.is_dir()):
+                raise LocalExecutionPolicyError("trusted-local runtime HOME must be a canonical directory")
+            protected = [workspace]
+            metadata = git_metadata_path or self.discover_git_metadata(workspace)
+            if metadata is not None:
+                protected.append(Path(metadata).resolve(strict=True))
+            worktree_metadata = self.discover_git_worktree_metadata(workspace)
+            if worktree_metadata is not None:
+                protected.append(Path(worktree_metadata).resolve(strict=True))
+            for source, destination in (*trusted_readonly_mounts, *trusted_writable_mounts):
+                protected.extend((Path(source).resolve(strict=True), Path(destination)))
+            if any(path == other or path.is_relative_to(other)
+                    or other.is_relative_to(path) for other in protected):
+                raise LocalExecutionPolicyError("trusted-local runtime HOME overlaps a protected mount")
+            command.extend(self._directory_creation_args(path))
+            command.extend(("--bind", str(path), str(path)))
 
         if trusted_writable_mounts and assignment.sandbox == "read-only":
             raise LocalExecutionPolicyError(
@@ -768,6 +816,7 @@ class BubblewrapExecutionBackend:
         trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
         minimum_address_space_bytes: int = 0,
         minimum_process_count: int = 0,
+        trusted_local_runtime_home: TrustedLocalRuntimeHome | None = None,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -801,6 +850,7 @@ class BubblewrapExecutionBackend:
             git_metadata_path=resolved_git_metadata,
             trusted_readonly_mounts=trusted_readonly_mounts,
             trusted_writable_mounts=trusted_writable_mounts,
+            trusted_local_runtime_home=trusted_local_runtime_home,
         )
         env = self.minimal_environment(extra=environment)
         return self._popen(

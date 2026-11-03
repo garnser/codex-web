@@ -493,10 +493,9 @@ _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS = (
     _RECONCILABLE_REPOSITORY_ACTION_IDS | {CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID}
 )
 
-# These profiles execute different workloads but share the same narrow broker
-# boundary. The broker never grants generic network or localhost access: every
-# request is still operation-allowlisted, tenant/project scoped, authorized,
-# fenced, rate limited, and audited below.
+# Released compatibility behavior only. Do not append mutable profile names:
+# custom profiles enter through the exact current Definition declaration below.
+# These four retain their existing operation-specific authority/declaration owners.
 CONTROL_PLANE_EXECUTION_PROFILES = frozenset(
     {"orchestration-only", "repository-write", "orchestration-admin", "project-governor"}
 )
@@ -807,13 +806,40 @@ class ControlPlaneBrokerService:
             "effective_authority_requires_operation_checks": True,
         }
 
+    def _broker_profile_operations(self, assignment: ExecutionAssignment) -> frozenset[str] | None:
+        # None denotes the released four-profile behavior, not a new grant.
+        # Every custom name requires its exact current canonical declaration.
+        if assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES:
+            return None
+        if (self.execution_profiles is None or not assignment.execution_profile_id
+                or assignment.execution_profile_definition is None or not assignment.project_id):
+            raise ControlPlaneBrokerDeniedError("current pinned broker execution profile is unavailable")
+        try:
+            profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+        except (AttributeError, ValueError, LookupError, DefinitionCompatibilityError, DefinitionConflictError) as exc:
+            raise ControlPlaneBrokerDeniedError("current broker execution profile cannot be resolved") from exc
+        if reference != assignment.execution_profile_definition:
+            raise ControlPlaneBrokerDeniedError("broker execution profile pin is no longer current")
+        supported = frozenset(profile.control_plane_operations) & _OPERATION_BY_ID.keys()
+        if not supported:
+            raise ControlPlaneBrokerDeniedError("execution profile declares no supported broker operations")
+        return frozenset(supported)
+
     def public_assignment_capability(
         self,
         assignment: ExecutionAssignment,
     ) -> dict[str, Any]:
-        enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
+        try:
+            declared = self._broker_profile_operations(assignment)
+            enabled = True
+        except ControlPlaneBrokerDeniedError:
+            declared = frozenset()
+            enabled = False
         context = self._public_assignment_context(assignment) if enabled else None
-        operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        operations = [self.public_operation(item) for item in OPERATIONS
+                      if declared is None or item.id in declared] if enabled else []
         declared_reads = set()
         if enabled and self.execution_profiles is not None:
             try:
@@ -1898,10 +1924,9 @@ class ControlPlaneBrokerService:
     ):
         if operation.id == "repository.pull-request.ready":
             self._ready_declaration(assignment)
-        if assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES:
-            raise ControlPlaneBrokerDeniedError(
-                "assignment execution profile does not permit control-plane broker access"
-            )
+        declared = self._broker_profile_operations(assignment)
+        if declared is not None and operation.id not in declared:
+            raise ControlPlaneBrokerDeniedError("operation is not declared by the current pinned execution profile")
         if not assignment.project_id:
             raise ControlPlaneBrokerDeniedError(
                 "control-plane broker requires an assignment project"
@@ -3116,6 +3141,11 @@ class AssignmentBoundControlPlaneBroker:
             raise ControlPlaneBrokerDeniedError("assignment worker changed")
         if assignment.fence != self.fence:
             raise ControlPlaneBrokerDeniedError("assignment fence changed")
+        if (self.snapshot.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES
+                or assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES):
+            if (assignment.execution_profile_id, assignment.execution_profile_definition) != (
+                    self.snapshot.execution_profile_id, self.snapshot.execution_profile_definition):
+                raise ControlPlaneBrokerDeniedError("custom broker execution profile binding changed")
         if getattr(assignment,'resource_context',None)!=getattr(self.snapshot,'resource_context',None):
             raise ControlPlaneBrokerDeniedError('assignment immutable Resource context changed')
         if self.worker_service_identity_validator is not None:
@@ -3494,10 +3524,11 @@ class DeferredControlPlaneBrokerFactory:
         worker_service_identity_validator: Callable[[], str] | None = None,
     ) -> AssignmentBoundControlPlaneBroker | None:
         service = self.service
-        if (
-            service is None
-            or assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES
-        ):
+        if service is None:
+            return None
+        try:
+            service._broker_profile_operations(assignment)
+        except ControlPlaneBrokerDeniedError:
             return None
         broker = AssignmentBoundControlPlaneBroker(
             service,

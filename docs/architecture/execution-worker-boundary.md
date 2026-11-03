@@ -2053,3 +2053,52 @@ schema migration, grant, or credential expansion is implied.
 Existing Run and broker scope views display the exact WRITE/READ sets and write
 mode. The selected primary is distinct from the mutable primary; process metadata
 reports the read-only primary separately instead of labelling it writable.
+
+### Definition-driven custom broker eligibility
+
+Custom execution-profile names do not need a code-owned transport allowlist.
+Broker construction, public capability metadata and operation admission use the
+same scoped execution-profile resolver and require the assignment's exact current
+Definition reference. A custom profile must declare at least one recognized broker
+operation. Its advertised and permitted operation IDs are limited to that declared,
+recognized set; unknown declarations do not become operations. Catalog discovery
+(`control_plane.operations.list`) is not an implicit grant when a profile declares
+only `procedure.read`, `procedure.start` and `procedure.advance`.
+
+The four released profile IDs (`orchestration-only`, `repository-write`,
+`orchestration-admin`, `project-governor`) retain their existing compatibility
+behavior. That fixed set is not a mutable profile catalog and must not acquire new
+names. It preserves released catalogs whose declarations may be empty; existing
+operation-specific READY, Home, administrative, governor and context-read owners
+continue to enforce their declarations and authority. No retrospective Definition
+or assignment migration is required by this custom-profile transport correction.
+
+Eligibility is not effective authority. Every request still passes the existing
+worker/requester Identity, tenant/Project/Resource, assignment lease and fence,
+operation Authority, audit and canonical adapter checks. Procedure and credential
+admission remain their existing owners. A missing or superseded custom pin, an
+unresolvable profile, or an empty/unsupported declaration disables transport and
+refuses dispatch; it does not grant a default contract or trigger native input.
+Existing broker capability views expose the exact catalog without a new UI action.
+This correction does not diagnose or claim to fix any separate worker-start error.
+
+### Trusted-local Codex runtime HOME with read-only repositories
+
+The trusted-local credential owner may supply an ephemeral typed runtime-HOME
+mount for a read-only Codex assignment (#1985). This is the existing configured
+ambient sign-in HOME, not a per-assignment credential copy or repository grant.
+The launch owner revalidates its canonical grant and configured path immediately
+before spawn. The backend requires the exact assignment/worker/fence and runtime
+identity, a canonical absolute existing directory, and no parent/child overlap
+with the workspace, repository mounts or Git metadata. It binds that directory
+at the identical path for native runtime state only. Stored assignment, Profile
+and request data cannot select this mount. Existing delegated launches and the
+read-only rejection of generic writable repository mounts remain unchanged.
+Read-only describes repository authority; trusted-local sign-in continues to
+share the operator's configured ambient Codex state under its existing boundary.
+
+The trusted-local launch grant records the initial lease expiry for inspection;
+that fixed timestamp is not a separate session cutoff. Continued runtime use
+revalidates the current canonical assignment lease/fence and assignment deadline,
+including leases renewed by the existing session watchdog. Renewal neither
+changes the configured ambient HOME nor reissues credential authority.

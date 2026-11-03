@@ -12,6 +12,7 @@ from codex_web.execution_workers import (
     ExecutionRuntimeBinding,
 )
 from codex_web.identity import AuthenticationActor, PrincipalKind
+from codex_web.local_execution_backend import TrustedLocalRuntimeHome
 from codex_web.runtime.codex import (
     CODEX_MINIMUM_ADDRESS_SPACE_BYTES,
     CODEX_MINIMUM_PROCESS_COUNT,
@@ -67,6 +68,7 @@ class CodexTrustedLocalLaunch:
     command: tuple[str, ...]
     environment: dict[str, str]
     trusted_writable_mounts: tuple[tuple[Path, Path], ...]
+    trusted_local_runtime_home: TrustedLocalRuntimeHome | None = None
 
 
 class TrustedLocalCodexCredentialProvider:
@@ -141,7 +143,8 @@ class TrustedLocalCodexCredentialProvider:
             worker_id=worker_id,
             fence=fence,
             expires_at=expires_at,
-            codex_home=str(self.codex_home),
+            codex_home=str(self.codex_home.resolve(strict=True)
+                if assignment.sandbox == "read-only" else self.codex_home),
         )
 
     def use(
@@ -166,8 +169,12 @@ class TrustedLocalCodexCredentialProvider:
                     executable=self.executable,
                     subcommand=("app-server",),
                 ),
-                environment={"CODEX_HOME": str(self.codex_home)},
-                trusted_writable_mounts=((self.codex_home, self.codex_home),),
+                environment={"CODEX_HOME": grant.codex_home},
+                trusted_writable_mounts=(() if assignment.sandbox == "read-only"
+                    else ((self.codex_home, self.codex_home),)),
+                trusted_local_runtime_home=(TrustedLocalRuntimeHome(
+                    Path(grant.codex_home), assignment.id, worker_id, fence)
+                    if assignment.sandbox == "read-only" else None),
             )
         )
 
@@ -181,7 +188,10 @@ class TrustedLocalCodexCredentialProvider:
         self._require_worker_actor(actor)
         now = self._clock()
         lease = assignment.lease
-        if assignment.id != delegation.assignment_id:
+        if (assignment.id != delegation.assignment_id
+                or delegation.codex_home != str(self.codex_home.resolve(strict=True)
+                    if assignment.sandbox == "read-only" else self.codex_home)
+                or assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}):
             raise AssignmentBoundCodexSessionStaleError(
                 "trusted-local Codex grant assignment changed"
             )
