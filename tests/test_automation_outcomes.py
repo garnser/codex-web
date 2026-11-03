@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from codex_web.automation_definitions import AutomationTargetKind
-from codex_web.automation_runs import AutomationRunStatus
+from codex_web.automation_runs import AutomationRun, AutomationRunStatus
 from codex_web.execution_workers import AssignmentStatus
 from codex_web.failures import FailureReason, create_failure
 from codex_web.identity import (
@@ -224,6 +224,7 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 checksum="definition-checksum-1",
             ),
             status=AutomationRunStatus.RUNNING,
+            target_kind=AutomationTargetKind.AGENT_PROFILE,
             execution_ids=tuple(execution_ids),
             evidence_ids=(),
             started_at=100.0,
@@ -248,6 +249,39 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
             failure_code=None,
             failure_message=None,
         )
+
+    def test_legacy_canonical_run_without_procedure_custody_reconciles(self) -> None:
+        # Persisted agent-profile Runs already carry target_kind; only the new
+        # optional procedure facet is absent from their historical payloads.
+        payload = dict(self._run("exec-a").__dict__)
+        payload.update(
+            definition_ref={
+                "definition_id": "automation-a",
+                "kind": "automation",
+                "record_id": "definition-1",
+                "revision": 1,
+                "checksum": "a" * 64,
+                "definition_schema_version": "1.0",
+            },
+            trigger={"kind": "manual", "source_id": "operator"},
+            dedupe_key="legacy-run",
+            target_id="agent-james",
+        )
+        run = AutomationRun.model_validate(payload)
+        self.assertIsNone(run.procedure_custody)
+        self.assertNotIn("procedure_custody", run.model_dump(mode="json"))
+        self.assertEqual(run.target_kind, AutomationTargetKind.AGENT_PROFILE)
+        runs = _Runs(run)
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.SUCCEEDED)}),
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.SUCCEEDED)
+        self.assertEqual(len(runs.completed), 1)
+        self.assertIsNone(result.procedure_custody)
 
     def test_reconcile_for_execution_targets_matching_running_run(self) -> None:
         run = self._run("exec-a")
