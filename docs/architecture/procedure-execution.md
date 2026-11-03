@@ -622,3 +622,41 @@ retain their explicit null. Missing facts remain `needs_input` or `blocked`,
 without a sentinel target or a new nullable procedure type. The original receipt
 and verification Evidence prove the bounded observation only; their successful
 read does not turn those dispositions into readiness, approval, or merge consent.
+
+
+### Pending handoff preparation belongs to the admitted Automation Run
+
+A matching custody Automation may observe a genuine pending handoff before its
+recipient has a compatible native bootstrap. Read-only selection must not create
+that bootstrap, and deterministic ownership must not fall through to model
+reasoning merely because preparation has not completed (#1989).
+
+The bridge first validates the current published policy, Work/nonce, supervisor
+Role/Profile, repository context and live idle custody, then durably admits its
+existing Automation Run. The invocation portion of its dedupe key identifies the
+Automation/procedure semantic IDs and exact Work/nonce. A separate suffix pins
+the original published references and supervisor custody/scope. The existing Run
+writer atomically coalesces that invocation even when competing observations
+carry different custody suffixes. A changed supervisor or Definition therefore
+blocks the original Run instead of minting another attempt. Existing Runs with
+the former target/input key retain their original interpretation.
+
+Only the Run's existing coordinator owner may enter recipient preparation. It
+rechecks current controls, exact custody and required consumed ApprovalRequest,
+then delegates to the normal `prepare_compatible_pin` owner. That owner retains
+its existing narrow eligibility, exact nonce reservation, current Profile and
+scope, fencing and before-worker recovery rules. Ambiguous, missing or UNKNOWN
+original custody is never a generic create/retry signal. No native input, ACK,
+new handoff, role binding or grant is synthesized by the bridge.
+
+After an await, the owner rereads the Run, controls, policy and pinned context
+before full recipient selection, the existing governed input Artifact/custody
+claim, native credential preparation and procedure start. The first preparation
+clock is persisted on the Run and survives failures, claiming and restart; the
+finite duration is not renewed. Startup recovery resumes the same admitted Run.
+Archived/expired handoffs remain historical and cannot be recreated by recovery.
+
+This changes internal admission/deduplication only. No stored field or schema is
+added, and legacy serialization is unchanged. Existing Work, Automation Run,
+preflight and checkpoint inspectors expose the retained typed refusal or normal
+completion; no additional UI control or authority path is introduced.
