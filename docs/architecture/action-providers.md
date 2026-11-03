@@ -120,7 +120,7 @@ GitHub and GitLab implement one provider-neutral delivery catalog:
   GitLab merge request;
 - `code-host.branch.publish`.
 - `code-host.pull-request.merge` (GitHub).
-- `code-host.job.rerun` (GitHub).
+- `code-host.job.rerun` (GitHub and GitLab).
 
 Every request targets exactly one active canonical repository Resource. The
 provider locator is resolved from that Resource's GitHub or GitLab alias, while
@@ -215,11 +215,37 @@ back from the provider and compare it with the durable ActionResult. ActionInten
 receipts and verification receipts remain the authoritative reconciliation
 history, including unknown outcomes and bounded idempotent retries.
 
-CI job reruns are medium-risk external mutations. The assignment broker creates
-an ActionIntent for one exact GitHub job ID, the provider accepts only a
-completed failure-like conclusion, and the action is single-attempt so an
-unknown outcome cannot silently start a second run. Verification reads the job
-back and accepts only queued, running, or completed provider state.
+CI job reruns are medium-risk external mutations under the existing
+`repository.checks.rerun` authority and exact canonical repository/provider
+binding. The assignment broker creates an ActionIntent for one exact job ID;
+`parameters` accepts only `job_id`, with the normal durable idempotency key.
+The action is single-attempt. A response loss or malformed response after a
+possible POST retains an unknown outcome: neither retry nor reconciliation may
+silently start another job. Existing authority, credential, current-assignment,
+procedure admission, and trust/policy guards remain authoritative; publishing a
+procedure does not grant permission. There is no new Definition kind or schema.
+
+GitHub accepts completed failure-like conclusions and verifies a fresh workflow
+run attempt. GitLab accepts only nonarchived `failed` or `canceled` jobs, reads
+its scoped project and exact original job, then calls the documented
+[Jobs API retry endpoint](https://docs.gitlab.com/api/jobs/#retry-a-job) once,
+without variable or input overrides. A successful response must identify a
+**distinct new job** with the same project, pipeline, full commit, ref, name,
+and stage. The original job ID and returned job ID remain separate in the
+receipt. Verification uses fresh, independently credential-brokered project and
+original/new-job GETs, checks those identities against the receipt, and accepts
+only known queued/running/terminal retry states. This proves the retry was
+observed, **not** that CI passed, QA accepted, or a merge is authorized. Unknown
+outcomes without the new job identity remain unresolved; the provider never
+searches for a plausible retry or guesses success from the original job.
+
+The existing provider/action catalog and ActionIntent inspector expose this
+same action, repository scope, original/new job IDs, and receipt/verification
+results. No new UI mutation surface or client authority is needed. The existing
+operator API and GitHub behavior are unchanged. Native adoption still requires
+an actually allowed current Profile/assignment, both principal grants, an
+eligible binding/credential, and any required published procedure; this source
+capability does not publish a Skill or alter those grants (feature #2021).
 
 The same broker exposes read-only CI diagnostics without giving the execution
 worker a provider credential. Failed-job logs are UTF-8 decoded, capped at a

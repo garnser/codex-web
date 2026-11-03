@@ -41,6 +41,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
+    CODE_HOST_JOB_RERUN_EVIDENCE,
     CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
@@ -125,11 +126,7 @@ class GitLabActionProvider:
         return str(value).rstrip("/")
 
     def actions(self):
-        return tuple(
-            action
-            for action in self.contract.actions()
-            if action.action_id != CODE_HOST_JOB_RERUN_ACTION_ID
-        )
+        return self.contract.actions()
 
     @staticmethod
     def _owned_body(body: str, marker: str) -> str:
@@ -337,6 +334,9 @@ class GitLabActionProvider:
                 "work_item_issue_number": attested.work_item_issue_number,
                 "work_item_merge_request_number": attested.work_item_merge_request_number,
             }
+        if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            return {"operation": "job-rerun", "repository": project,
+                    "job_id": self.contract.job_rerun(request)}
         if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             return {"operation": "pull-request-ready", "repository": project,
                     **self.contract.pull_request_ready(request)}
@@ -406,6 +406,38 @@ class GitLabActionProvider:
         return {key: item.get(key) for key in (
             "id", "iid", "project_id", "source_project_id", "target_project_id", "state",
             "sha", "source_branch", "target_branch", "draft", "title", "description")}
+
+    @staticmethod
+    def _job_snapshot(item, *, project_id: int, job_id: int | None = None):
+        """Validate the scoped Jobs API identity, without trusting a Web URL."""
+        if not isinstance(item, dict) or type(project_id) is not int or project_id < 1:
+            raise ValueError("GitLab job project identity is invalid")
+        observed_id = item.get("id")
+        pipeline = item.get("pipeline")
+        commit = item.get("commit")
+        if (type(observed_id) is not int or observed_id < 1
+                or job_id is not None and observed_id != job_id
+                or not isinstance(pipeline, dict) or not isinstance(commit, dict)
+                or type(pipeline.get("id")) is not int or pipeline["id"] < 1
+                or type(pipeline.get("project_id")) is not int
+                or pipeline["project_id"] != project_id):
+            raise ValueError("GitLab job/pipeline identity does not match its project")
+        sha = pipeline.get("sha")
+        if (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)
+                or commit.get("id") != sha
+                or not isinstance(item.get("ref"), str) or not item["ref"]
+                or pipeline.get("ref") != item["ref"]
+                or not isinstance(item.get("name"), str) or not item["name"]
+                or not isinstance(item.get("stage"), str) or not item["stage"]):
+            raise ValueError("GitLab job omitted its exact commit/ref/name/stage")
+        return {"job_id": observed_id, "pipeline_id": pipeline["id"],
+                "head_sha": sha, "ref": item["ref"],
+                "job_name": item["name"], "job_stage": item["stage"]}
+
+    @staticmethod
+    def _same_job_scope(left, right):
+        return all(left[key] == right[key] for key in
+                   ("pipeline_id", "head_sha", "ref", "job_name", "job_stage"))
 
     async def execute(
         self,
@@ -822,6 +854,33 @@ class GitLabActionProvider:
             summary = (
                 "GitLab merge request is merged after clean pipeline validation."
             )
+        elif request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            job_id = self.contract.job_rerun(request)
+            repository = await self.client.project(self.api_base, project, token=credential)
+            current = await self.client.job(self.api_base, project, job_id, token=credential)
+            try:
+                project_id = repository.get("id") if isinstance(repository, dict) else None
+                original = self._job_snapshot(current, project_id=project_id, job_id=job_id)
+                if current.get("status") not in {"failed", "canceled"} or current.get("archived") is not False:
+                    raise ValueError("GitLab job must be a nonarchived failed or canceled job")
+            except ValueError as exc:
+                raise ActionRequirementError(str(exc)) from exc
+            # The original remains untouched. The POST returns a distinct retry
+            # job; any transport/normalization failure from here is uncertain.
+            retried = await self.client.retry_job(self.api_base, project, job_id, token=credential)
+            fresh = self._job_snapshot(retried, project_id=project_id)
+            if (fresh["job_id"] == job_id or not self._same_job_scope(original, fresh)
+                    or retried.get("archived") is not False
+                    or retried.get("status") not in {
+                        "created", "pending", "preparing", "waiting_for_resource", "scheduled",
+                        "running", "success", "failed", "canceled"}):
+                raise ValueError("GitLab retry response does not identify the exact new job")
+            evidence_type = CODE_HOST_JOB_RERUN_EVIDENCE
+            external_id = str(fresh["job_id"])
+            url = str(retried.get("web_url") or "") or None
+            output.update({**original, "retried_job_id": fresh["job_id"],
+                           "original_status": current["status"], "job_project_id": project_id})
+            summary = "GitLab accepted one governed job retry; this is not CI success."
         else:
             raise ValueError("unsupported GitLab action")
         return ActionResult(
@@ -1085,6 +1144,34 @@ class GitLabActionProvider:
                 or str(item.get("sha") or "").casefold()
                 == str(result.output["head_sha"]).casefold()
             )
+        elif result.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            try:
+                raw = result.output
+                old_id, new_id = raw.get("job_id"), raw.get("retried_job_id")
+                if (result.status != "succeeded" or type(old_id) is not int or old_id < 1
+                        or type(new_id) is not int or new_id < 1 or old_id == new_id
+                        or result.external_id != str(new_id)
+                        or raw.get("original_status") not in {"failed", "canceled"}):
+                    raise ValueError("GitLab original retry receipt is invalid")
+                repository = await self.client.project(self.api_base, project, token=credential)
+                project_id = repository.get("id") if isinstance(repository, dict) else None
+                if (type(project_id) is not int or type(raw.get("job_project_id")) is not int
+                        or type(raw.get("pipeline_id")) is not int
+                        or raw.get("job_project_id") != project_id):
+                    raise ValueError("GitLab retry receipt project changed")
+                original = await self.client.job(self.api_base, project, old_id, token=credential)
+                retried = await self.client.job(self.api_base, project, new_id, token=credential)
+                old = self._job_snapshot(original, project_id=project_id, job_id=old_id)
+                new = self._job_snapshot(retried, project_id=project_id, job_id=new_id)
+                verified = (all(raw.get(key) == value for key, value in old.items())
+                    and original.get("status") == raw["original_status"]
+                    and original.get("archived") is False and retried.get("archived") is False
+                    and self._same_job_scope(old, new)
+                    and retried.get("status") in {
+                        "created", "pending", "preparing", "waiting_for_resource", "scheduled",
+                        "running", "success", "failed", "canceled"})
+            except (KeyError, TypeError, ValueError):
+                verified = False
         else:
             raise ValueError("unsupported GitLab action result")
         evidence = (
