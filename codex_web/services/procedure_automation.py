@@ -126,7 +126,12 @@ class ProcedureAutomationService:
                 or activity.get('turnId') is not None or self.continuity.thread_is_active(binding.thread_id)):
             raise ProcedureAutomationError('procedure_automation_supervisor_not_idle')
         recipient_role = snapshot.owner(state.handoff.to_agent)
-        recipient_binding, recipient = await asyncio.to_thread(assignment_for, recipient_role)
+        recipient_binding = await asyncio.to_thread(self.routing.existing_binding, state, recipient_role)
+        from codex_web.services.work_item_dependencies import work_item_repository_scope
+        _, writable = work_item_repository_scope(state)
+        recipient_bootstrap, recipient = await asyncio.to_thread(self.routing.recovery_recipient,
+            state, recipient_binding, state.handoff.to_agent,
+            writable_repository_ids=writable, lookup_actor=lambda:actor)
         target = recipient
         if original_values is not None:
             from codex_web.services.procedure_custody_recovery import CustodyInput
@@ -143,7 +148,7 @@ class ProcedureAutomationService:
             raise ProcedureAutomationError('procedure_automation_target_context_missing')
         values = original_values or {'work_item_ref':state.ref, 'target_assignment_id':target.id,
             'expected_target_fence':target.fence, 'expected_handoff_requested_at':state.handoff.requested_at}
-        target_observation = await self.threads.runner(recipient_binding.thread_id)
+        target_observation = await self.threads.runner(recipient_bootstrap.thread_id)
         target_runner, target_activity = target_observation.get('runner') or {}, target_observation.get('activity') or {}
         # Closed canonical facts, not event prose, provider output or observations
         # promoted into authority. Unchanged watchdog windows cannot advance.

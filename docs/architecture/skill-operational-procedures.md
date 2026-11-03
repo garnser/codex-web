@@ -297,6 +297,19 @@ mutation owner. Interrupted/uncertain attempts lose that reusable witness and
 remain reconciliation-only. Completed Run status requires the exact completed
 checkpoint and governed step Evidence, not an idle or successful native turn.
 
+Recipient selection reads the existing routing owner's exact Work/nonce
+bootstrap reservation, not the Role's reply binding as an execution target.
+The logical reply binding and its other repository history remain unchanged.
+The routing owner separately validates current identity, Profile, worker,
+canonical scope and bootstrap attribution. Its recovery observation may describe
+an actually expired or LOST assignment; it is not a native-send pin and does not
+relax the existing LIVE recipient or final native-admission guards. Generation
+one still requires the canonical positive before-worker refusal. Accepted
+handoffs retain their exact START/ACK lineage, and unresolved originals refuse
+selection. A missing reservation permits only the validated same-scope anchor,
+never a scan for an arbitrary matching Role. The bridge observes the selected
+recipient thread while retaining the Run's original target/fence/nonce inputs.
+
 Existing Run payloads continue omitting the unset facet and retain state schema
 1.4. The first populated facet writes additive state schema 1.5 in the same
 namespace. The compatibility registry accepts both and registers the additive

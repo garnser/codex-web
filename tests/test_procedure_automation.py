@@ -206,7 +206,7 @@ class ProcedureAutomationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         def assignment(thread):return f.workers.store.assignment(f.assignment.id if thread=='supervisor' else self.target.id)
         def bootstrap(thread,actor):
             a=assignment(thread)
-            return SimpleNamespace(assignment_id=a.id,execution_id=a.execution_id,
+            return SimpleNamespace(thread_id=thread,assignment_id=a.id,execution_id=a.execution_id,
                 execution_workspace_id=a.execution_workspace_id)
         # Only native/Profile/routing read edges are controlled. Authority,
         # assignment/store, governed input, checkpoint and Evidence are real.
@@ -214,6 +214,7 @@ class ProcedureAutomationIntegrationTests(unittest.IsolatedAsyncioTestCase):
             owner=lambda v:v,coordination_owners=('supervisor',)),
             existing_binding=lambda _,role:SimpleNamespace(thread_id=self.binding_threads[role]),
             bootstraps=SimpleNamespace(get_by_thread=bootstrap),
+            recovery_recipient=lambda _,binding,role,**kw:(bootstrap(binding.thread_id,f.actor),assignment(binding.thread_id)),
             executor=lambda _,binding,role,**kw:(SimpleNamespace(profile_id=assignment(binding.thread_id).agent_profile.profile_id),f.actor))
         async def runner(thread):
             a=assignment(thread);busy=thread=='recipient' and self.target_busy
