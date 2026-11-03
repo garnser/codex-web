@@ -20,6 +20,18 @@ class NativeStartAdmissionRefused(RuntimeError):
         self.correlation = correlation
 
 
+def _repository_primary_matches(assignment, primary):
+    scope = assignment.repository_scope
+    if scope is None:
+        return False
+    if scope.write_mode != 'read_only':
+        return primary in scope.writable_repository_ids
+    target = assignment.repository_target
+    return (target is not None and target.read_only_primary_repository_id == primary
+            and target.mutable_repository_id is None and not scope.writable_repository_ids
+            and primary in scope.read_only_repository_ids and primary in assignment.resource_ids)
+
+
 def validate_attribution(service, current, correlation):
     snapshot = current.queued_turn_snapshot
     original = QueuedTurn.model_validate(snapshot) if snapshot is not None else None
@@ -214,8 +226,8 @@ class QueuedNativeStartCapture:
                     or getattr(assignment,'resource_context',None)!=current.resource_context
                     or (current.execution_profile_id is not None
                         and current.execution_profile_id != assignment.execution_profile_id)
-                    or (current.repository_resource_id is not None and (scope is None
-                        or current.repository_resource_id not in scope.writable_repository_ids))
+                    or (current.repository_resource_id is not None
+                        and not _repository_primary_matches(assignment, current.repository_resource_id))
                     or (current.writable_repository_resource_ids and (scope is None
                         or set(current.writable_repository_resource_ids) != set(scope.writable_repository_ids)))
                     or (current.read_only_repository_resource_ids and (scope is None

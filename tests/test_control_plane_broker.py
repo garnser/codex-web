@@ -1137,6 +1137,31 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "unsupported pull request merge parameters"):
                     parse({**minimal, "expected_head_sha": "a" * 40, field: value})
 
+    async def test_worker_catalog_omits_operator_audit_link_without_granting_audit_access(self):
+        status, _, catalog = await self._request("GET", "/api/control-plane-broker/operations")
+        self.assertEqual(status, 200, catalog)
+        self.assertTrue(catalog["enabled"])
+        # OLD must reach this actual socket response, not fail on a new helper.
+        self.assertNotIn("audit_href", catalog,
+            "Worker catalog must not advertise an operator-only audit route")
+
+        from codex_web.api.execution_workers import _operator_assignment
+        operator = _operator_assignment(self.assignment, SimpleNamespace(service=self.service))
+        inspection = operator["brokered_control_plane"]
+        audit_href = f"/api/control-plane-broker/audit?assignment_id={self.assignment.id}"
+        self.assertEqual(inspection["audit_href"], audit_href)
+        self.assertEqual(catalog["operations"], inspection["operations"])
+        # Omission is a presentation correction, never a new worker route.
+        status, headers, refused = await self._request("GET", audit_href)
+        self.assertEqual(status, 403, refused)
+        self.assertEqual(refused["error"]["message"], "control-plane path is not allowlisted")
+        event = next(item for item in self.service.audit.load().events
+                     if item.correlation_id == headers["x-correlation-id"])
+        self.assertEqual(event.assignment_id, self.assignment.id)
+        self.assertEqual(event.response_status, 403)
+        self.assertIsNone(event.operation_id)
+        self.assertEqual(event.denial_reason, "control-plane path is not allowlisted")
+
     async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
         with patch.object(
             self.service,
