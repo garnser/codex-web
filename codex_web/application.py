@@ -4470,6 +4470,8 @@ autonomy_service.procedure_event_handler = procedure_automation_service.handle_e
 automation_execution_service.procedure_automation = procedure_automation_service
 automation_outcome_reconciliation_service.procedure_reconciler = procedure_automation_service.reconcile
 app.state.procedure_automation_service = procedure_automation_service
+work_item_service.publish_event = procedure_automation_service.wrap_work_publisher(
+    work_item_service.publish_event)
 work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
