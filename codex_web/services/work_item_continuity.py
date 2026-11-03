@@ -10,6 +10,7 @@ from functools import wraps
 
 from fastapi import HTTPException
 
+from codex_web.work_item_wait import current_unchanged_wait
 from codex_web.models import WorkItemState, WorkItemHandoffDelivery
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
@@ -1243,6 +1244,8 @@ class WorkItemContinuityService:
         try:
             state = self.get_state(ref)
         except HTTPException:
+            return
+        if current_unchanged_wait(state):
             return
         if state.current_stage == "closed" or state.closed_at:
             return

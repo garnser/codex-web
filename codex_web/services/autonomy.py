@@ -16,6 +16,7 @@ from codex_web.action_intents import (
 from codex_web.action_providers import ActionRequest
 from codex_web.autonomy import AutonomyCycleOutcome, AutonomyObservation, AutonomyReasoningResult
 from codex_web.canonical_events import CanonicalEventType
+from codex_web.work_item_wait import current_unchanged_wait
 from codex_web.identity import AuthenticationActor
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.action_intents import ActionIntentService
@@ -98,6 +99,9 @@ class AutonomyService:
     ) -> dict[str, Any]:
         """Route watchdog reasoning through canonical event + autonomy controls."""
 
+        if work_item is not None and current_unchanged_wait(work_item):
+            return {"ok": True, "ignored": True, "reason": "work_item_unchanged_wait",
+                "threadId": binding.thread_id}
         dispatch_context = {}
         if work_item is not None:
             primary, writable = work_item_repository_scope(work_item)
@@ -360,6 +364,7 @@ class AutonomyService:
                     and state.current_stage
                     in self.ACTIONABLE_OWNER_STAGES
                     and not state.closed_at
+                    and not current_unchanged_wait(state)
                     and not (
                         state.handoff
                         and state.handoff.status == "pending"
@@ -524,6 +529,7 @@ class AutonomyService:
                 for state in states.values()
                 if state.project_id == project_id
                 and d.coerce_owner(actionable_owner_value(state)) == "release manager"
+                and not current_unchanged_wait(state)
                 and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
                 and (now - d.owner_activity_timestamp(state)) >= d.release_validation_sla_seconds()
             ]
@@ -583,6 +589,7 @@ class AutonomyService:
                 states = await asyncio.to_thread(d.load_work_item_states)
                 owned = [state for state in states.values()
                     if state.project_id == project_id and state.current_stage in self.ACTIONABLE_OWNER_STAGES
+                    and not current_unchanged_wait(state)
                     and recovery.owns(binding, state)]
                 owned.sort(key=lambda state: (d.owner_activity_timestamp(state), state.ref))
                 recovery_work = (await asyncio.to_thread(recovery.select_current_work, binding, owned)

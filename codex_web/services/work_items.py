@@ -8,6 +8,7 @@ from typing import Any
 
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.identity import TenantScope
+from codex_web.work_item_wait import current_unchanged_wait
 from codex_web.owner_routing import OwnerRoutingError
 from codex_web.models import (
     TaskSourceConfiguration,
@@ -1467,7 +1468,7 @@ class WorkItemService:
         if (
             previous_evidence is None
             or previous_evidence != work_item_progress_evidence(state)
-        ):
+        ) and not current_unchanged_wait(state):
             continuity.schedule_actionable_owner_dispatch(
                 state,
                 source="work-item-progress",

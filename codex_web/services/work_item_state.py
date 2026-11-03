@@ -22,6 +22,8 @@ from codex_web.services.work_item_dependencies import (
 )
 from codex_web.services.work_item_transitions import WorkItemTransitionService
 from codex_web.owner_routing import OwnerRoutingError
+from codex_web.work_item_wait import UnchangedWaitCheckpoint, wait_input_sha256, wait_context
+from codex_web.services.work_item_dependencies import actionable_owner_value
 from codex_web.storage.state_store import StateStore
 from codex_web.storage.work_item_events import WorkItemEventStore
 
@@ -139,6 +141,7 @@ class WorkItemStateMachine:
             routing_errors = [str(exc)]
             observation = {'schema_version': '1.0', 'status': 'blocked', 'reason': str(exc), 'grants_execution_authority': False}
         payload = state.model_dump()
+        payload["wait_checkpoint_context"] = wait_context(state)
         if observation is not None:
             payload['owner_routing'] = observation
         payload["isConfirmationPending"] = bool(
@@ -703,6 +706,7 @@ class WorkItemStateMachine:
         note: str | None = None,
         expected_handoff_requested_at: float | None = None,
         deferred_events: list | None = None,
+        wait_checkpoint=None,
     ) -> WorkItemState:
         # Work on a detached candidate: a denied stale update must not mutate
         # a caller's canonical object, append success audit, or reach writeback.
@@ -714,6 +718,7 @@ class WorkItemStateMachine:
         ):
             self._raise_pending_handoff_conflict(state)
         previous_evidence = work_item_progress_evidence(state)
+        original_wait_input = wait_input_sha256(state)
         routing = self._owner_routing(state)
         state = self._ensure_work_item_lane_defaults(state, routing=routing)
         now = time.time()
@@ -897,13 +902,30 @@ class WorkItemStateMachine:
             )
             or state.last_owner_activity_at is None
         )
+        if wait_checkpoint is not None:
+            expected = wait_checkpoint.expected_input_sha256
+            if (expected != original_wait_input or expected != wait_input_sha256(state)
+                    or self._routing_owner(state, actor, routing=routing) != self._routing_owner(
+                        state, actionable_owner_value(state), routing=routing)
+                    or not self._coerce_owner(actor) or not state.blocker or not state.next_action
+                    or state.closed_at or state.current_stage == 'closed'
+                    or state.handoff and state.handoff.status == 'pending'):
+                raise HTTPException(status_code=409, detail={
+                    'code': 'work_item_wait_checkpoint_changed',
+                    'message': 'Read current Work inputs; unchanged-wait cannot change the lane or attest remote readiness.'})
+            state.wait_checkpoint = UnchangedWaitCheckpoint(**wait_checkpoint.model_dump(),
+                actor=self._coerce_owner(actor), acknowledged_at=now)
+        elif note:
+            # A normal note-only material update remains a legitimate wake.
+            state.wait_checkpoint = None
         state.updated_at = now
         if refresh_owner_activity:
             state.last_owner_activity_at = now
         if note:
             state.notes = (state.notes + [note])[-20:]
-        meaningful_change = previous_evidence != work_item_progress_evidence(state)
+        meaningful_change = wait_checkpoint is None and previous_evidence != work_item_progress_evidence(state)
         if meaningful_change:
+            state.wait_checkpoint = None
             state.last_meaningful_update_at = now
         (self._append_work_item_event if deferred_events is None else deferred_events.append)(
             self._work_item_event(
@@ -921,6 +943,7 @@ class WorkItemStateMachine:
                     "release_gate": state.release_gate,
                     "status_label": state.status_label,
                     "meaningful_change": meaningful_change,
+                    "unchanged_wait_checkpoint": wait_checkpoint is not None,
                 },
             )
         )
@@ -1291,28 +1314,44 @@ class WorkItemStateMachine:
         ref: str,
         payload: WorkItemProgressUpdate,
     ) -> WorkItemState:
-        state = self._work_item_state(ref)
         fields_set = payload.model_fields_set
-        state = self._touch_work_item_progress(
-            state,
-            actor=payload.actor,
-            current_owner=payload.current_owner,
-            current_stage=payload.current_stage,
-            next_action=payload.next_action,
-            next_owner=payload.next_owner,
-            next_owner_present="next_owner" in fields_set,
-            blocker=payload.blocker,
-            blocker_present="blocker" in fields_set,
-            blocking_findings=payload.blocking_findings,
-            blocking_findings_present="blocking_findings" in fields_set,
-            release_gate=payload.release_gate,
-            status_label=payload.status_label,
-            artifact_state=payload.artifact_state,
-            note=payload.note,
-            expected_handoff_requested_at=payload.expected_handoff_requested_at,
-        )
-        state = self._sync_work_item_status_label(state)
-        return self._save_work_item_state(state)
+        events = [] if payload.wait_checkpoint is not None else None
+
+        def apply(state):
+            if state is None:
+                raise HTTPException(status_code=404, detail="Work item state not found")
+            state = self._touch_work_item_progress(
+                state,
+                actor=payload.actor,
+                current_owner=payload.current_owner,
+                current_stage=payload.current_stage,
+                next_action=payload.next_action,
+                next_owner=payload.next_owner,
+                next_owner_present="next_owner" in fields_set,
+                blocker=payload.blocker,
+                blocker_present="blocker" in fields_set,
+                blocking_findings=payload.blocking_findings,
+                blocking_findings_present="blocking_findings" in fields_set,
+                release_gate=payload.release_gate,
+                status_label=payload.status_label,
+                artifact_state=payload.artifact_state,
+                note=payload.note,
+                expected_handoff_requested_at=payload.expected_handoff_requested_at,
+                wait_checkpoint=payload.wait_checkpoint,
+                deferred_events=events,
+            )
+            return self._sync_work_item_status_label(state)
+
+        if payload.wait_checkpoint is not None:
+            if self.dependencies.update_state is None:
+                raise HTTPException(status_code=409, detail={'code': 'work_item_wait_owner_unavailable'})
+            # Validate the expected input and store its receipt on the SAME
+            # current canonical Work row; never overwrite a concurrent change.
+            state = self.dependencies.update_state(ref, apply)
+            for event in events:
+                self._append_work_item_event(event)
+            return state
+        return self._save_work_item_state(apply(self._work_item_state(ref)))
 
 
 def install_work_item_state_machine(
