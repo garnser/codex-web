@@ -22,6 +22,10 @@ class GitWorkspaceProvision:
 
 @runtime_checkable
 class ExecutionWorkspaceBackend(Protocol):
+    def git_workspace_path(self, workspace_id: str) -> Path:
+        """Canonical distinct Git-worktree target; planning has no side effects."""
+        ...
+
     def provision_git(
         self,
         repository_path: Path,
@@ -84,6 +88,12 @@ class LocalGitWorkspaceBackend:
             raise ExecutionWorkspaceBackendError(
                 "execution workspace path escapes backend root"
             )
+        return target
+
+    def git_workspace_path(self, workspace_id: str) -> Path:
+        target = self.root.resolve() / workspace_id
+        if target.parent != self.root.resolve() or target != self._workspace_target(workspace_id):
+            raise ExecutionWorkspaceBackendError("Git worktree plan must be a distinct canonical backend child")
         return target
 
     def provision_scratch(self, workspace_id: str) -> Path:
