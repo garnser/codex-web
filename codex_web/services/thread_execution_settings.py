@@ -224,10 +224,12 @@ class ThreadExecutionSettingsService:
             or "Agent"
         ).strip()
         role_key = role.lower()
-        base_url = self.internal_base_url()
         lines = [
             "codex-web structured work-item contract. These rules are mandatory for GitLab-driven work.",
-            f"Use `{base_url}/api/work-items` as the system of record for ownership, handoff, and progress.",
+            "Use `${CODEX_WEB_CONTROL_PLANE_URL}/api/work-items` through the current assignment-bound HTTP broker as the system of record for ownership, handoff, and progress.",
+            "Discover exact supported methods and paths with GET `${CODEX_WEB_CONTROL_PLANE_URL}/api/control-plane-broker/operations`; use its `work_item.read` and `work_item.progress` operations. Descriptor presence does not grant authority.",
+            "Resolve CODEX_WEB_CONTROL_PLANE_URL inside the current native execution environment and bypass proxies only for that assignment broker request. Do not substitute a host/internal URL, direct host localhost, raw provider API, credentials, or MCP availability for this channel.",
+            "If the assignment broker environment or required operation is unavailable, record that exact limitation and preserve uncertain mutation outcomes; do not retry a mutation or fall back to the host admin API.",
             "Before calling a work-item endpoint, URL-encode the full GitLab ref path with `urllib.parse.quote(ref, safe='')`.",
             "Do not rely on Slack narration alone. Every meaningful GitLab work step must also update codex-web state.",
             "",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from codex_web.models import BotBinding, ThreadRunSettings
 from codex_web.services.thread_execution_settings import (
@@ -153,6 +154,51 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
 
         stripped = service.base_developer_instructions("t1", effective)
         self.assertEqual(stripped, "Custom instruction")
+
+    def test_bound_contract_uses_runtime_broker_not_host_internal_url(self) -> None:
+        host = Host()
+        host.bindings = [binding()]
+        service = service_for(host)
+        with patch.dict('os.environ', {
+            'CODEX_WEB_INTERNAL_BASE_URL':'http://host-only.invalid:8765',
+            'CODEX_WEB_PORT':'8765',
+            'CODEX_WEB_CONTROL_PLANE_URL':'http://assignment-only.invalid:8788',
+        }):
+            contract = service.work_item_contract_instructions('t1')
+        self.assertIn('${CODEX_WEB_CONTROL_PLANE_URL}/api/work-items',contract)
+        self.assertIn('${CODEX_WEB_CONTROL_PLANE_URL}/api/control-plane-broker/operations',contract)
+        self.assertNotIn('http://host-only.invalid:8765',contract)
+        self.assertNotIn('http://127.0.0.1:',contract)
+        # Server environment values are not native assignment transport facts.
+        self.assertNotIn('http://assignment-only.invalid:8788',contract)
+        self.assertIn('`work_item.read`',contract)
+        self.assertIn('`work_item.progress`',contract)
+        self.assertIn('do not retry a mutation or fall back to the host admin API',contract)
+
+    def test_effective_bound_guidance_keeps_endpoint_and_ownership_rules_without_host_fallback(self) -> None:
+        for master in (False,True):
+            with self.subTest(master=master):
+                host = Host(); host.bindings = [binding(is_master=master)]
+                service = service_for(host)
+                effective = service.effective_developer_instructions('t1','Custom instruction')
+                self.assertIn('${CODEX_WEB_CONTROL_PLANE_URL}',effective)
+                self.assertNotIn('http://127.0.0.1:8765',effective)
+                self.assertIn('POST `/api/work-items/{ref}/progress`',effective)
+                self.assertIn('POST `/api/work-items/{ref}/handoff`',effective)
+                self.assertIn('POST `/api/work-items/{ref}/ack`',effective)
+                self.assertIn("urllib.parse.quote(ref, safe='')",effective)
+                role = 'orchestrator' if master else 'james'
+                self.assertIn('`actor`: `'+role+'`',effective)
+                self.assertEqual(service.base_developer_instructions('t1',effective),'Custom instruction')
+
+    def test_unbound_thread_does_not_receive_bound_broker_work_contract(self) -> None:
+        host = Host(); service = service_for(host)
+        self.assertIsNone(service.work_item_contract_instructions('unbound'))
+        effective = service.effective_developer_instructions('unbound','Custom instruction')
+        self.assertNotIn('codex-web structured work-item contract',effective)
+        self.assertNotIn('CODEX_WEB_CONTROL_PLANE_URL',effective)
+        self.assertIn('SECURITY TRUST BOUNDARY',effective)
+        self.assertEqual(service.base_developer_instructions('unbound',effective),'Custom instruction')
 
     def test_contract_is_disabled_when_gitlab_routing_is_disabled(self) -> None:
         host = Host()
