@@ -701,8 +701,11 @@ all source/filter guards. Event pruning grants no execution authority. Completed
 steps retain normal proof checks. Unstarted steps must have no reservations.
 A waiting/refused canonical READ may retain its exact valid diagnostic. The
 existing handoff-dispatch owner can also positively settle its original waiting
-mutation from canonical retained Work history: identical accepted snapshots of
-the exact original nonce must agree, with qualified delivery and its original
+mutation from canonical retained Work history: accepted snapshots of the exact
+original nonce must agree on every field except the archival `reason_code`
+annotation. Normal history archival may add that annotation without changing the
+ACK; it is neither discarded from history nor used as proof. All other handoff
+and delivery facts remain exact, with qualified delivery and its original
 canonical preflight START/correlation/Evidence, current original recipient
 identity/Profile/custody, and immutable input target/fence. The same existing
 read-only delivery matcher and native attribution validator own this observation;

@@ -194,9 +194,11 @@ class CustodyOperation:
         self.routing.require_resolved_originals(state)
         candidates = [h for h in (*state.handoff_history, state.handoff) if h is not None
             and h.requested_at == value.expected_handoff_requested_at and h.status == 'accepted']
-        # Canonical ACK and later archive may append the identical accepted
-        # snapshot twice. Conflicting accepted facts are not a unique witness.
-        if not candidates or any(h != candidates[0] for h in candidates[1:]):
+        # Normal archival may add reason_code to an otherwise identical ACK.
+        # Only that archival annotation is non-authoritative here: every other
+        # handoff and delivery field must still agree before START validation.
+        if not candidates or any(h.model_dump(exclude={'reason_code'}) !=
+                candidates[0].model_dump(exclude={'reason_code'}) for h in candidates[1:]):
             raise ValueError('custody_historical_ack_unavailable_or_conflicting')
         handoff = candidates[0]
         if (handoff.delivery is None or handoff.delivery.started_at is None
