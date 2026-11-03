@@ -424,3 +424,32 @@ other authority, storage or custody refusals preserve the unresolved origin.
 Existing ActionIntent receipt/verification and assignment discovery inspectors
 remain the operator surfaces. The existing runtime event stream records callback
 start, completion and typed refusal, without credentials or exception payloads.
+
+## Assignment broker catalog inspection
+
+The authenticated `control_plane.operations.list` GET retains the same assignment,
+requester, tenant, authority and execution-Profile filtering as other broker
+requests. It reports the existing built-in descriptors even if procedure discovery
+is unavailable, ambiguous or inaccessible. Its additive `procedure_availability`
+object contains the canonical metadata-only discovery and explicitly states that
+execution is not authorized, no assignment admission history was appended, and
+history capacity was not checked. Resource targets and environment remain exact
+canonical facts; catalog queries cannot infer or expand them.
+
+This is an observation, not a procedure admission or a second permission catalog.
+Every actual operation, including procedure start/advance, continues through its
+unchanged live identity/fence, required Skill/security, discovery and bounded
+history gates. Repeated catalog reads cannot exhaust execution admission history.
+Existing clients may continue to consume `operations`; inspectors can render the
+additional canonical availability/blocker metadata without treating descriptor
+presence or a successful observation as execution eligibility. No new UI object,
+mutable Definition or model call is introduced.
+
+The current browser broker panel (`static/control_plane_broker_admin.js` and
+`control_plane_broker_view.js`) consumes `brokered_control_plane` declarations
+from operator assignment projections; it does not fetch the assignment-bound
+operation-catalog endpoint. That declaration panel continues to label every
+operation as requiring fresh canonical checks. The new availability observation
+is visible in the programmatic/native GET response itself. Copying it into an
+operator assignment projection would falsely relabel the caller/context and is
+outside this fix; no existing web consumer hides a field from this response.
