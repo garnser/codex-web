@@ -740,3 +740,35 @@ input, ActionIntent execution, rollback or checkpoint success is introduced.
 A later genuine event may undergo ordinary admission; this action neither
 creates that event nor authorizes it. Missing or uncertain originals remain
 visible for their existing reconciliation owner instead of being erased.
+
+
+### Interrupted provider-result settlement
+
+A completed, canonically verified provider effect can outlive interruption of its
+local result projection. Result projection, governed output/proof writes and
+checkpoint CAS use one joined cooperative storage owner bounded by the original
+step start/timeout, procedure deadline and current live assignment lease/deadline.
+The guarded-readiness action retains its existing shared observation deadline.
+There is no separate five-second projection allowance or new deployment knob.
+
+Only an interruption after a positive exact canonical original can record a
+closed `provider_result_projection` diagnostic through existing governed INFO
+Evidence. It binds the current assignment/fence/run/Definition/input, step,
+original request/key/intent/attempt, completed receipt and actual verified
+verification. Recording itself requires remaining original allowance and current
+ownership; inability to record leaves the actual provider ledger intact without
+manufacturing recoverability. This diagnostic is not completion or QA Evidence.
+
+A later advance may settle that same server-recorded original by read-only
+projection, retaining matching partial deterministic Evidence. The INFO diagnostic remains
+in canonical run/step source lineage and the existing Attention Evidence links;
+it is never inserted into the exact declared PASS proof map. It does not create/claim/execute an ActionIntent, call provider verify,
+replace a key, or reset the original step clock. Current Role, Definition, input,
+lease/resource custody, proof and checkpoint CAS guards still apply. Missing,
+revoked, malformed or foreign diagnostics and changed originals refuse. UNKNOWN
+provider effects remain under their ordinary reconciliation owner. Legacy
+untyped `TimeoutError`/`recovery_required` states are not reclassified or reopened.
+An expired or retired assignment/run cannot borrow new custody; a successful
+original ledger remains reportable even when its historical procedure cannot be
+operationally resumed. Existing procedure/Evidence inspectors expose the current
+state and INFO diagnostic; no new UI mutation, ledger or Definition kind exists.
