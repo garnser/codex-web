@@ -693,7 +693,11 @@ cancellation and from native cancellation or replacement (#2001).
 The canonical owner requires the exact original bootstrap, worker, execution,
 workspace and tenant; cancellation must have removed its lease and advanced its
 original fence exactly once. The current published Automation and procedure
-references, governed original input and checkpoint must still agree. Completed
+references, governed original input and checkpoint must still agree. This
+terminal scheduling-only operation does not require the original event to remain
+in the bounded canonical event journal. Its durable Run trigger is preserved;
+ordinary admission and active execution still require the original event and
+all source/filter guards. Event pruning grants no execution authority. Completed
 steps retain normal proof checks. Unstarted steps must have no reservations.
 A waiting/refused canonical READ may retain its exact valid diagnostic. The
 existing handoff-dispatch owner can also positively settle its original waiting
