@@ -677,3 +677,27 @@ clock or causing another self-dispatch. The existing Work inspector displays the
 receipt and whether its input basis remains current; the registered broker
 progress descriptor exposes the typed request and normal dispatch guidance
 explains its use. Deployment does not rewrite old Work or published Definitions.
+
+
+### Dispatch guidance and wait eligibility (#2022)
+
+The existing unchanged-wait owner exposes state-only `state_eligible` and
+`state_ineligibility_reason` in `wait_checkpoint_context`. This projection and
+the dispatch prompt share the progress guard's pure state prerequisites: an
+open, non-pending-handoff lane with a concrete blocker and next action, excluding
+`implementation_active` (ordinary progress clears that lane's blocker). These
+facts grant no actor, hash, custody or execution authority; all existing exact
+owner and before/after input-fingerprint checks still run atomically.
+
+Only eligible prompts advertise the unchanged-wait request. An actual blocker
+not yet represented requires truthful normal structured progress first, followed
+by a fresh canonical read and a separate wait receipt if then eligible. Never
+invent a blocker, force an active lane into failure for pending CI, or substitute
+a wait for recipient acknowledgement. Normal pending exact-head CI retains its
+responsible owner/stage and waits for material provider events. A refused wait
+is not a successful acknowledgement or new prerequisite evidence; generated
+guidance must not recommend repeated refusal-only notes. Genuine material
+note-only progress retains its existing wake behavior. No scheduler, queue,
+lease, admission or pending-handoff guards are relaxed. The existing Work
+inspector remains authoritative; these additive context fields require no new
+mutation control or persisted Work facet.
