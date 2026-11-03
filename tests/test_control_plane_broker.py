@@ -2297,6 +2297,27 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
         context_reads = {"goal.read", "decision.read", "skill.procedure.read"}
+        # Request contracts are shared. Only source capture additionally reports
+        # observational assignment metadata; it never asserts runtime admission.
+        capture_context = {
+            "admitted_repository_resource_ids": [],
+            "metadata_compatible": False,
+            "admission_checked": False,
+            "requires": "Current authenticated worker, exact Work owner, Profile, lease, fence and member proof",
+            "blocked_reason": "source_capture_admitted_repository_context_or_worker_missing",
+        }
+
+        def shared_request_metadata(items):
+            shared = []
+            for item in items:
+                if item["id"] == "repository.source.capture":
+                    self.assertEqual({key: item[key] for key in capture_context}, capture_context)
+                    # Strip only the exact documented observation, preserving
+                    # comparison of all static request, scope and permission data.
+                    item = {key: value for key, value in item.items() if key not in capture_context}
+                shared.append(item)
+            return shared
+
         operator_items = result.json()["items"]
         undeclared_items = self.service.public_assignment_capability(self.assignment)["operations"]
         self.assertTrue(context_reads.issubset({item["id"] for item in operator_items}))
@@ -2304,7 +2325,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item for item in result.json()["items"]
                           if not item["id"].startswith(("project.", "operator."))
                           and item["id"] != "repository.pull-request.ready"
-                          and item["id"] not in context_reads], undeclared_items)
+                          and item["id"] not in context_reads], shared_request_metadata(undeclared_items))
         # Engine recognition in the operator catalog is not an opt-in declaration.
         self.assertTrue(any(item["id"] == "operator.host.inspect" for item in result.json()["items"]))
         self.assertFalse(any(item["id"] == "operator.host.inspect" for item in
@@ -2346,7 +2367,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         declared_items = self.service.public_assignment_capability(self.assignment)["operations"]
         self.assertEqual([item for item in operator_items
                           if not item["id"].startswith(("project.", "operator."))
-                          and item["id"] != "repository.pull-request.ready"], declared_items)
+                          and item["id"] != "repository.pull-request.ready"], shared_request_metadata(declared_items))
         self.assertTrue(context_reads.issubset({item["id"] for item in declared_items}))
         for stale_or_missing in (old_reference, None):
             self.assignment.execution_profile_definition = stale_or_missing
