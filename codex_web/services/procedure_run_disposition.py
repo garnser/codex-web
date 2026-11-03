@@ -27,7 +27,9 @@ def cancel_retired_run(service, run, actor):
 
     def validate():
         operator()
-        automation, owner, _ = service._definition(run, effects=False)
+        # Scheduling-only cancellation is not admission or event reactivation.
+        # The bounded event journal may have normally pruned its original.
+        automation, owner = service._current_definition_owner(run)
         assignment = service.engine.get(custody.assignment_id, owner)
         if ((assignment.organization_id, assignment.workspace_id, assignment.project_id) !=
                 (run.organization_id, run.workspace_id, run.project_id)
