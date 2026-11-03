@@ -1109,7 +1109,8 @@ class OwnerRoutingService:
             raise
         except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
             raise OwnerRoutingError('owner_recipient_custody_unavailable') from exc
-        if witness != pin.recipient:
+        if (witness != pin.recipient and not (pin.handoff_requested_at is not None
+                and self._accepted_initial_seal_compatible(pin.recipient, witness))):
             raise OwnerRoutingError('owner_recipient_custody_changed')
         assignment = self.assignments(witness.assignment_id)
         scope = assignment.repository_scope

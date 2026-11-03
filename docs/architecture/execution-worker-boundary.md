@@ -2126,3 +2126,19 @@ workspace bytes, copy sealed preparation, widen authority, or permit READ plus
 explicit WRITE. Existing WRITE and orchestration replacement behavior remains
 unchanged. No durable DTO/schema/state version changes are introduced; existing
 settings and scope inspectors expose the canonical READ versus WRITE values.
+
+### Pending handoff pins and initial native credential sealing
+
+A pending handoff's original recipient witness may precede the same assignment's
+first native credential seal (#1993). After ordinary current lineage, Work,
+Profile, scope, worker and lease validation, recipient validation reuses the
+existing exact initial-seal compatibility check. All recipient fields other than
+the authority checksum must remain identical. The admitted seal must match the
+current requester, worker and fence; current references must equal its recorded
+runtime and procedure references. Reconstructing only the pre-seal runtime
+references must reproduce the original checksum exactly.
+
+The original pin is never rewritten. Missing or inconsistent sealing evidence,
+unrecorded references, other authority changes, changed custody/Work/nonce or
+unresolved native originals still refuse. This creates no input, retry, ACK,
+delivery, grant or provider effect, and changes no stored schema or UI control.
