@@ -29,6 +29,15 @@ class WorkItemDispatchPromptPolicy:
             "model calls or retry unchanged CI. Route only evidenced code defects to the "
             "implementer and actual runner/dependency faults to the CI/runtime owner."
         )
+        wait_instructions += (
+            " If the current blocker and prerequisites are unchanged, read the Work's "
+            "wait_checkpoint_context.input_sha256 and submit progress with "
+            'wait_checkpoint={"schema_version":"1.0","expected_input_sha256":"<exact current hash>"}. '
+            "Keep the existing owner/stage/blocker/action; an optional note is retained as "
+            "an audit receipt without another automatic self-wake. This declares no remote "
+            "absence/readiness proof. New material evidence, including a material note-only "
+            "update, uses normal progress without wait_checkpoint."
+        )
         findings_suffix = wait_instructions
         if state.blocking_findings:
             findings_suffix += (

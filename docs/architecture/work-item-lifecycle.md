@@ -641,3 +641,39 @@ receives this corrected text through its existing owner. No new UI control,
 endpoint, permission catalog or mutable Definition is introduced. Retained historic
 Work text is not authority to reuse an old Profile, assignment or transport; current
 canonical execution and broker guards remain authoritative.
+
+### Explicit unchanged-prerequisite wait receipts (#2011)
+
+A pending-prerequisite note is not automatically proof of new material input.
+The additive `WorkItemProgressUpdate.wait_checkpoint` contract, schema `1.0`,
+lets the current actionable owner explicitly acknowledge unchanged canonical
+inputs while retaining its note and attributed `progress_updated` audit. Read
+`wait_checkpoint_context.input_sha256` from current Work, then submit
+`{"wait_checkpoint":{"schema_version":"1.0","expected_input_sha256":"<exact hash>"}}`
+with the current owner as actor. First publish any genuine blocker/action change
+normally, then read its new hash. A wait receipt cannot change the lane, ownership,
+blocker, prerequisites or pending handoff, and is validated on the current Work
+row under the existing canonical record mutation. Stale inputs refuse before
+successful audit/save. Missing atomic Work owner also refuses.
+
+The fingerprint covers canonical Work including tenant, Project, resources,
+source revision, owners/stage, handoff and receipts, retry/execution prerequisites,
+Artifact/Evidence references, blocker/findings and next action. Notes, receipt
+clocks and provider-observation receipt metadata are excluded; no remote input
+absence, provider readiness, authorization, QA or completion is inferred. The
+optional stored receipt uses the existing Work record, with absent fields omitted
+from legacy serialization; there is no new ledger or SQL migration.
+
+Only automatic followups for the **same Work and exact acknowledged inputs**
+are suppressed: progress continuity, owned-work/SLA/release watchdog reasoning,
+and unchanged blocked-lane orchestration. Delayed callbacks recheck current Work.
+Existing manual steering, external inputs, handoff/ACK, split-brain inspection,
+controls, native custody, queues and all execution guards remain unchanged.
+Any canonical input change invalidates the witness deterministically. A genuine
+material note-only update uses ordinary progress without `wait_checkpoint`,
+clears the witness, and retains existing material timestamp/wakeup semantics.
+Repeated explicit wait notes remain visible/audited without advancing the material
+clock or causing another self-dispatch. The existing Work inspector displays the
+receipt and whether its input basis remains current; the registered broker
+progress descriptor exposes the typed request and normal dispatch guidance
+explains its use. Deployment does not rewrite old Work or published Definitions.

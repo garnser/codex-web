@@ -13,6 +13,7 @@ from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
 from codex_web.owner_routing import OwnerRoutingBinding, OwnerRoutingPin, OwnerRoutingBlocker
 from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
+from codex_web.work_item_wait import UnchangedWaitRequest, UnchangedWaitCheckpoint
 
 
 SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
@@ -479,12 +480,15 @@ class WorkItemState(BaseModel):
     created_at: float
 
     owner_routing_blocker: OwnerRoutingBlocker | None = None
+    wait_checkpoint: UnchangedWaitCheckpoint | None = None
 
     @model_serializer(mode='wrap')
     def serialize_owner_routing(self, handler):
         result = handler(self)
         if self.owner_routing_blocker is None:
             result.pop('owner_routing_blocker', None)
+        if self.wait_checkpoint is None:
+            result.pop('wait_checkpoint', None)
         return result
 
 
@@ -525,6 +529,7 @@ class WorkItemAckCreate(BaseModel):
 
 
 class WorkItemProgressUpdate(BaseModel):
+    wait_checkpoint: UnchangedWaitRequest | None = None
     actor: str | None = None
     expected_handoff_requested_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     current_owner: str | None = None
