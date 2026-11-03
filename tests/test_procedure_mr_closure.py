@@ -28,7 +28,7 @@ from codex_web.skill_procedures import OperationalProcedure
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.mr_policy_acceptance import CurrentPolicyMRAcceptanceOwner
-from tests.test_gitlab_action_provider import GitLabActionProviderTests
+from tests import test_gitlab_action_provider as gitlab_fixtures
 
 
 HEAD, BASE = 'a' * 40, 'b' * 40
@@ -36,7 +36,7 @@ HEAD, BASE = 'a' * 40, 'b' * 40
 
 class MRClosureOwnerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.f = GitLabActionProviderTests(methodName='test_merge_request_requires_exact_head_and_green_pipeline')
+        self.f = gitlab_fixtures.GitLabActionProviderTests(methodName='test_merge_request_requires_exact_head_and_green_pipeline')
         await self.f.asyncSetUp()
         self.addAsyncCleanup(self.f.asyncTearDown)
         f = self.f

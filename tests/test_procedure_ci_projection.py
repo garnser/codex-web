@@ -14,7 +14,7 @@ from codex_web.services.code_host_ci_observation import CI_OBSERVATION_ACTION_ID
 from codex_web.services.procedure_execution import ProcedureExecutionError
 from codex_web.services.procedure_provider_results import CodeHostProcedureResultAdapter
 from tests.test_code_host_ci_observation import policy_ref
-from tests.test_procedure_code_host_results import ProcedureCodeHostResultTests
+from tests import test_procedure_code_host_results as procedure_result_fixtures
 
 
 HEAD = 'a' * 40
@@ -22,7 +22,7 @@ HEAD = 'a' * 40
 
 class CIProcedureProjectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.f = ProcedureCodeHostResultTests(methodName='test_canonical_original_receipt_and_actual_verification_become_distinct_evidence')
+        self.f = procedure_result_fixtures.ProcedureCodeHostResultTests(methodName='test_canonical_original_receipt_and_actual_verification_become_distinct_evidence')
         await self.f.asyncSetUp()
         self.addAsyncCleanup(self.f.asyncTearDown)
         f = self.f
