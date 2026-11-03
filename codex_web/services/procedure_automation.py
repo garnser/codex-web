@@ -286,6 +286,14 @@ class ProcedureAutomationService:
         return getattr(exc,'code',fallback)
 
     async def handle_event(self, event):
+        # Admission filters select NEW invocations. A real accepted-owner
+        # watchdog observation may still wake an existing pending-origin Run.
+        # This notification does not claim the event or suppress owner work.
+        if event.event_type == 'work.transition' and str(event.source).startswith('autonomy-watchdog:'):
+            await self._observe_work_change(
+                str(event.payload.get('work_item_ref') or event.payload.get('workItemRef') or ''),
+                scope=(event.tenant_id,event.workspace_id,str(event.payload.get('project_id') or '')),
+                event_id=event.event_id)
         matches = [m for m in self.event_triggers.matches(event)
             if m.automation.target.kind == AutomationTargetKind.CANONICAL_PROCEDURE]
         if not matches:
@@ -293,6 +301,59 @@ class ProcedureAutomationService:
         if len(matches) != 1:
             return {'handled':True,'code':'procedure_automation_policy_ambiguous'}
         return await self.handle_match(event, matches[0])
+
+    def wrap_work_publisher(self, publisher):
+        """Observe committed Work changes on their existing async owner loop."""
+        async def publish(event):
+            await publisher(event)
+            if event.get('type') in {'work-item.ack','work-item.progress','work-item.handoff'}:
+                await self._observe_work_change(str(event.get('ref') or ''))
+        return publish
+
+    async def _observe_work_change(self, ref, *, scope=None, event_id=None):
+        # Notification payloads are hints, never Work/actor/nonce authority.
+        # Failed observations cannot turn an already committed ACK into an API
+        # failure or prevent its ordinary recipient dispatch/continuity.
+        try:
+            if not ref or len(ref)>500:
+                return
+            state=await asyncio.to_thread(self.get_work,ref)
+            tenant=(state.organization_id,state.workspace_id,state.project_id)
+            handoff=state.handoff
+            if (scope is not None and scope!=tenant or state.ref!=ref
+                    or state.closed_at or state.current_stage=='closed'
+                    or handoff is None or handoff.status not in {'pending','accepted'}):
+                return
+            rows=await asyncio.to_thread(self.runs.store.list,
+                organization_id=state.organization_id,workspace_id=state.workspace_id)
+            revision='material-work:'+digest({
+                'scope':tenant,'work':state.ref,'nonce':handoff.requested_at,
+                'owner':state.current_owner,'next_owner':state.next_owner,
+                'status':str(handoff.status),'acknowledged_at':handoff.acknowledged_at,
+                'delivery':handoff.delivery.model_dump(mode='json') if handoff.delivery else None,
+                'resources':sorted(state.resource_ids)})
+            candidates=[]
+            for run in rows:
+                if (run.target_kind!='canonical_procedure' or run.status not in {'admitted','running'}
+                        or run.project_id!=state.project_id or run.work_item_ref!=state.ref):
+                    continue
+                if run.procedure_custody is not None:
+                    same=run.procedure_custody.handoff_requested_at==handoff.requested_at
+                else:
+                    prefix='procedure-handoff:'+digest({'automation_id':run.automation_id,
+                        'procedure_id':run.target_id,'work_item_ref':state.ref,
+                        'handoff_requested_at':handoff.requested_at})+':'
+                    same=run.dedupe_key.startswith(prefix)
+                if same:
+                    candidates.append(run)
+            for run in sorted(candidates,key=lambda row:(row.created_at,row.id))[:self.startup_limit]:
+                # Existing owner rechecks original event, current exact policy,
+                # custody, controls, duration and material observation before
+                # any interpreter advance. Never admit or repin here.
+                self.schedule_launch(run,event_id=event_id or run.trigger.event_id,revision=revision)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning('Procedure Work notification unavailable: %s',type(exc).__name__)
 
     def schedule_launch(self, run, *, event_id=None, revision=None):
         if run.target_kind != 'canonical_procedure' or run.status not in {'admitted','running'}:

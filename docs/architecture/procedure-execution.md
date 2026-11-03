@@ -660,3 +660,21 @@ This changes internal admission/deduplication only. No stored field or schema is
 added, and legacy serialization is unchanged. Existing Work, Automation Run,
 preflight and checkpoint inspectors expose the retained typed refusal or normal
 completion; no additional UI control or authority path is introduced.
+
+### Material Work continuation of existing invocations
+
+Initial Automation filters govern admission, not the lifetime of an already
+admitted invocation (#1995). The normal async Work publisher first delivers its
+existing event, then observes closed ACK/progress/handoff notifications. Existing
+watchdog observations also notify the bridge before initial-filter matching.
+The notification reloads canonical Work, checks tenant/Project and the exact
+original handoff nonce, and schedules only existing admitted/running Runs through
+their existing coordinator. It never creates an event, Run, input or authority.
+
+The original event, published references, input Artifact, custody, controls,
+duration and advance bounds remain enforced by the existing owner. Unchanged
+observations do not advance a waiting step; UNKNOWN effects are reconciled rather
+than replayed. Accepted-owner workflow is not suppressed by an existing-Run wake,
+and an observation failure cannot prevent committed ACK owner continuation.
+Retired or changed custody refuses; a checkpoint is never transferred to a new
+supervisor. These notifications add no polling, model traffic or stored format.
