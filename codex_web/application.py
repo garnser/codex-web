@@ -4086,6 +4086,7 @@ owner_routing_service = OwnerRoutingService(
     control_actor=identity_service.local_trusted_actor,
     actor_resolver=turn_execution_service.actor_resolver,
     replacement_resolver=thread_index_repository.replacement_thread_id,
+    authenticated_origin_revalidator=identity_service.revalidate_authenticated_origin,
     update_state=_update_work_item_state_record,
     append_event=work_item_state_machine._append_work_item_event,
     preflight=execution_preflight_store,

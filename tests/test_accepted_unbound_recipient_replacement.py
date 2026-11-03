@@ -108,6 +108,10 @@ class AcceptedUnboundRecipientReplacementTests(unittest.IsolatedAsyncioTestCase)
         return state, assignment
 
     def replacement_service(self, state):
+        # This legacy lineage fixture controls only the identity I/O seam.
+        # Real session/MFA provenance is covered by the authenticated-origin
+        # regression module using the canonical IdentityService.
+        self.n.routing.authenticated_origin_revalidator = lambda actor: actor
         from pathlib import Path
         from unittest.mock import AsyncMock, Mock
         from codex_web.models import ThreadRunSettings
@@ -261,7 +265,7 @@ class AcceptedUnboundRecipientReplacementTests(unittest.IsolatedAsyncioTestCase)
         with self.assertRaises(HTTPException):
             await service.replace(state.handoff.delivery.thread_id)
         self.assertEqual(self.new_calls, [])
-        with self.assertRaisesRegex(HTTPException, 'owner_replacement_actor_changed'):
+        with self.assertRaisesRegex(HTTPException, 'owner_recipient_accepted_lineage_unverified'):
             await service.replace(state.handoff.delivery.thread_id, work_item_ref=state.ref,
                 actor=self.f.f.actor.model_copy(update={'workspace_id': 'foreign'}), project=project)
         self.assertEqual(self.new_calls, [])

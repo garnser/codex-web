@@ -9,6 +9,7 @@ from codex_web.api.thread_scope import thread_scope_dependency
 from codex_web.services.thread_scope import ThreadScopeService
 
 from codex_web.api.identity import request_actor
+from codex_web.services.identity import IdentityError, identity_http_error
 from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstrapRecoveryRequest, QueuedOperatorAdmissionRequest
 from codex_web.services.turns import TurnService
 from codex_web.notification_batches import NotificationBatchRecoveryRequest
@@ -44,15 +45,21 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
 
     @router.post("/api/threads/{thread_id}/replace")
     async def replace_thread(thread_id: str, request: Request, work_item_ref: str | None = None) -> dict[str, Any]:
-        return await service.replace(thread_id, **({
-            'work_item_ref': work_item_ref, 'actor': request_actor(request),
-            'project': request.state.thread_project} if work_item_ref is not None else {}))
+        try:
+            return await service.replace(thread_id, **({
+                'work_item_ref': work_item_ref, 'actor': request_actor(request),
+                'project': request.state.thread_project} if work_item_ref is not None else {}))
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
 
     @router.get('/api/threads/{thread_id}/replacement-eligibility')
     async def replacement_eligibility(thread_id: str, request: Request, work_item_ref: str) -> dict[str, Any]:
-        _, result = await asyncio.to_thread(service.replacement_eligibility,
-            thread_id, work_item_ref=work_item_ref,
-            actor=request_actor(request), project=request.state.thread_project)
+        try:
+            _, result = await asyncio.to_thread(service.replacement_eligibility,
+                thread_id, work_item_ref=work_item_ref,
+                actor=request_actor(request), project=request.state.thread_project)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         return result
 
     @router.post("/api/threads/{thread_id}/turns")

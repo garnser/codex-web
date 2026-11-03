@@ -482,3 +482,12 @@ refusal. Retained preflight/native outcomes remain unchanged, and existing
 queue retargeting preserves known unstarted requests. No model calls, schema
 changes, new identity ledger, grants, historical backfill or automatic rollback
 are introduced by this replacement path.
+
+Explicit accepted-recipient replacement revalidates the original authenticated
+operator through the canonical Identity owner, including current membership,
+session or local-trusted provenance and current MFA assurance. Credential-free
+delegated identity resolution cannot establish this authentication. Missing
+authenticated-origin wiring refuses replacement; it does not fall back to a
+delegated actor or copy assurance onto one. Initial and post-await checks use
+the same revalidator. Authentication and authorization refusals reach the
+existing API/UI as HTTP 401/403, while canonical lineage conflicts remain 409.
