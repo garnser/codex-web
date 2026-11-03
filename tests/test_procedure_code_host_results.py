@@ -216,7 +216,13 @@ class ProcedureCodeHostResultTests(GitLabActionProviderTests):
                 adapter.project(request,result.model_copy(update={"output":{**result.output,**changed}}))
 
     async def test_blocking_projection_is_off_loop_and_cancellation_joins_actual_owner(self):
-        intent, receipt, history = await self.original()
+        # Current result bounds require an actual current durable owner, not
+        # this class's projection-only detached checkpoint fixture.
+        from tests.test_initial_publication_procedure import InitialPublicationProcedureTests
+        actual = InitialPublicationProcedureTests()
+        await actual.asyncSetUp()
+        self.addAsyncCleanup(actual.f.asyncTearDown)
+        runner, started = await actual.prepare_durable()
         entered, release, exited = threading.Event(), threading.Event(), threading.Event()
         loop_thread = threading.get_ident()
         def blocked(*args):
@@ -227,11 +233,11 @@ class ProcedureCodeHostResultTests(GitLabActionProviderTests):
                     raise AssertionError("private fixture release timeout")
             finally:
                 exited.set()
-        self.runner._provider_result = blocked
-        task = asyncio.create_task(self.runner._provider_result_owned(
-            self.assignment,self.step,intent,receipt,history,self.actor))
+        runner._provider_result = blocked
+        task = asyncio.create_task(runner.advance(started.id, actor=actual.f.actor,
+            run_id=started.procedure_checkpoint.id))
         try:
-            self.assertTrue(await asyncio.to_thread(entered.wait,2))
+            self.assertTrue(await asyncio.to_thread(entered.wait,30))
             task.cancel()
             await asyncio.sleep(0)
             self.assertFalse(task.done())
@@ -240,6 +246,7 @@ class ProcedureCodeHostResultTests(GitLabActionProviderTests):
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task,3)
         self.assertTrue(exited.is_set())
+        self.assertEqual(actual.pushes, 1)
 
 
 def load_tests(loader, tests, pattern):

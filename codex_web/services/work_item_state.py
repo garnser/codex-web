@@ -22,7 +22,7 @@ from codex_web.services.work_item_dependencies import (
 )
 from codex_web.services.work_item_transitions import WorkItemTransitionService
 from codex_web.owner_routing import OwnerRoutingError
-from codex_web.work_item_wait import UnchangedWaitCheckpoint, wait_input_sha256, wait_context
+from codex_web.work_item_wait import UnchangedWaitCheckpoint, wait_input_sha256, wait_context, wait_state_ineligibility
 from codex_web.services.work_item_dependencies import actionable_owner_value
 from codex_web.storage.state_store import StateStore
 from codex_web.storage.work_item_events import WorkItemEventStore
@@ -907,9 +907,7 @@ class WorkItemStateMachine:
             if (expected != original_wait_input or expected != wait_input_sha256(state)
                     or self._routing_owner(state, actor, routing=routing) != self._routing_owner(
                         state, actionable_owner_value(state), routing=routing)
-                    or not self._coerce_owner(actor) or not state.blocker or not state.next_action
-                    or state.closed_at or state.current_stage == 'closed'
-                    or state.handoff and state.handoff.status == 'pending'):
+                    or not self._coerce_owner(actor) or wait_state_ineligibility(state) is not None):
                 raise HTTPException(status_code=409, detail={
                     'code': 'work_item_wait_checkpoint_changed',
                     'message': 'Read current Work inputs; unchanged-wait cannot change the lane or attest remote readiness.'})
