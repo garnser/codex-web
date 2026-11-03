@@ -47,7 +47,7 @@ class SteeredHandoffDeliveryTests(unittest.IsolatedAsyncioTestCase):
         assignment.organization_id = "org"
         assignment.workspace_id = "workspace"
         assignment.execution_profile_id = "repository-write"
-        assignment.repository_target = SimpleNamespace(mutable_repository_id="repo-docs")
+        assignment.repository_target = SimpleNamespace(primary_repository_id=("repo-docs"), mutable_repository_id="repo-docs")
         assignment.repository_scope = SimpleNamespace(
             writable_repository_ids=("repo-docs",), read_only_repository_ids=())
         self.sessions.session.validate_current = MagicMock(return_value=assignment)

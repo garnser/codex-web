@@ -239,7 +239,7 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
             sandbox=self.attempt.sandbox or self.f.project.sandbox,
             approval_policy=self.attempt.approval_policy or self.f.project.approval_policy)
         self.sessions.session.validate_current().repository_target = SimpleNamespace(
-            mutable_repository_id=self.attempt.repository_resource_id,
+            primary_repository_id=(self.attempt.repository_resource_id), mutable_repository_id=self.attempt.repository_resource_id,
             read_only_repository_ids=self.attempt.read_only_repository_resource_ids)
         self.sessions.session.runtime = SimpleNamespace(generation='replacement-process')
         result = await self.admit()

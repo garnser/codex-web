@@ -1208,7 +1208,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                                                read_only_repository_ids=('unrelated-context',))
         recovered = sessions.start.return_value
         new = recovered.validate_current()
-        new.repository_target = SimpleNamespace(mutable_repository_id='repo-old')
+        new.repository_target = SimpleNamespace(primary_repository_id=('repo-old'), mutable_repository_id='repo-old')
         new.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
                                                read_only_repository_ids=())
         host._thread_run_settings = lambda _id: ThreadRunSettings(
@@ -1240,7 +1240,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 recovered = sessions.start.return_value
                 new = recovered.validate_current()
                 new.agent_profile = requested
-                new.repository_target = SimpleNamespace(mutable_repository_id='repo-old')
+                new.repository_target = SimpleNamespace(primary_repository_id=('repo-old'), mutable_repository_id='repo-old')
                 new.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
                                                        read_only_repository_ids=())
                 service._select_runtime_binding = AsyncMock(return_value=(runtime, requested))
@@ -1270,7 +1270,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 assignment.organization_id = "org"
                 assignment.workspace_id = "workspace"
                 assignment.execution_profile_id = "repository-write"
-                assignment.repository_target = SimpleNamespace(mutable_repository_id="repo-docs")
+                assignment.repository_target = SimpleNamespace(primary_repository_id=("repo-docs"), mutable_repository_id="repo-docs")
                 assignment.repository_scope = SimpleNamespace(writable_repository_ids=("repo-docs",),
                     read_only_repository_ids=())
                 sessions.session.validate_current = MagicMock(return_value=assignment)
@@ -2275,7 +2275,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         old = sessions.session.validate_current()
         old.runtime_binding = runtime
         old.agent_profile = bound_profile
-        old.repository_target = SimpleNamespace(mutable_repository_id="repo-old")
+        old.repository_target = SimpleNamespace(primary_repository_id=("repo-old"), mutable_repository_id="repo-old")
         old.repository_scope = SimpleNamespace(writable_repository_ids=("repo-old",))
         sessions.session.validate_current = MagicMock(return_value=old)
         service._assignment_record = MagicMock(return_value=old)
@@ -2283,7 +2283,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         new = recovered.validate_current()
         new.runtime_binding = runtime
         new.agent_profile = profile if bound_profile is None else bound_profile
-        new.repository_target = SimpleNamespace(mutable_repository_id="repo-new" if scope_switch else "repo-old")
+        new.repository_target = SimpleNamespace(primary_repository_id=("repo-new" if scope_switch else "repo-old"), mutable_repository_id="repo-new" if scope_switch else "repo-old")
         new.repository_scope = SimpleNamespace(writable_repository_ids=("repo-new" if scope_switch else "repo-old",))
         recovered.validate_current = MagicMock(return_value=new)
         if not scope_switch:
@@ -2377,7 +2377,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         fresh.runtime_binding = selected
         fresh.agent_profile = profile
         fresh.repository_scope = SimpleNamespace(writable_repository_ids=("repo-old",))
-        fresh.repository_target = SimpleNamespace(mutable_repository_id="repo-old")
+        fresh.repository_target = SimpleNamespace(primary_repository_id=("repo-old"), mutable_repository_id="repo-old")
         recovered.validate_current = MagicMock(return_value=fresh)
         sessions.start = AsyncMock(return_value=recovered)
         kwargs["model"] = "codex/gpt-6.1-sol"
@@ -2464,7 +2464,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             assignment = original_validate()
             assignment.runtime_binding = runtime_binding
             assignment.repository_target = SimpleNamespace(
-                mutable_repository_id=(
+                primary_repository_id=("repo-old" if validation_calls == 1 else "repo-new"), mutable_repository_id=(
                     "repo-old" if validation_calls == 1 else "repo-new"
                 )
             )
