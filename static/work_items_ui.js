@@ -377,7 +377,6 @@ function renderDetail(payload) {
     </section>
     ${workItemSummaryHtml({ item, diagnostics, esc })}
     <div class="work-handoff-inspection" role="status" aria-live="polite"></div>
-    <div class="work-accepted-recipient-replacement"></div>
     ${item.source_projection ? `<section class="work-detail-card work-provider-projection" aria-label="Provider projection">
       <h4>Canonical progress committed · provider projection ${esc(item.source_projection.status)}</h4>
       <div class="work-kv">${keyValueRows({

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Accepted recipient replacement</title>
-<body><main class="work-item-detail"><div class="work-accepted-recipient-replacement"></div></main>
+<body><main class="work-item-detail"><div class="work-handoff-inspection"></div></main>
 <script type="module">
 import { installAcceptedRecipientReplacement } from '/static/work_item_recipient_replacement_ui.js';
 import { createWorkItemViewScope } from '/static/work_item_view_scope.js';
@@ -12,7 +12,7 @@ window.requests = []; window.reloads = []; window.mode = 'success';
 window.install = (status = 'accepted') => {
   item.handoff.status = status;
   const detail = document.querySelector('.work-item-detail');
-  detail.innerHTML = '<div class="work-accepted-recipient-replacement"></div>';
+  detail.innerHTML = '<div class="work-handoff-inspection"></div>';
   installAcceptedRecipientReplacement(detail, item, {
     projectId: state.projectId, ...scope,
     reload: async ref => window.reloads.push(ref),

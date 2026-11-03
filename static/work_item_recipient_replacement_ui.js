@@ -10,8 +10,11 @@ export function installAcceptedRecipientReplacement(detail, item, {
   const handoff = item.handoff;
   const threadId = handoff?.delivery?.thread_id;
   if (handoff?.status !== 'accepted' || !item.ref || !threadId) return;
-  const host = detail.querySelector('.work-accepted-recipient-replacement');
-  if (!host) return;
+  const anchor = detail.querySelector('.work-handoff-inspection');
+  if (!anchor) return;
+  const host = document.createElement('div');
+  host.className = 'work-accepted-recipient-replacement';
+  anchor.after(host);
   const key = JSON.stringify([projectId, item.ref, handoff.requested_at, threadId]);
   const button = document.createElement('button');
   button.type = 'button';
