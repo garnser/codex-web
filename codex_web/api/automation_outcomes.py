@@ -10,13 +10,14 @@ from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.automation_outcomes import (
     AutomationOutcomeReconciliationService,
 )
-from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.identity import AuthenticationError, AuthorizationError, IdentityService
 from codex_web.storage.automation_runs import AutomationRunNotFoundError
 
 
 class AutomationReconcileRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     cancel_unknown_home: bool = Field(default=False, strict=True)
+    cancel_retired_procedure: bool = Field(default=False, strict=True)
 
 
 def build_automation_outcomes_router(
@@ -39,11 +40,14 @@ def build_automation_outcomes_router(
         try:
             actor = require_operator(request)
             run = service.reconcile(run_id, actor=actor,
-                **({'cancel_unknown_home': True} if payload and payload.cancel_unknown_home else {}))
+                **({'cancel_unknown_home': True} if payload and payload.cancel_unknown_home else {}),
+                **({'cancel_retired_procedure': True} if payload and payload.cancel_retired_procedure else {}))
             await service.sync_attention(run, actor=actor)
             return {"run": run.model_dump(mode="json")}
         except AutomationRunNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Automation run not found") from exc
+        except AuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError as exc:

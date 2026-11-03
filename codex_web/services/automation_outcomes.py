@@ -376,19 +376,23 @@ class AutomationOutcomeReconciliationService:
         *,
         actor: AuthenticationActor,
         cancel_unknown_home: bool = False,
+        cancel_retired_procedure: bool = False,
     ) -> AutomationRun:
         run = self.runs.store.get(
             run_id,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
         )
+        if cancel_retired_procedure and (cancel_unknown_home or run.target_kind != 'canonical_procedure'):
+            raise ValueError('Retired procedure disposition requires only the canonical procedure owner')
         if run.status != AutomationRunStatus.RUNNING or not run.execution_ids:
             return run
 
         if run.target_kind == 'canonical_procedure':
             if self.procedure_reconciler is None:
                 raise ValueError('Canonical procedure outcome owner is unavailable')
-            return self.procedure_reconciler(run.id,actor=actor,cancel_unknown=cancel_unknown_home)
+            return self.procedure_reconciler(run.id,actor=actor,cancel_unknown=cancel_unknown_home,
+                **({'cancel_retired_procedure': True} if cancel_retired_procedure else {}))
         if self.home_operator_reconciler is not None and run.target_kind == AutomationTargetKind.HOME_OPERATOR:
             return self.home_operator_reconciler(run.id, actor=actor, cancel_unknown=cancel_unknown_home)
 

@@ -1,4 +1,4 @@
-import { procedureTargetFields, readProcedureTarget, procedureRunSummary } from './automation_procedure_target.js';
+import { procedureTargetFields, readProcedureTarget, procedureRunSummary, retiredProcedureAction, wireRetiredProcedureActions } from './automation_procedure_target.js';
 import { confirmAction } from './action_confirmation.js';
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
@@ -108,6 +108,7 @@ function runRow(run) {
       <small>${esc(refs.join(" · ") || run.block_reason || "No linked execution yet")}</small>
       <small>${esc(run.result_reason || run.result_code || "")}</small>
       ${procedureRunSummary(run, esc)}
+      ${retiredProcedureAction(run, esc)}
       ${run.status === 'running' && run.target_kind === 'home_operator' ? `<button type="button" class="ghost-button" data-home-reconcile="${esc(run.id)}">Reconcile Home run</button>
       <button type="button" class="ghost-button" data-home-cancel-unknown="${esc(run.id)}">Cancel expired Home scheduling (outcome unknown)</button>` : ''}
     </article>`;
@@ -402,6 +403,8 @@ function render() {
     });
   });
   card.querySelector("[data-automation-run-now]")?.addEventListener("click", runNow);
+  wireRetiredProcedureActions(card, {projectContext, confirmAction, api, render,
+    refresh: () => loadRuns(state.selectedId), error: message => { state.error = message; }});
   card.querySelectorAll('[data-home-reconcile],[data-home-cancel-unknown]').forEach(button => {
     button.addEventListener('click', async () => {
       const context = projectContext();
