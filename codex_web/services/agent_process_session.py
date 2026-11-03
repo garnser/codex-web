@@ -18,6 +18,7 @@ from typing import Any, Callable, Sequence
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.storage.state_store import StorageLockUnavailable, StorageOperationBudget, storage_operation_budget, check_operation_budget, operation_lock
 from codex_web.services.managed_validation_custody import ManagedValidationCustody
+from codex_web.local_execution_backend import TrustedLocalRuntimeHome
 from codex_web.observability import log_event
 from codex_web.runtime import managed_validation_runner
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
@@ -633,6 +634,21 @@ class AssignmentBoundAgentProcessSession:
                         control_broker.mount_destination,
                     ),
                 )
+            runtime_home = getattr(launch_input, "trusted_local_runtime_home", None)
+            runtime_home_options = {}
+            if runtime_home is not None:
+                if type(runtime_home) is not TrustedLocalRuntimeHome:
+                    raise AssignmentBoundAgentProcessSessionStaleError(
+                        "invalid trusted-local runtime HOME custody")
+                # Revalidate the credential owner's exact configured HOME and
+                # live canonical grant immediately before the backend boundary.
+                current_assignment = self.local_worker._pending_assignment(self.assignment_id)
+                delegation_service.validate_current(launch_input.delegation,
+                    current_assignment, actor=self.local_worker.worker_actor)
+                if str(runtime_home.path) != getattr(launch_input.delegation, "codex_home", None):
+                    raise AssignmentBoundAgentProcessSessionStaleError(
+                        "trusted-local runtime HOME differs from canonical grant")
+                runtime_home_options["trusted_local_runtime_home"] = runtime_home
             launch_backend = self.local_worker.backend
             process = launch_backend.spawn_interactive(
                 assignment,
@@ -643,6 +659,7 @@ class AssignmentBoundAgentProcessSession:
                 trusted_writable_mounts=trusted_writable_mounts,
                 minimum_address_space_bytes=self.minimum_address_space_bytes,
                 minimum_process_count=self.minimum_process_count,
+                **runtime_home_options,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
