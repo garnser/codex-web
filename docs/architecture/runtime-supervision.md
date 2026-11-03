@@ -639,6 +639,14 @@ with tenant/actor/resource/assignment/fence/native provenance. Confirmed starts
 offer no replay. Stored positive evidence cannot initiate unknown scheduling
 retirement or be converted to an unstarted refusal.
 
+Native start/resume capture preserves a retained explicit repository primary for
+READ assignments as well as WRITE assignments. Under an actual READ_ONLY scope,
+the primary must equal the canonical target's read-only primary, belong to the
+assignment's admitted READ resources, and confer zero writable repositories.
+Ordinary WRITE primary membership remains unchanged. Neither capture nor shared
+historical attribution drops the primary or rewrites the original scope/checksum;
+foreign targets, changed Profile/context/fence and unknown outcomes still refuse.
+
 Correlation alone does not block existing terminal-task scheduling retirement.
 The retirement-preparation CAS and positive-evidence CAS order the two facts in
 the same preflight record. If positive evidence commits first, initial
