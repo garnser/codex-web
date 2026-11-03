@@ -33,7 +33,7 @@ class _CancelledRecipientContextRequired(OwnerRoutingError):
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
-                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None, inspection_actor=None):
+                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None, inspection_actor=None, authenticated_origin_revalidator=None):
         self.routing = routing
         self.get_state = get_state
         self.projects = projects
@@ -44,6 +44,10 @@ class OwnerRoutingService:
         self.profiles = profiles
         self.control_actor = control_actor
         self.actor_resolver = actor_resolver
+        # Delegated identity lookup does not authenticate a request or retain
+        # its session/MFA provenance. Explicit operator replacement needs the
+        # existing identity owner's authenticated-origin revalidation instead.
+        self.authenticated_origin_revalidator = authenticated_origin_revalidator
         self.replacement_resolver = replacement_resolver
         self.update_state, self.append_event = update_state, append_event
         self.preflight = preflight
@@ -795,7 +799,9 @@ class OwnerRoutingService:
         """
         from codex_web.services.identity import IdentityService
         from codex_web.identity import AuthenticationAssurance
-        fresh = self.actor_resolver(actor.identity_id, project)
+        if self.authenticated_origin_revalidator is None:
+            raise OwnerRoutingError('owner_replacement_authenticated_origin_unavailable')
+        fresh = self.authenticated_origin_revalidator(actor)
         IdentityService.require_admin(fresh)
         IdentityService.require_assurance(fresh, AuthenticationAssurance.MFA)
         if not fresh.has_same_authority(actor):
