@@ -89,6 +89,11 @@ _BOOTSTRAP_PREPARATION_STAGES = frozenset({
     'resource_context_validation', 'session_workspace_validation',
     'runtime_request_preparation', 'admission_before_provider_start',
 })
+# The post-provider guard is a closed lifecycle phase, never a pre-start
+# no-effect witness. Keep diagnostic acceptance restricted to the earlier set.
+_BOOTSTRAP_LIFECYCLE_STAGES = _BOOTSTRAP_PREPARATION_STAGES | frozenset({
+    'admission_after_provider_start',
+})
 _BOOTSTRAP_EXCEPTION_TYPES = frozenset({
     'TimeoutError', 'ValueError', 'TypeError', 'LookupError',
     'OSError', 'RuntimeError', 'AssertionError', 'Exception',
@@ -1067,7 +1072,7 @@ class ThreadService:
         preparation_stage = 'request_validation'
         def preparing(stage):
             nonlocal preparation_stage
-            if stage not in _BOOTSTRAP_PREPARATION_STAGES:
+            if stage not in _BOOTSTRAP_LIFECYCLE_STAGES:
                 raise ValueError('Invalid bootstrap preparation stage')
             preparation_stage = stage
         def before_provider_start():
@@ -1449,6 +1454,11 @@ class ThreadService:
             if before_provider_start is not None:
                 before_provider_start()
             runtime_result = await runtime_adapter.create_session(runtime_request)
+            if admission_guard is not None:
+                stage('admission_after_provider_start')
+                await PostTurnReadinessService._run_owned(
+                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    name='thread-admission-current-guard')
             response = runtime_result.payload
         except asyncio.CancelledError as exc:
             # This session already owns a registered worker fence. Request

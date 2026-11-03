@@ -135,6 +135,7 @@ class TurnService:
         self.scheduling_retirement = scheduling_retirement
         self.agent_profiles = agent_profiles
         self.memory_context = memory_context
+        self.owner_routing = None
 
     async def resume(
         self,
@@ -221,7 +222,51 @@ class TurnService:
                 "alreadyResuming": not scheduled,
             }
 
-    async def replace(self, thread_id: str) -> dict[str, Any]:
+    def replacement_eligibility(self, thread_id, *, work_item_ref, actor, project):
+        from codex_web.owner_routing import OwnerRoutingError
+        if self.owner_routing is None or actor is None or project is None or not work_item_ref:
+            raise HTTPException(status_code=409, detail={'code': 'owner_replacement_context_required'})
+        try:
+            context = self.owner_routing.accepted_replacement_context(
+                thread_id, work_item_ref, actor=actor, project=project)
+        except OwnerRoutingError as exc:
+            raise HTTPException(status_code=409, detail={'code': str(exc)}) from exc
+        state, binding, witness, profile, requester, _ = context
+        return context, {'eligible': True, 'code': 'accepted_recipient_replacement_available',
+            'work_item_ref': state.ref, 'threadId': thread_id,
+            'currentThreadId': witness.thread_id, 'assignment_id': witness.assignment_id,
+            'fence': witness.fence}
+
+    async def replace(self, thread_id: str, *, work_item_ref=None, actor=None, project=None) -> dict[str, Any]:
+        if work_item_ref is not None:
+            if self.bindings.for_thread(thread_id):
+                raise HTTPException(status_code=409, detail={'code': 'owner_replacement_bound_thread'})
+            context, _ = await asyncio.to_thread(self.replacement_eligibility,
+                thread_id, work_item_ref=work_item_ref, actor=actor, project=project)
+            preparer = self.owner_routing.recipient_preparer
+            name = 'accepted-owner-replacement:' + preparer.digest({
+                'work': work_item_ref, 'thread': thread_id,
+                'assignment': context[2].assignment_id, 'fence': context[2].fence})[:32]
+            def current():
+                preparer.ownership.require_fence(name)
+                fresh, _ = self.replacement_eligibility(thread_id, work_item_ref=work_item_ref,
+                    actor=actor, project=project)
+                if (self.owner_routing.accepted_replacement_signature(fresh)
+                        != self.owner_routing.accepted_replacement_signature(context)
+                        or not fresh[4].has_same_authority(context[4])):
+                    raise HTTPException(status_code=409, detail={'code': 'owner_replacement_context_changed'})
+            async def operation():
+                return await self.recovery.replace_accepted_recipient(
+                    thread_id, project=project, context=context, validate=current,
+                    reservation=lambda: self.owner_routing.accepted_replacement_reservation(context),
+                    operator_identity_id=actor.identity_id)
+            async with preparer.queue_lock(name):
+                acquired, replacement = await preparer.ownership.run_exclusive(name, operation)
+                if not acquired:
+                    raise HTTPException(status_code=409, detail={'code': 'owner_replacement_busy'})
+            self.execution.schedule_queue_drain(replacement)
+            return {'ok': True, 'oldThreadId': thread_id, 'newThreadId': replacement,
+                'work_item_ref': work_item_ref, 'queueDepth': self.queue_policy.depth(replacement)}
         existing_replacement = self.recovery.replacement_thread_id(thread_id)
         if existing_replacement:
             return {

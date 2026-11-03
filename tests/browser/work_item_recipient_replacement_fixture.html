@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Accepted recipient replacement</title>
+<body><main class="work-item-detail"><div class="work-accepted-recipient-replacement"></div></main>
+<script type="module">
+import { installAcceptedRecipientReplacement } from '/static/work_item_recipient_replacement_ui.js';
+import { createWorkItemViewScope } from '/static/work_item_view_scope.js';
+const state = { projectId: 'project-a', selectedRef: 'team/connector!33', listGeneration: 1 };
+const scope = createWorkItemViewScope(state, () => {});
+const item = {ref: state.selectedRef, handoff: {status: 'accepted', requested_at: 123,
+  to_agent: 'quinn', delivery: {thread_id: 'accepted-thread'}}};
+window.requests = []; window.reloads = []; window.mode = 'success';
+window.install = (status = 'accepted') => {
+  item.handoff.status = status;
+  const detail = document.querySelector('.work-item-detail');
+  detail.innerHTML = '<div class="work-accepted-recipient-replacement"></div>';
+  installAcceptedRecipientReplacement(detail, item, {
+    projectId: state.projectId, ...scope,
+    reload: async ref => window.reloads.push(ref),
+    request: async (path, options = {}) => {
+      window.requests.push({path, method: options.method || 'GET', body: options.body ?? null});
+      if (!options.method) {
+        if (window.mode === 'deferred') await new Promise(resolve => {window.releaseEligibility = resolve;});
+        if (window.mode === 'denied') {
+          const error = new Error('Current accepted recipient is not eligible');
+          error.detail = {code: 'owner_recipient_custody_changed'}; error.status = 409; throw error;
+        }
+        return {eligible: true, code: 'accepted_recipient_replacement_available',
+          work_item_ref: item.ref, threadId: 'accepted-thread', currentThreadId: 'accepted-thread',
+          assignment_id: 'assignment-current', fence: 2};
+      }
+      if (window.mode === 'unknown') throw new Error('Connection closed; outcome unknown');
+      return {ok: true, oldThreadId: 'accepted-thread', newThreadId: 'replacement-thread',
+        work_item_ref: item.ref, binding: null, queueDepth: 0};
+    },
+  });
+};
+window.changeProject = () => {state.projectId = 'project-b';};
+window.install();
+</script></body></html>

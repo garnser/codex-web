@@ -437,3 +437,48 @@ read-only; a concurrent writer can advance its own branch without changing the
 reader's pinned checkout. This is not a private clone or a grant to mutate the
 reader, source checkout, shared nonrepository Resource, or another worktree.
 No lease is yielded or released implicitly, and no persistent format changes.
+
+### Explicit replacement of an accepted unbound recipient
+
+An accepted Work handoff can retain a correlated START and genuine ACK on a
+repository-scoped recipient while its logical Role/reply binding remains on a
+different repository. Generation-zero accepted routing validates the actual
+admitted recipient, current Role/Profile and exact original attribution; the
+reply anchor is not required to be a cancelled lease owner of that repository.
+Generation-one preparation still requires its positive typed predecessor proof.
+The complete retained-original barrier, current authority, exact scope, native
+custody and LIVE lease/fence guards remain mandatory for owner input.
+
+Explicit cancellation remains a resource release. Accepted START/ACK alone does
+not authorize automatic revival. An administrator with current MFA may make a
+NEW bodyless `POST /api/threads/{recipient}/replace?work_item_ref={ref}` request
+within the canonical thread Project. The Work selector grants no permission.
+For an unbound recipient the existing replacement owner verifies the exact
+current accepted Work/nonce, retained START/ACK, original binding, current
+Profile/actor and cancelled next fence/no lease before any effect. An optional
+read-only `GET /api/threads/{recipient}/replacement-eligibility?work_item_ref={ref}`
+uses the same proof. The Work inspector uses that canonical result and an
+explicit confirmation; HTTP refusal/unknown is visible and never auto-retried.
+Ordinary bound replacement retains its existing API and behavior.
+
+The existing start/retirement owner joins terminal process ownership and holds
+admission through the scoped replacement graph commit. The normal bootstrap
+owner admits a new recipient with the same exact repository scope/current
+Profile; no logical bot binding, Work owner, nonce, ACK or historical START is
+rewritten. A deterministic bootstrap execution under the existing coordination
+owner reserves one provider attempt for that cancelled assignment/fence and
+accepted nonce. Existing unresolved reservations refuse another create; only a
+positively bound, current exact successor can finish an interrupted graph
+publication. There is no generation retry or absence-as-no-effect inference.
+The same graph lets ordinary owner dispatch resolve that authorized successor;
+input still requires fresh LIVE custody and its normal preflight/START.
+
+Current authority and Work are rechecked before reservation, provider I/O,
+after native creation and immediately before graph publication. Refusal after
+creation settles that invocation's unused successor through the existing
+canonical manager/retirement owners, preserving files and records; an existing
+candidate is not cancelled on this branch. Active or unknown custody remains a
+refusal. Retained preflight/native outcomes remain unchanged, and existing
+queue retargeting preserves known unstarted requests. No model calls, schema
+changes, new identity ledger, grants, historical backfill or automatic rollback
+are introduced by this replacement path.

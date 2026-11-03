@@ -160,6 +160,7 @@ class ThreadRecoveryService:
         actor: AuthenticationActor | None = None,
         replacement_evidence: dict[str, Any] | None = None,
         predecessor_scope: ReadOnlyReplacementScope | None = None,
+        admission_guard=None, bootstrap_token=None, prepared_thread_id=None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -205,6 +206,8 @@ class ThreadRecoveryService:
                 "writable_repository_resource_ids": list(settings.writable_repository_resource_ids),
                 "read_only_repository_resource_ids": list(settings.read_only_repository_resource_ids),
             })
+        if prepared_thread_id is not None:
+            return prepared_thread_id
         response = await self.thread_creator(
             project_id=project.id,
             sandbox=sandbox,
@@ -218,6 +221,8 @@ class ThreadRecoveryService:
             ),
             execution_profile_id=settings.execution_profile_id,
             **profile_kwargs,
+            **({"admission_guard": admission_guard} if admission_guard is not None else {}),
+            **({"bootstrap_token": bootstrap_token} if bootstrap_token is not None else {}),
         )
         thread = response.get("thread") if isinstance(response, dict) else None
         thread_id = thread.get("id") if isinstance(thread, dict) else None
@@ -498,6 +503,42 @@ class ThreadRecoveryService:
             async with self.predecessor_retirement(thread_id, project=project) as proof:
                 yield proof
 
+    async def replace_accepted_recipient(self, thread_id, *, project, context, validate,
+                                         operator_identity_id, reservation):
+        """A NEW operator request, never automatic undo of cancellation.
+
+        The existing start/retirement lock joins terminal process ownership and
+        remains held through the normal scoped replacement graph publication.
+        No logical bot binding is moved and no handoff/original is rewritten.
+        """
+        key = ('accepted-recipient', project.id, thread_id)
+        lock = self._replacement_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._replacement_locks[key] = lock
+        async with lock:
+            validate()
+            existing = self.replacement_thread_id(thread_id)
+            if existing:
+                return existing
+            state, binding, witness, profile, requester, _ = context
+            async with self._retire_predecessor(thread_id, project) as predecessor_scope:
+                validate()
+                token, prepared_thread_id = reservation()
+                return await self._replace_stale_web_thread(thread_id, project,
+                    'explicit authorized accepted-recipient replacement',
+                    predecessor_scope=predecessor_scope,
+                    agent_profile_id=profile.profile_id,
+                    agent_profile_revision=profile.revision, actor=requester,
+                    admission_guard=validate, retarget_bot_state=False,
+                    bootstrap_token=token, prepared_thread_id=prepared_thread_id,
+                    replacement_provenance={
+                        'accepted_work_item_ref': state.ref,
+                        'accepted_handoff_requested_at': state.handoff.requested_at,
+                        'accepted_assignment_id': witness.assignment_id,
+                        'accepted_assignment_fence': witness.fence,
+                        'replacement_authorized_by': operator_identity_id})
+
     async def replace_stale_web_thread(self, thread_id, project, error, **kwargs):
         async with self._retire_predecessor(thread_id, project) as predecessor_scope:
             return await self._replace_stale_web_thread(thread_id, project, error,
@@ -509,11 +550,14 @@ class ThreadRecoveryService:
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         actor: AuthenticationActor | None = None,
+        admission_guard=None, retarget_bot_state=True, replacement_provenance=None,
+        bootstrap_token=None, prepared_thread_id=None,
     ) -> str:
         h = self.host
         replacement_id = self.replacement_thread_id(thread_id)
         if replacement_id:
-            h._retarget_bot_thread_state(thread_id, replacement_id)
+            if retarget_bot_state:
+                h._retarget_bot_thread_state(thread_id, replacement_id)
             await h._archive_replaced_bot_thread(thread_id, replacement_id)
             return replacement_id
         settings = self.settings.get(thread_id)
@@ -530,7 +574,38 @@ class ThreadRecoveryService:
             actor=actor,
             replacement_evidence=replacement_evidence,
             predecessor_scope=predecessor_scope,
+            admission_guard=admission_guard, bootstrap_token=bootstrap_token,
+            prepared_thread_id=prepared_thread_id,
         )
+        async def validate_created():
+            if admission_guard is not None:
+                try:
+                    admission_guard()
+                except BaseException as refusal:
+                    if prepared_thread_id is None:
+                        # This invocation's unused successor must stay owned when
+                        # current Work/authority changes after the create await.
+                        # Existing retirement refuses active/UNKNOWN work; never
+                        # cancel a previously recovered candidate on this branch.
+                        async def settle_unused():
+                            async with self._retire_predecessor(new_thread_id, project):
+                                pass
+                        cleanup = asyncio.create_task(settle_unused())
+                        while not cleanup.done():
+                            try:
+                                await asyncio.shield(cleanup)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        try:
+                            cleanup.result()
+                        except BaseException as cleanup_error:
+                            raise refusal from cleanup_error
+                    raise
+        await validate_created()
+        if replacement_provenance is not None:
+            replacement_evidence.update(replacement_provenance)
         self._remember_successor(new_thread_id, settings, replacement_evidence,
             predecessor_scope, sandbox=sandbox, approval_policy=approval_policy)
         indexed = next((item for item in self.thread_index.load() if item.id == thread_id), None)
@@ -548,9 +623,16 @@ class ThreadRecoveryService:
                     updatedAt=time.time(),
                 )
             )
+        await validate_created()
         self._remember_replacement(thread_id, new_thread_id,
                                    project_id=project.id, provenance=replacement_evidence)
-        h._retarget_bot_thread_state(thread_id, new_thread_id)
+        if retarget_bot_state:
+            h._retarget_bot_thread_state(thread_id, new_thread_id)
+        else:
+            self.retarget_thread_settings(thread_id, new_thread_id)
+            self.retarget_active_turn(thread_id, new_thread_id)
+            self.retarget_turn_queue(thread_id, new_thread_id)
+            self.retarget_slack_thread_icon(thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(thread_id, new_thread_id)
         self.event_sink(
             {
