@@ -2202,6 +2202,7 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
+        catalog_discovery = None
         if self.procedure_admission is not None:
             # The immutable authority request retains the target resolved for
             # this operation, including administrative scratch assignments.
@@ -2215,8 +2216,18 @@ class ControlPlaneBrokerService:
                 source_state = self._state_for_target(assignment, str(payload.get("source_ref") or ""))
                 target_state = self._state_for_target(assignment, str(payload.get("target_ref") or ""))
                 procedure_targets = tuple(dict.fromkeys((*source_state.resource_ids, *target_state.resource_ids)))
-            await self.procedure_admission(assignment=assignment, actor=requester_actor,
-                operation=operation, resource_ids=procedure_targets, payload=payload)
+            if operation.id == "control_plane.operations.list":
+                # Catalog inspection is not an operational admission. Keep the
+                # authenticated/Profile-filtered descriptors readable even when
+                # a procedure cannot run; this observation grants no execution
+                # and cannot consume the assignment's admission history.
+                catalog_discovery = await run_settled(lambda:
+                    self.procedure_admission.inspect_current(assignment=assignment,
+                        actor=requester_actor, operation=operation,
+                        resource_ids=procedure_targets, payload=payload))
+            else:
+                await self.procedure_admission(assignment=assignment, actor=requester_actor,
+                    operation=operation, resource_ids=procedure_targets, payload=payload)
 
         if assignment.execution_profile_id == "orchestration-admin":
             # Administrative coordination never impersonates an implementer or
@@ -2344,6 +2355,13 @@ class ControlPlaneBrokerService:
             result = {"edge": edge.model_dump(mode="json")}
         elif operation.id == "control_plane.operations.list":
             result = self.public_assignment_capability(assignment)
+            if catalog_discovery is not None:
+                result["procedure_availability"] = {
+                    "discovery": catalog_discovery.model_dump(mode="json"),
+                    "execution_authorized": False,
+                    "assignment_history_recorded": False,
+                    "history_capacity_checked": False,
+                }
         elif operation.id == "deployment.local.status":
             result = self._local_deployment_status()
         elif operation.id == "deployment.local.install":

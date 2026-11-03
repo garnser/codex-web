@@ -66,8 +66,100 @@ class ProcedureBrokerAdmissionTests(unittest.IsolatedAsyncioTestCase):
 
         status, _, response = await self._request('GET','/api/control-plane-broker/operations')
         self.assertEqual(status,200,response)
-        self.assertEqual(records[-1].outcome,'no_match')
-        self.assertTrue(records[-1].admitted)
+        self.assertEqual(response['procedure_availability']['discovery']['outcome'],'no_match')
+        self.assertFalse(response['procedure_availability']['execution_authorized'])
+        self.assertEqual(len(records),2)  # Actual handoff attempts only; catalog is read-only.
+
+
+    def _catalog_discovery_fixture(self):
+        """Actual published Skill/security/discovery; only external execution is a fixture."""
+        admin = self.identity.local_trusted_actor()
+        resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
+        target = resources.create(ResourceCreate(resource_type=ResourceType.SERVICE, name='GitLab',
+            operational_context=ResourceOperationalContext(environment='staging',
+                service_versions={'gitlab':'18.0.0'})), actor=admin)
+        self.authority.resources = resources
+        self.states[self.ref].resource_ids = (target.id,)
+        actions = ActionProviderRegistry(ActionProviderStateStore(self.sqlite))
+        actions.register(procedure_fixtures.MetadataProvider(), tenant_scope=admin.tenant)
+        skills = SkillService(self.registry, clock=lambda:100)
+        skills.bind_procedure_contracts(actions=actions, resources=resources, scope_actor=lambda r:admin)
+        scanners = SkillScannerRegistry(); scanners.register(FakeScanner())
+        skills.bind_security(SkillSecurityService(SkillSecurityStore(self.sqlite),self.registry,scanners,clock=lambda:100))
+        content = procedure_fixtures.procedure()
+        content['operation_triggers'] = ['control_plane.operations.list', 'work_item.handoff']
+        content['required_worker_capabilities'] = []
+        for step in content['steps']:
+            if 'worker' in step:
+                del step['worker']; step['action'] = dict(content['steps'][0]['action'])
+        draft = skills.create(SkillCreate(skill_id='catalog-matching-procedure',name='Scoped catalog procedure',
+            instructions='Read exact canonical operational context.',operational_procedure=content),actor=admin)
+        published = skills.publish(draft['skillId'],draft['recordId'],SkillPublish(),actor=admin)
+        records = []
+        workers = SimpleNamespace(record_procedure_discovery=lambda *a, **k: records.append(a[1]))
+        admission = BrokerProcedureAdmissionService(ProcedureDiscoveryService(skills,resources),workers,admin)
+        self.service.procedure_admission = admission
+        return published, records, admission
+
+    async def test_catalog_read_reports_unresolved_procedure_without_consuming_history(self):
+        _, records, _ = self._catalog_discovery_fixture()
+        # The authentic ordinary orchestration fixture has resource_ids=().
+        status, _, response = await self._request('GET','/api/control-plane-broker/operations')
+        self.assertEqual(status,200,response)
+        ids = {operation['id'] for operation in response['operations']}
+        self.assertIn('work_item.read',ids)
+        self.assertIn('verification.content.read',ids)
+        availability = response['procedure_availability']
+        self.assertEqual(availability['discovery']['resource_ids'],[])
+        self.assertEqual(availability['discovery']['outcome'],'inaccessible')
+        self.assertIn('target_resources_unresolved',availability['discovery']['blockers'])
+        self.assertIn('environment_unresolved',availability['discovery']['blockers'])
+        self.assertFalse(availability['execution_authorized'])
+        self.assertFalse(availability['assignment_history_recorded'])
+        self.assertFalse(availability['history_capacity_checked'])
+        self.assertEqual(records,[])
+        self.assertEqual(self.work_items.handoffs,[])
+
+    async def test_catalog_read_reports_quarantine_but_protected_handoff_still_refuses(self):
+        published, records, _ = self._catalog_discovery_fixture()
+        self.registry.quarantine(published['recordId'],actor='security',reason='Revoked procedure trust')
+        status, _, response = await self._request('GET','/api/control-plane-broker/operations')
+        self.assertEqual(status,200,response)
+        self.assertIn('procedure_quarantined',response['procedure_availability']['discovery']['blockers'])
+        self.assertEqual(records,[])
+        status, _, response = await self._request('POST',
+            '/api/work-items/'+quote(self.ref,safe='')+'/handoff',
+            payload={'from_agent':'james','to_agent':'quinn','reason':'Must retain security denial'})
+        self.assertEqual(status,409,response)
+        self.assertIn('procedure_quarantined',response['error']['procedure_discovery']['blockers'])
+        self.assertEqual(len(records),1)
+        self.assertEqual(self.work_items.handoffs,[])
+
+    async def test_catalog_still_refuses_changed_assignment_fence_before_discovery(self):
+        _, records, _ = self._catalog_discovery_fixture()
+        self.current_assignment = self.assignment.model_copy(update={'fence':2})
+        status, _, response = await self._request('GET','/api/control-plane-broker/operations')
+        self.assertEqual(status,403,response)
+        self.assertIn('fence changed',response['error']['message'])
+        self.assertNotIn('operations',response)
+        self.assertNotIn('procedure_availability',response)
+        self.assertEqual(records,[])
+
+    async def test_catalog_does_not_append_to_exhausted_history_but_actual_operation_does(self):
+        from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
+        _, records, admission = self._catalog_discovery_fixture()
+        def full(*args, **kwargs):
+            raise ProcedureHistoryExhaustedError('history full')
+        admission.workers.record_procedure_discovery = full
+        status, _, response = await self._request('GET','/api/control-plane-broker/operations')
+        self.assertEqual(status,200,response)
+        self.assertFalse(response['procedure_availability']['history_capacity_checked'])
+        status, _, response = await self._request('POST',
+            '/api/work-items/'+quote(self.ref,safe='')+'/handoff',
+            payload={'from_agent':'james','to_agent':'quinn','reason':'Must retain history refusal'})
+        self.assertEqual(status,409,response)
+        self.assertEqual(response['error']['code'],'procedure_assignment_exhausted')
+        self.assertEqual(self.work_items.handoffs,[])
 
     async def test_exhaustion_is_typed_before_broker_handler_and_keeps_prior_mutation(self):
         from unittest.mock import patch
