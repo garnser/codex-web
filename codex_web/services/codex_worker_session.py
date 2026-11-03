@@ -191,7 +191,6 @@ class TrustedLocalCodexCredentialProvider:
         if (assignment.id != delegation.assignment_id
                 or delegation.codex_home != str(self.codex_home.resolve(strict=True)
                     if assignment.sandbox == "read-only" else self.codex_home)
-                or delegation.expires_at <= now
                 or assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}):
             raise AssignmentBoundCodexSessionStaleError(
                 "trusted-local Codex grant assignment changed"

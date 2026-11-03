@@ -8,7 +8,7 @@ import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from codex_web import local_execution_backend as backend_module
 from codex_web.services.codex_worker_session import (
@@ -126,17 +126,54 @@ class ReadonlyTrustedLocalRuntimeHomeTests(unittest.IsolatedAsyncioTestCase):
                     self.build(home=dataclasses.replace(self.mount(), **changes))
         self.assertEqual(self.commands, [])
 
-    async def test_current_grant_rejects_foreign_home_and_expired_lease(self):
+    async def test_current_grant_rejects_foreign_home_expired_current_lease_and_deadline(self):
         lease = self.assignment.lease
         grant = self.provider._grant(self.assignment, worker_id=lease.worker_id, fence=lease.fence)
-        for changed in (dataclasses.replace(grant, codex_home=str(self.bin)),
-                dataclasses.replace(grant, expires_at=0)):
-            with self.assertRaises(AssignmentBoundCodexSessionStaleError):
-                self.provider.validate_current(changed, self.assignment, actor=self.local.worker_actor)
+        self.provider._clock = lambda: lease.expires_at - 1
+        foreign = dataclasses.replace(grant, codex_home=str(self.bin))
+        with self.assertRaises(AssignmentBoundCodexSessionStaleError):
+            self.provider.validate_current(foreign, self.assignment, actor=self.local.worker_actor)
         stale = self.assignment.model_copy(update={'fence':self.assignment.fence+1})
         with self.assertRaises(AssignmentBoundCodexSessionStaleError):
             self.provider.validate_current(grant, stale, actor=self.local.worker_actor)
+        expired_lease = self.assignment.model_copy(update={
+            'lease':lease.model_copy(update={'expires_at':lease.expires_at-2})})
+        with self.assertRaisesRegex(AssignmentBoundCodexSessionStaleError, 'lease/fence is stale'):
+            self.provider.validate_current(grant, expired_lease, actor=self.local.worker_actor)
+        expired_deadline = self.assignment.model_copy(update={'deadline_at':lease.expires_at-2})
+        with self.assertRaisesRegex(AssignmentBoundCodexSessionStaleError, 'deadline has expired'):
+            self.provider.validate_current(grant, expired_deadline, actor=self.local.worker_actor)
         self.assertEqual(self.commands, [])
+
+    async def test_renewed_canonical_lease_survives_original_launch_grant_expiry(self):
+        await self.session.start()
+        original_grant = self.session.delegation
+        current = self.fixture.f.workers.store.assignment(self.assignment.id)
+        self.assertEqual(original_grant.expires_at, current.lease.expires_at)
+        # Renew through the real canonical owner BEFORE the old lease expires.
+        # No sleeps, grant replacement or direct Store mutation.
+        renew_at = original_grant.expires_at - 10
+        self.provider._clock = lambda: renew_at
+        self.session._clock = lambda: renew_at
+        with patch('codex_web.services.execution_workers.time.time', return_value=renew_at):
+            renewed = self.session._heartbeat_and_renew(current)
+        # Mirror _watchdog: keep the same launch grant, but retain its newly
+        # validated canonical lease snapshot for the next supervision budget.
+        self.session._bound_assignment = renewed
+        observed_at = original_grant.expires_at + 1
+        self.assertLess(observed_at, renewed.lease.expires_at)
+        self.provider._clock = lambda: observed_at
+        self.session._clock = lambda: observed_at
+        self.assertIs(self.session.delegation, original_grant)
+        try:
+            observed = self.session._validate_current_authority()
+        except AssignmentBoundCodexSessionStaleError as exc:
+            self.assertEqual(str(exc), 'trusted-local Codex grant assignment changed')
+            self.fail('valid renewed canonical lease was refused using the original launch-grant expiry')
+        self.assertEqual(observed.lease, renewed.lease)
+        self.assertEqual(observed.fence, current.fence)
+        self.assertTrue(self.session.status().ready)
+        self.assertIs(self.session.delegation, original_grant)
 
     async def test_session_refuses_runtime_home_different_from_configured_grant(self):
         original_use = self.provider.use

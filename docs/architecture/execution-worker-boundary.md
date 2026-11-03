@@ -2096,3 +2096,9 @@ and request data cannot select this mount. Existing delegated launches and the
 read-only rejection of generic writable repository mounts remain unchanged.
 Read-only describes repository authority; trusted-local sign-in continues to
 share the operator's configured ambient Codex state under its existing boundary.
+
+The trusted-local launch grant records the initial lease expiry for inspection;
+that fixed timestamp is not a separate session cutoff. Continued runtime use
+revalidates the current canonical assignment lease/fence and assignment deadline,
+including leases renewed by the existing session watchdog. Renewal neither
+changes the configured ambient HOME nor reissues credential authority.
