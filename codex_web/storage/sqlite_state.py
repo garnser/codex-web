@@ -830,6 +830,50 @@ class SQLiteStateStore:
                 )
             return None
 
+    def shared_artifact_candidates(self, namespace, *, organization_id, workspace_id,
+            project_id, work_item_ref, provider, source, before=None, limit=32):
+        """Bound returned exact-Work candidates in SQL, not a tenant Python scan.
+
+        SQLite JSON evaluation may scan the canonical document internally; this
+        is a result bound, not a claimed scanned-row/CPU bound. No full fallback.
+        """
+        if type(limit) is not int or not 1 <= limit <= 32 or (before is not None and (type(before) is not int or not 1 <= before <= 2**61-1)):
+            raise ValueError('invalid shared-input page bound')
+        query = """WITH document AS MATERIALIZED (
+            SELECT payload FROM state_documents WHERE namespace=?),
+            matching AS MATERIALIZED (
+                SELECT CAST(item.key AS INTEGER)+1 AS ordinal,
+                    substr(json_extract(item.value,'$.id'),1,201) AS id,
+                    count(*) OVER (PARTITION BY json_extract(item.value,'$.id')) AS duplicates
+                FROM document,json_each(payload,'$.artifacts') AS item
+                WHERE item.type='object'
+                    AND json_extract(item.value,'$.organization_id')=?
+                    AND json_extract(item.value,'$.workspace_id')=?
+                    AND json_extract(item.value,'$.project_id')=?
+                    AND json_extract(item.value,'$.work_item_ref')=?
+                    AND json_extract(item.value,'$.provider')=?
+                    AND json_extract(item.value,'$.source')=?
+                ), candidates AS MATERIALIZED (SELECT * FROM matching
+                WHERE (? IS NULL OR ordinal < ?) ORDER BY ordinal DESC LIMIT ?)
+            SELECT COALESCE(json_extract(payload,'$.schema_version'),'0.0'),
+                json_type(payload)='object'
+                    AND COALESCE(json_type(payload,'$.schema_version'),'text') IN ('text','null')
+                    AND NOT EXISTS(SELECT 1 FROM json_each(payload) WHERE key NOT IN ('schema_version','artifacts','evidence','verifications'))
+                    AND COALESCE(json_type(payload,'$.artifacts'),'array')='array'
+                    AND COALESCE(json_type(payload,'$.evidence'),'array')='array'
+                    AND COALESCE(json_type(payload,'$.verifications'),'array')='array',
+                (SELECT json_group_array(json_object('ordinal',ordinal,'id',id,'duplicates',duplicates)) FROM candidates)
+            FROM document"""
+        with self._connection() as connection:
+            row=connection.execute(query,(namespace,organization_id,workspace_id,project_id,
+                work_item_ref,provider,source,before,before,limit+1)).fetchone()
+        if row is None:
+            return {'schema_version':None,'candidates':[],'more':False}
+        if not row[1]:
+            raise ValueError('unsupported canonical Artifact envelope')
+        selected=json.loads(row[2])
+        return {'schema_version':row[0],'candidates':selected[:limit],'more':len(selected)>limit}
+
     def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
                                      organization_id: str, workspace_id: str,
                                      collection_names: tuple[str, ...]) -> Any | None:

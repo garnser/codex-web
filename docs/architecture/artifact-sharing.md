@@ -129,3 +129,35 @@ permission or published policy is changed. Current-schema runtime metadata will
 therefore include the additional `artifact-sharing-policy: 1.0` entry. Existing
 Artifact/Evidence rows show bounded provenance with canonical source links and
 INFO limits; metadata does not enable an operator mutation or confer authority.
+
+### Receiving Work discovery
+
+A current owning WRITE worker may call the native broker's
+`GET /api/artifacts/shared-inputs?work_item_ref=<exact Work>&limit=8`.
+This reads target-Work shared-input IDs, digest and size, not source content or
+repository access. Both the authenticated worker and original requester need
+current `api.artifacts.read` and `api.evidence.read` on the target Resources.
+The normal current Profile, native custody, Work ownership and canonical
+workspace/recovery checks apply. This does not expand READ execution Profiles.
+Each returned report/INFO pair passes the same current directional policy,
+parent governance/lifecycle and visibility checks as exact-ID consumption.
+A receiver can then use existing exact Artifact/Evidence metadata and bounded
+Artifact content reads. INFO is neither independent QA nor acceptance.
+
+The canonical backend filters tenant, Project, exact Work, sharing provider and
+source before limiting to 32 candidates, newest recorded first. Default result
+limit is eight, maximum sixteen; metadata is capped at 32 KiB. SQLite queries the
+existing canonical JSON, while PostgreSQL uses its existing current v2 array
+projection and refuses unavailable/stale projections. Neither path loads a
+whole tenant history into Python. These are returned-data bounds, not database
+CPU or scanned-row guarantees. No index, schema or persisted format is added.
+
+Invisible/revoked candidates do not expose IDs. `complete=false` and `truncated`
+mean the caller has not established absence and must retain the provided
+same-scope `next_cursor` if it needs another bounded page. Cursors describe an
+observation position, confer no permission and revalidate current authority and
+policy on every request; they do not promise a snapshot across requests or
+include later insertions. New material Work inputs warrant a fresh first read,
+not unchanged polling. Concurrent changes during a read refuse rather than
+return stale authorization. Duplicated selected identities, malformed scoped
+metadata and incompatible schemas refuse; no unbounded fallback is used.

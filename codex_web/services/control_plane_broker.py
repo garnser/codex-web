@@ -114,6 +114,10 @@ from codex_web.services.worker_artifact_sharing import (
     OPERATION as ARTIFACT_SHARE_OPERATION, resolve as resolve_artifact_share_operation,
     WorkerArtifactSharingAdapter, public_contract as artifact_share_contract,
 )
+from codex_web.services.worker_shared_inputs import (
+    OPERATION as SHARED_INPUT_OPERATION, WorkerSharedInputsAdapter,
+    public_contract as shared_input_contract,
+)
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
     WorkerVerificationAdapter,
@@ -172,6 +176,7 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     *VERIFICATION_OPERATIONS,
     SOURCE_CAPTURE_OPERATION,
     ARTIFACT_SHARE_OPERATION,
+    SHARED_INPUT_OPERATION,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
         path_template="/api/agent-upgrade-approvals", capability="upgrade.approval.request",
         authority_level=AuthorityLevel.PREPARE),
@@ -783,6 +788,8 @@ class ControlPlaneBrokerService:
             result['scope'] = 'Exact admitted source repository plus canonical target Work under explicit Project sharing policy; data only'
             result['query_parameters'] = {'repository_resource_id':'One explicit admitted READ/WRITE source repository; must match capture'}
             result['verifier'] = 'No Verification or independent QA produced'
+        if item.id == SHARED_INPUT_OPERATION.id:
+            result.update(shared_input_contract())
         return result
 
     @staticmethod
@@ -1131,6 +1138,11 @@ class ControlPlaneBrokerService:
         if sharing is not None:
             operation,target = sharing
             return _ResolvedOperation(operation=operation,target_ref=target,query=parse_qs(parsed.query,keep_blank_values=True))
+        if path == SHARED_INPUT_OPERATION.path_template:
+            if method != 'GET':
+                raise ControlPlaneBrokerRequestError('Shared-input lookup requires GET')
+            return _ResolvedOperation(operation=SHARED_INPUT_OPERATION,target_ref=None,
+                query=parse_qs(parsed.query,keep_blank_values=True))
         verification_operation = resolve_verification_operation(method, path)
         if verification_operation is not None:
             operation, target = verification_operation
@@ -2333,6 +2345,11 @@ class ControlPlaneBrokerService:
         elif operation.id == ARTIFACT_SHARE_OPERATION.id:
             result = await run_settled(lambda: WorkerArtifactSharingAdapter(self,
                 policies=self.artifact_sharing_policies).share(assignment,worker_actor,resolved,payload,assignment_validator))
+        elif operation.id == SHARED_INPUT_OPERATION.id:
+            if body:
+                raise ControlPlaneBrokerRequestError('Shared-input lookup accepts no request body')
+            result = await run_settled(lambda: WorkerSharedInputsAdapter(self).read(
+                assignment,worker_actor,resolved,assignment_validator))
         elif operation.id.startswith("verification."):
             adapter = WorkerVerificationAdapter(self)
             if operation.id == 'verification.create':
