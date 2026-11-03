@@ -403,6 +403,7 @@ from codex_web.services.provider_capacity import (
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.github_action_provider import GitHubActionProvider
 from codex_web.services.gitlab_action_provider import GitLabActionProvider
+from codex_web.services.artifact_sharing import ArtifactSharingPolicyService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.recovery import LocalBackupDestination, RecoveryService
 from codex_web.services.releases import ReleaseService
@@ -1090,6 +1091,9 @@ app.include_router(build_crypto_keys_router(crypto_key_service, project_service,
 app.include_router(build_resources_router(resource_catalog_service, project_service))
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
+artifact_sharing_policy_service = ArtifactSharingPolicyService(
+    definition_registry_service, resource_catalog_service)
+app.state.artifact_sharing_policy_service = artifact_sharing_policy_service
 
 code_host_registry = CodeHostRegistry()
 code_host_registry.register_provider(GitLabCodeHostProvider())
@@ -2566,6 +2570,7 @@ app.state.gitlab_sync_job_service = gitlab_sync_job_service
 
 control_plane_broker_audit_store = ControlPlaneBrokerAuditStore(state_store)
 control_plane_broker_service = ControlPlaneBrokerService(
+    artifact_sharing_policies=artifact_sharing_policy_service,
     identity=identity_service,
     authority=authority_role_service,
     work_items=work_item_service,

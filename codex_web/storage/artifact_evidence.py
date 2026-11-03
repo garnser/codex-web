@@ -178,6 +178,28 @@ class ArtifactEvidenceStore:
             )
         )
 
+    def shared_artifact_candidates(self, *, organization_id, workspace_id, project_id,
+            work_item_ref, provider, source, before=None):
+        reader=getattr(self.store,'shared_artifact_candidates',None)
+        if not callable(reader):
+            raise ValueError('bounded canonical shared-input lookup unavailable')
+        result=reader(self.namespace,organization_id=organization_id,workspace_id=workspace_id,
+            project_id=project_id,work_item_ref=work_item_ref,provider=provider,source=source,
+            before=before,limit=32)
+        # Validate the SAME schema owner; never decode unrelated historical rows.
+        self._decode(None if result['schema_version'] is None else {'schema_version':result['schema_version']})
+        previous=before
+        for candidate in result['candidates']:
+            ordinal,identifier=candidate['ordinal'],candidate['id']
+            if (type(ordinal) is not int or ordinal < 1 or previous is not None and ordinal >= previous
+                    or not isinstance(identifier,str) or not 1 <= len(identifier) <= 200
+                    or type(candidate.get('duplicates')) is not int or candidate['duplicates'] != 1):
+                raise ValueError('invalid canonical shared-input candidate')
+            previous=ordinal
+        if len(result['candidates'])>32 or type(result['more']) is not bool:
+            raise ValueError('invalid bounded canonical shared-input page')
+        return result
+
     def load(self) -> ArtifactEvidenceState:
         return self._decode(self.store.get(self.namespace))
 

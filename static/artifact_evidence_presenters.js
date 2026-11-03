@@ -65,3 +65,9 @@ export function observationPolicyHtml(item) {
 }
 
 export { continuationInputHtml } from './mr_continuation_input_presenter.js';
+
+export { artifactSharingHtml } from './artifact_sharing_presenter.js';
+
+export function digestText(digest) {
+    return digest ? `${digest.algorithm}:${digest.value}` : "none";
+  }

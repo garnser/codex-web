@@ -14,13 +14,14 @@ from codex_web.storage import postgres_document_projection as projection
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.postgres_state import PostgresStateStore
 from tests import test_autonomy_append_scaling as fixtures
+from tests import test_shared_input_queries as shared_inputs
 
 
 ARRAYS = ('artifacts', 'evidence', 'verifications')
 
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
-class PostgresArtifactProjectionTests(unittest.TestCase):
+class PostgresArtifactProjectionTests(shared_inputs.SharedInputQueryContract, unittest.TestCase):
     setUp = fixtures.PostgresAutonomyAppendTests.setUp
 
     @staticmethod
@@ -67,6 +68,23 @@ class PostgresArtifactProjectionTests(unittest.TestCase):
                 'artifacts': selected.get('artifacts', []),
                 'evidence': proofs.get('evidence', []),
                 'verifications': records.get('verifications', [])}
+
+    def test_shared_input_query_refuses_stale_or_unavailable_projection_without_fallback(self):
+        store=self.query_store()
+        self.backend.put(store.namespace,self.document(artifacts=[self.query_row('current')]))
+        self.assertEqual(store.shared_artifact_candidates(**self.query_scope())['candidates'][0]['id'],'current')
+        with self.backend._connection() as connection:
+            connection.execute("UPDATE codex_document_record_headers SET source_sha256=sha256('wrong'::bytea) "
+                "WHERE namespace=%s",(store.namespace,))
+        with patch.object(self.backend,'get',side_effect=AssertionError('full history fallback')):
+            with self.assertRaisesRegex(ValueError,'unavailable'):
+                store.shared_artifact_candidates(**self.query_scope())
+        self.backend.put(store.namespace,self.document(artifacts=[self.query_row('fresh')]))
+        self.assertEqual(store.shared_artifact_candidates(**self.query_scope())['candidates'][0]['id'],'fresh')
+        with self.backend._connection() as connection:
+            connection.execute("UPDATE codex_state_metadata SET value='999' WHERE key='document-array-projection-format'")
+        with self.assertRaisesRegex(ValueError,'unavailable'):
+            store.shared_artifact_candidates(**self.query_scope())
 
     def test_input_envelope_indexed_and_unindexed_match_each_array_duplicate_policy(self):
         rows = {name: [self.row(organization='foreign', value=name+'-foreign'),

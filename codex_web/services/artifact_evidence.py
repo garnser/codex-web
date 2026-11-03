@@ -430,6 +430,18 @@ class ArtifactEvidenceService:
         )
         return artifact, record, proofs
 
+    def shared_input_candidates(self, actor, *, project_id, work_item_ref, before=None):
+        """Exact scoped metadata candidates; visibility remains the reader's job.
+
+        Uses the canonical backend query before its result limit. This never
+        loads the tenant's Artifact history or asserts a database scan bound.
+        """
+        from codex_web.artifact_sharing_policy import METHOD
+        from codex_web.services.worker_artifact_sharing import DELIVERY_SOURCE
+        return self.store.shared_artifact_candidates(organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,project_id=project_id,work_item_ref=work_item_ref,
+            provider=METHOD,source=DELIVERY_SOURCE,before=before)
+
     def list_artifacts(
         self,
         actor: AuthenticationActor,

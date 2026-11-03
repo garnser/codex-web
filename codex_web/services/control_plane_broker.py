@@ -110,6 +110,15 @@ from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmis
 from codex_web.services.home_host_output import OUTPUT_READ
 from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS, HomeProjectMessage
 
+from codex_web.services.worker_source_capture import OPERATION as SOURCE_CAPTURE_OPERATION
+from codex_web.services.worker_artifact_sharing import (
+    OPERATION as ARTIFACT_SHARE_OPERATION, resolve as resolve_artifact_share_operation,
+    WorkerArtifactSharingAdapter, public_contract as artifact_share_contract,
+)
+from codex_web.services.worker_shared_inputs import (
+    OPERATION as SHARED_INPUT_OPERATION, WorkerSharedInputsAdapter,
+    public_contract as shared_input_contract,
+)
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
     WorkerVerificationAdapter,
@@ -166,6 +175,9 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
+    SOURCE_CAPTURE_OPERATION,
+    ARTIFACT_SHARE_OPERATION,
+    SHARED_INPUT_OPERATION,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
         path_template="/api/agent-upgrade-approvals", capability="upgrade.approval.request",
         authority_level=AuthorityLevel.PREPARE),
@@ -522,6 +534,7 @@ class ControlPlaneBrokerService:
         execution_workers=None,
         execution_roles=None,
         execution_preflights=None,
+        artifact_sharing_policies=None,
         work_graph=None,
         mr_observation_configuration=None,
         operator: WorkItemOperatorService | None = None,
@@ -536,6 +549,7 @@ class ControlPlaneBrokerService:
         self.execution_workers = execution_workers
         self.execution_roles = execution_roles
         self.execution_preflights = execution_preflights
+        self.artifact_sharing_policies = artifact_sharing_policies
         self.work_graph = work_graph
         self.mr_observation_configuration = mr_observation_configuration
         self.operator = operator or WorkItemOperatorService(work_items)
@@ -570,6 +584,9 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        if item.id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import public_contract
+            result.update(public_contract())
         if item.id == "work_item.list":
             result["query_parameters"] = WorkItemPortfolioQuery.model_json_schema()
             result["query_parameters"]["description"] = (
@@ -772,6 +789,14 @@ class ControlPlaneBrokerService:
                     "records bounded issue scope without changing the execution subject"
                 ),
             }
+        if item.id == ARTIFACT_SHARE_OPERATION.id:
+            result.update(artifact_share_contract())
+            result['request_body'] = artifact_share_contract()['request_schema']
+            result['scope'] = 'Exact admitted source repository plus canonical target Work under explicit Project sharing policy; data only'
+            result['query_parameters'] = {'repository_resource_id':'One explicit admitted READ/WRITE source repository; must match capture'}
+            result['verifier'] = 'No Verification or independent QA produced'
+        if item.id == SHARED_INPUT_OPERATION.id:
+            result.update(shared_input_contract())
         return result
 
     @staticmethod
@@ -859,6 +884,16 @@ class ControlPlaneBrokerService:
                 pass
         operations = [op for op in operations if op["id"] not in CONTEXT_READ_IDS or op["id"] in declared_reads]
         for item in operations:
+            if item['id'] == SOURCE_CAPTURE_OPERATION.id:
+                scope = assignment.repository_scope
+                repositories = sorted((set(scope.writable_repository_ids) | set(scope.read_only_repository_ids))
+                    & set(assignment.resource_ids)) if scope is not None else []
+                item['admitted_repository_resource_ids'] = repositories
+                item['metadata_compatible'] = bool(repositories and self.local_execution_worker is not None)
+                item['admission_checked'] = False
+                item['requires'] = 'Current authenticated worker, exact Work owner, Profile, lease, fence and member proof'
+                if not item['metadata_compatible']:
+                    item['blocked_reason'] = 'source_capture_admitted_repository_context_or_worker_missing'
             if item['id'] == 'repository.read.merge-requirements':
                 declared = False
                 try:
@@ -1096,11 +1131,25 @@ class ControlPlaneBrokerService:
                 "absolute-form/control-plane proxy targets are not allowed"
             )
         path = parsed.path
+        if path == SOURCE_CAPTURE_OPERATION.path_template:
+            if method != SOURCE_CAPTURE_OPERATION.method:
+                raise ControlPlaneBrokerRequestError('Source capture requires POST')
+            return _ResolvedOperation(operation=SOURCE_CAPTURE_OPERATION,target_ref=None,
+                query=parse_qs(parsed.query,keep_blank_values=True))
         reasoning = resolve_reasoning_operation(method, path)
         if reasoning is not None:
             operation, target = reasoning
             return _ResolvedOperation(operation=operation, target_ref=target,
                 query=parse_qs(parsed.query, keep_blank_values=True))
+        sharing = resolve_artifact_share_operation(method,path)
+        if sharing is not None:
+            operation,target = sharing
+            return _ResolvedOperation(operation=operation,target_ref=target,query=parse_qs(parsed.query,keep_blank_values=True))
+        if path == SHARED_INPUT_OPERATION.path_template:
+            if method != 'GET':
+                raise ControlPlaneBrokerRequestError('Shared-input lookup requires GET')
+            return _ResolvedOperation(operation=SHARED_INPUT_OPERATION,target_ref=None,
+                query=parse_qs(parsed.query,keep_blank_values=True))
         verification_operation = resolve_verification_operation(method, path)
         if verification_operation is not None:
             operation, target = verification_operation
@@ -1400,6 +1449,12 @@ class ControlPlaneBrokerService:
             ) from exc
 
     def _operation_repository_id(self, assignment, operation_id, query, *, actor=None):
+        if operation_id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import repository_id
+            return repository_id(assignment,query)
+        if operation_id == ARTIFACT_SHARE_OPERATION.id:
+            from codex_web.services.worker_artifact_sharing import source_repository_id
+            return source_repository_id(assignment,query)
         if assignment.execution_profile_id != "orchestration-admin":
             return (self._read_repository_id(assignment, query)
                     if operation_id.startswith("repository.read.")
@@ -1992,6 +2047,8 @@ class ControlPlaneBrokerService:
         repository_read = operation.id.startswith("repository.read.")
         if ("repository_resource_id" in resolved.query and not repository_read
                 and not operation.id.startswith("project.")
+                and operation.id != SOURCE_CAPTURE_OPERATION.id
+                and operation.id != ARTIFACT_SHARE_OPERATION.id
                 and assignment.execution_profile_id != "orchestration-admin"):
             raise ControlPlaneBrokerRequestError(
                 "repository_resource_id is only supported for repository fact reads"
@@ -2015,7 +2072,9 @@ class ControlPlaneBrokerService:
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if operation.id.startswith("project.") or operation.id.startswith("verification.") or operation.id == "upgrade.approval.request":
+        if operation.id == ARTIFACT_SHARE_OPERATION.id:
+            resource_ids = (self._operation_repository_id(assignment,operation.id,resolved.query,actor=requester_actor),)
+        elif operation.id.startswith("project.") or operation.id.startswith("verification.") or operation.id == "upgrade.approval.request":
             resource_ids = (self._writable_repository_id(assignment),)
         elif (
             operation.id.startswith("repository.")
@@ -2302,6 +2361,18 @@ class ControlPlaneBrokerService:
             from codex_web.services.worker_upgrade_approvals import WorkerUpgradeApprovalAdapter
             result = await WorkerUpgradeApprovalAdapter(self).request(
                 assignment, worker_actor, resolved, payload, assignment_validator)
+        elif operation.id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import WorkerSourceCaptureAdapter
+            result = await run_settled(lambda: WorkerSourceCaptureAdapter(self).capture(
+                assignment,worker_actor,resolved,payload,assignment_validator))
+        elif operation.id == ARTIFACT_SHARE_OPERATION.id:
+            result = await run_settled(lambda: WorkerArtifactSharingAdapter(self,
+                policies=self.artifact_sharing_policies).share(assignment,worker_actor,resolved,payload,assignment_validator))
+        elif operation.id == SHARED_INPUT_OPERATION.id:
+            if body:
+                raise ControlPlaneBrokerRequestError('Shared-input lookup accepts no request body')
+            result = await run_settled(lambda: WorkerSharedInputsAdapter(self).read(
+                assignment,worker_actor,resolved,assignment_validator))
         elif operation.id.startswith("verification."):
             adapter = WorkerVerificationAdapter(self)
             if operation.id == 'verification.create':
