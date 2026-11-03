@@ -223,12 +223,18 @@ class ExecutionWorkspaceService:
             item for item in resources
             if item.resource_type == ResourceType.REPOSITORY
         ]
-        if repository_resource_id is None and not writable_repository_ids and len(repositories) == 1:
+        read_only_repository_ids = tuple(request.read_only_repository_ids)
+        readonly_primary = request.lease_mode == LeaseMode.READ and repository_resource_id in read_only_repository_ids
+        if repository_resource_id is None and not writable_repository_ids and not read_only_repository_ids and len(repositories) == 1:
             repository_resource_id = repositories[0].id
-            writable_repository_ids = (repository_resource_id,)
+            if request.lease_mode == LeaseMode.READ:
+                read_only_repository_ids = (repository_resource_id,)
+                readonly_primary = True
+            else:
+                writable_repository_ids = (repository_resource_id,)
         elif repository_resource_id is None and writable_repository_ids:
             repository_resource_id = writable_repository_ids[0]
-        elif repository_resource_id is not None and not writable_repository_ids:
+        elif repository_resource_id is not None and not writable_repository_ids and not readonly_primary:
             writable_repository_ids = (repository_resource_id,)
 
         for resource_id in writable_repository_ids:
@@ -244,12 +250,12 @@ class ExecutionWorkspaceService:
         if (
             repository_resource_id is not None
             and repository_resource_id not in writable_repository_ids
+            and not readonly_primary
         ):
             raise ExecutionWorkspaceConflictError(
                 "primary repository must be included in writable repository set"
             )
 
-        read_only_repository_ids = tuple(request.read_only_repository_ids)
         for resource_id in read_only_repository_ids:
             resource = by_id.get(resource_id)
             if resource is None:
@@ -1169,13 +1175,13 @@ class ExecutionWorkspaceService:
             if request.scratch
             else (
                 ExecutionWorkspaceKind.GIT_WORKTREE
-                if writable_repository_ids
+                if repository_resource_id is not None
                 else ExecutionWorkspaceKind.RESOURCE_LEASE
             )
         )
         branch_name = (
             deterministic_branch_name(request.subject.key, request.execution_id)
-            if kind == ExecutionWorkspaceKind.GIT_WORKTREE
+            if kind == ExecutionWorkspaceKind.GIT_WORKTREE and writable_repository_ids
             else None
         )
         if len(request.resource_ids) > self.quota.max_resources_per_workspace:
@@ -1208,7 +1214,7 @@ class ExecutionWorkspaceService:
         )
 
         source_paths: dict[str, Path] = {}
-        if writable_repository_ids:
+        if repository_resource_id is not None:
             for resource_id in writable_repository_ids:
                 source_paths[resource_id] = self._repository_source_path(
                     resource_by_id[resource_id],
@@ -1219,7 +1225,7 @@ class ExecutionWorkspaceService:
                 source_paths[resource_id] = self._repository_source_path(
                     resource_by_id[resource_id],
                     project,
-                    allow_project_fallback=False,
+                    allow_project_fallback=(resource_id == repository_resource_id),
                 )
             normalized_sources = [str(path) for path in source_paths.values()]
             if len(normalized_sources) != len(set(normalized_sources)):
@@ -1256,6 +1262,8 @@ class ExecutionWorkspaceService:
             kind=kind,
             resource_ids=request.resource_ids,
             repository_resource_id=repository_resource_id,
+            read_only_primary_repository_id=(repository_resource_id
+                if repository_resource_id in read_only_repository_ids and not writable_repository_ids else None),
             writable_repository_ids=writable_repository_ids,
             lease_id=lease_id,
             branch_name=branch_name,
@@ -1517,12 +1525,12 @@ class ExecutionWorkspaceService:
                 source = source_paths[resource_id]
                 provisioned = self.backend.provision_git_readonly(
                     source,
-                    self._member_workspace_id(
+                    (workspace_id if resource_id == repository_resource_id else self._member_workspace_id(
                         workspace_id,
                         resource_id,
                         access_mode=LeaseMode.READ,
-                    ),
-                    None,
+                    )),
+                    request.base_revision if resource_id == repository_resource_id else None,
                 )
                 provisioned_members.append(
                     (
@@ -1532,7 +1540,8 @@ class ExecutionWorkspaceService:
                             access_mode=LeaseMode.READ,
                             source_path=str(source),
                             workspace_path=str(provisioned.path),
-                            sandbox_path=self._readonly_sandbox_path(resource_id),
+                            sandbox_path=(str(provisioned.path) if resource_id == repository_resource_id
+                                          else self._readonly_sandbox_path(resource_id)),
                             branch_name=None,
                             base_revision=provisioned.base_revision,
                             head_revision=provisioned.head_revision,

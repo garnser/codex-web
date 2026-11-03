@@ -1283,6 +1283,7 @@ class AssignmentBoundAgentProcessSession:
             "agent_profile_id": assignment.agent_profile.profile_id if assignment and assignment.agent_profile else None,
             "agent_profile_revision": assignment.agent_profile.profile_revision if assignment and assignment.agent_profile else None,
             "mutable_repository_id": assignment.repository_target.mutable_repository_id if assignment and assignment.repository_target else None,
+            "read_only_primary_repository_id": assignment.repository_target.read_only_primary_repository_id if assignment and assignment.repository_target else None,
             "base_revision": assignment.base_revision if assignment else None,
             "validation_registration_id": self.managed_validation.registration.id if self.managed_validation and self.managed_validation.registration else None}
         cleanup_started = time.monotonic()

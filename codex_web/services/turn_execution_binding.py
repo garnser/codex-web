@@ -828,12 +828,12 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "existing thread assignment no longer matches its execution workspace"
             )
-        if repository_target.mutable_repository_id is None:
+        if repository_target.primary_repository_id is None:
             if workspace.repository_resource_id is not None:
                 raise TurnExecutionBindingError(
                     "orchestration workspace unexpectedly has repository authority"
                 )
-        elif workspace.repository_resource_id != repository_target.mutable_repository_id:
+        elif workspace.repository_resource_id != repository_target.primary_repository_id:
             raise TurnExecutionBindingError(
                 "existing thread workspace no longer matches repository target"
             )
@@ -1053,10 +1053,16 @@ class TurnExecutionBindingService:
                     "remediation_route": "/settings/execution-profiles",
                 },
             )
+        if lease_mode == LeaseMode.READ and writable_repository_ids:
+            raise TurnExecutionBindingError(
+                "READ execution cannot request writable repositories",
+                code="repository_scope_conflict",
+            )
         if (
             project.repository_selection_policy == "coordinated"
             and not writable_repository_ids
             and not effective_orchestration_only
+            and lease_mode == LeaseMode.WRITE
         ):
             writable_repository_ids = tuple(
                 item.id
@@ -1155,6 +1161,18 @@ class TurnExecutionBindingService:
                 ),
                 orchestration_only=effective_orchestration_only,
             )
+            repository_scope = RepositoryExecutionScope.from_target(repository_target)
+        if lease_mode == LeaseMode.READ and not effective_orchestration_only:
+            primary = repository_target.mutable_repository_id
+            if primary is None:
+                raise TurnExecutionBindingError("READ repository primary is unavailable",
+                                                code="repository_target_missing")
+            repository_target = RepositoryExecutionTarget.model_validate({
+                **repository_target.model_dump(mode="json"),
+                "mutable_repository_id": None,
+                "read_only_primary_repository_id": primary,
+                "read_only_repository_ids": (primary, *repository_target.read_only_repository_ids),
+            })
             repository_scope = RepositoryExecutionScope.from_target(repository_target)
         if resource_context is not None:
             execution_contract_version=execution_contract_version.replace("/1.0","/1.1")
@@ -1348,15 +1366,15 @@ class TurnExecutionBindingService:
                     actor=self.control_actor,
                 )
             else:
-                if repository_target.mutable_repository_id is None:
+                if repository_target.primary_repository_id is None:
                     raise TurnExecutionBindingError(
-                        "repository execution profile requires a mutable repository target",
+                        "repository execution profile requires a selected repository target",
                         code="repository_target_missing",
                         blocker={
                             "code": "repository_target_missing",
                             "message": (
                                 "repository execution profile requires a "
-                                "mutable repository target"
+                                "selected repository target"
                             ),
                             "retryable": False,
                             "target_type": "project",
@@ -1380,7 +1398,7 @@ class TurnExecutionBindingService:
                             ),
                             resource_context=resource_context,
                             read_only_resource_ids=context_ids,
-                            repository_resource_id=repository_target.mutable_repository_id,
+                            repository_resource_id=repository_target.primary_repository_id,
                             writable_repository_ids=writable_ids,
                             read_only_repository_ids=(
                                 repository_scope.read_only_repository_ids
@@ -1403,7 +1421,7 @@ class TurnExecutionBindingService:
                     self.workspaces.release_stale_thread_bootstraps(
                         project_id=project.id,
                         repository_resource_id=(
-                            repository_target.mutable_repository_id
+                            repository_target.primary_repository_id
                         ),
                         keep_execution_id=normalized_execution_id,
                         actor=self.control_actor,
@@ -1420,7 +1438,7 @@ class TurnExecutionBindingService:
                             ),
                             resource_context=resource_context,
                             read_only_resource_ids=context_ids,
-                            repository_resource_id=repository_target.mutable_repository_id,
+                            repository_resource_id=repository_target.primary_repository_id,
                             writable_repository_ids=writable_ids,
                             read_only_repository_ids=(
                                 repository_scope.read_only_repository_ids
@@ -1461,7 +1479,7 @@ class TurnExecutionBindingService:
                     "message": detail,
                     "retryable": code == "lease_conflict",
                     "target_type": "repository",
-                    "target_id": repository_target.mutable_repository_id,
+                    "target_id": repository_target.primary_repository_id,
                     "remediation_route": "/api/execution-workspaces",
                 },
             ) from exc

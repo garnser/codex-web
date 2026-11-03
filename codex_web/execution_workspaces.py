@@ -6,7 +6,7 @@ import hashlib
 import re
 import time
 from enum import StrEnum
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.definitions import DefinitionReference
 
@@ -248,6 +248,7 @@ class ExecutionWorkspace(ResourceContextModel):
     kind: ExecutionWorkspaceKind
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None = None
+    read_only_primary_repository_id: str | None = None
     writable_repository_ids: tuple[str, ...] = ()
     lease_id: str
     path: str | None = None
@@ -284,13 +285,18 @@ class ExecutionWorkspace(ResourceContextModel):
                 if item and item.strip()
             )
         )
-        if not writable and self.repository_resource_id is not None:
+        readonly_primary = self.read_only_primary_repository_id
+        if readonly_primary is not None and (
+                readonly_primary != self.repository_resource_id or writable):
+            raise ValueError("read-only primary workspace cannot contain writable repositories")
+        if not writable and self.repository_resource_id is not None and readonly_primary is None:
             writable = (self.repository_resource_id,)
         if self.repository_resource_id is None and writable:
             self.repository_resource_id = writable[0]
         if (
             self.repository_resource_id is not None
             and self.repository_resource_id not in writable
+            and readonly_primary is None
         ):
             raise ValueError("primary repository must be included in writable repository ids")
         self.writable_repository_ids = writable
@@ -320,6 +326,9 @@ class ExecutionWorkspace(ResourceContextModel):
             ]
             if len(mutable) != 1:
                 raise ValueError("mutable repository member is missing")
+            if readonly_primary is not None and any(
+                    member.access_mode != LeaseMode.READ for member in self.repository_members):
+                raise ValueError("read-only primary workspace requires only READ members")
             if mutable[0].access_mode not in {LeaseMode.READ, LeaseMode.WRITE}:
                 raise ValueError("invalid mutable repository member access")
         for resource_id, checkpoint in self.repository_checkpoints.items():
@@ -359,6 +368,13 @@ class ExecutionWorkspace(ResourceContextModel):
                 )
         return self
 
+    @model_serializer(mode="wrap")
+    def omit_legacy_readonly_primary(self, handler):
+        result = self.serialize_resource_context(handler)
+        if self.read_only_primary_repository_id is None:
+            result.pop("read_only_primary_repository_id", None)
+        return result
+
 
 class ExecutionWorkspaceEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -377,6 +393,17 @@ class ExecutionWorkspaceState(BaseModel):
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)
+
+    def model_post_init(self, __context):
+        if any(w.read_only_primary_repository_id is not None for w in self.workspaces):
+            self.schema_version = "1.9"
+
+    @model_serializer(mode="wrap")
+    def version_readonly_primary(self, handler):
+        result = handler(self)
+        if any(w.read_only_primary_repository_id is not None for w in self.workspaces):
+            result["schema_version"] = "1.9"
+        return result
 
 
 class ExecutionWorkspaceAcquire(ResourceContextModel):
@@ -425,7 +452,13 @@ class ExecutionWorkspaceAcquire(ResourceContextModel):
                 if item and item.strip()
             )
         )
-        if not self.writable_repository_ids and self.repository_resource_id is not None:
+        if self.lease_mode == LeaseMode.READ:
+            if self.writable_repository_ids:
+                raise ValueError("READ lease cannot request writable repositories")
+            if self.repository_resource_id is not None:
+                self.read_only_repository_ids = tuple(dict.fromkeys((
+                    self.repository_resource_id, *self.read_only_repository_ids)))
+        elif not self.writable_repository_ids and self.repository_resource_id is not None:
             self.writable_repository_ids = (self.repository_resource_id,)
         if self.repository_resource_id is None and self.writable_repository_ids:
             self.repository_resource_id = self.writable_repository_ids[0]
@@ -455,6 +488,8 @@ class ExecutionWorkspaceAcquire(ResourceContextModel):
         if (
             self.repository_resource_id is not None
             and self.repository_resource_id not in self.writable_repository_ids
+            and not (self.lease_mode == LeaseMode.READ
+                     and self.repository_resource_id in self.read_only_repository_ids)
         ):
             raise ValueError("primary repository must be included in writable repository ids")
         if len(self.writable_repository_ids) > 1 and self.lease_mode != LeaseMode.WRITE:

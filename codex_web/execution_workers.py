@@ -24,8 +24,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.14",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14"),
+    "1.15",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -325,6 +325,9 @@ class ExecutionAssignmentCreate(ResourceContextModel):
                 raise ValueError(
                     "mutable repository target must be included in assignment resources"
                 )
+            if (self.repository_target.read_only_primary_repository_id is not None
+                    and self.repository_target.read_only_primary_repository_id not in self.resource_ids):
+                raise ValueError("read-only primary must be included in assignment resources")
             if (
                 self.project_id is not None
                 and self.repository_target.project_id != self.project_id
@@ -344,7 +347,7 @@ class ExecutionAssignmentCreate(ResourceContextModel):
             ):
                 raise ValueError("repository scope project does not match assignment")
             if self.repository_target is not None:
-                if self.repository_scope.write_mode.value == "single":
+                if self.repository_scope.write_mode.value in {"single", "read_only"}:
                     expected = RepositoryExecutionScope.from_target(self.repository_target)
                     if self.repository_scope != expected:
                         raise ValueError(
@@ -550,8 +553,24 @@ class WorkerEvent(BaseModel):
 class ExecutionWorkerState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = EXECUTION_WORKER_CONTRACT.current
+    schema_version: str = "1.14"
     workers: list[ExecutionWorker] = Field(default_factory=list)
     assignments: list[ExecutionAssignment] = Field(default_factory=list)
     events: list[WorkerEvent] = Field(default_factory=list)
     enrollments: list[ExecutionWorkerEnrollmentGrant] = Field(default_factory=list)
+
+    def model_post_init(self, __context):
+        EXECUTION_WORKER_CONTRACT.require(self.schema_version)
+        if any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
+               or a.repository_scope is not None and a.repository_scope.write_mode.value == "read_only"
+               for a in self.assignments):
+            self.schema_version = "1.15"
+
+    @model_serializer(mode="wrap")
+    def version_readonly_scope(self, handler):
+        result = handler(self)
+        if any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
+               or a.repository_scope is not None and a.repository_scope.write_mode.value == "read_only"
+               for a in self.assignments):
+            result["schema_version"] = "1.15"
+        return result
