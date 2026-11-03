@@ -1,0 +1,482 @@
+{
+  "notice": "INACTIVE EXAMPLE: archived, expired and unbound; not a publication DTO or authority. Bind actual owner/fallback and fresh review dates through normal governed Definition publication only after source qualification.",
+  "kind": "agent.skill",
+  "schema_version": "1.0",
+  "payload": {
+    "name": "Workspace and original publication recovery",
+    "description": "Exact current workspace observation and original-intent recovery with immutable provenance.",
+    "instructions": "Use the registered procedure only after current canonical admission. Preserve all commits, refs, files, queue and original ActionIntent history. Never infer NOT_SENT from missing data; uncertain effects use read-only original reconciliation. Do not reset or automatically switch Git branches, fabricate evidence/ACK, change publication parameters or create a new key for unknown effects. A known branch repair is performed separately by the current admitted implementation worker; the procedure independently verifies its resulting current state. Follow existing shared work-continuity and broker operating rules.",
+    "categories": [
+      "operations"
+    ],
+    "applicability_tags": [
+      "workspace",
+      "publication-recovery"
+    ],
+    "capability_tags": [
+      "repository.branch.publish"
+    ],
+    "assets": [],
+    "required_provider_capabilities": [],
+    "required_worker_capabilities": [],
+    "input_expectations": [
+      "Governed immutable input Artifact with exact original request digest and current custody/resource scope."
+    ],
+    "output_expectations": [
+      "Original verified publication receipt and exact requested head, or typed refusal/UNKNOWN with capable owner."
+    ],
+    "operational_procedure": {
+      "schema_version": "1.4",
+      "owner_identity_id": "UNBOUND_CANONICAL_OWNER",
+      "task_triggers": [
+        "workspace-publication-recovery"
+      ],
+      "operation_triggers": [
+        "repository.branch.publish"
+      ],
+      "resource_selectors": [
+        {
+          "id": "repository",
+          "resource_types": [
+            "repository"
+          ],
+          "match": "all"
+        }
+      ],
+      "environments": [
+        "development"
+      ],
+      "inputs": [
+        {
+          "name": "work_item_ref",
+          "type": "string",
+          "required": true,
+          "description": "Exact qualified current Work Item"
+        },
+        {
+          "name": "execution_workspace_id",
+          "type": "string",
+          "required": true,
+          "description": "Exact current canonical workspace"
+        },
+        {
+          "name": "expected_assignment_id",
+          "type": "string",
+          "required": true,
+          "description": "Current canonical assignment identity"
+        },
+        {
+          "name": "expected_assignment_fence",
+          "type": "integer",
+          "required": true,
+          "description": "Current canonical assignment fence"
+        },
+        {
+          "name": "original_intent_id",
+          "type": "string",
+          "required": true,
+          "description": "Unchanged original branch publication ActionIntent"
+        },
+        {
+          "name": "expected_original_request_sha256",
+          "type": "string",
+          "required": true,
+          "description": "Exact immutable original request checksum including its key"
+        },
+        {
+          "name": "expected_original_receipt_id",
+          "type": "string",
+          "required": false,
+          "description": "Exact original receipt when retained; absence never proves no effect"
+        },
+        {
+          "name": "expected_head_revision",
+          "type": "string",
+          "required": true,
+          "description": "Full original requested publication commit"
+        },
+        {
+          "name": "expected_canonical_branch",
+          "type": "string",
+          "required": true,
+          "description": "Canonical workspace local branch; not the remote destination"
+        }
+      ],
+      "reviewed_at": 0,
+      "review_due_at": 1,
+      "expires_at": 1,
+      "required_provider_capabilities": [],
+      "required_worker_capabilities": [],
+      "conflict_group": "workspace-publication-recovery",
+      "precedence": 100,
+      "on_conflict": "fail_closed",
+      "max_duration_seconds": 1800,
+      "steps": [
+        {
+          "id": "inspect",
+          "kind": "diagnostic",
+          "description": "workspace.publication.inspect",
+          "inputs": [
+            {
+              "name": "work_item_ref",
+              "type": "string",
+              "required": true,
+              "description": "Exact qualified current Work Item"
+            },
+            {
+              "name": "execution_workspace_id",
+              "type": "string",
+              "required": true,
+              "description": "Exact current canonical workspace"
+            },
+            {
+              "name": "expected_assignment_id",
+              "type": "string",
+              "required": true,
+              "description": "Current canonical assignment identity"
+            },
+            {
+              "name": "expected_assignment_fence",
+              "type": "integer",
+              "required": true,
+              "description": "Current canonical assignment fence"
+            },
+            {
+              "name": "original_intent_id",
+              "type": "string",
+              "required": true,
+              "description": "Unchanged original branch publication ActionIntent"
+            },
+            {
+              "name": "expected_original_request_sha256",
+              "type": "string",
+              "required": true,
+              "description": "Exact immutable original request checksum including its key"
+            },
+            {
+              "name": "expected_original_receipt_id",
+              "type": "string",
+              "required": false,
+              "description": "Exact original receipt when retained; absence never proves no effect"
+            },
+            {
+              "name": "expected_head_revision",
+              "type": "string",
+              "required": true,
+              "description": "Full original requested publication commit"
+            },
+            {
+              "name": "expected_canonical_branch",
+              "type": "string",
+              "required": true,
+              "description": "Canonical workspace local branch; not the remote destination"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "observed_original_intent_id",
+              "type": "string",
+              "required": true,
+              "description": "Unchanged original ActionIntent identity; not rebound as a later input"
+            },
+            {
+              "name": "original_outcome",
+              "type": "string",
+              "required": true,
+              "description": "Canonical original status, including unresolved outcomes"
+            },
+            {
+              "name": "verified",
+              "type": "boolean",
+              "required": true,
+              "description": "Positive exact original receipt and verification, never absence inference"
+            }
+          ],
+          "preconditions": [],
+          "expected_evidence": [
+            {
+              "name": "inspect-proof",
+              "description": "Canonical bounded observation with exact original intent/receipt/verification lineage. No provider receipt is invented.",
+              "kind": "artifact"
+            }
+          ],
+          "timeout_seconds": 600,
+          "max_attempts": 1,
+          "retry_backoff_seconds": 0,
+          "failure": {
+            "outcome": "escalate",
+            "escalation_owner_identity_id": "UNBOUND_CURRENT_CAPABLE_OWNER",
+            "attention_reason": "Preserve original intent, refs, files and UNKNOWN outcomes. Current implementation owner repairs only its own canonical workspace through its admitted worker; unresolved authority or custody goes to authenticated operator."
+          },
+          "permissions": [
+            {
+              "capability": "repository.read.metadata",
+              "level": "read",
+              "resource_selector": "repository",
+              "approvals": {
+                "count": 0,
+                "role_ids": []
+              }
+            }
+          ],
+          "control_plane": {
+            "operation_id": "workspace.publication.inspect.v1",
+            "contract_version": "1.0",
+            "resource_selector": "repository"
+          }
+        },
+        {
+          "id": "reconcile-original",
+          "kind": "mutation",
+          "description": "code-host.branch.publish",
+          "inputs": [
+            {
+              "name": "work_item_ref",
+              "type": "string",
+              "required": true,
+              "description": "Exact qualified current Work Item"
+            },
+            {
+              "name": "execution_workspace_id",
+              "type": "string",
+              "required": true,
+              "description": "Exact current canonical workspace"
+            },
+            {
+              "name": "expected_assignment_id",
+              "type": "string",
+              "required": true,
+              "description": "Current canonical assignment identity"
+            },
+            {
+              "name": "expected_assignment_fence",
+              "type": "integer",
+              "required": true,
+              "description": "Current canonical assignment fence"
+            },
+            {
+              "name": "original_intent_id",
+              "type": "string",
+              "required": true,
+              "description": "Unchanged original branch publication ActionIntent"
+            },
+            {
+              "name": "expected_original_request_sha256",
+              "type": "string",
+              "required": true,
+              "description": "Exact immutable original request checksum including its key"
+            },
+            {
+              "name": "expected_original_receipt_id",
+              "type": "string",
+              "required": false,
+              "description": "Exact original receipt when retained; absence never proves no effect"
+            },
+            {
+              "name": "expected_head_revision",
+              "type": "string",
+              "required": true,
+              "description": "Full original requested publication commit"
+            },
+            {
+              "name": "expected_canonical_branch",
+              "type": "string",
+              "required": true,
+              "description": "Canonical workspace local branch; not the remote destination"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "observed_original_intent_id",
+              "type": "string",
+              "required": true,
+              "description": "Unchanged original ActionIntent identity; not rebound as a later input"
+            },
+            {
+              "name": "original_outcome",
+              "type": "string",
+              "required": true,
+              "description": "Canonical original status, including unresolved outcomes"
+            },
+            {
+              "name": "verified",
+              "type": "boolean",
+              "required": true,
+              "description": "Positive exact original receipt and verification, never absence inference"
+            }
+          ],
+          "preconditions": [
+            {
+              "source": "step",
+              "name": "inspect",
+              "predicate": "succeeded"
+            }
+          ],
+          "expected_evidence": [
+            {
+              "name": "reconcile-original-proof",
+              "description": "Canonical bounded observation with exact original intent/receipt/verification lineage. No provider receipt is invented.",
+              "kind": "artifact"
+            }
+          ],
+          "timeout_seconds": 600,
+          "max_attempts": 1,
+          "retry_backoff_seconds": 0,
+          "failure": {
+            "outcome": "escalate",
+            "escalation_owner_identity_id": "UNBOUND_CURRENT_CAPABLE_OWNER",
+            "attention_reason": "Preserve original intent, refs, files and UNKNOWN outcomes. Current implementation owner repairs only its own canonical workspace through its admitted worker; unresolved authority or custody goes to authenticated operator."
+          },
+          "permissions": [
+            {
+              "capability": "repository.branch.publish",
+              "level": "execute",
+              "resource_selector": "repository",
+              "approvals": {
+                "count": 0,
+                "role_ids": []
+              }
+            }
+          ],
+          "impact": {
+            "resource_selector": "repository",
+            "change": "configuration",
+            "description": "Only the original governed remote branch publication; no checkout mutation, replacement request, merge or issue closure.",
+            "max_unavailable_seconds": 0,
+            "reversible": false
+          },
+          "verification_step_id": "verify-original",
+          "control_plane": {
+            "operation_id": "publication.intent.recover.v1",
+            "contract_version": "1.0",
+            "resource_selector": "repository"
+          }
+        },
+        {
+          "id": "verify-original",
+          "kind": "verification",
+          "description": "workspace.publication.verify-original",
+          "inputs": [
+            {
+              "name": "work_item_ref",
+              "type": "string",
+              "required": true,
+              "description": "Exact qualified current Work Item"
+            },
+            {
+              "name": "execution_workspace_id",
+              "type": "string",
+              "required": true,
+              "description": "Exact current canonical workspace"
+            },
+            {
+              "name": "expected_assignment_id",
+              "type": "string",
+              "required": true,
+              "description": "Current canonical assignment identity"
+            },
+            {
+              "name": "expected_assignment_fence",
+              "type": "integer",
+              "required": true,
+              "description": "Current canonical assignment fence"
+            },
+            {
+              "name": "original_intent_id",
+              "type": "string",
+              "required": true,
+              "description": "Unchanged original branch publication ActionIntent"
+            },
+            {
+              "name": "expected_original_request_sha256",
+              "type": "string",
+              "required": true,
+              "description": "Exact immutable original request checksum including its key"
+            },
+            {
+              "name": "expected_original_receipt_id",
+              "type": "string",
+              "required": false,
+              "description": "Exact original receipt when retained; absence never proves no effect"
+            },
+            {
+              "name": "expected_head_revision",
+              "type": "string",
+              "required": true,
+              "description": "Full original requested publication commit"
+            },
+            {
+              "name": "expected_canonical_branch",
+              "type": "string",
+              "required": true,
+              "description": "Canonical workspace local branch; not the remote destination"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "observed_original_intent_id",
+              "type": "string",
+              "required": true,
+              "description": "Unchanged original ActionIntent identity; not rebound as a later input"
+            },
+            {
+              "name": "original_outcome",
+              "type": "string",
+              "required": true,
+              "description": "Canonical original status, including unresolved outcomes"
+            },
+            {
+              "name": "verified",
+              "type": "boolean",
+              "required": true,
+              "description": "Positive exact original receipt and verification, never absence inference"
+            }
+          ],
+          "preconditions": [
+            {
+              "source": "step",
+              "name": "reconcile-original",
+              "predicate": "succeeded"
+            }
+          ],
+          "expected_evidence": [
+            {
+              "name": "verify-original-proof",
+              "description": "Canonical bounded observation with exact original intent/receipt/verification lineage. No provider receipt is invented.",
+              "kind": "artifact"
+            }
+          ],
+          "timeout_seconds": 600,
+          "max_attempts": 1,
+          "retry_backoff_seconds": 0,
+          "failure": {
+            "outcome": "escalate",
+            "escalation_owner_identity_id": "UNBOUND_CURRENT_CAPABLE_OWNER",
+            "attention_reason": "Preserve original intent, refs, files and UNKNOWN outcomes. Current implementation owner repairs only its own canonical workspace through its admitted worker; unresolved authority or custody goes to authenticated operator."
+          },
+          "permissions": [
+            {
+              "capability": "repository.read.metadata",
+              "level": "read",
+              "resource_selector": "repository",
+              "approvals": {
+                "count": 0,
+                "role_ids": []
+              }
+            }
+          ],
+          "control_plane": {
+            "operation_id": "publication.intent.verify.v1",
+            "contract_version": "1.0",
+            "resource_selector": "repository"
+          }
+        }
+      ]
+    },
+    "owner_identity_id": "UNBOUND_CANONICAL_OWNER",
+    "lifecycle": "archived",
+    "provenance": {
+      "origin": "local"
+    }
+  }
+}

@@ -78,6 +78,10 @@ AUTOMATION_RUN_MIGRATIONS.register(
     "1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"})
 
 
+AUTOMATION_RUN_MIGRATIONS.register(
+    '1.4', '1.5', lambda payload: {**payload, 'schema_version':'1.5'})
+
+
 class AutomationRunNotFoundError(KeyError):
     pass
 
@@ -94,11 +98,14 @@ class AutomationRunStore:
         if not isinstance(payload, dict):
             raise ValueError("automation run state must be an object")
         version = str(payload.get("schema_version") or "0.0")
-        if version != AUTOMATION_RUN_STATE_CONTRACT.current:
+        # Legacy-only reads/writes retain released 1.4 bytes. A populated
+        # procedure facet explicitly upgrades the existing state at its writer.
+        target = '1.4' if version in {'0.0','1.0','1.1','1.2','1.3','1.4'} else AUTOMATION_RUN_STATE_CONTRACT.current
+        if version != target:
             payload = AUTOMATION_RUN_MIGRATIONS.migrate(
                 payload,
                 from_version=version,
-                to_version=AUTOMATION_RUN_STATE_CONTRACT.current,
+                to_version=target,
             )
         return AutomationRunState.model_validate(payload)
 
@@ -111,7 +118,7 @@ class AutomationRunStore:
     ) -> AutomationRunState:
         payload = self.store.update(
             self.namespace,
-            lambda raw: updater(self._decode(raw)).model_dump(mode="json"),
+            lambda raw: AutomationRunState.model_validate(updater(self._decode(raw)).model_dump(mode="json")).model_dump(mode="json"),
             default=AutomationRunState().model_dump(mode="json"),
         )
         return self._decode(payload)

@@ -180,6 +180,7 @@ class RuntimeSupervisor:
         schedule_queue_drain: Callable[[str], Any] | None = None,
         local_worker_heartbeat: Callable[[], Any] | None = None,
         recover_expired_assignments: Callable[[], Any] | None = None,
+        recover_procedure_automations: Callable[[], Awaitable[Any]] | None = None,
         recover_deferred_repository_actions: Callable[[], Awaitable[None]] | None = None,
         flush_compatibility_state: Callable[[], Any] | None = None,
     ) -> None:
@@ -256,6 +257,7 @@ class RuntimeSupervisor:
         )
         self.local_worker_heartbeat = local_worker_heartbeat
         self.recover_expired_assignments = recover_expired_assignments
+        self.recover_procedure_automations = recover_procedure_automations
         self.recover_deferred_repository_actions = recover_deferred_repository_actions
         self.flush_compatibility_state = (
             flush_compatibility_state
@@ -543,6 +545,8 @@ class RuntimeSupervisor:
         # recovery. The authenticated heartbeat only reactivates its canonical
         # offline worker record.
         await self._heartbeat_local_worker_once()
+        if self.recover_procedure_automations is not None and self._owns('startup-recovery'):
+            self._spawn_startup_task('procedure-automation-recovery', self.recover_procedure_automations())
         if (
             self.codex is not None
             and self.codex.ready.is_set()

@@ -383,11 +383,17 @@ class LocalExecutionWorkerRuntime:
             # worker contract. The execution workspace lease remains canonical
             # for their singular primary repository.
             writable = {primary}
-        if primary is not None and primary not in writable:
+        if primary is not None and primary not in writable | read_only:
             raise LocalExecutionWorkerRuntimeError(
                 "primary repository is outside assignment repository authority"
             )
 
+        if primary in read_only:
+            members = [member for member in workspace.repository_members if member.resource_id == primary]
+            if (len(members) != 1 or members[0].access_mode.value != "read"
+                    or assignment.sandbox != "read-only"
+                    or workspace.read_only_primary_repository_id != primary):
+                raise LocalExecutionWorkerRuntimeError("read-only primary requires exact READ custody and sandbox")
         readonly_mounts: list[tuple[Path, Path]] = []
         writable_mounts: list[tuple[Path, Path]] = []
         for member in getattr(workspace, "repository_members", ()):

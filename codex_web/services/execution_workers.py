@@ -1086,7 +1086,8 @@ class ExecutionWorkerService:
                 workspace_writable = set(
                     getattr(workspace, "writable_repository_ids", ())
                 )
-                if not workspace_writable and workspace.repository_resource_id is not None:
+                if (not workspace_writable and workspace.repository_resource_id is not None
+                        and workspace.read_only_primary_repository_id is None):
                     workspace_writable = {workspace.repository_resource_id}
                 if workspace_writable != set(scope.writable_repository_ids):
                     raise WorkerConflictError(
@@ -1096,6 +1097,25 @@ class ExecutionWorkerService:
                     member.resource_id: member
                     for member in getattr(workspace, "repository_members", ())
                 }
+                if scope.write_mode.value == "read_only":
+                    primary = (payload.repository_target.read_only_primary_repository_id
+                               if payload.repository_target is not None else None)
+                    lease = self.workspaces.store.lease(workspace.lease_id)
+                    if (payload.sandbox != "read-only"
+                            or primary is None or workspace.repository_resource_id != primary
+                            or workspace.read_only_primary_repository_id != primary
+                            or lease is None or lease.released_at is not None
+                            or lease.expires_at <= time.time()
+                            or lease.execution_id != payload.execution_id
+                            or lease.execution_workspace_id != workspace.id
+                            or lease.subject != workspace.subject
+                            or (lease.organization_id, lease.workspace_id, lease.owner_identity_id)
+                                != (workspace.organization_id, workspace.workspace_id, workspace.owner_identity_id)
+                            or lease.mode.value != "read"
+                            or any(lease.resource_modes.get(r) is None
+                                   or lease.resource_modes[r].value != "read"
+                                   for r in scope.read_only_repository_ids)):
+                        raise WorkerConflictError("read-only repository primary requires exact live READ lease")
                 for resource_id in scope.writable_repository_ids:
                     member = members.get(resource_id)
                     if member is None or member.access_mode.value != "write":

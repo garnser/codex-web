@@ -20,7 +20,7 @@ class MergeObservationClient:
         self.row = {"iid":33,"state":"opened","sha":"a"*40,"merge_commit_sha":None,
             "source_branch":"delivery","target_branch":"main","draft":False,
             "merge_status":"can_be_merged","detailed_merge_status":"mergeable",
-            "head_pipeline":{"id":9,"status":"success"}}
+            "head_pipeline":{"id":9,"status":"success","sha":"a"*40}}
         self.reads = []
         self.merges = 0
         self.after_read = None

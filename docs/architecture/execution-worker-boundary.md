@@ -2022,3 +2022,34 @@ wrapper remain intact; the adapter neither parses instruction markers nor
 changes their trust, scope or permission rules. It does not inject assignment
 broker authority into unbound sessions or depend on resume overriding a loaded
 thread. Other runtime adapters and native START/custody guards are unchanged.
+
+### Repository READ custody
+
+A repository execution with an effective READ lease (including `repository-write`
+with the `read-only` sandbox) records an explicit read-only primary, zero writable
+repositories, and a `read_only` repository scope. The primary and additional READ
+contexts come from the same canonical selectors and retain their source/evidence.
+Explicit writable collections are refused under READ; a coordinated Project policy
+does not silently widen that selection. Retained human/connector ingress freezes
+these same READ selectors before admission.
+
+The workspace primary is a real read-only Git member and supplies the actual cwd;
+all selected repository lease modes and members must be READ. It is not an
+orchestration workspace or an absent scope. Assignment admission and the local
+mount owner require the read-only sandbox and exact primary/member/lease metadata.
+WRITE and publication owners still require actual writable repositories and WRITE
+members/leases. A read-only primary does not satisfy those controls.
+
+The optional target/workspace `read_only_primary_repository_id` is omitted for
+legacy rows. Legacy target/scope/workspace serialization and legacy-only worker
+and workspace state versions remain unchanged (1.14 and 1.8 respectively). State
+containing the new READ representation emits worker 1.15 / workspace 1.9; the
+existing migration owners accept older versions without a startup backfill or
+historical authority rewrite. Older readers reject the new target/scope/workspace
+representation. Deployment must qualify compatible readers/writers before new
+admission; rollback readability after those rows exist is not promised. No SQL
+schema migration, grant, or credential expansion is implied.
+
+Existing Run and broker scope views display the exact WRITE/READ sets and write
+mode. The selected primary is distinct from the mutable primary; process metadata
+reports the read-only primary separately instead of labelling it writable.

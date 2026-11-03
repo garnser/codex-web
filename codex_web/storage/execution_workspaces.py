@@ -17,8 +17,8 @@ from codex_web.identity import TenantScope
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
     "execution-workspace-state",
-    "1.8",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"),
+    "1.9",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9"),
 )
 EXECUTION_WORKSPACE_STATE_MIGRATIONS = MigrationRegistry("execution-workspace-state")
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
@@ -195,6 +195,11 @@ EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
 )
 
 
+EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
+    "1.8", "1.9", lambda payload: {**payload, "schema_version": "1.9"},
+)
+
+
 class ExecutionWorkspaceStateStore:
     namespace = "execution_workspaces"
     workspace_namespace = "execution_workspaces.workspaces"
@@ -211,11 +216,12 @@ class ExecutionWorkspaceStateStore:
         if not isinstance(payload, dict):
             raise ValueError("execution workspace state must be an object")
         version = str(payload.get("schema_version") or "0.0")
-        if version != EXECUTION_WORKSPACE_STATE_CONTRACT.current:
+        target = "1.9" if version == "1.9" else "1.8"
+        if version != target:
             payload = EXECUTION_WORKSPACE_STATE_MIGRATIONS.migrate(
                 payload,
                 from_version=version,
-                to_version=EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+                to_version=target,
             )
         EXECUTION_WORKSPACE_STATE_CONTRACT.require(payload.get("schema_version", ""))
         return ExecutionWorkspaceState.model_validate(payload)
@@ -279,7 +285,7 @@ class ExecutionWorkspaceStateStore:
         events = self.store.record_items(self.event_namespace).values()
         return self._decode(
             {
-                "schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+                "schema_version": "1.8",
                 "workspaces": sorted(
                     workspaces,
                     key=lambda item: (item.get("created_at", 0), item.get("id", "")),
@@ -368,7 +374,7 @@ class ExecutionWorkspaceStateStore:
             self._ensure_records()
             namespaces = (self.workspace_namespace, self.lease_namespace, self.event_namespace)
             def apply(documents):
-                current = self._decode({"schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+                current = self._decode({"schema_version": "1.8",
                     "workspaces": list(documents[self.workspace_namespace].values()),
                     "leases": list(documents[self.lease_namespace].values()),
                     "events": list(documents[self.event_namespace].values())})
@@ -377,7 +383,7 @@ class ExecutionWorkspaceStateStore:
                     self.lease_namespace: {item.id: item.model_dump(mode="json") for item in updated.leases},
                     self.event_namespace: self._event_records(updated.events)}
             documents = self.store.update_many({name: {} for name in namespaces}, apply)
-            return self._decode({"schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+            return self._decode({"schema_version": "1.8",
                 "workspaces": list(documents[self.workspace_namespace].values()),
                 "leases": list(documents[self.lease_namespace].values()),
                 "events": list(documents[self.event_namespace].values())})

@@ -5,7 +5,7 @@ import uuid
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.compatibility import ContractSpec
 from codex_web.definitions import DefinitionReference
@@ -13,8 +13,8 @@ from codex_web.definitions import DefinitionReference
 
 AUTOMATION_RUN_STATE_CONTRACT = ContractSpec(
     "automation-run-state",
-    "1.4",
-    ("1.0", "1.1", "1.2", "1.3", "1.4"),
+    "1.5",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
 )
 
 
@@ -94,6 +94,24 @@ class HomeEventTerminal(BaseModel):
     observed_at: float
 
 
+class ProcedureAutomationCustody(BaseModel):
+    """Exact procedure ownership on an existing Run, never a second job ledger."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    assignment_id: str
+    worker_id: str
+    execution_id: str
+    execution_workspace_id: str | None
+    fence: int = Field(ge=1)
+    definition: DefinitionReference
+    input_snapshot_id: str
+    input_snapshot_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    handoff_requested_at: float = Field(ge=0, allow_inf_nan=False)
+    checkpoint_id: str | None = None
+    advances_started: int = Field(default=0, ge=0, le=64)
+    last_material_observation_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    last_activation_event_id: str | None = None
+
+
 class AutomationRun(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -117,6 +135,7 @@ class AutomationRun(BaseModel):
     approval_request_id: str | None = None
     execution_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+    procedure_custody: ProcedureAutomationCustody | None = None
     home_custody: HomeEventCustody | None = None
     home_terminal: HomeEventTerminal | None = None
     home_interrupt_attempted_at: float | None = None
@@ -128,16 +147,27 @@ class AutomationRun(BaseModel):
 
     @model_validator(mode="after")
     def normalize(self) -> "AutomationRun":
+        if self.procedure_custody is not None and self.target_kind != 'canonical_procedure':
+            raise ValueError('procedure custody requires canonical_procedure Run')
         self.execution_ids = tuple(dict.fromkeys(self.execution_ids))
         self.evidence_ids = tuple(dict.fromkeys(self.evidence_ids))
         return self
+
+    @model_serializer(mode='wrap')
+    def omit_unset_procedure(self, handler):
+        result = handler(self)
+        if self.procedure_custody is None:
+            result.pop('procedure_custody', None)
+        return result
 
 
 class AutomationRunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = AUTOMATION_RUN_STATE_CONTRACT.current
+    schema_version: str = "1.4"
     runs: list[AutomationRun] = Field(default_factory=list)
 
     def model_post_init(self, __context: Any) -> None:
         AUTOMATION_RUN_STATE_CONTRACT.require(self.schema_version)
+        if any(run.procedure_custody is not None for run in self.runs):
+            self.schema_version = "1.5"

@@ -65,6 +65,22 @@ by native input/discovery admission and does not acquire provider SecretUse.
 Both that action requester and the actual authenticated worker must currently
 be allowed to use every admitted credential reference.
 
+Event-only procedure Automations also use this same initial native preparation
+owner (#1982, #1977). After retaining the actual AutomationRun and its input
+Artifact, the bridge verifies the current requester, exact thread/bootstrap,
+assignment/fence, execution/workspace and Artifact source/scope. It compares the
+canonical parsed input checksum, preserving formatting-equivalent originals.
+Full normal discovery determines the selected set, which must include the exact
+Automation target; the existing physical session attestor and credential CAS
+seal that entire set on an unused pending bootstrap. No native input, native
+START, model call or fake checkpoint is created by preparation. A missing
+preparation owner refuses pending custody. An already sealed or historical
+assignment is not reopened or retrofitted. After awaited preparation the bridge
+rereads the original Run, controls, input, handoff nonce and selected custody
+before the ordinary interpreter start, whose credential guard remains mandatory.
+This uses existing inspector custody/Run blockers; no new UI authority or schema
+is introduced, and live event-only supervision still needs operational qualification.
+
 Supporting Memory retrieval appends its normal canonical retrieval audit outside
 the credential transaction. Locked credential revalidation and the selected-procedure
 native input guard repeat the same current procedure selection, security, instruction-capacity
@@ -535,3 +551,74 @@ and Role checks. The observation never crosses a provider/network checkpoint or
 request. Custom Governance filters and different tenants retain ordinary separate
 filter calls. This changes no stored format, authority or observation deadline;
 there is no additional operator UI setting.
+
+## Read-only CI and dependency readiness
+
+The registered GitLab `code-host.pull-request.observe-ci` action observes one
+explicit MR/head in Development. Its current native head pipeline must appear in
+a complete, bounded same-head pipeline/job inventory. Truncation, changing
+inventory, foreign job provenance and unsupported downstream bridges refuse a
+complete observation. A successful read is distinct from green CI: pending,
+failed and unknown remain explicit typed outputs. No rerun, installation or host
+operation is performed. A successful merge pipeline must also positively carry
+the exact current MR head SHA.
+
+The provider accepts an explicit canonical prerequisite validator; absent
+composition returns `needs_input`. It reads three distinct independent canonical
+Verification/Evidence/Artifact receipts using method
+`ci-dependency-readiness.v1`. Bounded SHA-256 content binds repository/head, Work,
+actual target resource and Development environment. Dependency provenance and
+runtime receipts must agree on ABI/platform. Evidence.digest and the original
+Verification.findings marker `ci_readiness_manifest_sha256:<sha256>` both bind
+exact reviewed content. `profile_reference_sha256` is SHA-256 of the complete
+canonical DefinitionReference serialized as sorted compact JSON (not a label or
+only its payload checksum). The runtime attribution must match
+its exact canonical assignment, profile reference and compatible worker/service
+identity. Target purpose/coordination observations are data, never helper-install
+permission. Privileged work still requires its separately registered operation,
+current authority and actual ApprovalRequest. An approval-reference string or a
+source/security review cannot substitute for that grant.
+
+Procedure result adapters preserve original ActionIntent/receipt identity. A
+procedure must explicitly gate on `readiness=ready_for_validation`; success of the
+read itself never authorizes a dependent mutation. No new definition is published
+or assigned automatically. Existing canonical procedure/run and evidence views
+expose the receipt, typed blockers and accountable next owner; this adds no
+operator control or parallel state. Diagnostic workers retain their existing
+network-off, secret-free sandbox.
+
+Native reviewers can use the existing `verification.create` operation with the
+fixed `ci-dependency-readiness.v1` request schema. It accepts only original
+Artifact/Evidence identities, exact source/digest/target and a request identity;
+the server reads the bounded report and derives the result and digest marker.
+Current Work ownership, requester/worker/Profile/lease, explicit target Resource
+admission and original rows are checked again under the canonical append writer.
+Repeated identical requests resolve the original review; response loss uses the
+exact method/Work/source read. An unknown lookup never authorizes replay.
+Actual verifier independence is calculated against all referenced producers.
+Two native roles sharing one service identity cannot independently review each
+other's records; genuinely distinct existing producer/reviewer principals or an
+authorized human review are needed. No actor, result, grant or approval can be
+provided in this request, and review never installs a helper or grants host use.
+
+
+Runtime receipts explicitly declare `execution_target_kind`. The supported
+`canonical-native-assignment` basis is the canonical native assignment, worker,
+profile reference and current lease/fence. Its target report must identify that
+same actual canonical worker service identity; labels cannot substitute. It
+does not attest a GitLab runner,
+container image or its Python ABI. `external-ci-job` has no registered runtime
+attestor in this slice and remains `needs_input` with an accountable owner and
+`external_ci_runtime_attested=false`. A trusted server-injected
+`execution_target_requirement` resolves the actual published workflow's required
+basis; missing requirements or a native report offered against an external
+requirement remain unready. This requirement is never taken from caller text or
+a weaker request option. No Workspace or operational grant is added by a report.
+
+CI procedure output declarations use an optional string (`required: false`) for
+`execution_target_kind`. When current prerequisites do not establish a target,
+the scalar projection omits that field; raw original provider prerequisites
+retain their explicit null. Missing facts remain `needs_input` or `blocked`,
+without a sentinel target or a new nullable procedure type. The original receipt
+and verification Evidence prove the bounded observation only; their successful
+read does not turn those dispositions into readiness, approval, or merge consent.

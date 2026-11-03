@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 from fastapi import HTTPException
 
 from codex_web.models import IndexedThread, Project, QueuedNativeStartReceipt, ExecutionPreflightBlocker
+from codex_web.resources import RepositoryExecutionTarget, RepositoryTargetSource
 from codex_web.services.queued_bootstrap_recovery import QueuedBootstrapRecoveryService
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingService
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
@@ -55,7 +56,9 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
             execution_profile_id='repository-write',
             agent_profile=SimpleNamespace(profile_id='james', profile_revision=6),
             repository_scope=SimpleNamespace(writable_repository_ids=('repo',), read_only_repository_ids=('reference',)),
-            repository_target=SimpleNamespace(mutable_repository_id='repo'))
+            repository_target=RepositoryExecutionTarget(organization_id='org', workspace_id='ws',
+                project_id='project', mutable_repository_id='repo',
+                read_only_repository_ids=('reference',), source=RepositoryTargetSource.EXPLICIT))
         self.bindings.bind(bootstrap_id=recovery.bootstrap_id, thread_id='fresh',
             execution_id=recovery.execution_id, assignment_id='assignment',
             execution_workspace_id='workspace', actor=self.admin)

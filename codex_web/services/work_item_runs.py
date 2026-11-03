@@ -211,7 +211,7 @@ class WorkItemRunProjectionService:
             "organizationId": target.organization_id,
             "workspaceId": target.workspace_id,
             "projectId": target.project_id,
-            "writeMode": "single",
+            "writeMode": "read_only" if target.read_only_primary_repository_id else "single",
             "writableRepositoryIds": (
                 [target.mutable_repository_id]
                 if target.mutable_repository_id is not None

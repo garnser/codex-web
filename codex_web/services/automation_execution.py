@@ -72,6 +72,7 @@ class AutomationExecutionService:
         self.action_providers = action_providers
         self.approvals = approvals
         self.home_operator_followup = None
+        self.procedure_automation = None
 
     def _run(self, run_id: str, *, organization_id: str, workspace_id: str) -> AutomationRun:
         return self.runs.store.get(
@@ -563,6 +564,11 @@ class AutomationExecutionService:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
+        if run.target_kind == 'canonical_procedure':
+            if self.procedure_automation is None:
+                raise AutomationExecutionError('Canonical procedure Automation owner is unavailable')
+            self.procedure_automation.schedule_launch(run)
+            return run
         if run.status != AutomationRunStatus.ADMITTED:
             return run
 

@@ -418,16 +418,27 @@ class OwnerRoutingService:
         return bound.thread_id
 
     def _live_recipient(self, state, binding, bootstrap, owner, *, lookup_actor=None):
-        from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
+        from codex_web.execution_workers import AssignmentStatus
         assignment = self.assignments(bootstrap.assignment_id)
         now = time.time()
         if (assignment is None or assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
                 or assignment.lease is None or assignment.lease.expires_at <= now
                 or assignment.lease.fence != assignment.fence
                 or assignment.lease.worker_id != assignment.assigned_worker_id
-                or (assignment.deadline_at is not None and assignment.deadline_at <= now)
-                or assignment.execution_id != bootstrap.execution_id
+                or (assignment.deadline_at is not None and assignment.deadline_at <= now)):
+            raise OwnerRoutingError('owner_recipient_custody_unavailable')
+        return self._recipient_metadata(state, binding, bootstrap, owner,
+            lookup_actor=lookup_actor, assignment=assignment)
+
+    def _recipient_metadata(self, state, binding, bootstrap, owner, *, lookup_actor=None, assignment=None):
+        """Current identity/scope observation; never permission to send native input."""
+        from codex_web.execution_workers import WorkerLifecycle
+        if assignment is None:
+            assignment = self.assignments(bootstrap.assignment_id)
+        if (assignment is None or assignment.execution_id != bootstrap.execution_id
                 or assignment.execution_workspace_id != bootstrap.execution_workspace_id
+                or (assignment.lease is not None and (assignment.lease.fence != assignment.fence
+                    or assignment.lease.worker_id != assignment.assigned_worker_id))
                 or (bootstrap.organization_id, bootstrap.workspace_id, bootstrap.created_by)
                    != (state.organization_id, state.workspace_id, assignment.created_by)):
             raise OwnerRoutingError('owner_recipient_custody_unavailable')
@@ -447,7 +458,95 @@ class OwnerRoutingService:
             authority_checksum=self._authority_checksum(assignment),
             work_item_owner_checksum=self._work_item_owner_checksum(state)), profile, actor
 
-    def _accepted_owner_recipient(self, state, binding, owner, requested, *, lookup_actor=None, originals_checked=False):
+    def recovery_recipient(self, state, binding, configured_owner, *, writable_repository_ids, lookup_actor=None):
+        """Read exact Work/nonce custody, including expired/LOST reservations.
+
+        Unlike compatible_pin this returns metadata, not a native-send pin. No
+        preparation, arbitrary matching-lane discovery, rebind or retry occurs.
+        The recovery owner must still classify the real lease/status and apply
+        its original assignment/fence guards before any effect.
+        """
+        from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
+        current = self.get_state(state.ref)
+        handoff = current.handoff
+        requested = set(writable_repository_ids)
+        snapshot = self.snapshot(current)
+        owner = snapshot.owner(configured_owner) if snapshot is not None else None
+        if (current != state or current.closed_at or not requested or handoff is None
+                or handoff.status not in {'pending', 'accepted'} or owner is None
+                or snapshot.owner(handoff.to_agent) != owner
+                or snapshot.owner(current.current_owner) != snapshot.owner(
+                    handoff.from_agent if handoff.status == 'pending' else handoff.to_agent)
+                or binding.is_master or binding.project_id != current.project_id
+                or normalized_owner(self.binding_prefix(binding)) != owner):
+            raise OwnerRoutingError('owner_recipient_preparation_changed')
+        self.require_resolved_originals(current)
+        source_profile, source_actor = self.executor(current, binding, owner, lookup_actor=lookup_actor)
+        actor = (lookup_actor or self.control_actor)()
+        source = self.bootstraps.get_by_thread(binding.thread_id, actor)
+        source_assignment = self.assignments(source.assignment_id)
+        if source_assignment is None:
+            raise OwnerRoutingError('owner_executor_bootstrap_unverified')
+        # Accepted custody is identified by the existing complete START/ACK
+        # lineage owner, including canonical rebind/replacement validation.
+        accepted = self._accepted_owner_recipient(current, binding, owner, requested,
+            lookup_actor=lookup_actor, originals_checked=True, metadata_only=True)
+        if accepted is not None:
+            witness, _, _ = accepted
+            bound = self.bootstraps.get_by_thread(witness.thread_id, actor)
+        else:
+            bound = None
+            preparer = self.recipient_preparer
+            if preparer is not None and handoff.status == 'pending':
+                token = preparer.logical_id(current, binding, configured_owner, tuple(requested))
+                physical = token
+                try:
+                    bound = self.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
+                except ThreadBootstrapBindingNotFoundError:
+                    previous = preparer.existing_assignment(execution_id='thread-bootstrap-' + token)
+                    if previous is not None:
+                        # Generation one requires the SAME positive canonical
+                        # before-worker refusal used by normal preparation.
+                        proof, profile, _ = preparer.context(current, binding, configured_owner,
+                            tuple(requested), discover=False, lookup_actor=lookup_actor, originals_checked=True)
+                        if (previous.execution_id != 'thread-bootstrap-' + token
+                                or not preparer.recoverable(previous, proof, profile, token)):
+                            raise OwnerRoutingError('owner_recipient_bootstrap_pending')
+                        physical = preparer.digest({'logical_id': token,
+                            'predecessor_id': previous.id, 'predecessor_fence': previous.fence})[:32]
+                        try:
+                            bound = self.bootstraps.get_by_bootstrap('bootstrap-' + physical, actor)
+                        except ThreadBootstrapBindingNotFoundError:
+                            raise OwnerRoutingError('owner_recipient_bootstrap_pending') from None
+                if bound is not None:
+                    candidate = self.assignments(bound.assignment_id)
+                    if (candidate is None or bound.bootstrap_id != 'bootstrap-' + physical
+                            or candidate.execution_id != 'thread-bootstrap-' + physical
+                            or bound.thread_id == binding.thread_id):
+                        raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
+            if bound is None:
+                # Ordinary same-scope custody needs no separate reservation.
+                # A wrong-scope anchor must never stand in for a missing pin.
+                bound = source
+        witness, profile, requester = self._recipient_metadata(
+            current, binding, bound, owner, lookup_actor=lookup_actor)
+        assignment = self.assignments(witness.assignment_id)
+        scope = assignment.repository_scope
+        if (assignment.subject is None or assignment.subject.kind != 'thread_bootstrap'
+                or assignment.subject.ref != bound.bootstrap_id
+                or (bound.organization_id, bound.workspace_id, bound.created_by)
+                    != (current.organization_id, current.workspace_id, assignment.created_by)
+                or profile != source_profile or requester.identity_id != source_actor.identity_id
+                or assignment.created_by != source_assignment.created_by
+                or scope is None or (scope.organization_id, scope.workspace_id, scope.project_id)
+                    != (current.organization_id, current.workspace_id, current.project_id)
+                or set(scope.writable_repository_ids) != requested
+                or set(assignment.resource_ids) != set((*scope.writable_repository_ids, *scope.read_only_repository_ids))
+                or (bound.thread_id != binding.thread_id and scope.read_only_repository_ids)):
+            raise OwnerRoutingError('owner_recipient_work_item_scope_changed')
+        return bound, assignment
+
+    def _accepted_owner_recipient(self, state, binding, owner, requested, *, lookup_actor=None, originals_checked=False, metadata_only=False):
         """Select an already delivered recipient, never prepare or replay input.
 
         Only the current accepted handoff is lineage. Its retained exact START
@@ -647,7 +746,8 @@ class OwnerRoutingService:
                     or (assignment.sandbox, assignment.approval_policy, assignment.network)
                         != (admitted.sandbox, admitted.approval_policy, admitted.network)):
                 raise OwnerRoutingError('owner_recipient_custody_changed')
-            witness, profile, resolved_actor = self._live_recipient(
+            observe = self._recipient_metadata if metadata_only else self._live_recipient
+            witness, profile, resolved_actor = observe(
                 state, binding, bootstrap, owner, lookup_actor=lookup_actor)
             if changed:
                 self._accepted_recovery_credentials(admitted, assignment, historical, delivery.started_at)

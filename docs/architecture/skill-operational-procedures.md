@@ -247,3 +247,76 @@ before reconciliation. An interruption therefore leaves no reusable waiting
 witness. Waiting alone, an absent receipt, or an UNKNOWN result never permits
 execution. The owner must still revalidate the exact original target, fence,
 nonce, authority and canonical reservation before any effect.
+
+
+### Event-owned canonical procedure Automations
+
+Automation schema 1.2 adds an explicit `canonical_procedure` target with an
+exact published procedure Definition reference, a canonical supervisor Role,
+and a finite `max_advances` (1–64). It accepts only canonical `work.transition`
+triggers, reuse-only Work policy, concurrency/attempt limits of one, zero model
+budgets and a finite duration. It does not grant an assignment, Resource,
+Identity, transport, or recovery permission. Earlier Automation schema validators
+reject this arm, including explicit null new fields.
+
+Work watchdog events supplied with a canonical Work snapshot normalize
+`work_item_ref` and `handoff_status` (`pending`, `accepted`, or `none`) from
+that snapshot before ingestion and matching. Legacy `ref` remains available.
+Caller matching fields cannot override these canonical values; a pending-only
+procedure filter does not adopt ordinary owner events without a pending handoff.
+
+The composition owner connects the existing Work watchdog event ingress to the
+Automation event matcher before native reasoning. An explicit matching procedure
+policy consumes that observation deterministically, including truthful missing
+scope, ambiguous Role, busy and unknown refusals. It does not fall back to a
+model. Current canonical routing must resolve one existing supervisor bootstrap
+whose actual assignment already owns the exact required Resource context. A
+zero-repository supervisor cannot infer authority from the Work item. Publisher
+selection of an unsuitable supervisor yields a blocker; ordinary authorized
+admission must establish the required scope separately.
+
+The existing AutomationRun owns one optional typed procedure-custody facet:
+exact assignment/worker/execution/workspace/fence, immutable input Artifact and
+checksum, exact procedure reference/checkpoint, advance reservation count and
+material observation digest. Its stable dedupe key follows the exact Definition
+and original handoff nonce/target inputs, rather than watchdog window IDs. Each
+advance is reserved atomically before the existing interpreter is called. The
+existing keyed coordinator coalesces concurrent observations and joins shutdown;
+one bounded startup recovery resumes retained active Runs. There is no new
+ledger, periodic recovery poll, model turn or counter reset.
+
+Unchanged observations cannot advance a waiting checkpoint. Material changes
+(native activity, real lease expiry, canonical custody, delivery or ACK) may
+resume only the same original inputs under fresh controls, Role/Profile scope,
+fence and interpreter guards. Normal recipient preparation may change current
+recipient custody, but it cannot silently replace the original recovery target
+or nonce. Archived/expired handoffs are never recreated. Mutating resumed steps
+always use their registered reconciliation owner; positive engine-validated
+pre-effect diagnostics may be renewed while still busy without invoking a
+mutation owner. Interrupted/uncertain attempts lose that reusable witness and
+remain reconciliation-only. Completed Run status requires the exact completed
+checkpoint and governed step Evidence, not an idle or successful native turn.
+
+Recipient selection reads the existing routing owner's exact Work/nonce
+bootstrap reservation, not the Role's reply binding as an execution target.
+The logical reply binding and its other repository history remain unchanged.
+The routing owner separately validates current identity, Profile, worker,
+canonical scope and bootstrap attribution. Its recovery observation may describe
+an actually expired or LOST assignment; it is not a native-send pin and does not
+relax the existing LIVE recipient or final native-admission guards. Generation
+one still requires the canonical positive before-worker refusal. Accepted
+handoffs retain their exact START/ACK lineage, and unresolved originals refuse
+selection. A missing reservation permits only the validated same-scope anchor,
+never a scan for an arbitrary matching Role. The bridge observes the selected
+recipient thread while retaining the Run's original target/fence/nonce inputs.
+
+Existing Run payloads continue omitting the unset facet and retain state schema
+1.4. The first populated facet writes additive state schema 1.5 in the same
+namespace. The compatibility registry accepts both and registers the additive
+transition; there is no SQL DDL, new state namespace, outcome backfill or startup
+migration. Before publishing Automation 1.2 or writing a facet, all writers must
+support the new contracts. An older binary is not promised to read a published
+1.2 target or populated 1.5 state. Code-only deployment does not itself publish
+an Automation or repin any Profile. The existing Automation editor exposes the
+exact procedure reference, Role, finite limit, and Run checkpoint/counter/result;
+manual Run now remains disabled for this event-only target.

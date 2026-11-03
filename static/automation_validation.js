@@ -8,6 +8,9 @@ export function automationEditorErrors(form) {
   if (form.elements.target_kind?.value === "home_operator") {
     required.push("home_thread_id", "home_binding_revision", "agent_profile_revision");
   }
+  if (form.elements.target_kind?.value === "canonical_procedure") {
+    required.push("procedure_ref", "supervisor_role", "procedure_max_advances");
+  }
   return required.filter(name => !form.elements[name].value.trim()).map(name => ({
     field: name,
     message: `Enter ${name.replaceAll('_', ' ')} for the selected trigger.`,
@@ -20,6 +23,9 @@ export const automationErrorFields = {
   'definition.instructions': 'instructions',
   'definition.target.id': 'target_id',
   'definition.target.kind': 'target_kind',
+  'definition.target.procedure_ref': 'procedure_ref',
+  'definition.target.supervisor_role': 'supervisor_role',
+  'definition.target.max_advances': 'procedure_max_advances',
   'definition.target.home_thread_id': 'home_thread_id',
   'definition.target.home_binding_revision': 'home_binding_revision',
   'definition.target.agent_profile_revision': 'agent_profile_revision',

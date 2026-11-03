@@ -478,6 +478,7 @@ class AutomationTriggerAdmissionBridge:
         self.event_triggers = event_triggers
         self.bus = bus
         self.launch_handler = launch_handler
+        self.procedure_handler = None
 
     def set_launch_handler(
         self,
@@ -680,7 +681,12 @@ class AutomationTriggerAdmissionBridge:
     def install(self) -> Callable[[], None]:
         async def on_event(event: CanonicalEventEnvelope) -> None:
             for match in self.event_triggers.matches(event):
-                await self._launch(self._admit_event_match(event, match))
+                if match.automation.target.kind == AutomationTargetKind.CANONICAL_PROCEDURE:
+                    if self.procedure_handler is None:
+                        raise ValueError('Canonical procedure Automation owner is unavailable')
+                    await self.procedure_handler(event, match)
+                else:
+                    await self._launch(self._admit_event_match(event, match))
             await self._launch(self._admit_schedule(event))
 
         return self.bus.subscribe(on_event)

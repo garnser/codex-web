@@ -299,7 +299,7 @@ class RetainedBotRoutingTests(unittest.IsolatedAsyncioTestCase):
         assignment.execution_profile_definition = definition
         assignment.agent_profile = profile
         assignment.runtime_binding = runtime
-        assignment.repository_target = SimpleNamespace(mutable_repository_id="restricted-repo")
+        assignment.repository_target = SimpleNamespace(primary_repository_id=("restricted-repo"), mutable_repository_id="restricted-repo")
         assignment.repository_scope = SimpleNamespace(writable_repository_ids=("restricted-repo",),
             read_only_repository_ids=("read-only-repo",))
         sessions.session.validate_current = Mock(return_value=assignment)

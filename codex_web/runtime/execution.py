@@ -2716,7 +2716,7 @@ class TurnExecutionService:
                     )
                     assignment_primary = getattr(
                         getattr(assignment, "repository_target", None),
-                        "mutable_repository_id",
+                        "primary_repository_id",
                         None,
                     )
                     target_drift = (
@@ -2801,7 +2801,7 @@ class TurnExecutionService:
                                     "repository_target",
                                     None,
                                 ),
-                                "mutable_repository_id",
+                                "primary_repository_id",
                                 None,
                             )
                         ),
@@ -3053,7 +3053,7 @@ class TurnExecutionService:
                 )
                 if requested_repository and (
                     target is None
-                    or target.mutable_repository_id != requested_repository
+                    or target.primary_repository_id != requested_repository
                 ):
                     raise HTTPException(
                         status_code=409,
@@ -3062,14 +3062,14 @@ class TurnExecutionService:
                             "threadId": thread_id,
                             "requestedRepositoryResourceId": requested_repository,
                             "effectiveRepositoryResourceId": (
-                                target.mutable_repository_id
+                                target.primary_repository_id
                                 if target is not None
                                 else None
                             ),
                         },
                     )
                 canonical_repository_resource_id = (
-                    target.mutable_repository_id
+                    target.primary_repository_id
                     if target is not None
                     else settings.repository_resource_id
                 )
@@ -4112,7 +4112,7 @@ class TurnExecutionService:
                     execution_id=canonical_execution_id, started_at=time.time(),
                     execution_profile_id=getattr(assignment, "execution_profile_id", None),
                     repository_resource_id=getattr(
-                        getattr(assignment, "repository_target", None), "mutable_repository_id", None),
+                        getattr(assignment, "repository_target", None), "primary_repository_id", None),
                     writable_repository_resource_ids=tuple(getattr(
                         getattr(assignment, "repository_scope", None), "writable_repository_ids", ())),
                     read_only_repository_resource_ids=tuple(getattr(
@@ -5586,7 +5586,7 @@ class TurnExecutionService:
             renewed = await self._supersede_thread_bootstrap(thread_id=thread_id, project=project,
                 runtime_binding=runtime, sandbox=assignment.sandbox, approval_policy=assignment.approval_policy,
                 execution_profile_id=assignment.execution_profile_id, agent_profile=assignment.agent_profile,
-                explicit_repository_id=assignment.repository_target.mutable_repository_id if assignment.repository_target else None,
+                explicit_repository_id=assignment.repository_target.primary_repository_id if assignment.repository_target else None,
                 writable_repository_ids=tuple(scope.writable_repository_ids) if scope else (),
                 read_only_repository_ids=tuple(scope.read_only_repository_ids) if scope else (),
                 **({"resource_context":assignment.resource_context} if assignment.resource_context is not None else {}),

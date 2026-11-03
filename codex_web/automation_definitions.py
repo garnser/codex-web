@@ -9,7 +9,7 @@ from codex_web.definitions import DefinitionReference
 
 
 AUTOMATION_KIND = "automation"
-AUTOMATION_SCHEMA_VERSION = "1.1"
+AUTOMATION_SCHEMA_VERSION = "1.2"
 
 
 class AutomationTriggerType(StrEnum):
@@ -24,6 +24,7 @@ class AutomationTargetKind(StrEnum):
     AGENT_PROFILE = "agent_profile"
     TEAM = "team"
     HOME_OPERATOR = "home_operator"
+    CANONICAL_PROCEDURE = "canonical_procedure"
 
 
 class AutomationLifecycle(StrEnum):
@@ -69,12 +70,18 @@ class AutomationTarget(BaseModel):
     home_thread_id: str | None = Field(default=None, min_length=1, max_length=200)
     home_binding_revision: int | None = Field(default=None, ge=1)
     agent_profile_revision: int | None = Field(default=None, ge=1)
+    procedure_ref: DefinitionReference | None = None
+    supervisor_role: str | None = Field(default=None, min_length=1, max_length=160)
+    max_advances: int | None = Field(default=None, ge=1, le=64)
 
     @model_serializer(mode="wrap")
     def omit_home_pins(self, handler):
         result = handler(self)
         if self.kind != AutomationTargetKind.HOME_OPERATOR:
             for key in ('home_thread_id', 'home_binding_revision', 'agent_profile_revision'):
+                result.pop(key, None)
+        if self.kind != AutomationTargetKind.CANONICAL_PROCEDURE:
+            for key in ("procedure_ref", "supervisor_role", "max_advances"):
                 result.pop(key, None)
         return result
 
@@ -86,6 +93,13 @@ class AutomationTarget(BaseModel):
                 raise ValueError("Home follow-up requires exact thread, selection and Agent Profile revisions")
         elif any(value is not None for value in pins):
             raise ValueError("Home selection pins require the Home operator target")
+        procedure_fields = (self.procedure_ref, self.supervisor_role, self.max_advances)
+        if self.kind == AutomationTargetKind.CANONICAL_PROCEDURE:
+            if (any(v is None for v in procedure_fields) or self.procedure_ref.kind != 'agent.skill'
+                    or self.procedure_ref.definition_id != self.id):
+                raise ValueError('canonical procedure target requires exact Skill, supervisor Role and advance bound')
+        elif any(v is not None for v in procedure_fields):
+            raise ValueError('procedure target fields require canonical_procedure')
         return self
 
 
@@ -138,6 +152,14 @@ class AutomationDefinition(BaseModel):
                     or self.budget.max_duration_seconds is None
                     or self.budget.max_input_tokens <= 0 or self.budget.max_output_tokens <= 0):
                 raise ValueError("Home event follow-up requires an owner, event trigger, finite budgets, reuse_only and one attempt/concurrency")
+        if self.target.kind == AutomationTargetKind.CANONICAL_PROCEDURE:
+            if (self.trigger.type != AutomationTriggerType.CANONICAL_EVENT
+                    or self.trigger.event_type != 'work.transition'
+                    or self.retry.max_attempts != 1 or self.budget.max_concurrency != 1
+                    or self.work_item_policy != 'reuse_only' or not self.owner_identity_id
+                    or self.budget.max_duration_seconds is None
+                    or (self.budget.max_input_tokens, self.budget.max_output_tokens, self.budget.max_cost_usd) != (0, 0, 0)):
+                raise ValueError('canonical procedure requires Work events, owner, reuse_only, zero models and finite single-run bounds')
         refs = [
             *self.skill_refs,
             *(

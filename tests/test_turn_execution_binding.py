@@ -766,19 +766,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
                     if resolved is not None else __import__('contextlib').nullcontext())
                 binding = None
                 with context:
-                    if sandbox == "read-only":
-                        # Existing repository-write targeting requests a writable
-                        # member even for a read-only inner mode. That independent
-                        # canonical scope refusal must remain, so inspect the real
-                        # submitted request without bypassing its validator.
-                        with patch.object(self.workers, "create_assignment", wraps=self.workers.create_assignment) as create:
-                            with self.assertRaisesRegex(TurnExecutionBindingError,
-                                    "assignment writable repository lacks a write workspace member"):
-                                self._prepare(execution_id="network-" + sandbox, sandbox=sandbox)
-                        assignment = create.call_args.args[0]
-                    else:
-                        binding = self._prepare(execution_id="network-" + sandbox, sandbox=sandbox)
-                        assignment = self.workers.assignment_for_execution(binding.execution_id, actor=self.actor)
+                    binding = self._prepare(execution_id="network-" + sandbox, sandbox=sandbox)
+                    assignment = self.workers.assignment_for_execution(binding.execution_id, actor=self.actor)
                 enabled = expected(sandbox)
                 self.assertEqual(assignment.network.enabled, enabled)
                 self.assertEqual(WorkerCapability.NETWORK in assignment.required_capabilities, enabled)

@@ -61,6 +61,7 @@ class AutonomyService:
         self.action_intents = action_intents
         self.controller = controller
         self.canonical_events = canonical_events
+        self.procedure_event_handler = None
 
     def _actions(self) -> ActionExecutionService:
         if self.action_execution is None:
@@ -100,9 +101,13 @@ class AutonomyService:
         dispatch_context = {}
         if work_item is not None:
             primary, writable = work_item_repository_scope(work_item)
-            payload = {**payload, "resource_ids": list(dict.fromkeys(
-                [*getattr(work_item, "resource_ids", ()), *writable]
-            ))}
+            # These matching fields come from the canonical Work snapshot, never
+            # watchdog caller aliases. Keep legacy payload fields for consumers.
+            payload = {**payload, "work_item_ref": work_item.ref,
+                "handoff_status": work_item.handoff.status if work_item.handoff is not None else "none",
+                "resource_ids": list(dict.fromkeys(
+                    [*getattr(work_item, "resource_ids", ()), *writable]
+                ))}
             if getattr(work_item, "goal_id", None):
                 payload["goal_id"] = work_item.goal_id
             dispatch_context = {
@@ -228,6 +233,15 @@ class AutonomyService:
             tenant_id=organization_id,
             workspace_id=workspace_id,
         )
+        if self.procedure_event_handler is not None:
+            handled = await self.procedure_event_handler(delivery.event)
+            if handled and handled.get('handled'):
+                cycle = await self.controller.process(delivery.event,
+                    AutonomyObservation(deterministic_resolved=True, reasoning_score=0,
+                        reason='Canonical procedure observation: '+str(handled.get('code') or handled.get('status') or 'retained')[:200]),
+                    cycle_key=cycle_key)
+                return {**handled, 'ok':True, 'ignored':True,
+                    'reason':'canonical_procedure_owned', 'autonomyCycleId':cycle.id}
         if not delivery.inserted:
             return {
                 "ok": True,

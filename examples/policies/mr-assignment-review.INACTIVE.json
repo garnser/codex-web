@@ -1,0 +1,25 @@
+{
+  "notice": "INACTIVE schema fragment, NOT a full Definition draft or an authority grant. Clone the complete actual current execution-role-catalog payload and scope through normal governed publication, bind real Role IDs and current revision CAS; do not auto-publish/repin.",
+  "kind": "execution-role-catalog",
+  "definition_schema_version": "1.1",
+  "new_payload_field": {
+    "mr_review_policy": {
+      "schema_version": "1.0",
+      "basis": "assignment_role",
+      "implementation_role_ids": [
+        "UNBOUND_EXISTING_IMPLEMENTATION_ROLE"
+      ],
+      "validation_role_ids": [
+        "UNBOUND_EXISTING_VALIDATION_ROLE"
+      ]
+    }
+  },
+  "principal_independence_requirements_unchanged": true,
+  "publication_authorized": false,
+  "optional_ci_readiness_field": {
+    "mr_ci_readiness_policy": {
+      "schema_version": "1.0",
+      "execution_target_kind": "UNBOUND_EXPLICIT_NATIVE_OR_EXTERNAL_TARGET"
+    }
+  }
+}
