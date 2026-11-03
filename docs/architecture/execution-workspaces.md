@@ -155,8 +155,9 @@ Conflict detection is resource-specific. Read/read overlap is permitted.
 Write/write overlap is permitted only when both canonical workspace records
 identify the resource as a writable member of distinct Git worktrees; their
 workspace paths, branches, leases, fences and integration outcomes remain
-independent. Read/write overlap and every shared or non-Git write overlap fail
-closed. Existing single-repository workspaces retain the legacy top-level
+independent. Mixed read/write overlap requires the additional canonical physical
+path and exact detached-read member checks described below. Every shared checkout
+or non-Git write overlap still fails closed. Existing single-repository workspaces retain the legacy top-level
 path/branch/base/head projection and gain one equivalent member record.
 
 Repository filesystem sources come from canonical Resource filesystem/path
@@ -172,7 +173,10 @@ Leases are reserved transactionally in SQLite before provisioning.
 - read/read leases may coexist;
 - write/write leases may coexist only for the same canonical repository when
   both executions own independently provisioned writable Git worktree members;
-- read/write and shared or non-Git write overlaps conflict;
+- mixed READ/WRITE repository leases may coexist only for positively identified,
+  distinct canonical Git-worktree paths and exact per-resource member modes;
+  unknown/legacy paths, shared checkouts and non-Git write overlaps still conflict;
+  the existing isolated WRITE/WRITE rule is unchanged;
 - resource-scoped conflicts fail before a worktree is created;
 - tenant and identity quotas are evaluated against active leases;
 - workspace resource count and requested disk usage are bounded;
@@ -414,3 +418,22 @@ a source mutation; it does not promise rollback after disk/host loss. Older
 readers retain their scalar/raw detail view. The inspector normalization requires
 the supported version and scalar shape before displaying complete/ready; absent,
 malformed and future representations do not establish readiness.
+
+### Isolated read snapshots and writable recipients
+
+A detached read-only Git worktree must not block a separately isolated writable
+recipient (#1987). The same canonical backend plans both member destinations;
+lease admission verifies the existing active member's source/path/mode and its
+recorded detached base/head equality before permitting mixed READ/WRITE overlap.
+This is canonical member evidence from provisioning, not a claim that each lease
+admission runs Git or independently rereads every checkout file. Missing
+path planning or member evidence fails closed; provisioning reservations without
+completed member evidence do not qualify for this additional permission.
+
+The read checkout and per-worktree HEAD/index are separate, but Git's common
+metadata/object store is shared, as with existing isolated writable worktrees.
+The read-only native backend continues mounting its checkout and Git metadata
+read-only; a concurrent writer can advance its own branch without changing the
+reader's pinned checkout. This is not a private clone or a grant to mutate the
+reader, source checkout, shared nonrepository Resource, or another worktree.
+No lease is yielded or released implicitly, and no persistent format changes.
