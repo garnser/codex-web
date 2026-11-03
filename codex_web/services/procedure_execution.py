@@ -1567,7 +1567,7 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_provider_result_budget_exhausted")
         return deadline
 
-    def _positive_result_original(self, assignment, step, intent, receipt, history, actor):
+    def _positive_result_original(self, assignment, step, intent, receipt, history, actor, *, require_provider_verification=True):
         # Read-only prerequisite, never provider verification or a missing-result
         # inference. The projector independently enforces every origin/output fact.
         current = self.intents.get(intent.id, actor)
@@ -1595,7 +1595,8 @@ class ProcedureExecutionService:
                     != (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.execution_id)
                 or intent.work_item_ref != self._action_work_item_ref(assignment, intent.request, actor, intent=intent)
                 or verification is None or verification.intent_id != intent.id or not verification.verified
-                or verification.provider_verification is None or not verification.provider_verification.verified
+                or (require_provider_verification and (verification.provider_verification is None
+                    or not verification.provider_verification.verified))
                 or not math.isfinite(verification.verified_at)
                 or verification.verified_at < max(receipt.result.completed_at, receipt.received_at)):
             raise ProcedureExecutionError("procedure_provider_result_original_not_settled")
@@ -1658,10 +1659,13 @@ class ProcedureExecutionService:
             return await PostTurnReadinessService._run_owned(guarded_projection,
                 seconds=deadline - self.clock(), name="procedure-provider-result-" + intent.id)
         deadline = self._provider_result_deadline(assignment, step, intent, actor)
-        self._positive_result_original(assignment, step, intent, receipt, history, actor)
+        # Ordinary projection retains the actual action's verification contract.
+        # Minting or using an interruption witness below remains strictly verified.
         def guard():
             self._provider_result_deadline(assignment, step, intent, actor)
-            self._positive_result_original(assignment, step, intent, receipt, history, actor)
+            self._positive_result_original(assignment, step, intent, receipt, history, actor,
+                require_provider_verification=intent.verification_required)
+        guard()
         async def operation():
             await asyncio.to_thread(guard)
             result = await asyncio.to_thread(self._provider_result,

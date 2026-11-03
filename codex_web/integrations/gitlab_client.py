@@ -518,6 +518,18 @@ class GitLabClient:
         )
         return response if isinstance(response, dict) else {}
 
+    async def job(self, api_base: str, project: str, job_id: int, *, token: str) -> dict[str, Any]:
+        return await self.get_json(
+            api_base, f"projects/{quote(project, safe='')}/jobs/{job_id}", token=token,
+        )
+
+    async def retry_job(self, api_base: str, project: str, job_id: int, *, token: str) -> dict[str, Any]:
+        # A retry creates a new job. Never retry this POST on response loss.
+        return await self.request_json(
+            "POST", api_base, f"projects/{quote(project, safe='')}/jobs/{job_id}/retry",
+            token=token,
+        )
+
     async def branch(
         self,
         api_base: str,

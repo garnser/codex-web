@@ -750,6 +750,11 @@ checkpoint CAS use one joined cooperative storage owner bounded by the original
 step start/timeout, procedure deadline and current live assignment lease/deadline.
 The guarded-readiness action retains its existing shared observation deadline.
 There is no separate five-second projection allowance or new deployment knob.
+Ordinary projection preserves the canonical action's declared verification
+requirement: a successful read whose contract does not require provider
+verification may project its governed output and Evidence. This does not qualify
+it for interruption settlement, which always requires actual positive provider
+verification as well as the completed original receipt.
 
 Only an interruption after a positive exact canonical original can record a
 closed `provider_result_projection` diagnostic through existing governed INFO
