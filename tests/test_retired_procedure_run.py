@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from codex_web.api.automation_outcomes import build_automation_outcomes_router
+from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.execution_workers import AssignmentCancelRequest
 from codex_web.models import ExecutionPreflightAttempt
 from codex_web.services.automation_outcomes import AutomationOutcomeReconciliationService
@@ -90,6 +91,59 @@ class RetiredProcedureRunTests(unittest.IsolatedAsyncioTestCase):
         # Repeating the request cannot replay an operation or produce a retry.
         self.assertEqual(self.dispose(), result)
         self.assertEqual(self.b.operation.calls, self.operation_calls)
+
+    def prune_published_original_event(self):
+        # Exercise normal bounded retention, not raw deletion or a missing-event
+        # mock. The Run was genuinely admitted before its published event ages out.
+        store = self.b.service.events
+        original = store.event(self.run.trigger.event_id)
+        self.assertIsNotNone(original)
+        if store.outbox(original.event_id) is not None:
+            store.mark_outbox_published(original.event_id, backend_id='private-fixture',
+                delivery_id='private-original-delivery', now=original.occurred_at + 1)
+        store.max_events = 1
+        later = CanonicalEventEnvelope(event_id='later-retained-event',
+            event_type='test.retention', source='private-fixture',
+            occurred_at=original.occurred_at + 2, payload={},
+            tenant_id=original.tenant_id, workspace_id=original.workspace_id)
+        store.record_if_new(later, idempotency_key='later-retained-event')
+        self.assertIsNone(store.event(original.event_id))
+        self.assertEqual(store.event(later.event_id), later)
+
+    async def test_normally_pruned_event_does_not_strand_settled_retired_run(self):
+        self.prune_published_original_event()
+        result = None
+        refusal = None
+        try:
+            result = self.dispose()
+        except ProcedureAutomationError as exc:
+            refusal = str(exc)
+        self.assertIsNotNone(result, f'Retired scheduling depends on pruned event: {refusal}')
+        self.assertEqual(result.status, 'cancelled')
+        self.assertEqual(result.result_code, 'procedure_retired_custody_cancelled')
+        self.assert_originals()
+        self.assertEqual(self.dispose(), result)
+
+    async def test_active_execution_still_refuses_normally_pruned_original_event(self):
+        self.prune_published_original_event()
+        self.change_assignment(lambda a: a.__dict__.update(self.before.model_copy(deep=True).__dict__))
+        live = self.b.current().model_copy(deep=True)
+        with self.assertRaisesRegex(ProcedureAutomationError, 'procedure_automation_event_changed'):
+            self.b.service._definition(self.run)
+        self.assertEqual(self.b.current(), live)
+        self.assertEqual(self.b.operation.calls, self.operation_calls)
+        self.assertEqual(self.b.service._get(self.run), self.run)
+
+    async def test_pruned_event_does_not_bypass_current_definition_validation(self):
+        self.prune_published_original_event()
+        resolve = self.b.runs.definitions.resolve
+        def changed(*args, **kwargs):
+            definition, reference = resolve(*args, **kwargs)
+            return definition, reference.model_copy(update={'revision':reference.revision + 1})
+        with patch.object(self.b.runs.definitions, 'resolve', side_effect=changed):
+            with self.assertRaisesRegex(ProcedureAutomationError, 'procedure_automation_definition_changed'):
+                self.dispose()
+        self.assert_originals()
 
     async def test_existing_reconcile_without_explicit_disposition_still_refuses_changed_fence(self):
         with self.assertRaisesRegex(ProcedureAutomationError, 'original_custody_changed'):

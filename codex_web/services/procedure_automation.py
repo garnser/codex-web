@@ -50,7 +50,8 @@ class ProcedureAutomationService:
     def _get(self, run):
         return self.runs.store.get(run.id, organization_id=run.organization_id, workspace_id=run.workspace_id)
 
-    def _definition(self, run, *, effects=True):
+    def _current_definition_owner(self, run):
+        """Current exact policy and owner, without authorizing event execution."""
         automation, reference = self.runs.definitions.resolve_reference(run.definition_ref,
             organization_id=run.organization_id, workspace_id=run.workspace_id, project_id=run.project_id)
         current, current_ref = self.runs.definitions.resolve(run.automation_id,
@@ -60,6 +61,10 @@ class ProcedureAutomationService:
             raise ProcedureAutomationError('procedure_automation_definition_changed')
         actor = self.identity.actor_for_identity(automation.owner_identity_id,
             scope=TenantScope(organization_id=run.organization_id, workspace_id=run.workspace_id))
+        return automation, actor
+
+    def _definition(self, run, *, effects=True):
+        automation, actor = self._current_definition_owner(run)
         event = self.events.event(run.trigger.event_id) if run.trigger.event_id else None
         if (event is None or event.event_type != 'work.transition' or run.trigger.kind != 'canonical_event'
                 or not str(event.source).startswith('autonomy-watchdog:')
