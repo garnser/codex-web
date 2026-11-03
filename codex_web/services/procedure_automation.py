@@ -31,18 +31,20 @@ class ProcedureSelection:
     assignment: object
     values: dict
     observation: str
+    thread_id: str
 
 
 class ProcedureAutomationService:
     """No native input, assignment creation, authority grant or polling owner."""
     def __init__(self, *, runs, engine, identity, routing, threads, continuity,
                  get_work, events, event_triggers, controller, coordinator,
-                 automation_execution, startup_limit=64):
+                 automation_execution, startup_limit=64, native_preparation=None):
         self.runs, self.engine, self.identity = runs, engine, identity
         self.routing, self.threads, self.continuity = routing, threads, continuity
         self.get_work, self.events, self.event_triggers = get_work, events, event_triggers
         self.controller, self.coordinator = controller, coordinator
         self.automation_execution = automation_execution
+        self.native_preparation = native_preparation
         self.startup_limit = max(1, min(128, startup_limit))
 
     def _get(self, run):
@@ -162,7 +164,7 @@ class ProcedureAutomationService:
             'recipient_activity':{k:target_activity.get(k) for k in ('state','turnId')},
             'recipient_runner':{k:target_runner.get(k) for k in ('assignmentId','fence','live','processRunning','pendingExecutorWork')},
             'supervisor_id':supervisor.id, 'supervisor_fence':supervisor.fence})
-        return ProcedureSelection(actor, supervisor, values, observation)
+        return ProcedureSelection(actor, supervisor, values, observation, binding.thread_id)
 
     def _original_values(self, run, actor):
         custody = run.procedure_custody
@@ -360,6 +362,28 @@ class ProcedureAutomationService:
         if run.status!='running' or custody is None:
             return
         self._same_selection(custody,selection,automation)
+        pending = selection.assignment.native_credential_custody
+        if pending is not None and pending.admitted_at is None:
+            if self.native_preparation is None:
+                raise ProcedureAutomationError('procedure_automation_preparation_owner_unavailable')
+            from types import SimpleNamespace
+            await self.native_preparation(project=SimpleNamespace(id=run.project_id,
+                organization_id=run.organization_id,workspace_id=run.workspace_id),actor=actor,
+                thread_id=selection.thread_id,execution_id=custody.execution_id,
+                assignment_id=custody.assignment_id,expected_fence=custody.fence,
+                sandbox=selection.assignment.sandbox,definition=custody.definition,
+                input_snapshot_id=custody.input_snapshot_id,
+                request_checksum=custody.input_snapshot_sha256,automation_run_id=run.id)
+            # Preparation may await physical/current authority reads. Re-read
+            # original Run, policy/controls and nonce/custody before any start.
+            refreshed = await asyncio.to_thread(self._get,run)
+            if refreshed.status != 'running' or refreshed.procedure_custody != custody:
+                raise ProcedureAutomationError('procedure_automation_run_claim_changed')
+            run = refreshed
+            automation,actor,event = await asyncio.to_thread(self._definition,run)
+            values = await asyncio.to_thread(self._original_values,run,actor)
+            selection = await self._select(automation,actor,event,original_values=values)
+            self._same_selection(custody,selection,automation)
         assignment = await asyncio.to_thread(self.engine.start,custody.assignment_id,
             definition=custody.definition,input_snapshot_id=custody.input_snapshot_id,
             actor=actor,expected_fence=custody.fence)

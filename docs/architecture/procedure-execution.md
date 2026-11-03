@@ -65,6 +65,22 @@ by native input/discovery admission and does not acquire provider SecretUse.
 Both that action requester and the actual authenticated worker must currently
 be allowed to use every admitted credential reference.
 
+Event-only procedure Automations also use this same initial native preparation
+owner (#1982, #1977). After retaining the actual AutomationRun and its input
+Artifact, the bridge verifies the current requester, exact thread/bootstrap,
+assignment/fence, execution/workspace and Artifact source/scope. It compares the
+canonical parsed input checksum, preserving formatting-equivalent originals.
+Full normal discovery determines the selected set, which must include the exact
+Automation target; the existing physical session attestor and credential CAS
+seal that entire set on an unused pending bootstrap. No native input, native
+START, model call or fake checkpoint is created by preparation. A missing
+preparation owner refuses pending custody. An already sealed or historical
+assignment is not reopened or retrofitted. After awaited preparation the bridge
+rereads the original Run, controls, input, handoff nonce and selected custody
+before the ordinary interpreter start, whose credential guard remains mandatory.
+This uses existing inspector custody/Run blockers; no new UI authority or schema
+is introduced, and live event-only supervision still needs operational qualification.
+
 Supporting Memory retrieval appends its normal canonical retrieval audit outside
 the credential transaction. Locked credential revalidation and the selected-procedure
 native input guard repeat the same current procedure selection, security, instruction-capacity

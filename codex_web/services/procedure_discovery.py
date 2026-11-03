@@ -435,6 +435,7 @@ class NativeProcedureAdmissionService:
         self.native_session_attestor = None
         self.procedure_execution = None
         self.reasoning_preparation = None
+        self.bootstrap_bindings = None
 
     def _native_policy(self, assignment, actor, project, sandbox):
         """Existing exact profile permits isolated preparation, never host operations.
@@ -576,6 +577,73 @@ class NativeProcedureAdmissionService:
                 raise ValueError("initial native credential preparation changed")
         return self.procedure_execution.admit_initial_native_credentials(
             assignment, selected, actor, validate)
+
+    async def prepare_automation(self, *, project, actor, thread_id, execution_id,
+                                 assignment_id, expected_fence, sandbox, definition,
+                                 input_snapshot_id, request_checksum, automation_run_id):
+        """Seal an unused native bootstrap for its real event input (#1982).
+
+        This is preparation only: no native input, START or procedure checkpoint.
+        Full ordinary discovery selects the credential scope; the Automation
+        target must belong to it. Existing admitted custody is never enlarged.
+        """
+        import asyncio
+        import hashlib
+        import json
+        from codex_web.services.procedure_execution import ProcedureExecutionError, bounded_data
+
+        def prepare():
+            engine = self.procedure_execution
+            if engine is None or self.native_session_attestor is None:
+                raise ProcedureExecutionError("procedure_automation_preparation_owner_unavailable")
+            current_actor = engine.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+            if not current_actor.has_same_authority(actor):
+                raise ProcedureExecutionError("procedure_automation_preparation_actor_changed")
+            assignment = engine.get(assignment_id, current_actor)
+            engine._live(assignment)
+            if ((assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    != (project.organization_id, project.workspace_id, project.id)
+                    or assignment.created_by != current_actor.identity_id
+                    or assignment.execution_id != execution_id
+                    or assignment.fence != expected_fence or assignment.sandbox != sandbox
+                    or not thread_id):
+                raise ProcedureExecutionError("procedure_automation_preparation_assignment_changed")
+            if self.bootstrap_bindings is None:
+                raise ProcedureExecutionError("procedure_automation_preparation_binding_unavailable")
+            bootstrap = self.bootstrap_bindings.get_by_thread(thread_id, current_actor)
+            if ((bootstrap.assignment_id, bootstrap.execution_id, bootstrap.execution_workspace_id)
+                    != (assignment.id, assignment.execution_id, assignment.execution_workspace_id)):
+                raise ProcedureExecutionError("procedure_automation_preparation_thread_changed")
+            artifact = engine.evidence.get_artifact(input_snapshot_id, actor=current_actor)
+            previous = assignment.procedure_checkpoint
+            reused = (previous is not None and previous.definition == definition
+                and previous.input_snapshot_id == input_snapshot_id)
+            if ((artifact.source != "automation-run:" + automation_run_id and not reused)
+                    or artifact.execution_id != execution_id
+                    or artifact.execution_workspace_id != assignment.execution_workspace_id
+                    or set(artifact.resource_ids) != set(assignment.resource_ids)):
+                raise ProcedureExecutionError("procedure_automation_preparation_input_scope")
+            raw, _ = engine._content(input_snapshot_id, current_actor, assignment)
+            canonical = json.dumps(bounded_data(json.loads(raw)), sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode()
+            if hashlib.sha256(canonical).hexdigest() != request_checksum:
+                raise ProcedureExecutionError("procedure_automation_preparation_input_changed")
+            context = self._preparation_context(assignment, current_actor, project,
+                sandbox, request_checksum)
+            discovery, _ = self.discovery.discover(context)
+            selected = tuple(discovery.selected)
+            if definition not in selected:
+                raise ProcedureExecutionError("procedure_automation_preparation_target_unselected")
+            custody = assignment.native_credential_custody
+            if custody is not None and custody.admitted_at is None:
+                assignment = self._admit_initial_native_credentials(assignment, selected,
+                    current_actor, project, sandbox, request_checksum)
+            # Same physical attestation/current full selection for both initial
+            # sealing and already-admitted use; never reopen an empty/old seal.
+            self._preparation_discovery(assignment, current_actor, project, sandbox,
+                request_checksum, selected)
+            return assignment
+        return await asyncio.to_thread(prepare)
 
     def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references, *,
                                      _include_supporting_context=True):
@@ -1002,6 +1070,7 @@ def install_native_procedure_admission(turns, sessions, discovery, workers, hist
     admission = NativeProcedureAdmissionService(discovery, workers, history, control_actor, execution_profiles)
     admission.native_session_attestor = getattr(turns, "attest_native_provider_preparation", None)
     admission.procedure_execution = procedure_execution
+    admission.bootstrap_bindings = getattr(turns, "bootstrap_bindings", None)
     turns.procedure_admission = admission
     sessions.procedure_admission = admission.agent_session_admission
     return admission

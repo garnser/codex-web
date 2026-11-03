@@ -3453,7 +3453,7 @@ turn_execution_service.session_custody = AgentSessionCustodyService(
 )
 
 from codex_web.services.procedure_discovery import install_native_procedure_admission
-install_native_procedure_admission(turn_execution_service, agent_session_service,
+native_procedure_admission_service = install_native_procedure_admission(turn_execution_service, agent_session_service,
     procedure_discovery_service, execution_worker_service, thread_history_repository,
     identity_service.local_trusted_actor(), execution_profile_definition_service,
     procedure_execution=procedure_execution_service)
@@ -4463,6 +4463,7 @@ procedure_automation_service = ProcedureAutomationService(
     controller=autonomy_controller,
     coordinator=native_recovery_service.coordinator,
     automation_execution=automation_execution_service,
+    native_preparation=native_procedure_admission_service.prepare_automation,
 )
 automation_trigger_admission_bridge.procedure_handler = procedure_automation_service.handle_match
 autonomy_service.procedure_event_handler = procedure_automation_service.handle_event
