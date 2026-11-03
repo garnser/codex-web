@@ -11,6 +11,8 @@ import math
 import time
 import uuid
 from dataclasses import replace
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 from contextvars import ContextVar
 
 _current_input_witness = ContextVar("procedure_current_input_witness", default=None)
@@ -40,6 +42,27 @@ class ProcedureExecutionError(ActionRequirementError):
     def __init__(self, code):
         self.code = code
         super().__init__(code)
+
+
+class _ProviderResultInterruption(BaseModel):
+    """Governed diagnostic payload, never a caller or checkpoint mutation DTO."""
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    schema_version: Literal["1.0"] = "1.0"
+    phase: Literal["provider_result_projection"] = "provider_result_projection"
+    assignment_id: str
+    fence: int = Field(ge=1)
+    procedure_run_id: str
+    definition_checksum: str
+    step_id: str
+    intent_id: str
+    attempt: int = Field(ge=1)
+    request_checksum: str
+    idempotency_key: str
+    input_snapshot_id: str
+    input_snapshot_checksum: str
+    receipt_id: str
+    verification_id: str
+    started_at: float
 
 
 def bounded_data(value, limit=16384):
@@ -1487,22 +1510,197 @@ class ProcedureExecutionService:
                 proofs[name] = evidence.id
         return {"outputs": outputs, "evidence": proofs}
 
-    async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
-        # Projection includes canonical Evidence writes. Keep that blocking work
-        # off the shared loop, and join the actual owner before cancellation can
-        # release the procedure's caller. Existing cooperative store budgets
-        # bound the operation and prevent a cancelled owner making later commits.
-        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+    def _complete_step_result(self, assignment, step, actor, procedure, result, *, deadline=None, guard=None):
+        checkpoint = assignment.procedure_checkpoint
+        state = checkpoint.steps[step.id]
+        bounded_data(result)
+        if (not isinstance(result, dict) or set(result) != {"outputs", "evidence"}
+            or not isinstance(result["evidence"], dict)
+            or any(not isinstance(v, str) or not v or len(v) > 200 for v in result["evidence"].values())
+            or len(set(result["evidence"].values())) != len(result["evidence"])):
+            raise ProcedureExecutionError("procedure_output_contract_invalid")
+        # The INFO interruption remains governed canonical Evidence with exact
+        # run/step source and the existing Attention link, not declared PASS proof.
+        state.evidence = result["evidence"]
+        self._record_outputs(assignment, step, state, result.get("outputs", {}), actor)
+        self._proof(assignment, step, state, actor)
+        positive_deadline = deadline if deadline is not None else self._guarded_readonly_deadline(assignment, procedure, step)
+        if guard is not None:
+            guard()  # Fresh custody/authority after governed output/proof I/O.
+        state.status = "succeeded"; checkpoint.status = "ready"; state.not_before = None
+        if state.failure_code == "procedure_provider_result_settlement_required":
+            state.failure_code = None; checkpoint.failure_code = None
+        return self._save(assignment, checkpoint, positive_deadline=positive_deadline)
+
+    def _provider_result_deadline(self, assignment, step, intent, actor):
         deadline = self.readonly_operation_deadline(intent, actor)
+        if deadline is not None:
+            return deadline  # Preserve the guarded-readiness shared deadline.
+        current = self.get(assignment.id, actor)
+        self._live(current)
+        pin = current.procedure_checkpoint
+        if (current.fence != assignment.fence or pin is None
+                or self.run_id(pin) != self.run_id(assignment.procedure_checkpoint)
+                or pin.revision != assignment.procedure_checkpoint.revision
+                or pin.status != "running" or pin.current_step_id != step.id
+                or pin.steps[step.id].status != "running"
+                or pin.steps[step.id].action_intent_id != intent.id
+                or pin.steps[step.id].started_at is None):
+            raise ProcedureExecutionError("procedure_provider_result_owner_changed")
+        current_actor = self._actor(current)
+        if not current_actor.has_same_authority(actor):
+            raise ProcedureExecutionError("procedure_actor_changed")
+        procedure = self._procedure(current, current_actor)
+        inputs = self._inputs(current, current_actor, procedure)
+        self._protected(current, step, current_actor, procedure, inputs)
+        binding, _, _, request = self._request(step, current, current_actor, procedure,
+            self._step_inputs(step, pin, inputs, current_actor, current))
+        if (binding.id != intent.binding_id
+                or intent.work_item_ref != self._action_work_item_ref(current, request, current_actor, intent=intent)
+                or self.intents._idempotency_request_identity(request)
+                    != self.intents._idempotency_request_identity(intent.request)):
+            raise ProcedureExecutionError("procedure_action_request_changed")
+        deadline = min(pin.deadline_at, pin.steps[step.id].started_at + step.timeout_seconds,
+            current.lease.expires_at,
+            current.deadline_at if current.deadline_at is not None else float('inf'))
+        if not math.isfinite(deadline) or self.clock() >= deadline:
+            raise ProcedureExecutionError("procedure_provider_result_budget_exhausted")
+        return deadline
+
+    def _positive_result_original(self, assignment, step, intent, receipt, history, actor, *, require_provider_verification=True):
+        # Read-only prerequisite, never provider verification or a missing-result
+        # inference. The projector independently enforces every origin/output fact.
+        current = self.intents.get(intent.id, actor)
+        canonical = self.intents.store.load(intent_id=intent.id)
+        verification = next((v for v in history.verifications if v.id == intent.last_verification_id), None)
+        canonical_receipt = next((r for r in canonical.receipts if receipt is not None and r.id == receipt.id), None)
+        canonical_verification = next((v for v in canonical.verifications if v.id == intent.last_verification_id), None)
+        if (current != intent or canonical_receipt != receipt or canonical_verification != verification
+                or intent.status != "succeeded" or intent.attempt != assignment.procedure_checkpoint.steps[step.id].attempts
+                or intent.id != assignment.procedure_checkpoint.steps[step.id].action_intent_id
+                or receipt is None or receipt.result is None or receipt.outcome != "completed"
+                or receipt.id != intent.last_receipt_id or receipt.intent_id != intent.id
+                or receipt.attempt != intent.attempt or receipt.result.status != "succeeded"
+                or receipt.result.provider_binding_id != intent.binding_id
+                or (receipt.provider_type, receipt.provider_instance, receipt.action_id,
+                    receipt.idempotency_key, receipt.correlation_id)
+                    != (intent.provider_type, intent.provider_instance, intent.action_id,
+                        intent.idempotency_key, intent.correlation_id)
+                or (intent.provider_type, intent.provider_instance, intent.action_id)
+                    != (step.action.provider_type, step.action.provider_instance, step.action.action_id)
+                or intent.request.idempotency_key != intent.idempotency_key
+                or intent.requested_by != assignment.procedure_checkpoint.actor_identity_id
+                or intent.idempotency_key != self._step_origin(assignment, step.id, intent=True)
+                or (intent.organization_id, intent.workspace_id, intent.project_id, intent.execution_id)
+                    != (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.execution_id)
+                or intent.work_item_ref != self._action_work_item_ref(assignment, intent.request, actor, intent=intent)
+                or verification is None or verification.intent_id != intent.id or not verification.verified
+                or (require_provider_verification and (verification.provider_verification is None
+                    or not verification.provider_verification.verified))
+                or not math.isfinite(verification.verified_at)
+                or verification.verified_at < max(receipt.result.completed_at, receipt.received_at)):
+            raise ProcedureExecutionError("procedure_provider_result_original_not_settled")
+
+    def _result_interruption(self, assignment, step, intent, receipt):
+        pin = assignment.procedure_checkpoint
+        return _ProviderResultInterruption(assignment_id=assignment.id, fence=assignment.fence,
+            procedure_run_id=self.run_id(pin), definition_checksum=pin.definition.checksum,
+            step_id=step.id, intent_id=intent.id, attempt=intent.attempt,
+            request_checksum=checksum(intent.request.model_dump(mode="json")),
+            idempotency_key=intent.idempotency_key, input_snapshot_id=pin.input_snapshot_id,
+            input_snapshot_checksum=pin.input_snapshot_checksum, receipt_id=receipt.id, verification_id=intent.last_verification_id,
+            started_at=pin.steps[step.id].started_at)
+
+    def _validate_result_interruption(self, assignment, step, intent, receipt, actor):
+        state = assignment.procedure_checkpoint.steps[step.id]
+        reference = state.evidence.get("provider_result_interruption")
+        if not reference:
+            raise ProcedureExecutionError("procedure_provider_result_interruption_missing")
+        diagnostic = self.evidence.get_evidence(reference, actor=actor)
+        if (diagnostic.lifecycle != "valid"
+                or (diagnostic.organization_id, diagnostic.workspace_id)
+                    != (assignment.organization_id, assignment.workspace_id)
+                or (diagnostic.retention_expires_at is not None
+                    and diagnostic.retention_expires_at <= self.clock())
+                or set(diagnostic.resource_ids) - set(assignment.resource_ids)
+                or diagnostic.artifact_ids):
+            raise ProcedureExecutionError("procedure_provider_result_interruption_invalid")
+        try:
+            recorded = _ProviderResultInterruption.model_validate_json(
+                diagnostic.metadata["provider_result_interruption"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProcedureExecutionError("procedure_provider_result_interruption_invalid") from exc
+        if (recorded != self._result_interruption(assignment, step, intent, receipt)
+                or diagnostic.evidence_type != "policy_evaluation" or diagnostic.result != "info"
+                or diagnostic.provider != "canonical-procedure-owner"
+                or diagnostic.source != self._step_origin(assignment, step.id)
+                or diagnostic.producer_identity_id != actor.identity_id
+                or diagnostic.project_id != assignment.project_id
+                or diagnostic.work_item_ref != intent.work_item_ref
+                or diagnostic.execution_id != assignment.execution_id
+                or diagnostic.execution_workspace_id != assignment.execution_workspace_id
+                or tuple(diagnostic.resource_ids) != tuple(intent.resource_ids)):
+            raise ProcedureExecutionError("procedure_provider_result_interruption_changed")
+
+    async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
+        # Projection includes canonical Evidence writes. Keep its joined writer
+        # and cooperative storage budget within the existing step/run/live lease.
+        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            # Keep the guarded-readiness projection window and its canonical
+            # shared deadline exactly as before; its tail already has guards.
+            deadline = self.readonly_operation_deadline(intent, actor)
+            async def guarded_projection():
+                self.readonly_operation_deadline(intent, actor)
+                result = await asyncio.to_thread(self._provider_result,
+                    assignment, step, intent, receipt, history, actor)
+                self.readonly_operation_deadline(intent, actor)
+                return result
+            return await PostTurnReadinessService._run_owned(guarded_projection,
+                seconds=deadline - self.clock(), name="procedure-provider-result-" + intent.id)
+        deadline = self._provider_result_deadline(assignment, step, intent, actor)
+        # Ordinary projection retains the actual action's verification contract.
+        # Minting or using an interruption witness below remains strictly verified.
+        def guard():
+            self._provider_result_deadline(assignment, step, intent, actor)
+            self._positive_result_original(assignment, step, intent, receipt, history, actor,
+                require_provider_verification=intent.verification_required)
+        guard()
         async def operation():
-            self.readonly_operation_deadline(intent, actor)
+            await asyncio.to_thread(guard)
             result = await asyncio.to_thread(self._provider_result,
                 assignment, step, intent, receipt, history, actor)
-            self.readonly_operation_deadline(intent, actor)
-            return result
-        return await PostTurnReadinessService._run_owned(operation,
-            seconds=deadline - self.clock() if deadline is not None else 5.,
-            name="procedure-provider-result-" + intent.id)
+            await asyncio.to_thread(guard)
+            procedure = self._procedure(assignment, actor)
+            return await asyncio.to_thread(self._complete_step_result,
+                assignment, step, actor, procedure, result, deadline=deadline,
+                guard=guard)
+        try:
+            return await PostTurnReadinessService._run_owned(operation,
+                seconds=deadline - self.clock(), name="procedure-provider-result-" + intent.id)
+        except TimeoutError as exc:
+            # _run_owned has joined its child before this diagnostic append.
+            # Do not reinterpret provider uncertainty or manufacture PASS proof.
+            self._positive_result_original(assignment, step, intent, receipt, history, actor)
+            remaining = self._provider_result_deadline(assignment, step, intent, actor) - self.clock()
+            def record_interruption():
+                self._provider_result_deadline(assignment, step, intent, actor)
+                diagnostic = self.evidence.create_evidence(EvidenceCreate(project_id=assignment.project_id,
+                    work_item_ref=intent.work_item_ref, execution_id=assignment.execution_id,
+                    execution_workspace_id=assignment.execution_workspace_id, resource_ids=intent.resource_ids,
+                    evidence_type="policy_evaluation", result="info", provider="canonical-procedure-owner",
+                    source=self._step_origin(assignment, step.id), observed_at=self.clock(),
+                    summary="Verified original retained; provider-result projection interrupted",
+                    metadata={"provider_result_interruption":self._result_interruption(
+                        assignment, step, intent, receipt).model_dump_json()}), actor=actor)
+                self._provider_result_deadline(assignment, step, intent, actor)
+                assignment.procedure_checkpoint.steps[step.id].evidence = {
+                    "provider_result_interruption":diagnostic.id}
+            async def diagnostic_operation():
+                return await asyncio.to_thread(record_interruption)
+            await PostTurnReadinessService._run_owned(diagnostic_operation,
+                seconds=remaining, name="procedure-result-interruption-" + intent.id)
+            raise ProcedureExecutionError("procedure_provider_result_settlement_required") from exc
 
     def creation_discovery(self, payload, actor):
         if not payload.execution_id:
@@ -1807,10 +2005,13 @@ class ProcedureExecutionService:
         if expected_fence is not None and assignment.fence != expected_fence:
             raise ProcedureExecutionError('procedure_expected_fence_changed')
         self._require_current_run(assignment, run_id)
-        self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if assignment.procedure_checkpoint is None:
             raise ProcedureExecutionError("procedure_checkpoint_missing")
         checkpoint = assignment.procedure_checkpoint
+        settlement_only = any(s.failure_code == "procedure_provider_result_settlement_required"
+            for s in checkpoint.steps.values())
+        if not settlement_only:
+            self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if checkpoint.status in {"completed", "recovered", "recovery_required"}:
             return assignment
         try:
@@ -1820,6 +2021,27 @@ class ProcedureExecutionService:
             self._live(assignment)
             if self.clock() >= checkpoint.deadline_at:
                 raise ProcedureExecutionError("procedure_duration_budget_exhausted")
+            if settlement_only:
+                # Validate the server-owned diagnostic before generic UNKNOWN or
+                # rollback recovery can touch the original. Rejection stays in
+                # this read-only lane on every subsequent advance as well.
+                marked = [(name, value) for name, value in checkpoint.steps.items()
+                    if value.failure_code == "procedure_provider_result_settlement_required"]
+                if len(marked) != 1 or marked[0][0] != checkpoint.current_step_id:
+                    raise ProcedureExecutionError("procedure_provider_result_interruption_invalid")
+                name, pending = marked[0]
+                declared = next((s for s in procedure.steps if s.id == name), None)
+                if (declared is None or declared.action is None or pending.status != "reconciliation_required"
+                        or not pending.action_intent_id
+                        or any(value.status == "reconciliation_required" and value is not pending
+                               for value in checkpoint.steps.values())):
+                    raise ProcedureExecutionError("procedure_provider_result_interruption_invalid")
+                original = self.intents.get(pending.action_intent_id, actor)
+                history = self.intents.store.load(intent_id=original.id)
+                receipt = next((r for r in history.receipts if r.id == original.last_receipt_id), None)
+                self._positive_result_original(assignment, declared, original, receipt, history, actor)
+                self._validate_result_interruption(assignment, declared, original, receipt, actor)
+                pending.status = "running"
             # No later mutation while ANY previous effect is uncertain.
             unknown = next((s for s in checkpoint.steps.values() if s.status == "reconciliation_required"), None)
             canonical_unknown = unknown is not None and any(
@@ -1882,37 +2104,45 @@ class ProcedureExecutionService:
                 binding, _, _, request = self._request(step, assignment, actor, procedure, values)
                 checkpoint.status = "running"; state.status = "running"
                 assignment = self._save(assignment, checkpoint)
-                intent = self.intents.create(ActionIntentCreate(binding_id=binding.id, request=request,
-                    execution_id=assignment.execution_id, work_item_ref=assignment.work_item_ref,
-                    timeout_seconds=step.timeout_seconds,
-                    policy_decision=ActionDecisionSnapshot(
-                        decision_id=f"procedure-policy:{assignment.id}:{checkpoint.revision}",
-                        outcome="allow", source="canonical:procedure-step",
-                        definition_refs=(checkpoint.definition,),
-                        capabilities=tuple(p.capability for p in step.permissions),
-                        evaluated_at=self.clock(), expires_at=assignment.lease.expires_at,
-                        reasons=("Exact published step, current Role authority and canonical approval quorum checked",
-                            "Live assignment, worker, Resource lease, material preconditions and secret references checked",
-                            "Registered provider security policy remains enforced; protected gates recheck before effects",
-                            *(("Current-use input witness Artifact: " + self._input_sources(assignment)[-1],)
-                                if _current_input_witness.get() is not None else ()))),
-                    retry_policy=ActionIntentRetryPolicy(max_attempts=step.max_attempts, backoff_seconds=step.retry_backoff_seconds)), actor=actor)
-                state.action_intent_id = intent.id
-                checkpoint.status = "running"; state.status = "running"
-                assignment = self._save(assignment, checkpoint)
-                if self.worker_actor is None:
-                    raise ProcedureExecutionError("procedure_action_worker_unavailable")
-                if intent.status == ActionIntentStatus.PENDING:
-                    intent = self.intents.claim(ActionIntentClaimRequest(worker_id="procedure:" + assignment.id,
-                        lease_seconds=max(10, min(3600, step.timeout_seconds + 10))),
-                        intent_id=intent.id, actor=self.worker_actor)
-                    if intent is None:
+                settlement = state.failure_code == "procedure_provider_result_settlement_required"
+                if settlement:
+                    intent = self.intents.get(state.action_intent_id, actor)
+                    history = self.intents.store.load(intent_id=intent.id)
+                    receipt = next((r for r in history.receipts if r.id == intent.last_receipt_id), None)
+                    self._positive_result_original(assignment, step, intent, receipt, history, actor)
+                    self._validate_result_interruption(assignment, step, intent, receipt, actor)
+                else:
+                    intent = self.intents.create(ActionIntentCreate(binding_id=binding.id, request=request,
+                        execution_id=assignment.execution_id, work_item_ref=assignment.work_item_ref,
+                        timeout_seconds=step.timeout_seconds,
+                        policy_decision=ActionDecisionSnapshot(
+                            decision_id=f"procedure-policy:{assignment.id}:{checkpoint.revision}",
+                            outcome="allow", source="canonical:procedure-step",
+                            definition_refs=(checkpoint.definition,),
+                            capabilities=tuple(p.capability for p in step.permissions),
+                            evaluated_at=self.clock(), expires_at=assignment.lease.expires_at,
+                            reasons=("Exact published step, current Role authority and canonical approval quorum checked",
+                                "Live assignment, worker, Resource lease, material preconditions and secret references checked",
+                                "Registered provider security policy remains enforced; protected gates recheck before effects",
+                                *(("Current-use input witness Artifact: " + self._input_sources(assignment)[-1],)
+                                    if _current_input_witness.get() is not None else ()))),
+                        retry_policy=ActionIntentRetryPolicy(max_attempts=step.max_attempts, backoff_seconds=step.retry_backoff_seconds)), actor=actor)
+                    state.action_intent_id = intent.id
+                    checkpoint.status = "running"; state.status = "running"
+                    assignment = self._save(assignment, checkpoint)
+                    if self.worker_actor is None:
+                        raise ProcedureExecutionError("procedure_action_worker_unavailable")
+                    if intent.status == ActionIntentStatus.PENDING:
+                        intent = self.intents.claim(ActionIntentClaimRequest(worker_id="procedure:" + assignment.id,
+                            lease_seconds=max(10, min(3600, step.timeout_seconds + 10))),
+                            intent_id=intent.id, actor=self.worker_actor)
+                        if intent is None:
+                            return assignment
+                        intent = await self.intents.execute_claimed(intent.id, "procedure:" + assignment.id, actor=self.worker_actor)
+                    elif intent.status in {"claimed", "executing"}:
+                        # Another delivery owns the intent. Existing stale-claim recovery
+                        # determines known-unstarted versus uncertain, never this runner.
                         return assignment
-                    intent = await self.intents.execute_claimed(intent.id, "procedure:" + assignment.id, actor=self.worker_actor)
-                elif intent.status in {"claimed", "executing"}:
-                    # Another delivery owns the intent. Existing stale-claim recovery
-                    # determines known-unstarted versus uncertain, never this runner.
-                    return assignment
                 state.attempts = intent.attempt
                 if intent.status in {"uncertain", "requires_reconciliation"}:
                     state.status = "reconciliation_required"; checkpoint.status = "reconciliation_required"
@@ -1930,7 +2160,13 @@ class ProcedureExecutionService:
                 receipt = next((r for r in history.receipts if r.id == intent.last_receipt_id), None)
                 if receipt is None or receipt.result is None:
                     raise ProcedureExecutionError("procedure_action_receipt_missing")
-                result = await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
+                # Persist the observed original attempt before its owned result
+                # writer; recovery never borrows an unrecorded later attempt.
+                if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                    result = await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
+                else:
+                    assignment = self._save(assignment, checkpoint)
+                    return await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
             elif step.worker:
                 if state.attempts >= step.max_attempts:
                     raise ProcedureExecutionError("procedure_diagnostic_retry_exhausted")
@@ -1943,18 +2179,7 @@ class ProcedureExecutionService:
                     assignment, step, code, values), timeout=step.timeout_seconds + 5)
             else:
                 result = await self._judgment(assignment, step, actor, values)
-            bounded_data(result)
-            if (not isinstance(result, dict) or set(result) != {"outputs", "evidence"}
-                or not isinstance(result["evidence"], dict)
-                or any(not isinstance(v, str) or not v or len(v) > 200 for v in result["evidence"].values())
-                or len(set(result["evidence"].values())) != len(result["evidence"])):
-                raise ProcedureExecutionError("procedure_output_contract_invalid")
-            state.evidence = result["evidence"]
-            self._record_outputs(assignment, step, state, result.get("outputs", {}), actor)
-            self._proof(assignment, step, state, actor)
-            positive_deadline = self._guarded_readonly_deadline(assignment, procedure, step)
-            state.status = "succeeded"; checkpoint.status = "ready"; state.not_before = None
-            return self._save(assignment, checkpoint, positive_deadline=positive_deadline)
+            return self._complete_step_result(assignment, step, actor, procedure, result)
         except (ProcedureExecutionError, ProcedureAdmissionError) as exc:
             if exc.code == "procedure_checkpoint_conflict":
                 raise
@@ -1966,7 +2191,20 @@ class ProcedureExecutionService:
         step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None) if 'procedure' in locals() else None
         state = checkpoint.steps[step.id] if step else None
         if state:
+            if settlement_only:
+                # Keep the typed lane even when current authority, diagnostics
+                # or original proofs refuse; never fall through into recovery.
+                state.failure_code = "procedure_provider_result_settlement_required"
+                state.status = "reconciliation_required"
+                checkpoint.status = "reconciliation_required"
+                await self._attention(assignment, code, step.failure.escalation_owner_identity_id)
+                return self._save(assignment, checkpoint)
             state.failure_code = code
+            if (step.action and code == "procedure_provider_result_settlement_required"):
+                state.status = "reconciliation_required"
+                checkpoint.status = "reconciliation_required"
+                await self._attention(assignment, code, step.failure.escalation_owner_identity_id)
+                return self._save(assignment, checkpoint)
             if step.control_plane and step.kind in {"mutation", "recovery"} and state.attempts:
                 # A later authority/lease/metadata failure cannot retroactively
                 # prove that a previously owned canonical effect did not happen.
