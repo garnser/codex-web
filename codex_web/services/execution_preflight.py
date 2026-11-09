@@ -664,6 +664,10 @@ class ExecutionPreflightService:
             if not isinstance(item, dict):
                 continue
             value = dict(item)
+            from codex_web.native_empty_preparation import closed_empty_preparation_diagnostics
+            diagnostics = closed_empty_preparation_diagnostics(value.pop('native_empty_preparation_diagnostics', None))
+            if diagnostics:
+                value['native_empty_preparation_diagnostics'] = diagnostics
             # Reserved controller witness cannot be supplied by provider/HTTP detail.
             value.pop('local_preinput_refusal', None)
             if local_preinput_refusal is not None:

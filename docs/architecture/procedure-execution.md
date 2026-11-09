@@ -777,3 +777,16 @@ An expired or retired assignment/run cannot borrow new custody; a successful
 original ledger remains reportable even when its historical procedure cannot be
 operationally resumed. Existing procedure/Evidence inspectors expose the current
 state and INFO diagnostic; no new UI mutation, ledger or Definition kind exists.
+
+### Empty native preparation refusal diagnostics
+
+The attested empty-physical-scope fallback retains a bounded closed observation
+of local session attestation, native owner, physical scope, preparation context,
+candidate validation/consistency, discovery or otherwise unclassified fallback
+failures (#2036). These stage and
+safe exception categories accompany the original discovery refusal through the
+canonical preflight projection and existing inspector. Candidate failures remain
+refusals; diagnostics neither authorize retry nor establish provider non-start.
+Messages, arbitrary exception names and provider payloads are excluded. Current
+input and credential-CAS checks still repeat the original proof; no scope is
+inferred, no queued original is changed, and no diagnostic grants authority.
