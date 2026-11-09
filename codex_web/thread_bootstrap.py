@@ -36,6 +36,22 @@ class BootstrapPreworkerRefusal:
     error_http_status: int | None = None
 
 
+@dataclass(frozen=True)
+class BootstrapPreproviderRefusal:
+    """Internal joined admission refusal after worker start, before provider I/O.
+
+    A public cancellation reason or retained telemetry cannot construct authority.
+    The session owner must settle its exact worker before persisting this proof.
+    """
+
+    bootstrap_id: str
+    execution_id: str
+    error_type: str
+    guard_deadline_exceeded: bool
+    origin: RecipientBootstrapOrigin
+    error_http_status: int | None = None
+
+
 THREAD_BOOTSTRAP_BINDING_CONTRACT = ContractSpec(
     "thread-bootstrap-binding-state",
     "1.0",

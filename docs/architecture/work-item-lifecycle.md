@@ -712,3 +712,42 @@ note-only progress retains its existing wake behavior. No scheduler, queue,
 lease, admission or pending-handoff guards are relaxed. The existing Work
 inspector remains authoritative; these additive context fields require no new
 mutation control or persisted Work facet.
+
+
+### Joined recipient refusal after worker startup
+
+A recipient reservation may fail its last current-intent guard after its isolated
+worker started but before the provider thread-create boundary. The existing owned
+guard cancels its cooperative storage budget and joins the actual operation,
+including synchronous work, before returning a deadline refusal. Cancellation of
+an asyncio waiter alone is not this proof. The thread owner supplies a separate
+internal recipient-origin witness only from that exact joined guard boundary.
+The session owner first fences and releases the original reservation, then joins
+its worker teardown and requires no running process or pending executor work.
+Only afterward may the worker owner CAS a typed `before_provider_start`
+FailureRecord onto that unchanged terminal custody. A failed cleanup, changed
+fence/authority/scope, provider call, or absent origin leaves no recovery proof.
+
+The existing recipient preparer accepts this distinct known phase alongside its
+pre-worker phase. It revalidates the exact current Work, pending nonce, binding,
+Profile, execution Definition, resources, actor and unresolved-original guards.
+The same logical invocation may reserve only its existing single distinct
+physical generation, keeping the original cancelled assignment unchanged. A
+second generation refusal or UNKNOWN remains held; no new handoff, ACK, native
+input replay, Role-binding rewrite or generic cancellation reversal is admitted.
+
+Historical cancellations without the new authoritative witness remain held;
+telemetry and a missing provider receipt cannot retroactively authorize them.
+An operator may instead make a separately authorized normal replacement of an
+existing bound Role thread when its canonical current Profile and repository
+scope already match the pending Work. Ordinary compatible-recipient selection
+may then use that new LIVE Role custody; this does not retry or amend the old
+unbound reservation. Wrong scope, unresolved originals or any current admission
+refusal still block. Existing assignment Failure/provenance inspectors expose
+the typed phase and canonical blocker; no new UI operation or public recovery
+DTO is introduced.
+
+Recipient attribution serializes its exact assignment-field projection once per
+fresh guard. Discovery/checkpoint histories are not serialized repeatedly as
+unused proof inputs; current authority checks and the existing guard deadlines
+remain unchanged.
