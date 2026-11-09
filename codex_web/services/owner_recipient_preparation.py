@@ -85,6 +85,12 @@ class OwnerRecipientPreparationService:
                 organization_id=current.organization_id, workspace_id=current.workspace_id,
                 project_id=current.project_id)
             execution_definition = reference.model_dump(mode='json') if reference is not None else None
+        assignment_keys = ('id', 'execution_id', 'execution_workspace_id', 'created_by',
+            'agent_profile', 'resource_ids', 'repository_scope', 'sandbox',
+            'approval_policy', 'fence', 'status', 'assigned_worker_id')
+        # Serialize only the immutable attribution fields once. Checkpoints and
+        # discovery histories are neither proof inputs nor repeated guard work.
+        assignment_values = assignment.model_dump(mode='json', include=set(assignment_keys))
         proof = {'work_item_ref': current.ref, 'organization_id': current.organization_id,
             'workspace_id': current.workspace_id, 'project_id': current.project_id,
             'owner': owner, 'binding': binding.model_dump(mode='json'),
@@ -94,10 +100,7 @@ class OwnerRecipientPreparationService:
             'writable': sorted(writable), 'resources': sorted(current.resource_ids),
             'source': {key: getattr(source, key) for key in ('id', 'assignment_id',
                 'execution_id', 'execution_workspace_id', 'worker_id', 'provider_id', 'runtime_id')},
-            'assignment': {key: assignment.model_dump(mode='json').get(key) for key in
-                ('id', 'execution_id', 'execution_workspace_id', 'created_by', 'agent_profile',
-                 'resource_ids', 'repository_scope', 'sandbox', 'approval_policy', 'fence', 'status',
-                 'assigned_worker_id')},
+            'assignment': {key: assignment_values.get(key) for key in assignment_keys},
             'profile': profile.model_dump(mode='json'), 'actor_id': actor.identity_id,
             'routing_definition': snapshot.definition.model_dump(mode='json'),
             'execution_definition': execution_definition}
@@ -177,9 +180,25 @@ class OwnerRecipientPreparationService:
         details = failure.details if failure is not None else {}
         scope = assignment.repository_scope
         reference = assignment.execution_profile_definition
-        return (str(assignment.status) == 'cancelled' and assignment.fence == 1
-            and assignment.lease is None and assignment.assigned_worker_id is None
-            and assignment.started_at is None
+        preworker = (assignment.fence == 1 and assignment.assigned_worker_id is None
+            and assignment.started_at is None and failure is not None
+            and failure.source_native_code == 'before_worker_start'
+            and details.get('phase') == 'before_worker_start'
+            and details.get('worker_start_called') is False
+            and type(details.get('reservation_fence')) is int
+            and details.get('reservation_fence') == 0)
+        preprovider = (assignment.fence == 2 and assignment.assigned_worker_id is not None
+            and assignment.started_at is not None and failure is not None
+            and failure.worker_id == assignment.assigned_worker_id
+            and failure.source_native_code == 'before_provider_start'
+            and details.get('phase') == 'before_provider_start'
+            and details.get('worker_start_called') is True
+            and details.get('admission_guard_joined') is True
+            and details.get('worker_teardown_settled') is True
+            and type(details.get('reservation_fence')) is int
+            and details.get('reservation_fence') == 1)
+        return (str(assignment.status) == 'cancelled' and assignment.lease is None
+            and (preworker or preprovider)
             and assignment.subject is not None and assignment.subject.kind == 'thread_bootstrap'
             and assignment.subject.ref == 'bootstrap-' + logical_id
             and assignment.execution_id == 'thread-bootstrap-' + logical_id
@@ -200,10 +219,7 @@ class OwnerRecipientPreparationService:
             and failure.source_subsystem == 'thread-bootstrap-admission'
             and failure.assignment_id == assignment.id and failure.execution_id == assignment.execution_id
             and failure.correlation_id == assignment.subject.ref
-            and failure.source_native_code == 'before_worker_start'
-            and details.get('phase') == 'before_worker_start'
-            and details.get('provider_start_called') is False and details.get('worker_start_called') is False
-            and type(details.get('reservation_fence')) is int and details.get('reservation_fence') == 0
+            and details.get('provider_start_called') is False
             and type(details.get('generation')) is int and details.get('generation') == 0
             and details.get('created_by') == assignment.created_by
             and details.get('logical_id') == logical_id

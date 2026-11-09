@@ -1717,13 +1717,24 @@ class AssignmentBoundAgentProcessSessionManager:
             'execution_workspace_id': assignment.execution_workspace_id,
             'manager_started_at': self.started_at}
 
-    async def cancel_bootstrap(self, assignment_id: str, *, reason: str) -> ExecutionAssignment:
+    async def cancel_bootstrap(self, assignment_id: str, *, reason: str,
+                               preprovider_refusal=None) -> ExecutionAssignment:
         async with self._assignment_lock(assignment_id):
             session = self.sessions.get(assignment_id)
             if session is None or session.fence is None:
                 raise AssignmentBoundAgentProcessSessionStaleError(
                     "bootstrap cancellation requires the registered fenced session"
                 )
+            original = None
+            if preprovider_refusal is not None:
+                from codex_web.thread_bootstrap import BootstrapPreproviderRefusal
+                if not isinstance(preprovider_refusal, BootstrapPreproviderRefusal):
+                    raise AssignmentBoundAgentProcessSessionStaleError('invalid pre-provider refusal')
+                original = await asyncio.to_thread(self.local_worker._pending_assignment, assignment_id)
+                if (str(original.status) != 'running' or original.fence != session.fence
+                        or original.assigned_worker_id != session.worker_id
+                        or original.started_at is None or original.lease is None):
+                    raise AssignmentBoundAgentProcessSessionStaleError('pre-provider worker custody changed')
             cancelled = await asyncio.to_thread(
                 self.local_worker.worker_service.cancel_bootstrap,
                 assignment_id,
@@ -1734,6 +1745,18 @@ class AssignmentBoundAgentProcessSessionManager:
                 actor=self.local_worker.control_actor,
             )
             await session.stop()
+            if preprovider_refusal is not None:
+                # Do not authorize another physical attempt from cancellation
+                # alone. The owned worker process and executor must be settled.
+                stopped = session.status()
+                if (stopped.running or stopped.pending_executor_work != 0
+                        or stopped.worker_id != original.assigned_worker_id
+                        or stopped.fence != original.fence):
+                    raise AssignmentBoundAgentProcessSessionStaleError('pre-provider teardown unsettled')
+                from codex_web.services.async_operations import run_settled
+                cancelled = await run_settled(partial(
+                    self.local_worker.worker_service.record_bootstrap_preprovider_refusal,
+                    original, preprovider_refusal, actor=self.local_worker.control_actor))
             self.sessions.pop(assignment_id, None)
             return cancelled
 
@@ -1808,6 +1831,7 @@ class AssignmentBoundAgentProcessSessionManager:
         failure_message: str | None = None,
         artifact_ids: tuple[str, ...] = (),
         evidence_ids: tuple[str, ...] = (),
+        preprovider_refusal=None,
     ) -> ExecutionAssignment:
         session = self.sessions.get(assignment_id)
         if session is None:
@@ -1822,6 +1846,8 @@ class AssignmentBoundAgentProcessSessionManager:
                 return await self.cancel_bootstrap(
                     assignment_id,
                     reason=failure_message or failure_code or "bootstrap failed",
+                    **({'preprovider_refusal': preprovider_refusal}
+                       if preprovider_refusal is not None else {}),
                 )
         from codex_web.services.async_operations import run_settled
         assignment = await run_settled(session.validate_current)
