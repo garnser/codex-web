@@ -212,6 +212,17 @@ after awaited dispatch. Concurrent replacement, acknowledgement, closure and
 unrelated progress survive; an expiry event is emitted only after the matching
 current intake is actually archived.
 
+Undelivered-handoff expiry returns responsibility to the sender for a current
+business-readiness review; it does not make repair of the archived nonce a
+precondition to all later handoffs. Recipient preparation requires a genuine
+current pending handoff. Once current Work readiness and required evidence
+justify the next stage, the normal handoff owner commits that new intent before
+normal dispatch prepares its recipient. This is guidance, not automatic renewal,
+authority, evidence of QA, or a change to delivery TTL. Unresolved original native
+outcomes and current custody/authority denials remain blocking under their existing
+owners; historical receipts, archived nonces and independent validation requirements
+remain unchanged. Existing Work next-action/history surfaces display this disposition.
+
 After normal broker identity, tenant, Project, resource, execution-profile and
 operation authorization, the scoped work-item read includes a bounded
 `owner_dispatch` projection. It uses the same actionable-owner and responsible

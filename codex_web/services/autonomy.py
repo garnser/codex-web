@@ -720,7 +720,12 @@ class AutonomyService:
                         current.current_stage = "implementation_active"
                         current.next_owner = sender
                         current.next_action = (
-                            f"{sender}: reconcile the expired delivery to {recipient} and renew only after its exact blocker changes."
+                            f"{sender}: review current Work readiness and required evidence for {recipient}. "
+                            "Resolve unresolved original native outcomes and current custody or authority denials first. "
+                            "If validation or the next business stage is genuinely ready, request a new normal handoff; "
+                            "its dispatch prepares the recipient under that current nonce. "
+                            "Do not require preparation against the archived nonce, blindly renew unchanged failures, "
+                            "or replay an original input."
                             if awaiting_delivery else
                             f"{sender}: reconcile the expired intake to {recipient}; no pending acknowledgement remains."
                         )
