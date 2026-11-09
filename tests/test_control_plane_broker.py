@@ -2492,7 +2492,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_gitlab_artifacts_use_assignment_resource_and_credential_boundary(self) -> None:
-        from codex_web.code_hosts import CodeHostError, CodeHostUnsupportedCapabilityError
+        from codex_web.code_hosts import CodeHostUnsupportedCapabilityError
         from codex_web.resources import ResourceCreate, ResourceProvenance, ResourceType
         from codex_web.services.resources import ResourceCatalogService
         from codex_web.storage.resource_catalog import ResourceCatalogStore
@@ -2584,11 +2584,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("provider-secret", json.dumps(service.audit.load().model_dump(mode="json")))
         observed = len(calls)
         for path, error in (
-            ("?member_path=../index.html", CodeHostError),
-            ("?member_path=%2Findex.html", CodeHostError),
-            ("?member_path=html%5Cindex.html", CodeHostError),
-            ("?member_path=html%00index.html", CodeHostError),
-            ("?member_path=", CodeHostError),
+            ("?member_path=../index.html", ControlPlaneBrokerRequestError),
+            ("?member_path=%2Findex.html", ControlPlaneBrokerRequestError),
+            ("?member_path=html%5Cindex.html", ControlPlaneBrokerRequestError),
+            ("?member_path=html%00index.html", ControlPlaneBrokerRequestError),
+            ("?member_path=", ControlPlaneBrokerRequestError),
             ("?member_path=a&member_path=b", ControlPlaneBrokerRequestError),
             ("?max_bytes=327681", ControlPlaneBrokerRequestError),
         ):

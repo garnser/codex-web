@@ -52,6 +52,9 @@ from codex_web.code_hosts import (
     normalize_pull_request_state,
     CodeHostCapability,
     CodeHostError,
+    CodeHostArtifactUnavailableError,
+    CodeHostInvalidRequestError,
+    CodeHostUnsupportedCapabilityError,
     CodeHostProviderBinding,
     CodeHostTransientError,
 )
@@ -2467,8 +2470,32 @@ class ControlPlaneBrokerService:
                 elif getattr(exc, "transport_failure", False) is True:
                     message = "Governed repository read transport failed."
                     code = "repository_read_transport_error"
+                elif operation.id != "repository.read.artifact-download":
+                    # Preserve the released unknown/internal classification of
+                    # other repository reads; this boundary is artifact-only.
+                    raise
+                elif isinstance(exc, CodeHostInvalidRequestError):
+                    raise ControlPlaneBrokerRequestError(
+                        "Governed repository read request violates its bounded protocol.",
+                        status_code=400, code="repository_read_request_invalid",
+                    ) from None
+                elif isinstance(exc, CodeHostArtifactUnavailableError):
+                    code = ("repository_artifact_expired" if exc.expired
+                            else "repository_artifact_unavailable")
+                    message = ("Current artifact metadata reports the archive expired." if exc.expired
+                               else "Current artifact metadata does not establish a downloadable archive.")
+                elif isinstance(exc, CodeHostUnsupportedCapabilityError):
+                    code = "repository_read_unsupported"
+                    message = "The provider does not support this governed repository read."
+                elif isinstance(exc, CodeHostTransientError):
+                    code = "repository_read_transient_error"
+                    message = "Governed repository read failed transiently; verified facts are unavailable."
                 else:
-                    raise  # Unknown/internal failures retain their original classification.
+                    # A declared domain refusal (for example foreign job
+                    # identity or malformed size) is not verified absence. Do
+                    # not expose provider messages, paths or credential data.
+                    code = "repository_read_unverified"
+                    message = "Governed repository read could not establish verified facts."
                 # A hidden/inaccessible repository can also return404. This is
                 # never an absence witness or permission to publish/retry.
                 raise ControlPlaneBrokerRequestError(
