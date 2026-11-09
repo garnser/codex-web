@@ -11,6 +11,7 @@ import httpx
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import (
     CodeHostArtifactDownloadFact,
+    CodeHostArtifactUnavailableError,
     CodeHostArtifactFact,
     validate_artifact_member_path,
     CodeHostCapability,
@@ -615,7 +616,9 @@ class GitLabCodeHostProvider:
             raise CodeHostError("GitLab artifact job does not belong to the selected project")
         fact = self._artifact(job)
         if fact is None or fact.expired:
-            raise CodeHostError("GitLab job artifact is missing or expired")
+            # This describes the established metadata condition only. A member
+            # may still be hidden or inaccessible; never infer its absence.
+            raise CodeHostArtifactUnavailableError(expired=fact is not None and fact.expired)
         path = f"projects/{project}/jobs/{artifact_id}/artifacts"
         if member_path is not None:
             path += "/" + quote(member_path, safe="/")
