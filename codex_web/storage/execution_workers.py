@@ -197,6 +197,9 @@ EXECUTION_WORKER_MIGRATIONS.register(
 EXECUTION_WORKER_MIGRATIONS.register(
     "1.15", "1.16", lambda payload: {**payload, "schema_version": "1.16"},
 )
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.16", "1.17", lambda payload: {**payload, "schema_version": "1.17"},
+)
 
 
 class ExecutionWorkerStore:
@@ -218,7 +221,7 @@ class ExecutionWorkerStore:
         if not isinstance(payload, dict):
             raise ValueError("execution worker state must be an object")
         version = str(payload.get("schema_version") or "0.0")
-        target = version if version in {"1.15", "1.16"} else "1.14"
+        target = version if version in {"1.15", "1.16", "1.17"} else "1.14"
         if version != target:
             payload = EXECUTION_WORKER_MIGRATIONS.migrate(
                 payload,

@@ -188,6 +188,7 @@ class CodexAgentRuntimeAdapter:
     async def create_session(
         self,
         request: AgentRuntimeSessionRequest,
+        *, create_capture=None,
     ) -> AgentRuntimeResult:
         params: dict[str, Any] = {"sessionStartSource": "startup"}
         if request.workspace_cwd:
@@ -206,7 +207,14 @@ class CodexAgentRuntimeAdapter:
             params["developerInstructions"] = request.developer_instructions
         runtime = getattr(self.transport, "runtime", self.transport)
         generation = getattr(runtime, "generation", None)
-        response = await self.transport.request("thread/start", params)
+        if create_capture is None and self.runtime_id == 'codex':
+            factory = getattr(self.transport, 'bootstrap_create_capture', None)
+            if callable(factory):
+                create_capture = factory()
+        if create_capture is None:
+            response = await self.transport.request("thread/start", params)
+        else:
+            response = await self.transport.request_with_start_capture("thread/start", params, create_capture)
         result = self._result(response)
         # Codex has not written a rollout until the first turn. This local
         # optimization is valid only in the process that actually created it.

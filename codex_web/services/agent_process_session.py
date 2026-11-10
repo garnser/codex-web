@@ -1514,8 +1514,12 @@ class AssignmentBoundAgentProcessSession:
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
         return await self._request(method, params)
 
+    def bootstrap_create_capture(self):
+        from codex_web.services.bootstrap_native_create import BootstrapNativeCreateCapture
+        return BootstrapNativeCreateCapture(self.local_worker.worker_service, self.local_worker.control_actor)
+
     async def request_with_start_capture(self, method: str, params: Any, capture) -> dict[str, Any]:
-        if method not in {'turn/start', 'thread/resume'} or method != capture.rpc_method:
+        if method not in {'turn/start', 'thread/resume', 'thread/start'} or method != capture.rpc_method:
             raise ValueError('native capture method does not match its typed contract')
         return await self._request(method, params, start_capture=capture)
 
@@ -1529,6 +1533,8 @@ class AssignmentBoundAgentProcessSession:
             if start_capture is not None:
                 capture = start_capture.bind_assignment(assignment, worker_id=self.worker_id,
                     fence=self.fence, validator=self.validate_current)
+                if capture.rpc_method == 'thread/start':
+                    self._bootstrap_create_capture_enabled = True
                 return await self.runtime.request(method, params, start_capture=capture)
             return await self.runtime.request(method, params)
         except Exception as exc:
@@ -1731,6 +1737,16 @@ class AssignmentBoundAgentProcessSessionManager:
                     "bootstrap cancellation requires the registered fenced session"
                 )
             original = None
+            runtime = getattr(session, 'runtime', None)
+            process = (getattr(runtime, 'proc', None) if runtime is not None else None) or getattr(session, '_owned_process', None)
+            runtime_generation = getattr(runtime, 'generation', None)
+            from codex_web.services.async_operations import run_settled
+            cleanup_original = (await run_settled(partial(self.local_worker._pending_assignment, assignment_id))
+                if getattr(session, '_bootstrap_create_capture_enabled', False) else None)
+            cleanup_executors = tuple(executor for executor in (
+                getattr(session, '_supervision_executor', None),
+                getattr(session, '_diagnostic_executor', None), getattr(runtime, '_pipe_executor', None))
+                if executor is not None)
             if preprovider_refusal is not None:
                 from codex_web.thread_bootstrap import BootstrapPreproviderRefusal
                 if not isinstance(preprovider_refusal, BootstrapPreproviderRefusal):
@@ -1750,6 +1766,16 @@ class AssignmentBoundAgentProcessSessionManager:
                 actor=self.local_worker.control_actor,
             )
             await session.stop()
+            from codex_web.services.bootstrap_native_create import record_joined_cleanup
+            from codex_web.services.async_operations import run_settled
+            if cleanup_original is not None and cleanup_original.bootstrap_create_observation is not None:
+                # Only the newly correlated path claims joined executors. Old
+                # cancelled bootstraps retain their missing/unknown evidence.
+                for executor in cleanup_executors:
+                    await run_settled(partial(executor.shutdown, wait=True, cancel_futures=True))
+                await run_settled(partial(record_joined_cleanup,
+                    self.local_worker.worker_service, cleanup_original, self.local_worker.control_actor,
+                    runtime_generation=runtime_generation, process=process, status=session.status()))
             if preprovider_refusal is not None:
                 # Do not authorize another physical attempt from cancellation
                 # alone. The owned worker process and executor must be settled.

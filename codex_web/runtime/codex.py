@@ -211,7 +211,7 @@ class CodexRuntime:
         self.pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
         self.generation = uuid.uuid4().hex
         self.native_runtime_version: str | None = None
-        self._start_captures: dict[str, tuple[float, Any, Any]] = {}
+        self._start_captures: dict[str, tuple[float | None, Any, Any]] = {}
         self._start_capture_lock = asyncio.Lock()
         self.pending_approvals: dict[int | str, dict[str, Any]] = {}
         self.pending_approval_rpc_ids: dict[int | str, int | str] = {}
@@ -554,7 +554,7 @@ class CodexRuntime:
     def _prune_start_captures(self) -> None:
         now = time.monotonic()
         for key, (deadline, _, _) in tuple(self._start_captures.items()):
-            if deadline <= now:
+            if deadline is not None and deadline <= now:
                 self._start_captures.pop(key, None)
 
     async def _dispatch_message(self, message: dict[str, Any], *, generation: str | None = None) -> None:
@@ -567,8 +567,10 @@ class CodexRuntime:
             if slot is not None:
                 _, capture, correlation = slot
                 try:
-                    if await asyncio.to_thread(capture.observe, correlation,
-                                               generation=generation, message=message):
+                    observe = lambda: capture.observe(correlation, generation=generation, message=message)
+                    captured = (await run_settled(observe) if capture.rpc_method == 'thread/start'
+                                else await asyncio.to_thread(observe))
+                    if captured:
                         self._start_captures.pop(message['id'], None)
                 except Exception:
                     # Do not turn a persistence/projection failure into provider
@@ -816,7 +818,7 @@ class CodexRuntime:
         message_id = self.next_id
         self.next_id += 1
         if start_capture is not None:
-            if method not in {'turn/start', 'thread/resume'} or method != start_capture.rpc_method or not isinstance(params, dict):
+            if method not in {'turn/start', 'thread/resume', 'thread/start'} or method != start_capture.rpc_method or not isinstance(params, dict):
                 raise ValueError('native capture method does not match its typed contract')
             async with self._start_capture_lock:
                 self._prune_start_captures()
@@ -826,14 +828,17 @@ class CodexRuntime:
                 # the reader also checks the immutable process generation.
                 message_id = 'queued-start-' + uuid.uuid4().hex
                 generation = self.generation
-                correlation = await asyncio.to_thread(start_capture.prepare,
-                    generation=generation, rpc_request_id=message_id,
+                prepare = lambda: start_capture.prepare(generation=generation, rpc_request_id=message_id,
                     native_session_id=params.get('threadId'),
-                    **({'runtime_version':self.native_runtime_version} if method == 'thread/resume' else {}))
+                    **({'process_pid': self.proc.pid if self.proc is not None else None} if method == 'thread/start' else {}),
+                    **({'runtime_version': self.native_runtime_version} if method == 'thread/resume' else {}))
+                correlation = (await run_settled(prepare) if method == 'thread/start'
+                               else await asyncio.to_thread(prepare))
                 if generation != self.generation:
                     raise RuntimeError('native start transport generation changed during preparation')
                 self._start_captures[message_id] = (
-                    time.monotonic() + self.START_CAPTURE_TTL_SECONDS, start_capture, correlation)
+                    None if method == 'thread/start' else time.monotonic() + self.START_CAPTURE_TTL_SECONDS,
+                    start_capture, correlation)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self.pending[message_id] = future
