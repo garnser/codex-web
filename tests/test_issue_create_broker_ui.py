@@ -1,15 +1,14 @@
 """Import the real inspector module graph and render its canonical broker metadata."""
 import json
-from pathlib import Path
 import subprocess
 import unittest
 
 from codex_web.services.control_plane_broker import ControlPlaneBrokerService
+from tests.js_module_fixture import static_module_fixture
 
 
 class IssueCreateBrokerUiTests(unittest.TestCase):
     def test_actual_module_renders_canonical_request_schema_and_preserves_legacy_views(self):
-        root = Path(__file__).resolve().parents[1]
         operation = next(item for item in ControlPlaneBrokerService.operations()
                          if item.id == "repository.issue.create")
         descriptor = ControlPlaneBrokerService.public_operation(operation)
@@ -49,8 +48,8 @@ assert.doesNotMatch(html, /Accepted request formats/);
 delete item.brokered_control_plane;
 assert.match(brokerDeclarationHtml(item, 'project'), /Brokered control plane/);
 '''
-        result = subprocess.run([
-            "node", "--experimental-default-type=module", "--input-type=module", "-e", script,
-            (root / "static/control_plane_broker_view.js").as_uri(), json.dumps(descriptor),
-        ], capture_output=True, text=True, timeout=30)
+        with static_module_fixture("control_plane_broker_view.js") as entry:
+            result = subprocess.run([
+                "node", "--input-type=module", "-e", script, entry, json.dumps(descriptor),
+            ], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
