@@ -448,6 +448,7 @@ class NativeProcedureAdmissionService:
         self.execution_profiles = execution_profiles
         self.input_authorizer = None
         self.native_session_attestor = None
+        self.native_session_preparer = None
         self.procedure_execution = None
         self.reasoning_preparation = None
         self.bootstrap_bindings = None
@@ -593,7 +594,7 @@ class NativeProcedureAdmissionService:
         expected_context = context
         def validate():
             current = checked('session_attestation', lambda: self._current_preparation_assignment(assignment))
-            checked('session_attestation', lambda: self.native_session_attestor(current, self.procedure_execution))
+            checked('session_attestation', lambda: self._attest_native_session(current))
             # Attestation itself may span a renewal; its return is not authority.
             current = checked('native_owner', lambda: self._current_preparation_assignment(current))
             checked('native_owner', lambda: self.procedure_execution.validate_native_preparation(current, selected, actor))
@@ -621,6 +622,30 @@ class NativeProcedureAdmissionService:
         checked('candidate_consistency', consistent_selection)
         return discovery, text
 
+    def _attest_native_session(self, assignment):
+        from codex_web.services.native_procedure_preparation import attest_prepared_session
+        return attest_prepared_session(assignment, self.procedure_execution, self.native_session_attestor)
+
+    def _seal_initial_credentials(self, assignment, selected, actor, validate):
+        options = {}
+        from codex_web.runtime.execution import TurnExecutionService
+        attestor, preparer = self.native_session_attestor, self.native_session_preparer
+        canonical_pair = (
+            getattr(attestor, '__func__', None) is TurnExecutionService.attest_native_provider_preparation
+            and getattr(preparer, '__func__', None) is TurnExecutionService.prepare_native_provider_preparation
+            and getattr(attestor, '__self__', None) is getattr(preparer, '__self__', None))
+        if canonical_pair:
+            from codex_web.services.native_procedure_preparation import native_session_observation
+            def prepare():
+                proof = preparer(assignment, self.procedure_execution)
+                if self.native_session_attestor is not attestor or self.native_session_preparer is not preparer:
+                    raise ValueError('Native preparation attestor pair changed')
+                return native_session_observation(proof, attestor=attestor,
+                    procedures=self.procedure_execution)
+            options['prepare_session'] = prepare
+        return self.procedure_execution.admit_initial_native_credentials(
+            assignment, selected, actor, validate, **options)
+
     def _admit_initial_native_credentials(self, assignment, selected, actor, project, sandbox, request_checksum, *, _diagnostics=None):
         # An explicit writer on the initial path only. Shared preparation and
         # guarded input remain read-only, including on resumed native sessions.
@@ -636,7 +661,7 @@ class NativeProcedureAdmissionService:
                 _diagnostics=_diagnostics)
             if fresh.context_checksum != expected.context_checksum:
                 raise ValueError("initial native credential preparation changed")
-        return self.procedure_execution.admit_initial_native_credentials(
+        return self._seal_initial_credentials(
             self._current_preparation_assignment(assignment), selected, actor, validate)
 
     async def prepare_automation(self, *, project, actor, thread_id, execution_id,
@@ -740,7 +765,7 @@ class NativeProcedureAdmissionService:
                 if self.native_session_attestor is None or self.procedure_execution is None:
                     raise ValueError("physical scope is not attested")
                 current = self._current_preparation_assignment(assignment)
-                self.native_session_attestor(current, self.procedure_execution)
+                self._attest_native_session(current)
             checked('session_attestation', attest)
             checked('native_owner', lambda: self.procedure_execution.validate_native_preparation_owner(
                 self._current_preparation_assignment(assignment)))
@@ -978,7 +1003,7 @@ class NativeProcedureAdmissionService:
                             "code": "procedure_native_preparation_changed",
                             "message": "Current empty native preparation differs from its initial admission",
                         })
-                return self.procedure_execution.admit_initial_native_credentials(
+                return self._seal_initial_credentials(
                     self._current_preparation_assignment(assignment), (), actor, validate)
             try:
                 assignment = await asyncio.to_thread(seal_empty)
@@ -1214,6 +1239,7 @@ def install_native_procedure_admission(turns, sessions, discovery, workers, hist
     """One production wiring point for native turns and provider-neutral sessions."""
     admission = NativeProcedureAdmissionService(discovery, workers, history, control_actor, execution_profiles)
     admission.native_session_attestor = getattr(turns, "attest_native_provider_preparation", None)
+    admission.native_session_preparer = getattr(turns, 'prepare_native_provider_preparation', None)
     admission.procedure_execution = procedure_execution
     admission.bootstrap_bindings = getattr(turns, "bootstrap_bindings", None)
     turns.procedure_admission = admission

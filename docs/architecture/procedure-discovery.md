@@ -1,5 +1,19 @@
 # Procedure discovery and operational admission
 
+Initial native credential sealing prepares expensive process/session resource
+validation before taking the assignment writer. Only the canonical paired native
+runtime attestor/preparer can install a process-local observation; custom
+attestors retain their full existing validation. The guarded CAS still resolves
+current immutable assignment custody, live finite lease, token/acquisition/fence,
+current metadata/candidate/context and credential scope. The observation rechecks
+the exact registered manager/session, process object/generation, readiness,
+backend and serving broker identity without rescanning disk or probing a backend
+under those locks. It is neither serialized nor an authority grant. Ordinary
+final native-input guards continue to perform full validation. Same-owner lease
+renewals are permitted; expiry, revocation or changed ownership/metadata refuse.
+Metadata reads still hold canonical guards and may contend; this separation
+removes physical-attestation coupling, not every possible source of lease delay.
+
 Operational procedures remain immutable `agent.skill` Definitions. Discovery uses
 `OperationalProcedure@1.0`, the Skill resolver/security gates, canonical Resources,
 Project scope, current requester identity and existing action authority/policy. No

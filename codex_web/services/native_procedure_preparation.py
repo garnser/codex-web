@@ -33,6 +33,36 @@ class NativeProviderPreparation:
 
 
 _current = ContextVar("native_provider_procedure_preparation", default=None)
+_session_observation = ContextVar('native_session_preparation_observation', default=None)
+
+
+@dataclass(frozen=True)
+class NativeSessionPreparationObservation:
+    """Ephemeral owning-session proof; never serialized or accepted from input."""
+    assignment_id: str
+    validate: Callable[[object, object], None] = field(repr=False, compare=False)
+
+
+@contextmanager
+def native_session_observation(proof, *, attestor, procedures):
+    if type(proof) is not NativeSessionPreparationObservation:
+        raise ValueError('Actual native session preparation observation required')
+    token = _session_observation.set((proof, attestor, procedures))
+    try:
+        yield
+    finally:
+        _session_observation.reset(token)
+
+
+def attest_prepared_session(assignment, procedures, attestor):
+    observed = _session_observation.get()
+    if observed is None:
+        return attestor(assignment, procedures)
+    proof, original_attestor, original_procedures = observed
+    if (original_attestor is not attestor or original_procedures is not procedures
+            or proof.assignment_id != assignment.id):
+        raise ValueError('Native session preparation owner changed')
+    return proof.validate(assignment, procedures)
 
 
 def current_preparation():
