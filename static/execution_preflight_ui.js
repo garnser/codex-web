@@ -177,6 +177,18 @@ export function createExecutionPreflightUi({
             return `Native preparation: ${stage} · exception ${exception}\nOriginal preflight: ${attempt.id}\n`
               + 'Inspect this retained original; diagnostics do not authorize retry.';
           }),
+          ...blockers.flatMap(blocker => {
+            const stages = ['session_attestation', 'native_owner', 'physical_scope', 'preparation_context',
+              'candidate_validation', 'candidate_consistency', 'discovery', 'fallback'];
+            const exceptions = ['TimeoutError', 'ValueError', 'TypeError', 'LookupError', 'OSError',
+              'RuntimeError', 'AssertionError', 'Exception', 'AttributeError', 'NameError', 'KeyError',
+              'IndexError', 'PermissionError', 'FileNotFoundError', 'NotImplementedError'];
+            const rows = Array.isArray(blocker.native_empty_preparation_diagnostics)
+              ? blocker.native_empty_preparation_diagnostics.slice(0, stages.length) : [];
+            return rows.filter(row => row && stages.includes(row.stage) && exceptions.includes(row.exception_type))
+              .map(row => `Empty-scope preparation: ${row.stage} · exception ${row.exception_type}\n`
+                + `Original preflight: ${attempt.id}\nDiagnostics do not authorize retry or prove non-start.`);
+          }),
           ...blockers.filter(blocker => blocker.code === 'native_session_scope_incompatible').map(blocker =>
             `Native session ${blocker.agent_session_id} · previous assignment ${blocker.previous_assignment_id} · refused assignment ${blocker.assignment_id}\n`
             + `Previous repositories: ${(blocker.original_resource_ids || []).join(', ')}\n`
