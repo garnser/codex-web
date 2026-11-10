@@ -31,8 +31,8 @@ class MissionSupervisorTests(unittest.TestCase):
 
     def sample(self, **runner):
         return {"checked_at": self.now, "service": {"ActiveState": "active"},
-                "observer": {"checked_at": self.now, "threads": {"thread": {
-                    "queue_depth": 0, "activity": "idle", "runner": runner}}}}
+                "observer": {"checked_at": self.now, "inspection_status": "complete", "threads": {"thread": {
+                    "queue_depth": 0, "activity": "idle", "runner": {"state": "idle", **runner}}}}}
 
     def test_retired_idle_runner_is_not_new_work_failure(self):
         snapshot = self.sample(state="lost", assignmentStatus="cancelled", leaseValid=False, processRunning=False)
@@ -149,6 +149,227 @@ class MissionSupervisorTests(unittest.TestCase):
             "threads": {"t": {"name": "private", "output": "private", "progress": {"turn_id": "a", "text": "raw"}}}})
         self.assertNotIn("private", json.dumps(reduced))
         self.assertNotIn("raw", json.dumps(reduced))
+
+    def observer_sample(self, *, complete=True, state="running"):
+        tid = "01a16582-cf57-7003-84d1-159c324e70f7"
+        return {"checked_at": self.now, "inspection_complete": complete, "conditions": {},
+            "threads": {tid: {"activity": "active", "queue_depth": 1,
+                "runner": {"state": state, "assignmentStatus": "running",
+                    "assignmentId": "assignment-" + "a" * 32, "fence": 1,
+                    "leaseValid": state != "lost", "processRunning": state != "lost"}}}}
+
+    def observe_raw(self, raw, previous=None, *, now=None):
+        snapshot = {"service": {"ActiveState": "active"}, "observer": monitor.reduce_observer(raw)}
+        return snapshot, monitor.observe(snapshot, previous or {}, now=self.now if now is None else now)
+
+    def test_fresh_failed_project_inspection_preserves_unknown_runner_status(self):
+        previous, failures = self.observe_raw(self.observer_sample(state="lost"))
+        monitor.retain_signals(self.state, failures, now=self.now, observer=previous["observer"])
+        key = failures[0].key
+        item = self.state["signals"][key]
+        original_metadata = dict(item["metadata"])
+        raw = {"checked_at": self.now + 60, "threads": {}, "inspection_complete": False,
+            "conditions": {"project_inspection": {"kind": "inspection_failed", "error_type": "HTTPError"}}}
+        snapshot, signals = self.observe_raw(raw, previous, now=self.now + 60)
+        self.assertEqual([s.kind for s in signals], ["observer_inspection_incomplete"])
+        monitor.retain_signals(self.state, signals, now=self.now + 60, observer=snapshot["observer"])
+        self.assertFalse(item["current"])
+        self.assertEqual(item["observation_status"], "unknown")
+        self.assertEqual(item["last_seen"], self.now)
+        self.assertEqual(item["metadata"], original_metadata)
+        self.assertNotIn("resolved", item)
+
+    def test_partial_reads_detect_good_lane_failure_but_ignore_failed_lane_payload(self):
+        raw = self.observer_sample(state="lost")
+        failed_tid = "01a16582-cf57-7003-84d1-159c324e70f8"
+        raw["threads"][failed_tid] = dict(next(iter(raw["threads"].values())), read_error_type="HTTPError")
+        snapshot, signals = self.observe_raw(raw)
+        self.assertEqual(snapshot["observer"]["inspection_status"], "incomplete")
+        self.assertEqual(snapshot["observer"]["failed_thread_count"], 1)
+        self.assertEqual([s.kind for s in signals], ["observer_inspection_incomplete", "current_runner_failure"])
+        self.assertNotIn(failed_tid, [s.metadata.get("thread_id") for s in signals])
+
+    def test_missing_or_malformed_legacy_completeness_never_proves_project_coverage(self):
+        for declared in (None, "true", 1, [], {}):
+            with self.subTest(declared=declared):
+                raw = self.observer_sample(state="lost")
+                raw["inspection_complete"] = declared
+                snapshot, signals = self.observe_raw(raw)
+                self.assertEqual(snapshot["observer"]["inspection_status"], "unknown")
+                self.assertEqual([s.kind for s in signals], ["observer_inspection_incomplete", "current_runner_failure"])
+        raw.pop("inspection_complete")
+        self.assertEqual(monitor.reduce_observer(raw)["inspection_status"], "unknown")
+
+    def test_declared_complete_cannot_override_inspection_error_or_malformed_inventory(self):
+        for mutation in (
+            {"conditions": {"project": {"kind": "inspection_failed", "error_type": "private"}}},
+            {"conditions": []}, {"threads": []}, {"threads": {"invalid": {}}},
+            {"threads": {"01a16582-cf57-7003-84d1-159c324e70f7": {"runner": []}}},
+        ):
+            with self.subTest(mutation=mutation):
+                raw = self.observer_sample()
+                raw.update(mutation)
+                self.assertEqual(monitor.reduce_observer(raw)["inspection_status"], "incomplete")
+
+    def test_stale_observer_does_not_refresh_historical_runner_failure(self):
+        raw = self.observer_sample(state="lost")
+        previous, signals = self.observe_raw(raw)
+        monitor.retain_signals(self.state, signals, now=self.now, observer=previous["observer"])
+        snapshot, stale = self.observe_raw(raw, previous, now=self.now + 301)
+        self.assertEqual([s.kind for s in stale], ["observer_stale"])
+        monitor.retain_signals(self.state, stale, now=self.now + 301, observer=snapshot["observer"])
+        self.assertEqual(self.state["signals"][signals[0].key]["observation_status"], "unknown")
+
+    def test_successful_fresh_thread_read_settles_failure_observation_without_claiming_resolution(self):
+        previous, signals = self.observe_raw(self.observer_sample(state="lost"))
+        monitor.retain_signals(self.state, signals, now=self.now, observer=previous["observer"])
+        key = signals[0].key
+        for retired in (False, True):
+            raw = self.observer_sample()
+            raw["checked_at"] = self.now + 60
+            if retired:
+                sample = next(iter(raw["threads"].values()))
+                sample.update(activity="idle", queue_depth=0)
+                sample["runner"].update(state="lost", assignmentStatus="cancelled", leaseValid=False, processRunning=False)
+            snapshot, observed = self.observe_raw(raw, previous, now=self.now + 60)
+            self.assertEqual(observed, [])
+            monitor.retain_signals(self.state, observed, now=self.now + 60, observer=snapshot["observer"])
+            self.assertFalse(self.state["signals"][key]["current"])
+            self.assertEqual(self.state["signals"][key]["observation_status"], "not_observed")
+            self.assertNotIn("issue_closed", self.state["signals"][key])
+
+    def test_complete_empty_inventory_does_not_prove_absent_runner_recovered(self):
+        previous, signals = self.observe_raw(self.observer_sample(state="lost"))
+        monitor.retain_signals(self.state, signals, now=self.now, observer=previous["observer"])
+        snapshot, empty = self.observe_raw({"checked_at": self.now + 60, "inspection_complete": True,
+            "threads": {}, "conditions": {}}, previous, now=self.now + 60)
+        self.assertEqual(empty, [])
+        monitor.retain_signals(self.state, empty, now=self.now + 60, observer=snapshot["observer"])
+        self.assertEqual(self.state["signals"][signals[0].key]["observation_status"], "unknown")
+        raw = self.observer_sample(state="unknown")
+        raw["checked_at"] = self.now + 60
+        snapshot, unknown = self.observe_raw(raw, previous, now=self.now + 60)
+        monitor.retain_signals(self.state, unknown, now=self.now + 60, observer=snapshot["observer"])
+        self.assertEqual(self.state["signals"][signals[0].key]["observation_status"], "unknown")
+
+    def test_coverage_signal_has_one_identity_and_retains_prior_launch_receipt(self):
+        for offset, declared in ((0, False), (60, None), (120, False)):
+            raw = {"checked_at": self.now + offset, "inspection_complete": declared, "threads": {}}
+            snapshot, signals = self.observe_raw(raw, now=self.now + offset)
+            monitor.retain_signals(self.state, signals, now=self.now + offset, observer=snapshot["observer"])
+        self.assertEqual(list(self.state["signals"]), ["observer:inspection"])
+        self.assertEqual(monitor.choose_signal(self.state, self.config, now=self.now + 120), "observer:inspection")
+        self.state["signals"]["observer:inspection"].update(job_id="existing", issue_write_attempted=True)
+        complete = {"checked_at": self.now + 180, "inspection_complete": True, "threads": {}}
+        snapshot, signals = self.observe_raw(complete, now=self.now + 180)
+        monitor.retain_signals(self.state, signals, now=self.now + 180, observer=snapshot["observer"])
+        self.assertFalse(self.state["signals"]["observer:inspection"]["current"])
+        complete.update(checked_at=self.now + 240, inspection_complete=False)
+        snapshot, signals = self.observe_raw(complete, now=self.now + 240)
+        monitor.retain_signals(self.state, signals, now=self.now + 240, observer=snapshot["observer"])
+        self.assertEqual(self.state["signals"]["observer:inspection"]["job_id"], "existing")
+        self.assertTrue(self.state["signals"]["observer:inspection"]["issue_write_attempted"])
+        self.assertIsNone(monitor.choose_signal(self.state, self.config, now=self.now + 240))
+
+    def test_reduced_coverage_metadata_is_bounded_and_omits_private_diagnostics(self):
+        raw = self.observer_sample(complete=False)
+        raw["conditions"] = {"private name": {"kind": "inspection_failed", "error_type": "private", "message": "private"}}
+        sample = next(iter(raw["threads"].values()))
+        sample["read_error_type"] = "private"
+        reduced = monitor.reduce_observer(raw)
+        self.assertNotIn("private", json.dumps(reduced))
+        self.assertEqual(reduced["failed_thread_count"], 1)
+        many = {"checked_at": self.now, "inspection_complete": True, "threads": {
+            f"00000000-0000-0000-0000-{i:012x}": {"runner": {"state": "running"}} for i in range(201)}}
+        reduced = monitor.reduce_observer(many)
+        self.assertEqual(len(reduced["threads"]), 200)
+        self.assertEqual(reduced["inspection_status"], "incomplete")
+
+    def test_tick_persists_unknown_failure_and_exposes_coverage_without_live_actions(self):
+        previous, signals = self.observe_raw(self.observer_sample(state="lost"))
+        monitor.retain_signals(self.state, signals, now=self.now, observer=previous["observer"])
+        monitor.atomic_json(self.root / "state.json", self.state)
+        monitor.atomic_json(self.root / "latest.json", previous)
+        self.config["automatic_investigations"] = False
+        monitor.atomic_json(self.root / "config.json", self.config)
+        snapshot, _ = self.observe_raw({"checked_at": self.now + 60, "inspection_complete": False,
+            "threads": {}, "conditions": {"project": {"kind": "inspection_failed"}}}, now=self.now + 60)
+        snapshot.update(github_checked_at=self.now + 60, disk_free=9 * 1024**3,
+            memory_available=4 * 1024**3, bugs=[])
+        with patch.object(monitor, "collect", return_value=snapshot), redirect_stdout(io.StringIO()):
+            monitor.tick(self.root, now=self.now + 60, run=lambda _: self.fail("classification must not perform live actions"))
+        saved = monitor.load_state(self.root)
+        self.assertEqual(saved["signals"][signals[0].key]["observation_status"], "unknown")
+        self.assertTrue(saved["signals"]["observer:inspection"]["current"])
+        self.assertEqual(saved["jobs"], {})
+        self.assertEqual(monitor.read_json(self.root / "summary.json")["observer_inspection_status"], "incomplete")
+
+    def test_canonical_cancelled_and_waiting_projections_are_successful_inspections(self):
+        for state, assignment in (("cancelled", "cancelled"), ("waiting", "pending"), ("waiting", "claimed")):
+            with self.subTest(state=state, assignment=assignment):
+                raw = self.observer_sample(state=state)
+                sample = next(iter(raw["threads"].values()))
+                sample.update(activity="idle", queue_depth=0, runner_projection_status="present")
+                sample["runner"].update(assignmentStatus=assignment, leaseValid=True, processRunning=True)
+                snapshot, signals = self.observe_raw(raw)
+                self.assertEqual(snapshot["observer"]["inspection_status"], "complete")
+                self.assertEqual(snapshot["observer"]["failed_thread_count"], 0)
+                self.assertEqual(signals, [])
+
+    def test_explicit_null_projection_is_complete_coverage_without_runner_evidence(self):
+        for marker in (None, "absent"):
+            raw = self.observer_sample()
+            sample = next(iter(raw["threads"].values()))
+            sample["runner"] = None
+            if marker:
+                sample["runner_projection_status"] = marker
+            snapshot, signals = self.observe_raw(raw)
+            reduced = next(iter(snapshot["observer"]["threads"].values()))
+            self.assertTrue(reduced["inspection_ok"])
+            self.assertIsNone(reduced["runner"])
+            self.assertEqual(snapshot["observer"]["inspection_status"], "complete")
+            self.assertEqual(signals, [])
+
+    def test_legacy_all_null_projection_and_contradictory_markers_stay_incomplete(self):
+        fields = ("state", "assignmentId", "assignmentStatus", "fence", "leaseValid",
+            "leaseExpiresAt", "updatedAt", "processRunning", "live", "reason", "pendingExecutorWork")
+        cases = [
+            {"runner": dict.fromkeys(fields)}, {}, {"runner": {}}, {"runner": []},
+            {"runner": None, "runner_projection_status": "present"},
+            {"runner": {"state": "cancelled"}, "runner_projection_status": "absent"},
+            {"runner": None, "runner_projection_status": "invalid"},
+            {"runner": None, "runner_projection_status": "private"},
+            {"runner": {"state": "waiting"}, "read_error_type": "HTTPError"},
+            {"runner": None, "runner_projection_status": "absent", "read_error_type": None},
+            {"runner": {"state": None}, "runner_projection_status": "absent"},
+        ]
+        for sample in cases:
+            with self.subTest(sample=sample):
+                raw = self.observer_sample()
+                tid = next(iter(raw["threads"]))
+                raw["threads"][tid] = sample
+                snapshot, signals = self.observe_raw(raw)
+                self.assertEqual(snapshot["observer"]["inspection_status"], "incomplete")
+                self.assertEqual([s.kind for s in signals], ["observer_inspection_incomplete"])
+
+    def test_successful_flattened_absence_marker_keeps_prior_runner_failure_unknown(self):
+        previous, signals = self.observe_raw(self.observer_sample(state="lost"))
+        monitor.retain_signals(self.state, signals, now=self.now, observer=previous["observer"])
+        original = dict(self.state["signals"][signals[0].key]["metadata"])
+        raw = self.observer_sample()
+        raw["checked_at"] = self.now + 60
+        sample = next(iter(raw["threads"].values()))
+        sample["runner_projection_status"] = "absent"
+        sample["runner"] = dict.fromkeys(("state", "assignmentId", "assignmentStatus", "fence", "leaseValid",
+            "leaseExpiresAt", "updatedAt", "processRunning", "live", "reason", "pendingExecutorWork"))
+        snapshot, observed = self.observe_raw(raw, previous, now=self.now + 60)
+        self.assertEqual(observed, [])
+        self.assertEqual(snapshot["observer"]["inspection_status"], "complete")
+        monitor.retain_signals(self.state, observed, now=self.now + 60, observer=snapshot["observer"])
+        item = self.state["signals"][signals[0].key]
+        self.assertEqual(item["observation_status"], "unknown")
+        self.assertEqual(item["metadata"], original)
+        self.assertEqual(item["last_seen"], self.now)
 
     def test_receipt_is_not_inferred_issue_closure(self):
         job = {"id": "a", "status": "running", "unit": "same.service"}
