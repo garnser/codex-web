@@ -98,6 +98,10 @@ class WorkerLeaseError(ExecutionWorkerError):
     reason_code = FailureReason.WORKER_LEASE_LOST
 
 
+class ProcedureDiscoveryLeaseRefusal(WorkerLeaseError):
+    """Canonical discovery writer refused its live-lease guard, not provider I/O."""
+
+
 class WorkerCapabilityError(ExecutionWorkerError):
     reason_code = FailureReason.CAPABILITY_UNAVAILABLE
 
@@ -1239,7 +1243,7 @@ class ExecutionWorkerService:
             if item.fence != expected_fence or item.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}:
                 raise WorkerLeaseError("procedure discovery assignment fence/status changed")
             if item.lease is None or item.lease.expires_at <= time.time():
-                raise WorkerLeaseError("procedure discovery requires a live assignment lease")
+                raise ProcedureDiscoveryLeaseRefusal("procedure discovery requires a live assignment lease")
             if (item.organization_id, item.workspace_id, item.project_id) != (
                 discovery.organization_id, discovery.workspace_id, discovery.project_id):
                 raise AuthorizationError("procedure discovery scope differs from assignment")
