@@ -73,6 +73,7 @@ from codex_web.services.action_intents import ActionIntentConflictError, ActionI
 from codex_web.services.agent_profiles import AgentProfileError
 from codex_web.services.definitions import DefinitionCompatibilityError, DefinitionConflictError
 from codex_web.services.code_host_action_contract import (
+    CodeHostActionContract,
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_CREATE_ACTION_ID,
@@ -742,6 +743,8 @@ class ControlPlaneBrokerService:
                     if item.id == "repository.branch.publish" else []
                 ),
             }
+            if item.id == "repository.issue.create":
+                result["request_body"]["parameters"] = CodeHostActionContract.issue_create_parameters_schema()
             if item.id == "repository.pull-request.ready":
                 result["explicit_declaration_required"] = True
                 result["request_body"]["parameters"] = {
@@ -1696,6 +1699,15 @@ class ControlPlaneBrokerService:
             ),
             requested_by=requester_actor.identity_id,
         )
+        if action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            try:
+                # Validate the provider's existing contract before durable
+                # admission; preserve the original request and idempotency key.
+                CodeHostActionContract.issue_create(request)
+            except ValueError as exc:
+                raise ControlPlaneBrokerRequestError(
+                    str(exc), status_code=400, code="invalid_issue_create_parameters",
+                ) from None
         # Publishing, MR creation, and merging may include provider-side checks. Give
         # those bounded operations enough time without letting the caller extend
         # execution or retry authority. The lease also covers receipt recording.

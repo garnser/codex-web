@@ -54,6 +54,8 @@ CODE_HOST_CHANGE_REQUEST_EVIDENCE = "code-host-change-request"
 CODE_HOST_BRANCH_EVIDENCE = "code-host-branch"
 CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE = "code-host-pull-request-merge"
 CODE_HOST_JOB_RERUN_EVIDENCE = "code-host-job-rerun"
+_ISSUE_TITLE_MAX_CHARS = 256
+_ISSUE_BODY_MAX_CHARS = 65536
 
 _LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REVISION = re.compile(r"^[0-9a-f]{40,64}$")
@@ -413,6 +415,18 @@ class CodeHostActionContract:
         return body.strip()
 
     @staticmethod
+    def issue_create_parameters_schema() -> dict[str, Any]:
+        """Discovery for the same existing title/body parser, without effects."""
+        return {
+            "type": "object", "additionalProperties": False, "required": ["title"],
+            "properties": {
+                "title": {"type": "string", "minLength": 1,
+                          "maxLength": _ISSUE_TITLE_MAX_CHARS, "pattern": r"\S"},
+                "body": {"type": "string", "maxLength": _ISSUE_BODY_MAX_CHARS, "default": ""},
+            },
+        }
+
+    @staticmethod
     def issue_create(request: ActionRequest) -> dict[str, str]:
         if set(request.parameters) - {"title", "body"}:
             raise ValueError("unsupported issue create parameters")
@@ -420,9 +434,9 @@ class CodeHostActionContract:
         body = request.parameters.get("body", "")
         if not isinstance(title, str) or not title.strip():
             raise ValueError("issue title is required")
-        if len(title) > 256:
+        if len(title) > _ISSUE_TITLE_MAX_CHARS:
             raise ValueError("issue title exceeds limit")
-        if not isinstance(body, str) or len(body) > 65536:
+        if not isinstance(body, str) or len(body) > _ISSUE_BODY_MAX_CHARS:
             raise ValueError("issue body must be a bounded string")
         return {"title": title.strip(), "body": body.strip()}
 
