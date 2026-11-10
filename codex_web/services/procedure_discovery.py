@@ -31,6 +31,19 @@ def checksum(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+class _EmptyPreparationUnavailable(ValueError):
+    """An unavailable observation cannot supply a local non-input witness."""
+
+
+class _EmptyPreparationCandidatesChanged(ValueError):
+    """Owned consistency check, not authority inferred from exception prose."""
+
+    def __init__(self, *, no_exclusions, references_changed):
+        super().__init__("physical-scope candidates changed or are unsupported")
+        self.no_exclusions = no_exclusions
+        self.references_changed = references_changed
+
+
 @dataclass(frozen=True)
 class OperationContext:
     """Core-resolved context, not authority supplied by procedure instructions."""
@@ -741,6 +754,7 @@ class NativeProcedureAdmissionService:
         context = replace(context, policy_source=context.policy_source + ";" + source,
             capability_sources=(*context.capability_sources,source))
         excluded = []
+        validation_failed = []
         def excludes(reference):
             if reference not in references:
                 return False
@@ -748,6 +762,7 @@ class NativeProcedureAdmissionService:
                 checked('candidate_validation', lambda: self.procedure_execution.validate_native_preparation(
                     self._current_preparation_assignment(assignment), (reference,), actor, require_targets=False))
             except Exception:
+                validation_failed.append(True)
                 return False
             excluded.append(reference)
             return True
@@ -756,8 +771,14 @@ class NativeProcedureAdmissionService:
             discovery, text = checked('discovery', lambda: self.discovery.discover(context,
                 _include_supporting_context=_include_supporting_context))
         def consistent():
-            if not excluded or tuple(candidate.reference for candidate in discovery.candidates) != tuple(references):
-                raise ValueError("physical-scope candidates changed or are unsupported")
+            # Check unavailable observations even when another candidate was
+            # excluded successfully and the full ordered inventory is unchanged.
+            if validation_failed or discovery.outcome == 'failed':
+                raise _EmptyPreparationUnavailable('Current empty native preparation observation is unavailable')
+            references_changed = tuple(candidate.reference for candidate in discovery.candidates) != tuple(references)
+            if not excluded or references_changed:
+                raise _EmptyPreparationCandidatesChanged(no_exclusions=not excluded,
+                    references_changed=references_changed)
         checked('candidate_consistency', consistent)
         return discovery, text
 
@@ -927,14 +948,28 @@ class NativeProcedureAdmissionService:
                         # the credential CAS, including candidate exclusions and
                         # policy/capability provenance. Supporting retrieval can
                         # audit, so it must remain outside this writer lock.
-                        fresh, _ = self._empty_preparation_discovery(current, actor, project,
-                            sandbox, request_checksum, empty_preparation_references,
-                            _include_supporting_context=False)
+                        try:
+                            fresh, _ = self._empty_preparation_discovery(current, actor, project,
+                                sandbox, request_checksum, empty_preparation_references,
+                                _include_supporting_context=False)
+                        except _EmptyPreparationCandidatesChanged as exc:
+                            raise ExecutionPrestartRefusal(status_code=409, detail={
+                                "code": "procedure_native_preparation_changed",
+                                "message": ("Current empty native preparation has no supported candidate exclusions"
+                                    if exc.no_exclusions else
+                                    "Current empty native preparation candidate references changed"),
+                                "native_empty_preparation_diagnostics": [
+                                    {"stage": "candidate_consistency", "exception_type": "ValueError"}],
+                            }) from exc
                     else:
                         # A genuine zero-candidate discovery has no attested
                         # exclusions; retain its original plain-context check.
                         fresh_context = self.discovery.assignment_context(context, current, actor=actor)
                         fresh, _ = self.discovery.discover(fresh_context, _include_supporting_context=False)
+                    # The plain zero-candidate branch has no empty-proof callback;
+                    # it must also preserve errors caught by discovery as unknown.
+                    if fresh.outcome == 'failed':
+                        raise _EmptyPreparationUnavailable('Current empty native preparation observation is unavailable')
                     if not fresh.admitted or fresh.selected or fresh.context_checksum != discovery.context_checksum:
                         # This comparison is an authoritative local pre-input
                         # refusal. Unexpected storage/attestor failures still
