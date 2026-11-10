@@ -72,10 +72,63 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
     async def test_terminal_before_usage_then_canonical_event_accounts_exact_original_once(self):
         await self.account_native_usage(delayed=True)
 
-    async def account_native_usage(self, *, delayed):
+    async def test_idle_before_terminal_accounts_exact_original_once(self):
+        await self.account_native_usage(delayed=False, idle_first=True)
+
+    async def test_idle_before_terminal_then_late_usage_accounts_exact_original_once(self):
+        await self.account_native_usage(delayed=True, idle_first=True)
+
+    async def test_idle_and_foreign_terminal_preserve_original_then_duplicate_is_noop(self):
+        active=await self.start_home_goal_native()
+        self.home_goal.usage.upsert(self.canonical_usage(active))
+        self.execution.record_thread_activity({'method':'thread/status/changed','params':{'threadId':self.thread,'status':{'type':'idle'}}})
+        self.execution.record_thread_activity({'method':'turn/completed','params':{'threadId':self.thread,'turn':{'id':'foreign-turn'}}})
+        self.assertEqual(self.execution._active_turn(self.thread),active)
+        self.assertNotIn(self.assignment.id,self.execution.assignment_completion_tasks)
+        foreign=active.model_copy(update={'fence':active.fence+1})
+        with self.assertRaisesRegex(ValueError,'terminal custody changed'):
+            await self.home_goal.record_terminal(foreign,succeeded=True)
+        pending=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(pending.home_continuation.delivery.phase,'started')
+        terminal={'method':'turn/completed','params':{'threadId':self.thread,'turn':{'id':active.turn_id}}}
+        self.execution.record_thread_activity(terminal)
+        task=self.execution.assignment_completion_tasks[self.assignment.id]
+        self.execution.record_thread_activity(terminal)
+        await task
+        settled=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.execution.record_thread_activity(terminal)
+        await self.home_goal.record_terminal(active,succeeded=True)
+        self.assertEqual(self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant),settled)
+        self.assertEqual(settled.home_continuation.model_calls,1)
+        self.assertEqual(len(self.starts()),1)
+
+    async def test_idle_and_unknown_usage_never_settle_or_replay_original(self):
+        active=await self.start_home_goal_native()
+        self.home_goal.usage.upsert(self.canonical_usage(active).model_copy(update={'terminal_outcome':'unknown'}))
+        for status in ('idle','systemError','notLoaded'):
+            self.execution.record_thread_activity({'method':'thread/status/changed','params':{'threadId':self.thread,'status':{'type':status}}})
+            self.assertEqual(self.execution._active_turn(self.thread),active)
+            self.assertNotIn(self.assignment.id,self.execution.assignment_completion_tasks)
+        self.execution.record_thread_activity({'method':'turn/completed','params':{'threadId':self.thread,'turn':{'id':active.turn_id}}})
+        await self.execution.assignment_completion_tasks[self.assignment.id]
+        current=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(current.home_continuation.delivery.phase,'terminal_pending_usage')
+        self.assertEqual(current.home_continuation.model_calls,0)
+        self.assertIsNone(current.home_continuation.delivery.usage_id)
+        await self.goal_continuation.dispatch_once(current.id,scope=self.actor.tenant)
+        self.assertEqual(len(self.starts()),1)
+        self.assertEqual(self.queue_store.get(self.thread),[])
+
+    async def account_native_usage(self, *, delayed, idle_first=False):
         active=await self.start_home_goal_native()
         usage=self.canonical_usage(active)
         if not delayed:self.home_goal.usage.upsert(usage)
+        if idle_first:
+            self.execution.record_thread_activity({'method':'thread/status/changed','params':{'threadId':self.thread,'status':{'type':'idle'}}})
+            self.assertEqual(self.execution._active_turn(self.thread),active)
+            pending=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+            self.assertEqual(pending.home_continuation.delivery.phase,'started')
+            self.assertEqual(pending.home_continuation.model_calls,0)
         self.execution.record_thread_activity({'method':'turn/completed','params':{'threadId':self.thread,'turn':{'id':active.turn_id}}})
         await self.execution.assignment_completion_tasks[self.assignment.id]
         if delayed:
@@ -94,6 +147,7 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         current=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
         self.assertEqual(current.home_continuation.delivery.phase,'settled')
         self.assertEqual(current.home_continuation.delivery.usage_id,usage.id)
+        self.assertEqual(current.home_continuation.model_calls,1)
         self.assertEqual((current.home_continuation.input_tokens,current.home_continuation.output_tokens),(17,9))
         self.assertEqual(current.status,'blocked')  # One-call budget exhausted, not a completed Goal.
         self.assertEqual(current.home_continuation.reserved_calls,1)

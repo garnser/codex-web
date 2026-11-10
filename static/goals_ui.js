@@ -438,6 +438,11 @@ function renderExecutionBindings() {
   }
   return state.executionBindings.map((item) => {
     const status = item.status || 'unknown';
+    const home = item.home_continuation;
+    const delivery = home?.delivery;
+    const accounting = delivery ? `
+        <small>Home delivery: ${esc(delivery.phase)}${delivery.phase === 'terminal_pending_usage' ? ' · Execution terminal; accounting pending' : ''}</small>
+        <small>Accounted model calls: ${esc(home.model_calls ?? 0)} · input tokens: ${esc(home.input_tokens ?? 0)} · output tokens: ${esc(home.output_tokens ?? 0)} · usage: ${esc(delivery.usage_id || 'not recorded')}</small>` : '';
     const actions = [];
     const projectDelegation = item.execution_mode === 'project_delegation';
     if (!(item.work_item_refs || []).length && !['active', 'unknown', 'failed', 'completed', 'cancelled'].includes(status)) {
@@ -475,6 +480,7 @@ function renderExecutionBindings() {
         <small>last turn: ${esc(item.last_turn_id || '—')} · last execution: ${esc(item.last_execution_id || '—')} · activity: ${esc(fmtTime(item.heartbeat_at || item.updated_at))}</small>
         <small>attempts: ${esc(item.recovery_attempts ?? 0)} · lease owner: ${esc(item.lease_owner_id || '—')} · lease expires: ${esc(fmtTime(item.lease_expires_at))}</small>
         <small>execution mode: ${esc(item.execution_mode || 'application_continuation')} · Project delegation: ${esc(item.delegation_authorization || 'none')}</small>
+        ${accounting}
         <small>stop/block reason: ${esc(item.stop_reason || '—')}</small>
       </div>`;
   }).join('');
