@@ -31,7 +31,9 @@ def referenced_assignments(store):
     from codex_web.storage.artifact_evidence import ARTIFACT_EVIDENCE_MIGRATIONS, ARTIFACT_EVIDENCE_CONTRACT
     from codex_web.storage.upgrades import UpgradeStore
     from codex_web.compatibility import ContractCompatibilityError
-    from codex_web.storage.goal_execution_bindings import GoalExecutionBindingStore
+    from codex_web.storage.goal_execution_bindings import (
+        GoalExecutionBindingStore, GOAL_EXECUTION_BINDING_CONTRACT,
+    )
     from codex_web.thread_bootstrap import ThreadBootstrapBindingState, THREAD_BOOTSTRAP_BINDING_CONTRACT
 
     refs = set()
@@ -144,14 +146,15 @@ def referenced_assignments(store):
         goals = read('goal_execution_bindings')
         if goals is not None:
             if (not isinstance(goals, dict) or not isinstance(goals.get('schema_version', '1.0'), str)
-                    or goals.get('schema_version', '1.0') not in {'1.0', '1.1', '1.2'}
+                    or goals.get('schema_version', '1.0') not in GOAL_EXECUTION_BINDING_CONTRACT.supported
                     or not isinstance(goals.get('bindings'), list)):
                 raise ReferenceInventoryUnavailable('invalid Goal roots')
+            GOAL_EXECUTION_BINDING_CONTRACT.require(goals.get('schema_version', '1.0'))
             goal_state = GoalExecutionBindingStore._decode(goals)
             if any(b.agent_session_id not in session_ids
                    for b in goal_state.bindings):
                 raise ReferenceInventoryUnavailable('missing Goal session root')
-            # Includes the exact retained HomeGoalDelivery, not just session IDs.
+            # Includes retained Home and Project deliveries, not just session IDs.
             walk(goal_state.model_dump(mode='json'))
         for item in mapping(read('active_turns')).values():
             walk(ActiveThreadTurn.model_validate(item).model_dump(mode='json'))

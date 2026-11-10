@@ -439,10 +439,12 @@ function renderExecutionBindings() {
   return state.executionBindings.map((item) => {
     const status = item.status || 'unknown';
     const home = item.home_continuation;
-    const delivery = home?.delivery;
+    const progress = home || item.project_continuation;
+    const delivery = progress?.delivery;
     const accounting = delivery ? `
-        <small>Home delivery: ${esc(delivery.phase)}${delivery.phase === 'terminal_pending_usage' ? ' · Execution terminal; accounting pending' : ''}</small>
-        <small>Accounted model calls: ${esc(home.model_calls ?? 0)} · input tokens: ${esc(home.input_tokens ?? 0)} · output tokens: ${esc(home.output_tokens ?? 0)} · usage: ${esc(delivery.usage_id || 'not recorded')}</small>` : '';
+        <small>${home ? 'Home' : 'Project'} delivery: ${esc(delivery.phase)}${delivery.phase === 'terminal_pending_usage' ? ' · Execution terminal; accounting pending' : ''}</small>
+        <small>Accounted model calls: ${esc(progress.model_calls ?? 'unknown')} · input tokens: ${esc(progress.input_tokens ?? 'unknown')} · output tokens: ${esc(progress.output_tokens ?? 'unknown')} · usage: ${esc(delivery.usage_id || 'not recorded')}</small>
+        ${home ? '' : `<small>Original input: ${esc(delivery.id)} · assignment: ${esc(delivery.assignment_id)} · queue: ${esc(delivery.queued_id || 'unconfirmed')} · roots: ${esc((delivery.work_item_refs || []).join(', ') || 'Project graph')}</small>`}` : '';
     const actions = [];
     const projectDelegation = item.execution_mode === 'project_delegation';
     if (!(item.work_item_refs || []).length && !['active', 'unknown', 'failed', 'completed', 'cancelled'].includes(status)) {

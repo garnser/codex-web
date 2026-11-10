@@ -6,12 +6,14 @@ from codex_web.goal_execution_bindings import GoalExecutionBindingState
 from codex_web.compatibility import ContractSpec, MigrationRegistry
 
 
-GOAL_EXECUTION_BINDING_CONTRACT = ContractSpec("goal-execution-binding-state", "1.2", ("1.0", "1.1", "1.2"))
+GOAL_EXECUTION_BINDING_CONTRACT = ContractSpec("goal-execution-binding-state", "1.3", ("1.0", "1.1", "1.2", "1.3"))
 GOAL_EXECUTION_BINDING_MIGRATIONS = MigrationRegistry("goal-execution-binding-state")
 GOAL_EXECUTION_BINDING_MIGRATIONS.register("1.0", "1.1",
     lambda payload: {**payload, "schema_version": "1.1"})
 GOAL_EXECUTION_BINDING_MIGRATIONS.register("1.1", "1.2",
     lambda payload: {**payload, "schema_version": "1.2"})
+GOAL_EXECUTION_BINDING_MIGRATIONS.register("1.2", "1.3",
+    lambda payload: {**payload, "schema_version": "1.3"})
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 

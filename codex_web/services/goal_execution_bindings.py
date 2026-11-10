@@ -224,6 +224,12 @@ class GoalExecutionBindingService:
             if application_only and current.execution_mode != GoalExecutionMode.APPLICATION:
                 result = current
                 return state
+            project = current.project_continuation
+            original = project.delivery if project else None
+            if (original is not None and original.phase != 'settled'
+                    and 'last_execution_id' in payload.model_fields_set
+                    and payload.last_execution_id != original.id):
+                raise GoalExecutionBindingConflictError('Unresolved Project original execution identity is immutable')
             if current.execution_mode == GoalExecutionMode.PROJECT_DELEGATION and payload.status in {
                     GoalExecutionBindingStatus.REQUESTED, GoalExecutionBindingStatus.ACTIVE, GoalExecutionBindingStatus.IDLE}:
                 raise GoalExecutionBindingConflictError("delegation cannot rewrite continuation status")
@@ -401,6 +407,9 @@ class GoalExecutionBindingService:
             current = self._binding(state, binding_id, actor.tenant)
             goal = self.goals.get(current.goal_id, scope=actor.tenant)
             roots = [r for r in goal.work_graph_bindings if r.project_id == current.project_id]
+            project = current.project_continuation
+            if project is not None and project.delivery is not None and project.delivery.phase != 'settled':
+                raise GoalExecutionBindingConflictError('Unresolved Project original cannot transfer to delegation')
             if (current.updated_at != expected_updated_at
                     or current.delegation_revision != expected_delegation_revision or goal.status != "active"
                     or current.goal_revision != goal.revision

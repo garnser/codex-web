@@ -663,15 +663,17 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         from codex_web.compatibility import ContractSpec
         raw=self.goal_bindings.store.load().model_dump(mode='json')
         self.assertNotIn('home_continuation',raw['bindings'][0])
+        self.assertNotIn('project_continuation',raw['bindings'][0])
         raw['schema_version']='1.1'
         self.f.sqlite.put(self.goal_bindings.store.namespace,raw)
         migrated=self.goal_bindings.store.load()
-        self.assertEqual(migrated.schema_version,'1.2')
+        self.assertEqual(migrated.schema_version,'1.3')
         # Reading is inert: no new contract may be written by cold composition.
         self.assertEqual(self.f.sqlite.get(self.goal_bindings.store.namespace)['schema_version'],'1.1')
         self.goal_bindings.store.update(lambda state:state)
         written=self.f.sqlite.get(self.goal_bindings.store.namespace)
-        self.assertEqual(written['schema_version'],'1.2')
+        self.assertEqual(written['schema_version'],'1.3')
+        self.assertNotIn('project_continuation',written['bindings'][0])
         old=ContractSpec('goal-execution-binding-state','1.1',('1.0','1.1'))
         with self.assertRaises(Exception):old.require(written['schema_version'])
         selected=self.goal_bindings.store.binding_state(self.goal_binding.id,
@@ -688,16 +690,18 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
             calls.append('child')
             raise ValueError('Preserved child observer failure')
         async def goal(active,**kwargs):calls.append('goal')
+        async def project_goal(active,**kwargs):calls.append('project-goal')
         async def restart(active,**kwargs):calls.append('restart')
         async def followup(active,**kwargs):calls.append('followup')
         env={'home_child_terminal_service':NS(record_terminal=failed),
             'home_goal_continuation':NS(record_terminal=goal),
+            'project_goal_continuation':NS(record_terminal=project_goal),
             'home_restart_recovery_service':NS(record_terminal=restart),
             'home_operator_followup':NS(record_terminal=followup)}
         exec(compile(ast.Module(body=[fn],type_ignores=[]),'actual-application-terminal-composition','exec'),env)
         with self.assertRaisesRegex(ValueError,'Preserved child'):
             await env[fn.name](object(),succeeded=True)
-        self.assertEqual(calls,['child','goal','restart','followup'])
+        self.assertEqual(calls,['child','goal','project-goal','restart','followup'])
 
 
 def load_tests(loader, tests, pattern):

@@ -1,4 +1,5 @@
 """Real canonical SQLite retention; no application/native/provider execution."""
+import hashlib
 import json
 from pathlib import Path
 import threading
@@ -13,6 +14,7 @@ from codex_web.artifact_evidence import Artifact, ArtifactEvidenceState
 from codex_web.execution_workers import ExecutionAssignment, WorkerLifecycle
 from codex_web.goal_execution_bindings import GoalExecutionBinding, GoalExecutionBindingState
 from codex_web.home_goal import HomeGoalDelivery, HomeGoalProgress
+from codex_web.project_goal_delivery import ProjectGoalDelivery, ProjectGoalProgress
 from codex_web.definitions import DefinitionReference
 from codex_web.models import (ActiveThreadTurn, QueuedTurn, OwnerLaneRecoveryContext,
     HomeOperatorCoordinationDispatch, ExecutionPreflightAttempt, ExecutionPreflightBlocker)
@@ -126,6 +128,36 @@ class ReferencedAssignmentRetentionTests(unittest.TestCase):
         for value in (goal_assignment,recovery_assignment,checkpoint_assignment):
             self.assertEqual(self.workers.assignment(value.id),value)
         self.assertEqual(before_roots,{name:self.db.get(name) for name in before_roots})
+
+    def test_project_goal_13_delivery_preserves_assignment_without_disabling_pruning(self):
+        retained = self.terminals[0]
+        session = self.session(self.active).model_copy(update={'project_id': 'data'})
+        AgentSessionStore(self.db).upsert(session)
+        message = 'Continue this existing Project MR from its retained original'
+        roots = ('data!26',)
+        delivery = ProjectGoalDelivery(id='project-goal-private-retained', goal_revision=1,
+            work_item_refs=roots, requested_by='local-admin', continuation_owner_id='private-goal-owner',
+            session_id=session.id, thread_id=session.provider_native_session_id,
+            assignment_id=retained.id, assignment_fingerprint='a'*64,
+            message=message, message_sha256=hashlib.sha256(message.encode()).hexdigest())
+        goal = GoalExecutionBinding(organization_id='local', workspace_id='default', goal_id='private-project-goal',
+            goal_revision=1, project_id='data', work_item_refs=roots, provider_id='openai', runtime_id='codex',
+            agent_session_id=session.id, thread_id=session.provider_native_session_id,
+            execution_owner_id='local-admin', created_by='local-admin', updated_by='local-admin',
+            change_reason='Private retained Project original', last_execution_id=delivery.id,
+            lease_owner_id=delivery.continuation_owner_id,
+            project_continuation=ProjectGoalProgress(reserved_calls=1, delivery=delivery))
+        store = GoalExecutionBindingStore(self.db)
+        store.update(lambda state: GoalExecutionBindingState(bindings=[goal]))
+        before = self.db.get(store.namespace)
+        self.assertEqual(before['schema_version'], '1.3')
+        self.ordinary_worker_update()
+        self.assertEqual(self.workers.assignment(retained.id), retained)
+        self.assertEqual(self.db.get(store.namespace), before)
+        # A rejected/unknown root schema suppresses all pruning. Prove that the
+        # new schema is understood, with exactly one extra retained predecessor.
+        self.assertIsNone(self.workers.assignment(self.terminals[1].id))
+        self.assertEqual(sum(a.status == 'lost' for a in self.workers.load().assignments), 129)
 
     def test_queued_failed_and_home_target_and_typed_preflight_roots_are_kept(self):
         failed, target, refused = self.terminals[:3]

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serial
 
 
 from codex_web.home_goal import HomeGoalProgress
+from codex_web.project_goal_delivery import ProjectGoalProgress
 
 
 class GoalExecutionMode(StrEnum):
@@ -116,6 +117,7 @@ class GoalExecutionBinding(BaseModel):
     native_objective_supported: bool = False
     capability_snapshot: tuple[str, ...] = ()
     home_continuation: HomeGoalProgress | None = None
+    project_continuation: ProjectGoalProgress | None = None
     execution_mode: GoalExecutionMode = GoalExecutionMode.APPLICATION
     delegation_authorization: ProjectDelegationAuthorization = ProjectDelegationAuthorization.NONE
     delegation_revision: int = Field(default=0, ge=0)
@@ -140,11 +142,30 @@ class GoalExecutionBinding(BaseModel):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
+    @model_validator(mode='after')
+    def project_delivery_scope(self):
+        if self.project_continuation is None:
+            return self
+        if (self.home_continuation is not None or self.project_id == 'home'
+                or (self.provider_id, self.runtime_id) != ('openai', 'codex')):
+            raise ValueError('Project continuation cannot acquire Home or foreign runtime authority')
+        d = self.project_continuation.delivery
+        if d is not None:
+            if (d.goal_revision, d.work_item_refs, d.requested_by, d.session_id, d.thread_id) != (
+                    self.goal_revision, self.work_item_refs, self.execution_owner_id, self.agent_session_id, self.thread_id):
+                raise ValueError('Project continuation original binding scope differs')
+            if d.phase != 'settled' and (self.execution_mode != GoalExecutionMode.APPLICATION
+                    or self.last_execution_id != d.id):
+                raise ValueError('Unresolved Project original cannot transfer execution ownership')
+        return self
+
     @model_serializer(mode="wrap")
     def omit_home_continuation(self, handler):
         result = handler(self)
         if self.home_continuation is None:
             result.pop("home_continuation", None)
+        if self.project_continuation is None:
+            result.pop("project_continuation", None)
         return result
 
 
@@ -165,6 +186,6 @@ class GoalExecutionBindingEvent(BaseModel):
 class GoalExecutionBindingState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.2"] = "1.2"
+    schema_version: Literal["1.3"] = "1.3"
     bindings: list[GoalExecutionBinding] = Field(default_factory=list)
     events: list[GoalExecutionBindingEvent] = Field(default_factory=list)
