@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import threading
 import tempfile
 import unittest
@@ -29,6 +30,31 @@ from codex_web.services.threads import ThreadService
 from codex_web.storage.agent_sessions import AgentSessionStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.thread_index import ThreadIndexRepository
+
+
+@asynccontextmanager
+async def held_context_request(request, entered, release, phase):
+    """Own the actual request through all fixture exits, including failed entry."""
+    task = asyncio.create_task(request)
+    entry = asyncio.create_task(entered.wait())
+    try:
+        # Whole-fixture deadlock guard, not an assertion of request latency.
+        done, _ = await asyncio.wait({task, entry}, timeout=60,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            raise AssertionError(f'Fixture deadlock guard: no request completion or held {phase} entry')
+        if task in done:
+            response = await task  # Surface the real request exception first.
+            raise AssertionError(
+                f'Context request completed before held {phase} inspection: HTTP {response.status_code}')
+        yield task
+    finally:
+        release.set()
+        entry.cancel()
+        await asyncio.gather(entry, return_exceptions=True)
+        # Deadlock cleanup guard only; request speed is not an acceptance rule.
+        # Join before leaving the client's lifetime or removing storage patches.
+        await asyncio.wait_for(task, 30)
 
 
 class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
@@ -239,21 +265,30 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         self.delegate.read.assert_not_called()
 
     async def test_real_context_and_scope_storage_do_not_block_event_loop_and_recheck_scope(self):
-        entered, release = threading.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        entered, release = asyncio.Event(), threading.Event()
         database = self.sessions.store.store
         original = database.record_page
         phases = []
+        loop_violations = []
         # Both scope lookup and context status use real canonical SQLite reads;
         # controlled stalls are below the composed service, never on the loop.
+        def hold(phase):
+            phases.append(phase)
+            loop.call_soon_threadsafe(entered.set)
+            if threading.get_ident() == loop_thread:
+                # Never deadlock OLD or rely on an assertion which _queue_depth
+                # could swallow. The test asserts this durable witness itself.
+                loop_violations.append(phase)
+                return
+            release.wait()
         def slow_page(*args, **kwargs):
-            phases.append('scope')
-            entered.set()
-            if not release.wait(2): raise TimeoutError('controlled scope timeout')
+            hold('scope')
             return original(*args, **kwargs)
         def queue_depth(thread):
-            phases.append('context')
-            entered.set()
-            if not release.wait(2): raise TimeoutError('controlled context timeout')
+            if blocked_phase == 'context':
+                hold('context')
             database.record_get(self.sessions.store.records_namespace, 'meta')
             return 0
         context = ContextCompactionService(request_for_thread=AsyncMock(), pending_approvals=lambda: {},
@@ -266,28 +301,67 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
             return await call_next(request)
         app.include_router(build_context_router(context, self.scope))
         for blocked_phase in ['scope', 'context']:
-            phases.clear(); entered.clear(); release.clear()
+            phases.clear(); loop_violations.clear(); entered.clear(); release.clear()
             with patch.object(database, 'record_items', side_effect=AssertionError('history scan')), \
                  patch.object(database, 'record_page', side_effect=slow_page if blocked_phase == 'scope' else original):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://fixture') as client:
-                    task = asyncio.create_task(client.get('/api/threads/thread-a/context?project_id=a'))
-                    ticks = 0
-                    try:
-                        async with asyncio.timeout(1):
-                            while not entered.is_set(): await asyncio.sleep(.002)
-                        for _ in range(10):
-                            await asyncio.sleep(.005)
-                            ticks += 1
+                    async with held_context_request(
+                            client.get('/api/threads/thread-a/context?project_id=a'),
+                            entered, release, blocked_phase) as task:
+                        self.assertEqual(loop_violations, [], 'canonical storage ran on the event-loop thread')
+                        progressed = asyncio.Event()
+                        loop.call_soon(progressed.set)
+                        await progressed.wait()
                         self.assertFalse(task.done())
-                        self.assertEqual(ticks, 10, 'request-loop heartbeat stalled')
+                        self.assertFalse(release.is_set(), 'worker gate opened without loop-owned release')
                         if blocked_phase == 'context':
                             item = self.sessions.store.find_unique_by_native_id('thread-a', provider_id='openai', runtime_id='codex')
                             self.sessions.store.upsert(item.model_copy(update={'project_id': 'b'}))
-                    finally:
-                        release.set()
-                    response = await asyncio.wait_for(task, 2)
+                    response = task.result()
+                    self.assertEqual(loop_violations, [], 'canonical storage ran on the event-loop thread')
                     self.assertEqual(response.status_code, 200 if blocked_phase == 'scope' else 404, response.text)
             self.assertIn(blocked_phase, phases)
+
+    async def test_held_context_request_surfaces_early_response_without_waiting_for_storage(self):
+        entered, release = asyncio.Event(), threading.Event()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                     base_url='http://fixture') as client:
+            with self.assertRaisesRegex(AssertionError, 'before held scope inspection: HTTP 404'):
+                async with held_context_request(client.get('/missing-route'), entered, release, 'scope'):
+                    self.fail('an early response reached the held-storage inspection')
+        self.assertTrue(release.is_set())
+        self.assertFalse(entered.is_set())
+
+    async def test_held_context_request_joins_real_read_when_inspection_raises(self):
+        loop = asyncio.get_running_loop()
+        entered, release = asyncio.Event(), threading.Event()
+        completed = []
+        database = self.sessions.store.store
+        original = database.record_page
+        def held_page(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            if threading.get_ident() == loop_thread:
+                return original(*args, **kwargs)
+            release.wait()
+            result = original(*args, **kwargs)
+            completed.append(True)
+            return result
+        loop_thread = threading.get_ident()
+        with patch.object(database, 'record_page', side_effect=held_page):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                         base_url='http://fixture') as client:
+                owned = None
+                with self.assertRaisesRegex(RuntimeError, 'controlled inspection failure'):
+                    async with held_context_request(
+                            client.get('/api/threads/thread-a/context?project_id=a'),
+                            entered, release, 'scope') as owned:
+                        raise RuntimeError('controlled inspection failure')
+                self.assertTrue(release.is_set())
+                self.assertIsNotNone(owned)
+                self.assertTrue(owned.done())
+                self.assertFalse(owned.cancelled())
+                self.assertEqual(owned.result().status_code, 200)
+                self.assertTrue(completed, 'actual canonical read was not joined inside fixture lifetime')
 
     def test_later_foreign_owner_after_same_owner_aliases_is_not_hidden_by_first_two(self):
         for index, owner in enumerate(['a', 'a', 'foreign']):
