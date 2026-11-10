@@ -137,6 +137,24 @@ Legacy `1.0` pins serialize exactly their original shape without a recipient
 field, preserving retained snapshot comparison. Actual matching native delivery
 is still required before ordinary recipient ACK; routing itself never ACKs.
 
+An initial native credential seal may add its exact recorded procedure secret
+references after the queued recipient witness was captured, before its original
+native START. Accepted-owner lineage recognizes this one canonical transition by
+reconstructing the original pending-reference authority checksum. The admitted
+seal must match the original assignment/execution, worker identity, requester and
+START fence, predate or equal the actual START, and account for the exact current
+reference set. Other authority fields must reproduce the original fingerprint.
+Current recipient comparison still checks its full custody witness, except the
+already permitted post-ACK Work ownership checksum and this verified seal
+fingerprint. Current queued witnesses retain their separate exact-fence and Work
+ownership checks. Historical terminal/rebind checks remain independent; a seal
+does not authorize a new assignment, input, nonce, ACK or unknown-outcome replay.
+Explicit operator replacement inspection recognizes the same verified initial
+seal on an accepted original only after its canonical cancelled, lease-free,
+exact-next-fence retirement. Every remaining historical recipient field stays
+exact, and this metadata inspection neither cancels an active worker nor sends
+new input.
+
 After intake is accepted, GitLab provider callbacks to the current owner use
 the same compatible-recipient selection and native custody witness. The
 original conversation binding remains reply provenance; the provider event pin

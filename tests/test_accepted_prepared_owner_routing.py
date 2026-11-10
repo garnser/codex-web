@@ -22,6 +22,46 @@ class AcceptedPreparedOwnerRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(state.handoff.acknowledged_at)
         return state
 
+    def install_pending_seal_observation(self, f):
+        """Real START/ACK fixtures observe the canonical seal shape before send.
+
+        The independent real-CAS test covers the seal writer itself; this
+        fixture observes its output at the pending original's native guard.
+        """
+        from codex_web.execution_workers import NativeCredentialCustody
+        f.f.worker.service_identity_id = 'private-worker-identity'
+        create = f.create
+        async def pending_create(**kwargs):
+            result = await create(**kwargs)
+            assignment = f.f.assignments[f.n.bound.assignment_id]
+            assignment.native_credential_custody = NativeCredentialCustody(
+                requester_identity_id=assignment.created_by,
+                worker_identity_id=f.f.worker.service_identity_id, fence=assignment.fence)
+            self.assertEqual(assignment.secret_refs, ())
+            return result
+        f.n.threads.create.side_effect = pending_create
+        validate = f.validate
+        def seal_before_input(pin, attempt_id=None):
+            assignment = f.f.assignments[pin.recipient.assignment_id]
+            seal = assignment.native_credential_custody
+            if seal.admitted_at is None:
+                # Same one-shot fields as admit_initial_native_credentials;
+                # no forged START/ACK, altered pin or bypassed routing guard.
+                assignment.secret_refs = ('private-procedure-a', 'private-procedure-b')
+                assignment.native_credential_custody = seal.model_copy(update={
+                    'admitted_at': time.time(), 'procedure_secret_refs': assignment.secret_refs})
+            validate(pin, attempt_id)
+        f.validate = seal_before_input
+
+    async def accepted_after_initial_seal(self):
+        self.install_pending_seal_observation(self.fixture)
+        state = await self.accepted()
+        f = self.fixture
+        assignment = f.f.assignments['fresh-recipient-assignment']
+        original = self.attempt().queued_turn_snapshot['owner_routing_pin']['recipient']
+        self.assertNotEqual(original['authority_checksum'], f.n.routing._authority_checksum(assignment))
+        return state, assignment
+
     def select(self, state):
         return self.fixture.n.routing.compatible_pin(state, self.fixture.n.binding,
             'orchestrator', writable_repository_ids=('platform',))
@@ -49,6 +89,134 @@ class AcceptedPreparedOwnerRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fixture.n.routing.context_for_pin(pin, self.fixture.n.binding),
             (self.fixture.f.f.profile, self.fixture.f.f.actor))
         self.assertEqual(self.snapshot(), before)
+
+    async def test_accepted_owner_retains_initial_seal_before_original_start(self):
+        state, assignment = await self.accepted_after_initial_seal()
+        attempt_before = self.attempt().model_dump(mode='json')
+        before = self.snapshot()
+        pin = self.select(state)
+        self.assertEqual(pin.recipient.assignment_id, assignment.id)
+        self.assertEqual(pin.recipient.authority_checksum, self.fixture.n.routing._authority_checksum(assignment))
+        self.assertEqual(self.fixture.n.routing.context_for_pin(pin, self.fixture.n.binding),
+            (self.fixture.f.f.profile, self.fixture.f.f.actor))
+        self.assertEqual(self.attempt().model_dump(mode='json'), attempt_before)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(state.handoff.requested_at, self.fixture.nonce)
+        self.assertEqual(state.handoff.status, 'accepted')
+
+    async def test_initial_seal_requires_exact_recorded_references_and_original_authority(self):
+        from codex_web.execution_workers import NetworkPolicy
+        state, original = await self.accepted_after_initial_seal()
+        f = self.fixture
+        mutations = (
+            {'secret_refs': (*original.secret_refs, 'private-unrecorded')},
+            {'secret_refs': original.secret_refs[:1]},
+            {'created_by': 'foreign-requester'},
+            {'agent_profile': original.agent_profile.model_copy(update={'profile_revision': 999})},
+            {'network': NetworkPolicy(enabled=True, allowed_hosts=('foreign.invalid',))},
+            {'resource_ids': ('foreign',)},
+            {'assigned_worker_id': 'foreign-worker'},
+            {'fence': original.fence + 1},
+        )
+        for mutation in mutations:
+            with self.subTest(fields=tuple(mutation)):
+                f.f.assignments[original.id] = original.model_copy(deep=True, update=mutation)
+                with self.assertRaises(OwnerRoutingError):
+                    self.select(state)
+        f.f.assignments[original.id] = original
+        self.assertEqual(self.select(state).recipient.assignment_id, original.id)
+        f.n.threads.create.assert_awaited_once()
+
+    async def test_initial_seal_requires_admitted_original_worker_requester_and_fence(self):
+        state, original = await self.accepted_after_initial_seal()
+        f = self.fixture
+        marker = original.native_credential_custody
+        markers = (None, marker.model_copy(update={'admitted_at': None}),
+            marker.model_copy(update={'worker_identity_id': 'foreign-worker'}),
+            marker.model_copy(update={'requester_identity_id': 'foreign-requester'}),
+            marker.model_copy(update={'fence': marker.fence + 1}),
+            marker.model_copy(update={'admitted_at': state.handoff.delivery.started_at + 1}))
+        for changed in markers:
+            with self.subTest(marker='missing' if changed is None else changed.model_dump(exclude={'procedure_secret_refs'})):
+                f.f.assignments[original.id] = original.model_copy(deep=True,
+                    update={'native_credential_custody': changed})
+                with self.assertRaisesRegex(OwnerRoutingError, 'accepted_lineage_unverified'):
+                    self.select(state)
+        f.f.assignments[original.id] = original
+        self.assertEqual(self.select(state).recipient.assignment_id, original.id)
+
+    async def test_sealed_accepted_owner_still_refuses_later_current_witness_drift(self):
+        state, original = await self.accepted_after_initial_seal()
+        f = self.fixture
+        pin = self.select(state)
+        before = self.attempt().model_dump(mode='json')
+        lease = original.lease.model_copy(update={'fence': original.fence + 1})
+        f.f.assignments[original.id] = original.model_copy(deep=True,
+            update={'fence': original.fence + 1, 'lease': lease})
+        with self.assertRaisesRegex(OwnerRoutingError, 'custody_changed'):
+            self.select(state)
+        with self.assertRaises(OwnerRoutingError):
+            f.n.routing.context_for_pin(pin, f.n.binding)
+        self.assertEqual(self.attempt().model_dump(mode='json'), before)
+        f.n.threads.create.assert_awaited_once()
+
+    async def cancelled_initial_seal_replacement(self):
+        from tests import test_accepted_replacement_authenticated_origin as origin
+        fixture = origin.AcceptedReplacementAuthenticatedOriginTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.install_pending_seal_observation(fixture.f)
+        # Existing fixture records correlated START + genuine ACK, then models
+        # the canonical cancelled/no-lease/next-fence observation and native
+        # custody. Authentication uses a real private MFA session/revalidator.
+        state, service, project, recovery = await fixture.context()
+        return fixture, state, service, project, recovery
+
+    async def test_cancelled_initially_sealed_recipient_has_normal_replacement_context(self):
+        fixture, state, service, project, _ = await self.cancelled_initial_seal_replacement()
+        f = fixture.f
+        before = state.model_dump(mode='json')
+        assignment = f.f.assignments['fresh-recipient-assignment']
+        attempt = f.f.f.preflight.for_work_item(organization_id='org-a', workspace_id='workspace-a',
+            project_id='project-a', ref=state.ref)[0]
+        original = attempt.model_dump(mode='json')
+        context, result = service.replacement_eligibility(state.handoff.delivery.thread_id,
+            work_item_ref=state.ref, actor=fixture.actor, project=project)
+        self.assertTrue(result['eligible'])
+        self.assertEqual(result['assignment_id'], assignment.id)
+        self.assertEqual(result['fence'], attempt.queued_start_correlation.fence + 1)
+        self.assertEqual(context[2].thread_id, state.handoff.delivery.thread_id)
+        self.assertEqual(f.f.f.env.states.get(state.ref).model_dump(mode='json'), before)
+        self.assertEqual(f.f.f.preflight.get(attempt.id).model_dump(mode='json'), original)
+        self.assertEqual(f.new_calls, [])
+        self.assertEqual(f.joined, [])
+        f.n.threads.create.assert_awaited_once()
+
+    async def test_cancelled_seal_replacement_still_requires_exact_retirement_and_authority(self):
+        from fastapi import HTTPException
+        from codex_web.execution_workers import AssignmentStatus, NetworkPolicy
+        fixture, state, service, project, _ = await self.cancelled_initial_seal_replacement()
+        f = fixture.f
+        original = f.f.assignments['fresh-recipient-assignment']
+        for mutation in (
+            {'fence': original.fence + 1},
+            {'lease': f.n.template.lease},
+            {'status': AssignmentStatus.RUNNING},
+            {'secret_refs': (*original.secret_refs, 'private-unrecorded')},
+            {'network': NetworkPolicy(enabled=True, allowed_hosts=('foreign.invalid',))},
+            {'native_credential_custody': original.native_credential_custody.model_copy(
+                update={'worker_identity_id': 'foreign-worker'})},
+        ):
+            with self.subTest(fields=tuple(mutation)):
+                f.f.assignments[original.id] = original.model_copy(deep=True, update=mutation)
+                with self.assertRaises(HTTPException):
+                    service.replacement_eligibility(state.handoff.delivery.thread_id,
+                        work_item_ref=state.ref, actor=fixture.actor, project=project)
+                self.assertEqual(f.new_calls, [])
+                self.assertEqual(f.joined, [])
+        f.f.assignments[original.id] = original
+        self.assertTrue(service.replacement_eligibility(state.handoff.delivery.thread_id,
+            work_item_ref=state.ref, actor=fixture.actor, project=project)[1]['eligible'])
 
     def configure_alias(self):
         from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
