@@ -73,3 +73,7 @@ class WorkerTransitionGuardObservationTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertIsNone(coroutines[0].cr_frame)
         self.assertEqual(store.assignment(assignment.id), assignment)
+
+
+def load_tests(loader, standard_tests, pattern):
+    return loader.loadTestsFromTestCase(WorkerTransitionGuardObservationTests)
