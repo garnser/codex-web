@@ -109,7 +109,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   gitlab-sync-qualification:
     name: gitlab-sync-qualification
@@ -140,7 +140,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   explicit-repository-target-qualification:
     name: explicit-repository-target-qualification
@@ -228,7 +228,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   distributed:
     name: distributed-backends
@@ -334,7 +334,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   browser-suite:
     name: chromium-${{ matrix.suite }}
@@ -415,7 +415,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   docker:
     name: docker-smoke
@@ -640,7 +640,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   podman-worker:
     name: rootless-podman-worker
@@ -754,7 +754,7 @@ jobs:
     needs:
       - changes
       - documentation
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
   functional-shards:
     name: chromium-functional-shard-${{ matrix.shard }}
@@ -839,7 +839,7 @@ jobs:
       - changes
       - documentation
       - functional-shards
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -864,7 +864,7 @@ jobs:
       - functional-shards
       - docker
       - podman-worker
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
