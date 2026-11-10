@@ -1553,7 +1553,20 @@ class TurnExecutionService:
                 if binding is None or binding.assignment_id == active.assignment_id:
                     raise ValueError('Retired terminal requires fresh current custody')
                 _manager, session = self._session_for_assignment(binding.assignment_id)
-                current = session.validate_current()
+                current = await self._settle_custody_call(session.validate_current, work_owner=session)
+                if (self._active_turn(active.thread_id) is not None
+                        or self.thread_handoff_in_progress(active.thread_id)
+                        or self.thread_is_active(active.thread_id)):
+                    return False
+                fresh = await self._settle_custody_call(
+                    self._bootstrap_binding_for_thread, active.thread_id, work_owner=session)
+                fresh_manager, fresh_session = self._session_for_assignment(binding.assignment_id)
+                if (fresh is None or (fresh.assignment_id, fresh.execution_id, fresh.execution_workspace_id)
+                        != (binding.assignment_id, binding.execution_id, binding.execution_workspace_id)
+                        or fresh_manager is not _manager or fresh_session is not session
+                        or self.thread_is_active(active.thread_id)
+                        or self.thread_handoff_in_progress(active.thread_id)):
+                    return False
                 if (current.id, current.execution_id, current.execution_workspace_id) != (
                         binding.assignment_id, binding.execution_id, binding.execution_workspace_id):
                     raise ValueError('Current terminal accounting custody changed')
@@ -1565,7 +1578,16 @@ class TurnExecutionService:
                     active.execution_id, active.execution_workspace_id):
                 raise ValueError('Retained terminal bootstrap custody changed')
             _manager, session = self._session_for_assignment(active.assignment_id)
-            current = session.validate_current()
+            current = await self._settle_custody_call(session.validate_current, work_owner=session)
+            fresh = await self._settle_custody_call(
+                self._bootstrap_binding_for_thread, active.thread_id, work_owner=session)
+            fresh_manager, fresh_session = self._session_for_assignment(active.assignment_id)
+            if (fresh is None or (fresh.assignment_id, fresh.execution_id, fresh.execution_workspace_id)
+                    != (binding.assignment_id, binding.execution_id, binding.execution_workspace_id)
+                    or fresh_manager is not _manager or fresh_session is not session
+                    or self.thread_is_active(active.thread_id)
+                    or self.thread_handoff_in_progress(active.thread_id)):
+                return False
             if (current.id, current.execution_id, current.execution_workspace_id,
                     current.assigned_worker_id, current.fence) != (active.assignment_id,
                     active.execution_id, active.execution_workspace_id, active.worker_id, active.fence):
@@ -1610,19 +1632,72 @@ class TurnExecutionService:
             )
             return
         self._event_loop = loop
+        existing = self.assignment_completion_tasks.get(assignment_id)
+        if existing is not None and not existing.done():
+            return
         try:
             manager, _session = self._session_for_assignment(assignment_id)
         except HTTPException:
             return
+
+        async def finish() -> None:
+            try:
+                await self._complete_assignment_owned(active, succeeded=succeeded,
+                    message=message, retained_recorder=retained_recorder,
+                    manager=manager, session=_session)
+            except Exception as exc:
+                # Preparation belongs to this same completion owner too. Keep
+                # a failed read observable without inventing a Work outcome or
+                # leaving a removed task's exception unobserved at shutdown.
+                self.host._append_bot_event({'type': 'turn_assignment_completion_failed',
+                    'thread_id': active.thread_id, 'turn_id': active.turn_id,
+                    'execution_id': active.execution_id, 'assignment_id': assignment_id,
+                    'execution_workspace_id': active.execution_workspace_id,
+                    'worker_id': active.worker_id, 'fence': active.fence,
+                    'error': str(exc)[:500]})
+            finally:
+                current = asyncio.current_task()
+                if self.assignment_completion_tasks.get(assignment_id) is current:
+                    self.assignment_completion_tasks.pop(assignment_id, None)
+                if self.thread_completion_tasks.get(active.thread_id) is current:
+                    self.thread_completion_tasks.pop(active.thread_id, None)
+
+        task = asyncio.create_task(finish(), name=f"turn-assignment-complete-{assignment_id}")
+        self.assignment_completion_tasks[assignment_id] = task
+        self.thread_completion_tasks[active.thread_id] = task
+
+    async def _complete_assignment_owned(self, active, *, succeeded, message,
+                                         retained_recorder, manager, session):
+        """One existing completion owner includes actual blocking validation."""
+        assignment_id = active.assignment_id
+        def still_owned():
+            current = asyncio.current_task()
+            if (self.assignment_completion_tasks.get(assignment_id) is not current
+                    or self.thread_completion_tasks.get(active.thread_id) is not current):
+                return False
+            try:
+                current_manager, current_session = self._session_for_assignment(assignment_id)
+            except HTTPException:
+                return False
+            current_active = self._active_turn(active.thread_id)
+            return (current_manager is manager and current_session is session
+                and (current_active is None or current_active == active))
+
         completion_work_item_ref = None
         with contextlib.suppress(Exception):
-            completion_assignment = _session.validate_current()
+            completion_assignment = await self._settle_custody_call(
+                session.validate_current, work_owner=session)
             completion_work_item_ref = getattr(
                 completion_assignment,
                 "work_item_ref",
                 None,
             )
-        bootstrap = self._bootstrap_binding_for_thread(active.thread_id)
+        if not still_owned():
+            return
+        bootstrap = await self._settle_custody_call(
+            self._bootstrap_binding_for_thread, active.thread_id, work_owner=session)
+        if not still_owned():
+            return
         if bootstrap is not None and bootstrap.assignment_id == assignment_id:
             checkpoint = getattr(manager, "checkpoint", None)
 
@@ -1665,10 +1740,6 @@ class TurnExecutionService:
 
             if (callable(checkpoint) or self.post_turn_readiness is not None
                     or getattr(self, "retained_turn_outcome_recorder", None) is not None):
-                existing = self.assignment_completion_tasks.get(assignment_id)
-                if existing is not None and not existing.done():
-                    return
-
                 async def checkpoint_retained_session() -> None:
                     checkpoint_error = None
                     try:
@@ -1688,26 +1759,10 @@ class TurnExecutionService:
                     except Exception as exc:
                         record_bootstrap_result(checkpoint_error=checkpoint_error or str(exc)[:500])
                         await self._record_retained_outcome(active, succeeded=False, recorder=retained_recorder)
-                    finally:
-                        current_task = asyncio.current_task()
-                        if self.assignment_completion_tasks.get(assignment_id) is current_task:
-                            self.assignment_completion_tasks.pop(assignment_id, None)
-                        if self.thread_completion_tasks.get(active.thread_id) is current_task:
-                            self.thread_completion_tasks.pop(active.thread_id, None)
-
-                task = asyncio.create_task(
-                    checkpoint_retained_session(),
-                    name=f"repository-checkpoint-{assignment_id}",
-                )
-                self.assignment_completion_tasks[assignment_id] = task
-                self.thread_completion_tasks[active.thread_id] = task
+                await checkpoint_retained_session()
             else:
                 record_bootstrap_result()
             return
-        existing = self.assignment_completion_tasks.get(assignment_id)
-        if existing is not None and not existing.done():
-            return
-
         async def complete() -> None:
             try:
                 params = message.get("params") or {}
@@ -1771,19 +1826,7 @@ class TurnExecutionService:
                             active.execution_id,
                             "ambiguous",
                         )
-            finally:
-                current = asyncio.current_task()
-                if self.assignment_completion_tasks.get(assignment_id) is current:
-                    self.assignment_completion_tasks.pop(assignment_id, None)
-                if self.thread_completion_tasks.get(active.thread_id) is current:
-                    self.thread_completion_tasks.pop(active.thread_id, None)
-
-        task = asyncio.create_task(
-            complete(),
-            name=f"turn-assignment-complete-{assignment_id}",
-        )
-        self.assignment_completion_tasks[assignment_id] = task
-        self.thread_completion_tasks[active.thread_id] = task
+        await complete()
 
     def notify_ready_status(self, intent) -> None:
         from codex_web.runtime.readiness_completion import notify_ready_status
@@ -2007,7 +2050,11 @@ class TurnExecutionService:
             return False
         try:
             manager, session = self._session_for_assignment(active.assignment_id)
-            assignment = session.validate_current()
+            assignment = await self._settle_custody_call(session.validate_current, work_owner=session)
+            fresh_manager, fresh_session = self._session_for_assignment(active.assignment_id)
+            if (self._active_turn(thread_id) != active
+                    or fresh_manager is not manager or fresh_session is not session):
+                return False
         except Exception:
             return False
         binding = getattr(assignment, "runtime_binding", None)
@@ -2034,7 +2081,9 @@ class TurnExecutionService:
             return False
         if native_session_id:
             return False
-        self.clear_thread_active(thread_id)
+        if self._active_turn(thread_id) != active:
+            return False
+        self.clear_thread_active(thread_id, turn_id=active.turn_id)
         with contextlib.suppress(Exception):
             await manager.complete(
                 active.assignment_id,
@@ -5554,7 +5603,14 @@ class TurnExecutionService:
             if self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id):
                 raise blocked('Wait for the current native turn and steering handoff before renewing this assignment.')
             manager, session = self._session_for_assignment(expected_assignment_id)
-            assignment = session.validate_current()
+            assignment = await self._settle_custody_call(session.validate_current, work_owner=session)
+            fresh_binding = await self._settle_custody_call(
+                self._bootstrap_binding_for_thread, thread_id, work_owner=session)
+            fresh_manager, fresh_session = self._session_for_assignment(expected_assignment_id)
+            if (fresh_binding is None or fresh_binding.assignment_id != binding.assignment_id
+                    or fresh_manager is not manager or fresh_session is not session
+                    or self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id)):
+                raise blocked('Assignment ownership or activity changed during renewal validation.')
             if (assignment.id != binding.assignment_id or assignment.execution_id != binding.execution_id
                     or assignment.execution_workspace_id != binding.execution_workspace_id
                     or assignment.subject.kind != 'thread_bootstrap'
@@ -5630,10 +5686,13 @@ class TurnExecutionService:
             if (not isinstance(native, dict) or native.get('id') != native_id
                     or native.get('status') != {'type': 'idle'}):
                 raise blocked('The provider has not confirmed that this exact native thread is idle.')
-            current = session.validate_current()
-            current_binding = self._bootstrap_binding_for_thread(thread_id)
+            current = await self._settle_custody_call(session.validate_current, work_owner=session)
+            current_binding = await self._settle_custody_call(
+                self._bootstrap_binding_for_thread, thread_id, work_owner=session)
+            fresh_manager, fresh_session = self._session_for_assignment(expected_assignment_id)
             if (self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id)
-                    or current_binding.assignment_id != assignment.id
+                    or current_binding is None or current_binding.assignment_id != assignment.id
+                    or fresh_manager is not manager or fresh_session is not session
                     or current.id != assignment.id or current.fence != assignment.fence
                     or current.lease != assignment.lease or current.execution_profile_definition != assignment.execution_profile_definition
                     or current.repository_scope != assignment.repository_scope

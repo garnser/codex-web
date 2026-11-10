@@ -2537,6 +2537,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
         self.assertEqual(
             outcomes,
             [("group/app#531", "bootstrap-exec", "succeeded")],
