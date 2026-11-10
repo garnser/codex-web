@@ -2570,7 +2570,8 @@ class TurnExecutionService:
                     session_manager, session = self._session_for_assignment(
                         bootstrap.assignment_id
                     )
-                    assignment = session.validate_current()
+                    assignment = await self._settle_custody_call(
+                        session.validate_current, work_owner=session)
                     runtime_binding = getattr(
                         assignment,
                         "runtime_binding",
@@ -2833,7 +2834,8 @@ class TurnExecutionService:
                         session = await session_manager.start(
                             bootstrap.assignment_id
                         )
-                        assignment = session.validate_current()
+                        assignment = await self._settle_custody_call(
+                            session.validate_current, work_owner=session)
                         runtime_binding = getattr(
                             assignment,
                             "runtime_binding",
@@ -2925,7 +2927,8 @@ class TurnExecutionService:
                     session = await session_manager.start(
                         bootstrap.assignment_id
                     )
-                    assignment = session.validate_current()
+                    assignment = await self._settle_custody_call(
+                        session.validate_current, work_owner=session)
                     runtime_binding = getattr(
                         assignment,
                         "runtime_binding",
