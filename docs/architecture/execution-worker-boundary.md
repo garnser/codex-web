@@ -928,6 +928,27 @@ checks remain mandatory. This keeps blocking validation off the shared event
 loop; it does not prove the cause of a historical lease failure or remove
 possible contention within one session's serial supervision executor.
 
+Retained-terminal reconciliation, terminal assignment completion, sessionless
+timeout cleanup and both idle-renewal validation edges use the same settled
+custody call owner. Blocking validation and its current bootstrap read run off
+the shared loop; mutable activity/task registries remain on the owning loop and
+are rechecked after awaits. Terminal callbacks reserve the existing assignment
+and thread completion task maps before validating. The same single owned task
+then performs the existing checkpoint/readiness/completion work and releases
+the barrier only after actual work joins. Even the no-checkpoint outcome now
+settles through that barrier; cancellation cannot spawn a late completion or
+leave an untracked worker. Repeated terminal callbacks deduplicate against that
+owner, and changed active/session/task ownership preserves the newer state.
+
+The synchronous legacy status compatibility fallback remains unchanged: native
+process sessions expose running/ready status and do not enter its full validation
+branch. No async operation is introduced into that synchronous API. These
+changes do not move renewal onto a second lane: per-session custody validation
+and watchdog validation/renewal still share one serial executor. They preserve
+independent-loop progress, not a guarantee against same-session contention, and
+do not establish the cause of James's historical lease loss. Lease/deadline and
+current authority rules remain unchanged.
+
 The canonical procedure-discovery writer distinguishes its live-lease refusal
 with a `WorkerLeaseError` subtype. Native procedure admission translates only
 that trusted local subtype into the existing preinput refusal, before this
