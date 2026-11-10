@@ -9,7 +9,9 @@ import json
 import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
+
+from codex_web.timeout_values import normalize_timeout, validate_timeout
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.compatibility import ContractSpec
@@ -17,7 +19,7 @@ from codex_web.authority import AuthorityApprovalRequirement, AuthorityEnvironme
 from codex_web.execution_workers import WorkerCapability
 from codex_web.resources import ResourceType
 
-PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.4", ("1.0", "1.1", "1.2", "1.3", "1.4"))
+PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.5", ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"))
 PROCEDURE_SCHEMA_VERSION = "1.0"
 PROCEDURE_MAX_BYTES = 64 * 1024
 Identifier = Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")]
@@ -170,7 +172,9 @@ class ProcedureStep(ProcedureData):
     outputs: tuple[ProcedureValueContract, ...] = Field(min_length=1, max_length=24)
     preconditions: tuple[ProcedureCondition, ...] = Field(default=(), max_length=24)
     expected_evidence: tuple[ProcedureEvidence, ...] = Field(min_length=1, max_length=16)
-    timeout_seconds: int = Field(ge=1, le=3600, strict=True)
+    timeout_seconds: int = Field(ge=-1, le=3600, strict=True)
+
+    _timeout_value = field_validator('timeout_seconds')(validate_timeout)
     max_attempts: int = Field(ge=1, le=5, strict=True)
     retry_backoff_seconds: int = Field(ge=0, le=300, strict=True)
     failure: ProcedureFailure
@@ -219,7 +223,7 @@ class ProcedureStep(ProcedureData):
 
 
 class OperationalProcedure(ProcedureData):
-    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4"] = PROCEDURE_SCHEMA_VERSION
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"] = PROCEDURE_SCHEMA_VERSION
     input_protocol: Literal["code-host-mr-procedure-input.v1", "code-host-mr-procedure-input.v2"] | None = None
     owner_identity_id: Identifier
     task_triggers: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
@@ -236,7 +240,9 @@ class OperationalProcedure(ProcedureData):
     conflict_group: Identifier
     precedence: int = Field(ge=0, le=1000, strict=True)
     on_conflict: Literal["fail_closed"] = "fail_closed"
-    max_duration_seconds: int = Field(ge=1, le=86400, strict=True)
+    max_duration_seconds: int = Field(ge=-1, le=86400, strict=True)
+
+    _duration_value = field_validator('max_duration_seconds')(validate_timeout)
     steps: tuple[ProcedureStep, ...] = Field(min_length=1, max_length=32)
 
     @model_serializer(mode="wrap")
@@ -248,9 +254,11 @@ class OperationalProcedure(ProcedureData):
 
     @model_validator(mode="after")
     def bounded_contract(self):
-        if self.input_protocol == 'code-host-mr-procedure-input.v2' and self.schema_version != '1.3':
+        if (self.max_duration_seconds in (0, -1) or any(s.timeout_seconds in (0, -1) for s in self.steps)) and self.schema_version != '1.5':
+            raise ValueError('disabled elapsed limits require procedure schema 1.5')
+        if self.input_protocol == 'code-host-mr-procedure-input.v2' and self.schema_version not in {'1.3', '1.5'}:
             raise ValueError('versioned observation input requires procedure schema 1.3')
-        if self.input_protocol == 'code-host-mr-procedure-input.v1' and self.schema_version != "1.2":
+        if self.input_protocol == 'code-host-mr-procedure-input.v1' and self.schema_version not in {"1.2", "1.5"}:
             raise ValueError("governed input protocol requires procedure schema 1.2")
         if self.schema_version == "1.0" and any(s.judgment or s.recovery for s in self.steps):
             raise ValueError("judgment/provider rollback requires procedure schema 1.1")
@@ -277,8 +285,11 @@ class OperationalProcedure(ProcedureData):
         ids = {s.id for s in self.steps}
         if len(ids) != len(self.steps):
             raise ValueError("step IDs must be unique")
-        worst_case = sum(s.max_attempts * s.timeout_seconds + (s.max_attempts - 1) * s.retry_backoff_seconds for s in self.steps)
-        if worst_case > self.max_duration_seconds:
+        duration = normalize_timeout(self.max_duration_seconds)
+        step_durations = [normalize_timeout(s.timeout_seconds) for s in self.steps]
+        worst_case = sum(s.max_attempts * seconds + (s.max_attempts - 1) * s.retry_backoff_seconds
+                         for s, seconds in zip(self.steps, step_durations) if seconds is not None)
+        if duration is not None and worst_case > duration:
             raise ValueError("step timeout/retry bounds exceed procedure duration budget")
         for version in self.service_versions:
             if version.resource_selector not in selectors:
@@ -300,7 +311,7 @@ class OperationalProcedure(ProcedureData):
                     raise ValueError("verification must reference a later verification step")
                 if not any(c.source == "step" and c.name == step.id and c.predicate == "succeeded" for c in verification.preconditions):
                     raise ValueError("verification must be conditional on the referring step success")
-            if self.schema_version != "1.4" and (
+            if self.schema_version not in {"1.4", "1.5"} and (
                     "control_plane" in step.model_fields_set
                     or "escalation_owner_policy" in step.failure.model_fields_set):
                 raise ValueError("canonical operations and owner policy require procedure schema 1.4")

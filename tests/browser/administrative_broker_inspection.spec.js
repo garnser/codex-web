@@ -58,6 +58,52 @@ test('administrative declaration, pinned attribution and actual denied audit rem
   await page.setViewportSize({width:375,height:812});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
+test('canonical issue request format is collapsed, escaped and read-only while legacy audit stays usable',async({page})=>{
+  const requests=[];
+  await page.route('**/api/**',route=>{
+    const request=route.request();requests.push({method:request.method(),url:request.url()});
+    return route.fulfill({json:{items:new URL(request.url()).pathname==='/api/control-plane-broker/audit'?audit:[]}});
+  });
+  await mountBroker(page);
+  const item=assignment();
+  const operation=item.brokered_control_plane.operations[0];
+  operation.request_body={type:'object',allowed_fields:['parameters','idempotency_key'],
+    idempotency_key:{type:'string'},assignment_bound_parameters:[],parameters:{
+    type:'object',additionalProperties:false,required:['title'],properties:{
+      title:{type:'string',minLength:1,maxLength:256,pattern:'\\S'},
+      body:{type:'string',maxLength:65536,default:''}},
+    description:'Contract data <img src=x onerror=alert(1)> is text, not executable input.'}};
+  item.brokered_control_plane.operations.push({id:'legacy<svg onload=alert(1)>'});
+  await emit(page,item);
+  const panel=page.getByRole('region',{name:'Broker scope and outcomes'});
+  const summary=panel.getByText('Accepted request formats',{exact:true});
+  const formats=summary.locator('..');
+  await expect(formats).toHaveJSProperty('open',false);
+  await expect(formats.locator('pre')).not.toBeVisible();
+  await summary.click();
+  await expect(formats.locator('pre')).toBeVisible();
+  await expect(formats).toContainText('repository.issue.create');
+  await expect(formats.locator('pre')).toContainText('"additionalProperties": false');
+  await expect(formats.locator('pre')).toContainText('"maxLength": 256');
+  await expect(formats.locator('pre')).toContainText('"maxLength": 65536');
+  expect(JSON.parse(await formats.locator('pre').textContent())).toEqual(operation.request_body);
+  await expect(formats).toContainText('current scope and authority still apply');
+  await expect(panel).toContainText('legacy<svg onload=alert(1)>');
+  await expect(panel.locator('img,svg,script,input,textarea')).toHaveCount(0);
+  expect(requests).toEqual([]);
+  await panel.getByRole('button',{name:'Load broker audit for assignment-a',exact:true}).click();
+  await expect(panel).toContainText('Latest 1 recorded broker outcomes');
+  expect(requests).toHaveLength(1);
+  expect(requests[0].method).toBe('GET');
+  expect(new URL(requests[0].url).pathname).toBe('/api/control-plane-broker/audit');
+  delete operation.request_body;
+  await emit(page,item);
+  await expect(panel.getByText('Accepted request formats',{exact:true})).toHaveCount(0);
+  await expect(panel).toContainText('repository.issue.create');
+  await expect(panel.getByRole('button',{name:'Load broker audit for assignment-a',exact:true})).toBeVisible();
+  await expect(panel.locator('img,svg,script')).toHaveCount(0);
+  expect(requests.every(request=>request.method==='GET')).toBe(true);
+});
 test('changed definition/profile and missing capability are shown as observations without granting controls',async({page})=>{
   await mountBroker(page); const item=assignment();
   const admin=item.brokered_control_plane.assignment_context.declared_administrative_scope;

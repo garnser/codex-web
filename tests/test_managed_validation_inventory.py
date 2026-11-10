@@ -91,7 +91,9 @@ class ManagedValidationInventoryTests(unittest.TestCase):
         self.assertTrue(self.capture.blocks_assignment_renewal())
         with self.assertRaisesRegex(ValueError,'exceeds contract'):self.capture.capture()
         self.reports(17)
-        token=storage_operation_budget.set(StorageOperationBudget(-1))
+        expired = StorageOperationBudget(1)
+        expired.deadline = 0
+        token=storage_operation_budget.set(expired)
         try:
             self.assertTrue(self.capture.blocks_assignment_renewal())
             with self.assertRaises(TimeoutError):self.capture.capture()

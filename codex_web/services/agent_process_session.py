@@ -20,6 +20,8 @@ from codex_web.storage.state_store import StorageLockUnavailable, StorageOperati
 from codex_web.services.managed_validation_custody import ManagedValidationCustody
 from codex_web.local_execution_backend import TrustedLocalRuntimeHome
 from codex_web.observability import log_event
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout, minimum_timeout
 from codex_web.runtime import managed_validation_runner
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
@@ -932,9 +934,10 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no execution workspace"
             )
-        if (
+        wall_seconds = normalize_timeout(assignment.limits.wall_seconds)
+        if (wall_seconds is not None and
             self._monotonic() - self.started_monotonic
-            >= assignment.limits.wall_seconds
+            >= wall_seconds
         ):
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded wall_seconds"
@@ -1259,7 +1262,9 @@ class AssignmentBoundAgentProcessSession:
         expires = min(lease.expires_at, assignment.deadline_at or lease.expires_at) if lease else now
         if expires <= now:
             raise TimeoutError("last validated lease or assignment deadline expired")
-        return min(10.0, expires - now)
+        # The configurable operation cap may be disabled; the actual lease and
+        # absolute assignment deadline always remain authoritative.
+        return minimum_timeout(RuntimePolicy.local_preparation_timeout(10.0), expires - now)
 
     def _lease_budget(self):
         return self._assignment_lease_budget(self._bound_assignment)
@@ -1509,8 +1514,12 @@ class AssignmentBoundAgentProcessSession:
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
         return await self._request(method, params)
 
+    def bootstrap_create_capture(self):
+        from codex_web.services.bootstrap_native_create import BootstrapNativeCreateCapture
+        return BootstrapNativeCreateCapture(self.local_worker.worker_service, self.local_worker.control_actor)
+
     async def request_with_start_capture(self, method: str, params: Any, capture) -> dict[str, Any]:
-        if method not in {'turn/start', 'thread/resume'} or method != capture.rpc_method:
+        if method not in {'turn/start', 'thread/resume', 'thread/start'} or method != capture.rpc_method:
             raise ValueError('native capture method does not match its typed contract')
         return await self._request(method, params, start_capture=capture)
 
@@ -1524,6 +1533,8 @@ class AssignmentBoundAgentProcessSession:
             if start_capture is not None:
                 capture = start_capture.bind_assignment(assignment, worker_id=self.worker_id,
                     fence=self.fence, validator=self.validate_current)
+                if capture.rpc_method == 'thread/start':
+                    self._bootstrap_create_capture_enabled = True
                 return await self.runtime.request(method, params, start_capture=capture)
             return await self.runtime.request(method, params)
         except Exception as exc:
@@ -1726,6 +1737,16 @@ class AssignmentBoundAgentProcessSessionManager:
                     "bootstrap cancellation requires the registered fenced session"
                 )
             original = None
+            runtime = getattr(session, 'runtime', None)
+            process = (getattr(runtime, 'proc', None) if runtime is not None else None) or getattr(session, '_owned_process', None)
+            runtime_generation = getattr(runtime, 'generation', None)
+            from codex_web.services.async_operations import run_settled
+            cleanup_original = (await run_settled(partial(self.local_worker._pending_assignment, assignment_id))
+                if getattr(session, '_bootstrap_create_capture_enabled', False) else None)
+            cleanup_executors = tuple(executor for executor in (
+                getattr(session, '_supervision_executor', None),
+                getattr(session, '_diagnostic_executor', None), getattr(runtime, '_pipe_executor', None))
+                if executor is not None)
             if preprovider_refusal is not None:
                 from codex_web.thread_bootstrap import BootstrapPreproviderRefusal
                 if not isinstance(preprovider_refusal, BootstrapPreproviderRefusal):
@@ -1745,6 +1766,16 @@ class AssignmentBoundAgentProcessSessionManager:
                 actor=self.local_worker.control_actor,
             )
             await session.stop()
+            from codex_web.services.bootstrap_native_create import record_joined_cleanup
+            from codex_web.services.async_operations import run_settled
+            if cleanup_original is not None and cleanup_original.bootstrap_create_observation is not None:
+                # Only the newly correlated path claims joined executors. Old
+                # cancelled bootstraps retain their missing/unknown evidence.
+                for executor in cleanup_executors:
+                    await run_settled(partial(executor.shutdown, wait=True, cancel_futures=True))
+                await run_settled(partial(record_joined_cleanup,
+                    self.local_worker.worker_service, cleanup_original, self.local_worker.control_actor,
+                    runtime_generation=runtime_generation, process=process, status=session.status()))
             if preprovider_refusal is not None:
                 # Do not authorize another physical attempt from cancellation
                 # alone. The owned worker process and executor must be settled.
@@ -1779,7 +1810,8 @@ class AssignmentBoundAgentProcessSessionManager:
         from codex_web.services.async_operations import run_settled
         from codex_web.storage.action_intents import ReadinessOriginIndexProgressing
         parent = storage_operation_budget.get()
-        seconds = min(30., parent.remaining() if parent is not None else 30.)
+        seconds = minimum_timeout(RuntimePolicy.local_preparation_timeout(30.),
+            parent.remaining() if parent is not None and parent.deadline != float('inf') else None)
 
         class PreparationBudget(StorageOperationBudget):
             def remaining(self):
@@ -1789,7 +1821,7 @@ class AssignmentBoundAgentProcessSessionManager:
                     parent.remaining()
                 return super().remaining()
 
-        budget = PreparationBudget(seconds)
+        budget = PreparationBudget(seconds, parent=parent)
 
         def prepare():
             token = storage_operation_budget.set(budget)

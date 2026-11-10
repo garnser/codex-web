@@ -2,6 +2,7 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { createActionProviderBindingControls } = await import(`${BASE}/static/action_provider_binding_controls.js`);
+  const { timeoutText } = await import(`${BASE}/static/timeout_values.js`);
   const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const state = { items: [], resources: [], projects: [], generation: 0 };
   let bindingControls;
@@ -59,7 +60,7 @@
       <small>Required authority: ${listText(action.required_authority)} · Resource types: ${listText(action.required_resource_types)}</small>
       <small>Credential: ${action.credential_required ? `required for ${escapeHtml(action.credential_purpose || "unspecified purpose")}` : "not required"}</small>
       <small>Expected evidence: ${listText(action.expected_evidence)} · Verification: ${action.capabilities?.verification ? "supported" : "not supported"} · Rollback: ${action.capabilities?.rollback ? "supported" : "not supported"} · Reversible: ${action.reversible ? "yes" : "no"}</small>
-      <small>Timeout: ${escapeHtml(action.timeout_seconds)}s · Retry max attempts: ${escapeHtml(action.retry_max_attempts)} · Network access: ${action.network_access ? "yes" : "no"} · Filesystem: ${escapeHtml(action.filesystem_access)} · Process access: ${action.process_access ? "yes" : "no"}</small>
+      <small>Timeout: ${escapeHtml(timeoutText(action.timeout_seconds))} · Retry max attempts: ${escapeHtml(action.retry_max_attempts)} · Network access: ${action.network_access ? "yes" : "no"} · Filesystem: ${escapeHtml(action.filesystem_access)} · Process access: ${action.process_access ? "yes" : "no"}</small>
     </details>`;
   }
 
@@ -83,13 +84,13 @@
           <button type="button" class="ghost-button" data-action-provider-toggle="${escapeHtml(binding.id)}" ${pending || refreshRequired ? "disabled" : ""} aria-label="${escapeHtml(refreshRequired ? "Refresh required for" : next)} ActionProvider binding ${escapeHtml(binding.id)}">${buttonLabel}</button>
         </div>
         ${renderSecurity(binding.security_policy)}
-        ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts currently available from this binding.</small>'}
+        ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts.</small>'}
       </div>`;
     }).join("") || '<div class="comm-entry"><strong>No ActionProvider bindings in this workspace.</strong></div>';
     focusReference(list);
   }
 
-  async function refresh({ loadingMessage = "Loading canonical ActionProvider state..." } = {}) {
+  async function refresh({ loadingMessage = "Loading providers..." } = {}) {
     setStatus(loadingMessage);
     let resources = [];
     let projects = [];
@@ -117,12 +118,12 @@
         resourceError ? `resource labels unavailable: ${resourceError}` : null,
         projectError ? `project labels unavailable: ${projectError}` : null,
       ].filter(Boolean);
-      setStatus(`${items.length} provider binding(s) · ${unavailable} unavailable/disabled.${warnings.length ? ` ${warnings.join(" · ")}` : ""} This view does not prepare or execute actions.`);
+      setStatus(`${items.length} bindings · ${unavailable} unavailable/disabled. This view does not prepare or execute actions.${warnings.length ? ` ${warnings.join(" · ")}` : ""}`);
       window.dispatchEvent(new CustomEvent("codex:action-provider-rendered", {
         detail: { items, resources, projects },
       }));
     } catch (error) {
-      setStatus(`ActionProvider catalog unavailable: ${error.message}`);
+      setStatus(`Providers unavailable: ${error.message}`);
       const list = document.getElementById("action-provider-list");
       if (list) list.innerHTML = "";
       throw error;

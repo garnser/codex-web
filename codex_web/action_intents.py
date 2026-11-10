@@ -5,7 +5,7 @@ import uuid
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 from codex_web.action_providers import ActionDefinition, ActionRequest, ActionResult, ActionVerification
 from codex_web.artifact_evidence import EvidenceRequirement
@@ -14,6 +14,7 @@ from codex_web.execution_workspaces import PublicationRecoveryIntentScope
 from codex_web.procedure_discovery import ProcedureDiscovery
 from codex_web.failures import FailureRecord
 from codex_web.security import ExecutionSecurityPolicy, SecurityTrustDecision
+from codex_web.timeout_values import validate_timeout
 
 
 class ActionIntentStatus(StrEnum):
@@ -142,6 +143,7 @@ class ActionIntent(BaseModel):
     rollback_required: bool = False
     rollback_checkpoint: ActionIntentRollbackCheckpoint | None = None
     timeout_seconds: float
+    _timeout_value = field_validator("timeout_seconds")(validate_timeout)
     retry_policy: ActionIntentRetryPolicy
     status: ActionIntentStatus = ActionIntentStatus.PENDING
     attempt: int = 0
@@ -228,6 +230,23 @@ class ActionIntentState(BaseModel):
     verifications: list[ActionIntentVerificationReceipt] = Field(default_factory=list)
     inbox: list[ActionInboxMessage] = Field(default_factory=list)
 
+    def _disabled_duration_format(self):
+        return any(item.timeout_seconds in (0, -1) or item.action_definition.timeout_seconds in (0, -1)
+                   for item in self.intents)
+
+    @model_validator(mode="after")
+    def duration_version(self):
+        if self._disabled_duration_format():
+            self.schema_version = "1.7"
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_duration_version(self, handler):
+        result = handler(self)
+        if self._disabled_duration_format():
+            result["schema_version"] = "1.7"
+        return result
+
 
 class ActionIntentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -244,7 +263,8 @@ class ActionIntentCreate(BaseModel):
     expected_evidence: tuple[EvidenceRequirement, ...] = ()
     verification_required: bool | None = None
     rollback_required: bool = False
-    timeout_seconds: float | None = Field(default=None, gt=0.0)
+    timeout_seconds: float | None = Field(default=None, ge=-1.0)
+    _timeout_value = field_validator("timeout_seconds")(validate_timeout)
     retry_policy: ActionIntentRetryPolicy = Field(default_factory=ActionIntentRetryPolicy)
     work_item_success: ActionIntentWorkItemSuccess | None = None
 

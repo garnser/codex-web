@@ -1,4 +1,6 @@
 from __future__ import annotations
+from codex_web.timeout_values import normalize_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
 
 import json
 import os
@@ -54,7 +56,7 @@ class MammouthModelCatalog:
         *,
         executable: str = "mammouth",
         ttl_seconds: float = 300.0,
-        timeout_seconds: float = 15.0,
+        timeout_seconds: float | None = None,
         environment_allowlist: Sequence[str] = (
             "HOME",
             "PATH",
@@ -66,7 +68,8 @@ class MammouthModelCatalog:
     ) -> None:
         self.executable = executable
         self.ttl_seconds = max(5.0, float(ttl_seconds))
-        self.timeout_seconds = max(1.0, float(timeout_seconds))
+        self.timeout_seconds = normalize_timeout(
+            RuntimePolicy.local_preparation_timeout(15.0) if timeout_seconds is None else timeout_seconds)
         self.environment_allowlist = tuple(environment_allowlist)
         self._environ = os.environ if environ is None else environ
         self._clock = clock

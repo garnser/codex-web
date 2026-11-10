@@ -3,6 +3,9 @@
 No caller SQL, arbitrary JSON paths or derived-alias absence proofs are accepted.
 """
 from contextlib import contextmanager
+import math
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import minimum_timeout
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.storage.state_store import (StorageOperationBudget, storage_operation_budget,
     state_record_storage_key)
@@ -34,9 +37,10 @@ class HomeIntentRecoveryQuery(BaseModel):
 @contextmanager
 def recovery_query_budget():
     parent = storage_operation_budget.get()
-    budget = StorageOperationBudget(min(5, parent.remaining()) if parent else 5)
-    if parent is not None:
-        budget.cancelled = parent.cancelled
+    remaining = parent.remaining() if parent is not None else None
+    budget = StorageOperationBudget(minimum_timeout(
+        RuntimePolicy.local_preparation_timeout(5),
+        remaining if remaining is not None and math.isfinite(remaining) else None), parent=parent)
     token = storage_operation_budget.set(budget)
     try:
         yield

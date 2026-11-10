@@ -476,15 +476,17 @@ class AutomationScheduleMaterializer:
 def install_automation_definitions(
     registry: DefinitionRegistryService,
 ) -> AutomationDefinitionService:
-    for version in ("1.0", "1.1", AUTOMATION_SCHEMA_VERSION):
+    for version in ("1.0", "1.1", "1.2", AUTOMATION_SCHEMA_VERSION):
         if not any(item["kind"] == AUTOMATION_KIND and item["schema_version"] == version
                    for item in registry.schemas.metadata()):
             def validate(payload, version=version):
                 target = payload.get('target', {})
-                if version != '1.2' and (target.get('kind') == 'canonical_procedure'
+                if version not in {'1.2', '1.3'} and (target.get('kind') == 'canonical_procedure'
                         or any(key in target for key in ('procedure_ref','supervisor_role','max_advances'))):
                     raise ValueError('Canonical procedure targets require Automation schema 1.2')
                 value = validate_automation_definition(payload)
+                if version != '1.3' and value['budget']['max_duration_seconds'] in (0, -1):
+                    raise ValueError('Disabled elapsed duration requires Automation schema 1.3')
                 if version == "1.0" and value["target"]["kind"] == "home_operator":
                     raise ValueError("Home operator targets require Automation schema 1.1")
                 return value

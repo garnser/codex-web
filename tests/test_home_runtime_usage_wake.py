@@ -185,7 +185,9 @@ class RuntimeUsageBridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         accepted = []
         def publish():
             original.set(('same-actor', 'same-tenant'))
-            storage_operation_budget.set(StorageOperationBudget(0))
+            expired = StorageOperationBudget(1)
+            expired.deadline = 0
+            storage_operation_budget.set(expired)
             accepted.extend(service.notify_runtime_usage() for _ in range(100))
         thread = threading.Thread(target=publish)
         thread.start()

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from codex_web.timeout_values import normalize_timeout
 
 import asyncio
 import contextlib
@@ -249,6 +250,7 @@ class CliRuntimeRunner:
                 0,
             )
 
+        timeout_seconds = normalize_timeout(timeout_seconds)
         process = await self._create_subprocess(*command.argv, **kwargs)
         pumps = (
             asyncio.create_task(
@@ -267,7 +269,7 @@ class CliRuntimeRunner:
                 try:
                     exit_code = await asyncio.wait_for(
                         process.wait(),
-                        timeout=max(0.01, float(timeout_seconds)),
+                        timeout=timeout_seconds,
                     )
                 except asyncio.TimeoutError as exc:
                     await self._terminate_process_tree(process)

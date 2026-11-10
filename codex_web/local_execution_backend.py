@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from codex_web.storage.state_store import check_operation_budget
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import minimum_timeout, normalize_timeout
 
 import hashlib
 import json
@@ -888,14 +890,14 @@ class BubblewrapExecutionBackend:
         restricted = assignment.model_copy(update={
             'sandbox': 'read-only',
             'network': assignment.network.model_copy(update={'enabled': False, 'allowed_hosts': ()}),
-            'limits': assignment.limits.model_copy(update={'wall_seconds': min(10, assignment.limits.wall_seconds)}),
         })
+        git_timeout = normalize_timeout(RuntimePolicy.local_preparation_timeout(3))
         script = (
             "import json,subprocess; "
             "g=lambda *a: subprocess.run(['/usr/bin/git','--no-optional-locks','-c','core.fsmonitor=false',*a],"
-            "check=True,capture_output=True,text=True,timeout=3).stdout.strip()\n"
+            f"check=True,capture_output=True,text=True,timeout={git_timeout!r}).stdout.strip()\n"
             "b=subprocess.run(['/usr/bin/git','--no-optional-locks','-c','core.fsmonitor=false',"
-            "'symbolic-ref','--quiet','--short','HEAD'],capture_output=True,text=True,timeout=3)\n"
+            f"'symbolic-ref','--quiet','--short','HEAD'],capture_output=True,text=True,timeout={git_timeout!r})\n"
             "if b.returncode not in (0,1): raise SystemExit('Git branch inspection failed')\n"
             "print(json.dumps({'head':g('rev-parse','HEAD'),"
             "'branch':b.stdout.strip() if b.returncode==0 else '',"
@@ -907,7 +909,8 @@ class BubblewrapExecutionBackend:
             'python3', '-I', '-S', '-c', script),
             workspace_path=workspace, git_metadata_path=metadata,
             environment={'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
-                         'GIT_OPTIONAL_LOCKS': '0'})
+                         'GIT_OPTIONAL_LOCKS': '0'},
+            operation_timeout_seconds=RuntimePolicy.local_preparation_timeout(10))
         if not result.succeeded or result.output_truncated:
             raise LocalExecutionPolicyError('Isolated Git inspection failed; inspect worker isolation/configuration')
         try:
@@ -932,7 +935,6 @@ class BubblewrapExecutionBackend:
         restricted = assignment.model_copy(update={
             'sandbox':'read-only',
             'network':assignment.network.model_copy(update={'enabled':False,'allowed_hosts':()}),
-            'limits':assignment.limits.model_copy(update={'wall_seconds':min(30,assignment.limits.wall_seconds)}),
         })
         environment = {'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null',
             'GIT_OPTIONAL_LOCKS':'0','GIT_NO_REPLACE_OBJECTS':'1','GIT_NO_LAZY_FETCH':'1'}
@@ -940,7 +942,8 @@ class BubblewrapExecutionBackend:
             *(key+'='+value for key,value in environment.items()),
             '/usr/bin/python3','-I','-S','-c',CAPTURE_PROGRAM,
             request.model_dump_json()), workspace_path=workspace, git_metadata_path=metadata,
-            environment=environment, poll_hook=poll_hook)
+            environment=environment, poll_hook=poll_hook,
+            operation_timeout_seconds=RuntimePolicy.local_preparation_timeout(30))
         poll_hook()
         if not result.succeeded or result.output_truncated:
             raise LocalExecutionPolicyError('Isolated source capture refused; no content acceptance')
@@ -962,6 +965,7 @@ class BubblewrapExecutionBackend:
         trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
         additional_disk_bytes: int = 0,
         failure_observer: Callable[[LocalExecutionStoppedObservation], None] | None = None,
+        operation_timeout_seconds: float | None = None,
     ) -> LocalExecutionResult:
         status = self.probe()
         if not status.ready:
@@ -972,6 +976,10 @@ class BubblewrapExecutionBackend:
         if not workspace.is_dir():
             raise LocalExecutionPolicyError("execution workspace is not a directory")
 
+        wall_seconds = minimum_timeout(
+            assignment.limits.wall_seconds,
+            operation_timeout_seconds,
+        )
         started = time.monotonic()
         timed_out = False
         limit_breach: str | None = None
@@ -1002,7 +1010,7 @@ class BubblewrapExecutionBackend:
                 start_new_session=True,
                 preexec_fn=self._limits_preexec(assignment.limits),
             )
-            deadline = started + assignment.limits.wall_seconds
+            deadline = started + wall_seconds if wall_seconds is not None else None
 
             def current_disk_bytes() -> int:
                 return (
@@ -1019,7 +1027,7 @@ class BubblewrapExecutionBackend:
                     if poll_hook is not None:
                         poll_hook()
                     now = time.monotonic()
-                    if now >= deadline:
+                    if deadline is not None and now >= deadline:
                         timed_out = True
                         limit_breach = "wall_seconds"
                         self._kill_process_group(process)
@@ -1032,7 +1040,8 @@ class BubblewrapExecutionBackend:
                     time.sleep(
                         min(
                             self.poll_interval_seconds,
-                            max(0.0, deadline - now),
+                            max(0.0, deadline - now) if deadline is not None
+                            else self.poll_interval_seconds,
                         )
                     )
                 exit_code = process.wait()

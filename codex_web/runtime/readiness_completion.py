@@ -7,6 +7,9 @@ import math
 import time
 
 from codex_web.action_intents import ActionIntentStatus
+from codex_web.timeout_values import minimum_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.services.async_operations import run_settled
 from codex_web.models import ActiveThreadTurn
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
 from codex_web.storage.state_store import storage_operation_budget
@@ -66,13 +69,16 @@ def _schedule(runtime, intent):
             async def lookup():
                 return await asyncio.to_thread(runtime.readiness_intent_lookup, intent.id)
             current = await PostTurnReadinessService._run_owned(lookup,
-                seconds=5, name='late-ready-origin-' + intent.id)
+                seconds=RuntimePolicy.local_preparation_timeout(5), name='late-ready-origin-' + intent.id)
             if (current is None or current.status not in UNRESOLVED
                     or current.readiness_origin != intent.readiness_origin
                     or current.attempt != intent.attempt):
                 return
-            events = await asyncio.wait_for(asyncio.to_thread(
-                runtime.readiness_terminal_events, limit=200), timeout=5)
+            async def terminal_events():
+                return await run_settled(lambda: runtime.readiness_terminal_events(limit=200))
+            events = await PostTurnReadinessService._run_owned(terminal_events,
+                seconds=RuntimePolicy.local_preparation_timeout(5),
+                name='late-ready-events-' + intent.id)
             origin = current.readiness_origin
             matches = [event for event in events
                 if event.get('type') in {'thread_bootstrap_turn_completed',
@@ -89,7 +95,7 @@ def _schedule(runtime, intent):
             observed = event['created_at']
             if (not event.get('thread_id') or not event.get('turn_id')
                     or observed < current.execution_started_at
-                    or not 0 <= time.time() - observed <= min(current.timeout_seconds, 300)):
+                    or not 0 <= time.time() - observed <= minimum_timeout(current.timeout_seconds, 300)):
                 return
             thread_id = event['thread_id']
             notification = getattr(runtime, 'agent_runtime_notification_tasks', {}).get(thread_id)
@@ -107,7 +113,7 @@ def _schedule(runtime, intent):
                 # The start lock may have been held by another native input.
                 # Never reuse this observation for a subsequently changed attempt.
                 latest = await PostTurnReadinessService._run_owned(lookup,
-                    seconds=5, name='late-ready-current-' + intent.id)
+                    seconds=RuntimePolicy.local_preparation_timeout(5), name='late-ready-current-' + intent.id)
                 if (latest is None or latest.status not in UNRESOLVED
                         or latest.readiness_origin != current.readiness_origin
                         or latest.attempt != current.attempt

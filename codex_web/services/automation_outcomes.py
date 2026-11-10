@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from codex_web.timeout_values import normalize_timeout
 from codex_web.attention import AttentionItemCreate, AttentionSeverity, AttentionSource
 from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRun, AutomationRunStatus
@@ -357,7 +358,8 @@ class AutomationOutcomeReconciliationService:
                     usage_evidence,
                 )
             elapsed = max(float(value) for value in completed_at) - float(run.started_at)
-            if elapsed > float(budget.max_duration_seconds):
+            duration = normalize_timeout(budget.max_duration_seconds)
+            if duration is not None and elapsed > duration:
                 return (
                     "failed",
                     "automation_duration_budget_exhausted",

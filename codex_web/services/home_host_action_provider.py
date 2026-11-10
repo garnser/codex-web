@@ -10,7 +10,7 @@ import time
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.action_intents import ActionDecisionOutcome
-from codex_web.action_providers import (ACTION_PROVIDER_CONTRACT, ActionCapability,
+from codex_web.action_providers import (ActionCapability,
     ActionDefinition, ActionEvidence, ActionResult, ActionRiskClass, UnsupportedActionCapabilityError)
 from codex_web.artifact_evidence import ArtifactCreate
 from codex_web.crypto import EncryptionContext
@@ -51,7 +51,7 @@ class HostCommand(BaseModel):
 
 
 class HomeHostActionProvider:
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type = 'home-operator'
     provider_instance = 'trusted-host'
 

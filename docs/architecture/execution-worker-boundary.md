@@ -853,11 +853,13 @@ gate in the same serial executor re-resolves the original session's current
 worker, assignment, credential authority, lease, deadline and fence. A stale
 renewal result is not installed before this gate passes. The gate does not
 repeat the resource scan, heartbeat or completed renewal; its budget is bounded
-by the live lease/deadline and the existing ten-second maximum. Failure, timeout
-or delayed observation of this gate fails closed without another reconciliation
-attempt. The normal renewal phase also checks current authority before any
-heartbeat or renewal. Old work completion alone cannot authorize continued
-execution after revocation. This is reconciliation of bounded supervision work,
+by the live lease and explicit assignment deadline, intersected with the
+configured local-preparation cap when enabled (ten seconds by default).
+Setting `CODEX_WEB_LOCAL_PREPARATION_TIMEOUT_SECONDS` to `0` or `-1` removes only
+that elapsed cap. Failure, timeout or delayed observation of this gate fails
+closed without another reconciliation attempt. The normal renewal phase also
+checks current authority before any heartbeat or renewal. Old work completion
+alone cannot authorize continued execution after revocation. This is reconciliation of bounded supervision work,
 not replay or reconciliation of native/provider outcomes.
 
 A settled PostgreSQL advisory-lock acquisition cancellation or local mutex
@@ -881,8 +883,9 @@ introduced.
 
 Renewal reserves settlement headroom inside its existing observation bound:
 the cooperative work budget is shorter by one quarter of that bound, capped at
-one second. The ten-second observation maximum and hard lease/deadline do not
-increase. This lets an acquisition refusal and rollback become an actual terminal
+one second. This headroom extends neither the configured observation cap when
+enabled nor the actual finite lease or explicit assignment deadline. This lets
+an acquisition refusal and rollback become an actual terminal
 future before the observer closes; it does not infer that a pending mutation
 settled. Only the existing one-shot current-authority gate can retain the same
 live claim after a known unstarted refusal. The retained claim has no extended

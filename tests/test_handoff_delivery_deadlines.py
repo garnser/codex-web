@@ -47,6 +47,24 @@ class HandoffDeliveryDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(host.states[state.ref].handoff)
         self.assertEqual(host.events[-1]['event_type'],'handoff_expired')
 
+    async def test_disabled_relative_expiry_preserves_pending_handoff_and_history(self):
+        for duration in (0, -1):
+            for delivery in (None, WorkItemHandoffDelivery(), WorkItemHandoffDelivery(
+                    status='delivered', started_at=1, thread_id='quinn-thread',
+                    turn_id='actual-turn', execution_id='actual-execution')):
+                with self.subTest(duration=duration, delivery=delivery):
+                    host = _Host()
+                    host._work_item_handoff_timeout_seconds = lambda: duration
+                    host._work_item_handoff_delivery_timeout_seconds = lambda: duration
+                    state = self.state(requested_at=1, delivery=delivery)
+                    original = state.handoff.model_dump(mode='json')
+                    host.states = {state.ref: state}
+                    await AutonomyService(host).run_work_item_sla_cycle()
+                    self.assertIsNotNone(host.states[state.ref].handoff)
+                    self.assertEqual(host.states[state.ref].handoff.model_dump(mode='json'), original)
+                    self.assertFalse(any(event['event_type'] in {'handoff_expired', 'handoff_delivery_expired'}
+                        for event in host.events))
+
     async def test_undelivered_dispatch_has_a_separate_bounded_expiry(self):
         host = _Host()
         state = self.state(requested_at=time.time()-3700, delivery=WorkItemHandoffDelivery())

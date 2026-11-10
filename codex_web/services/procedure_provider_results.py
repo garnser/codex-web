@@ -27,6 +27,7 @@ from codex_web.services.code_host_action_contract import (
 
 class CodeHostProcedureResultAdapter:
     provider_type = "gitlab"
+    # Match the existing producer and immutable positive-only procedure references.
     contract_version = "1.2"
     action_ids = (CODE_HOST_BRANCH_PUBLISH_ACTION_ID, CI_OBSERVATION_ACTION_ID, CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
                   CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS)

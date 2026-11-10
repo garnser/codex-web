@@ -5,6 +5,8 @@ The engine supplies authenticated actors and owns checkpoint/evidence writes.
 """
 from __future__ import annotations
 
+from codex_web.services.runtime_policy import RuntimePolicy
+
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -63,7 +65,7 @@ def register_publication_operations(registry, owner):
             required_capability='repository.branch.publish' if effect == 'mutation' else 'repository.read.metadata',
             authority_level='execute' if effect == 'mutation' else 'read',
             input_model=PublicationRecoveryInput, output_contracts=output_contracts(),
-            effect=effect, timeout_seconds=600, max_attempts=1,
+            effect=effect, timeout_seconds=RuntimePolicy.procedure_operation_timeout(600), max_attempts=1,
             allow_original_intent=effect == 'mutation'), owner)
 
 

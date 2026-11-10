@@ -7,6 +7,7 @@ import json
 import time
 from typing import Any
 
+from codex_web.timeout_values import normalize_timeout
 from codex_web.action_intents import (
     ActionIntent,
     ActionIntentCreate,
@@ -692,10 +693,11 @@ class AutonomyService:
                     # Missing qualified evidence cannot start an ACK deadline.
                     continue
                 pending_age = now - clock_start
-                timeout = d.handoff_delivery_timeout_seconds() if awaiting_delivery else d.handoff_timeout_seconds()
+                timeout = normalize_timeout(d.handoff_delivery_timeout_seconds()
+                    if awaiting_delivery else d.handoff_timeout_seconds())
                 expiry_reason = "handoff_delivery_expired" if awaiting_delivery else "handoff_expired"
                 recipient = d.coerce_owner(handoff.to_agent)
-                if pending_age >= timeout:
+                if timeout is not None and pending_age >= timeout:
                     if d.update_work_item_state is None:
                         # Never expire from a detached snapshot without a
                         # canonical atomic mutation collaborator.

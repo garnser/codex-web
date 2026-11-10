@@ -5,6 +5,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 
+from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.api.identity import request_actor
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.local_installation_inspector import LocalInstallationInspector
@@ -133,7 +134,7 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
                     source_revision=payload.source_revision,
                     target_revision=payload.target_revision)
             item = await PostTurnReadinessService._run_owned(drain_owned,
-                seconds=60, name='upgrade-service-drain-' + plan_id)
+                seconds=RuntimePolicy.local_preparation_timeout(60), name='upgrade-service-drain-' + plan_id)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (UpgradeError, AuthorizationError)):
@@ -251,7 +252,7 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
             async def verify_owned():
                 return await asyncio.to_thread(service.verify_post_upgrade, plan_id, actor=actor)
             item = await PostTurnReadinessService._run_owned(verify_owned,
-                seconds=60, name='upgrade-post-verification-' + plan_id)
+                seconds=RuntimePolicy.local_preparation_timeout(60), name='upgrade-post-verification-' + plan_id)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (UpgradeError, AuthorizationError)):

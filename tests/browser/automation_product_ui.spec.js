@@ -510,3 +510,31 @@ test('Retired procedure confirmation cannot cross a Project switch', async ({ pa
   await expect(page.locator('[data-automation-run="retired-project-b"]')).toBeVisible();
   expect(writes).toEqual([]);
 });
+
+for (const duration of [0, -1, 60]) {
+  test(`Automation editor sends explicit duration ${duration} without defaulting`, async ({ page }) => {
+    const writes = [];
+    await page.route('**/api/**', async route => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        if (new URL(request.url()).pathname === '/api/automations/drafts') writes.push(request.postDataJSON());
+        await route.fulfill({ json: { record: { record_id: 'duration-draft' } } });
+        return;
+      }
+      await route.fulfill({ json: { items: new URL(request.url()).pathname === '/api/automations'
+        ? [scopedAutomation('project-a')] : [] } });
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+    await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+    await switchAutomationProject(page, 'project-a');
+    const card = page.locator('[data-automation-product]');
+    await card.locator('[data-automation-edit]').click();
+    const form = card.locator('[data-automation-editor]');
+    await form.locator('[name=max_duration_seconds]').fill(String(duration));
+    await expect(form).toContainText('0 or -1 disables the timeout');
+    await form.locator('button[type=submit]').click();
+    await resolveAction(page);
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0].definition.budget.max_duration_seconds).toBe(duration);
+  });
+}

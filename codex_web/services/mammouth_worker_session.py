@@ -16,6 +16,7 @@ from codex_web.cli_runtime import (
     CliRuntimeTimeoutError,
 )
 from codex_web.execution_workers import ExecutionAssignment, ExecutionRuntimeBinding
+from codex_web.timeout_values import normalize_timeout
 from codex_web.services.agent_model_egress import (
     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
     AgentRuntimeModelEgressEndpoint,
@@ -158,7 +159,7 @@ class MammouthCliSandboxTurnExecutor:
         *,
         binding,
         on_output: Callable[[CliRuntimeOutput], Awaitable[None]],
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> CliRuntimeResult:
         loop = asyncio.get_running_loop()
         session = self._assignment_session(binding.assignment_id)
@@ -340,7 +341,7 @@ class MammouthCliSandboxTurnExecutor:
             try:
                 exit_code = await asyncio.wait_for(
                     asyncio.shield(wait_task),
-                    timeout=max(0.01, float(timeout_seconds)),
+                    timeout=normalize_timeout(timeout_seconds),
                 )
             except asyncio.TimeoutError:
                 self.local_worker.backend.terminate_process(process)

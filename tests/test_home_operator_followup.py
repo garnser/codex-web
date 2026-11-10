@@ -90,9 +90,10 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
             'retry': {'max_attempts': 1}}
         self.publish()
 
-    def publish(self, publisher='admin', identifier='home-ci'):
+    def publish(self, publisher='admin', identifier='home-ci', *, version=None):
         draft = self.registry.create_draft(DefinitionDraftCreate(definition_id=identifier, kind='automation',
-            definition_schema_version='1.1', scope_type='workspace', scope_id='default',
+            definition_schema_version=(version or ('1.3' if self.payload['budget']['max_duration_seconds'] in (0, -1) else '1.1')),
+            scope_type='workspace', scope_id='default',
             actor=publisher, payload=self.payload))
         return self.registry.publish(draft.record_id, DefinitionPublishRequest(actor=publisher))
 
@@ -345,6 +346,56 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.status, 'failed')
         self.assertEqual(failed.result_code, 'automation_output_tokens_budget_exhausted')
         self.assertEqual(len(self.calls), 1)
+
+    async def test_disabled_duration_skips_deadline_and_stale_callback_without_interrupt(self):
+        self.payload['budget']['max_duration_seconds'] = 0
+        self.publish()
+        row = self.admit().run
+        scheduled = []
+        self.followup._schedule = lambda *args, **kwargs: scheduled.append((args, kwargs))
+        await self.launch(row)
+        self.assertFalse(any(args[1] == 'deadline' for args, _ in scheduled))
+        self.runs.clock = lambda: 1000000.
+        self.followup.context(row.model_copy(update={'started_at': 100.}))
+        calls = []
+        async def request(*args):
+            calls.append(args)
+        self.turns.execution = NS(_request_for_thread=request)
+        await self.followup._deadline(row.model_copy(update={'status': 'running', 'started_at': 100.}), 100.)
+        self.assertEqual(calls, [])
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_home_current_publication_accepts_all_supported_home_schema_versions(self):
+        for version in ('1.1', '1.2', '1.3'):
+            with self.subTest(version=version):
+                self.publish(version=version)
+                row = self.admit(event_id='version-' + version).run
+                automation, actor, selected = self.followup.context(row)
+                self.assertEqual(automation.target.kind, 'home_operator')
+                self.assertEqual(actor.identity_id, automation.owner_identity_id)
+                self.assertEqual(selected['thread']['id'], automation.target.home_thread_id)
+
+    async def test_disabled_new_schema_keeps_current_administrator_publication_guard(self):
+        self.payload['budget']['max_duration_seconds'] = 0
+        self.publish(publisher='different-admin')
+        row = self.admit().run
+        with self.assertRaisesRegex(ValueError, 'administrator-published'):
+            self.followup.context(row)
+        self.assertEqual(self.calls, [])
+
+    async def test_disabled_duration_unknown_launch_keeps_same_original(self):
+        self.payload['budget']['max_duration_seconds'] = -1
+        self.publish()
+        self.throw_after_effect = True
+        row = self.admit().run
+        await self.launch(row)
+        self.runs.clock = lambda: 1000000.
+        await self.launch(row)
+        current = self.runs.store.get(row.id, organization_id='local', workspace_id='default')
+        self.assertEqual(current.status, 'running')
+        self.assertEqual(current.execution_ids, (f'home-followup-{row.id}',))
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(self.admit().launch_allowed)
 
     async def test_duration_interrupt_is_exact_original_fence_and_never_replayed(self):
         first = self.admit().run

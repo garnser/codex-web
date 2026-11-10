@@ -1,4 +1,6 @@
 from __future__ import annotations
+from codex_web.timeout_values import normalize_timeout, validate_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
 
 import asyncio
 import inspect
@@ -120,7 +122,7 @@ class BoundedExternalInputPlugin:
         phase: InputPhase,
         transport: str,
         invoker: ExternalInputInvoker,
-        timeout_seconds: float = DEFAULT_EXTERNAL_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = None,
         max_request_bytes: int = DEFAULT_MAX_EXTERNAL_REQUEST_BYTES,
         max_response_bytes: int = DEFAULT_MAX_EXTERNAL_RESPONSE_BYTES,
         allowed_context_classifications: tuple[str, ...] = ("public",),
@@ -129,8 +131,10 @@ class BoundedExternalInputPlugin:
     ) -> None:
         if not plugin_id.strip() or not plugin_version.strip() or not transport.strip():
             raise ValueError("external input plugin identity/version/transport are required")
-        if timeout_seconds <= 0 or timeout_seconds > 120:
-            raise ValueError("external input plugin timeout must be > 0 and <= 120 seconds")
+        timeout_seconds = (RuntimePolicy.local_preparation_timeout(DEFAULT_EXTERNAL_TIMEOUT_SECONDS)
+                           if timeout_seconds is None else validate_timeout(timeout_seconds))
+        if timeout_seconds > 120:
+            raise ValueError("external input plugin timeout must be 0, -1 or positive <= 120 seconds")
         if max_request_bytes < 256 or max_response_bytes < 256:
             raise ValueError("external input plugin request/response budgets must be >= 256 bytes")
         if not callable(invoker):
@@ -209,7 +213,7 @@ class BoundedExternalInputPlugin:
             return result
 
         try:
-            raw = await asyncio.wait_for(call(), timeout=self.timeout_seconds)
+            raw = await asyncio.wait_for(call(), timeout=normalize_timeout(self.timeout_seconds))
         except TimeoutError as exc:
             raise ExternalInputTransportError(
                 f"external input plugin transport timed out after {self.timeout_seconds:g}s"

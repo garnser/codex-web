@@ -5,17 +5,18 @@ import uuid
 from enum import StrEnum
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from codex_web.compatibility import ContractSpec
 from codex_web.resources import ResourceType
 from codex_web.security import ExecutionSecurityPolicy
+from codex_web.timeout_values import validate_timeout
 
 
 ACTION_PROVIDER_CONTRACT = ContractSpec(
     "action-provider",
-    "1.2",
-    ("1.0", "1.1", "1.2"),
+    "1.3",
+    ("1.0", "1.1", "1.2", "1.3"),
     deprecated=("1.0", "1.1"),
 )
 
@@ -61,7 +62,8 @@ class ActionDefinition(BaseModel):
     credential_required: bool = False
     credential_purpose: str | None = None
     expected_evidence: tuple[str, ...] = ()
-    timeout_seconds: float = Field(default=60.0, gt=0.0)
+    timeout_seconds: float = Field(default=60.0, ge=-1.0)
+    _timeout_value = field_validator("timeout_seconds")(validate_timeout)
     retry_max_attempts: int = Field(default=1, ge=1, le=100)
     reversible: bool = False
     network_access: bool = False

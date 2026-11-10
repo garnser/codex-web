@@ -9,7 +9,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from codex_web.timeout_values import validate_timeout
 
 from codex_web.definitions import DefinitionReference
 
@@ -152,7 +154,9 @@ class InputEnvelope(BaseModel):
     required_compliance_tags: tuple[str, ...] = ()
     preferred_provider_ids: tuple[str, ...] = ()
     max_output_tokens: int | None = Field(default=2048, ge=1)
-    timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
+    timeout_seconds: float = Field(default=120.0, ge=-1.0, le=600.0)
+
+    _timeout_value = field_validator('timeout_seconds')(validate_timeout)
     max_cost_usd: float | None = Field(default=None, gt=0.0)
     allow_fallback: bool = True
 

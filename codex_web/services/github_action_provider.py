@@ -13,7 +13,6 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from codex_web.action_providers import (
-    ACTION_PROVIDER_CONTRACT,
     ActionEvidence,
     ActionProviderBinding,
     ActionRequest,
@@ -58,7 +57,7 @@ BranchPublisher = Callable[[Path, str, str, str, str, str | None], Awaitable[Non
 class GitHubActionProvider:
     """Governed GitHub mutations behind ActionIntent/SecretBroker execution."""
 
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type = GITHUB_ACTION_PROVIDER_TYPE
 
     def __init__(

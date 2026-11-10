@@ -113,7 +113,7 @@ class ExecutiveInvocationDurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.spec.hot_reloadable)
         self.assertFalse(self.spec.startup_only)
         self.assertFalse(self.spec.grants_authority)
-        for invalid in (0, -1, 601, True, 300.5, '300', None):
+        for invalid in (-2, 601, True, 300.5, '300', None):
             with self.subTest(value=invalid), self.assertRaises(ValueError):
                 self.publish(invalid)
         with self.assertRaises(ValueError):
@@ -123,6 +123,10 @@ class ExecutiveInvocationDurationTests(unittest.IsolatedAsyncioTestCase):
             ))
         self.assertEqual(self.spec.validate_value(1), 1)
         self.assertEqual(self.spec.validate_value(600), 600)
+        for disabled in (0, -1):
+            with self.subTest(disabled=disabled):
+                self.assertEqual(self.spec.validate_value(disabled), disabled)
+                self.publish(disabled)
 
     async def test_invalid_resolved_value_refuses_before_reservation_and_any_call(self):
         item = self.activation()

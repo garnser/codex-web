@@ -24,8 +24,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.15",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15"),
+    "1.17",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -92,7 +92,9 @@ class WorkerResourceLimits(BaseModel):
     memory_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     disk_bytes: int = Field(default=20 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     process_count: int = Field(default=256, ge=1, le=65536)
-    wall_seconds: int = Field(default=1800, ge=1, le=86400)
+    # Stored duration sentinels are explicit; CPU and authority lifetimes remain
+    # independently bounded. Older readers reject these newly supported values.
+    wall_seconds: int = Field(default=1800, ge=-1, le=86400)
 
 
 class ExecutionWorker(BaseModel):
@@ -413,6 +415,52 @@ class NativeCredentialCustody(BaseModel):
     procedure_secret_refs: tuple[str, ...] = Field(default=(), max_length=32)
 
 
+class BootstrapCreateObservation(BaseModel):
+    """Historical transport facts, never native-input or recovery authority."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    assignment_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    execution_workspace_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    fence: int = Field(ge=1, strict=True)
+    attribution_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_generation: str = Field(min_length=1, max_length=256)
+    rpc_request_id: str = Field(min_length=1, max_length=256)
+    provider_id: Literal["openai"] = "openai"
+    runtime_id: Literal["codex"] = "codex"
+    prepared_at: float = Field(allow_inf_nan=False)
+    outcome: Literal["unknown", "created", "error_response"] = "unknown"
+    provider_native_session_id: str | None = Field(default=None, min_length=1, max_length=256)
+    provider_error_code: int | None = Field(default=None, strict=True)
+    observed_at: float | None = Field(default=None, allow_inf_nan=False)
+    cleanup_joined_at: float | None = Field(default=None, allow_inf_nan=False)
+    process_pid: int | None = Field(default=None, ge=1, strict=True)
+    process_exit_code: int | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.outcome == 'unknown':
+            if self.observed_at is not None or self.provider_native_session_id is not None or self.provider_error_code is not None:
+                raise ValueError('unknown creation cannot claim a provider result')
+        elif self.observed_at is None or self.observed_at < self.prepared_at:
+            raise ValueError('creation response requires an ordered observation')
+        elif self.outcome == 'created':
+            if (not self.provider_native_session_id or self.provider_native_session_id.strip() != self.provider_native_session_id
+                    or self.provider_error_code is not None):
+                raise ValueError('created response requires only its native identity')
+        elif self.provider_native_session_id is not None or type(self.provider_error_code) is not int:
+            raise ValueError('error response requires only its numeric protocol code')
+        if self.cleanup_joined_at is not None:
+            if (self.process_pid is None or type(self.process_exit_code) is not int
+                    or self.cleanup_joined_at < self.prepared_at):
+                raise ValueError('joined cleanup requires original process exit evidence')
+        elif self.process_exit_code is not None:
+            raise ValueError('process exit belongs to a joined cleanup observation')
+        return self
+
+
 class ExecutionAssignment(ResourceContextModel):
     resource_context: ReadOnlyResourceContext | None = None
     model_config = ConfigDict(extra="forbid")
@@ -446,6 +494,7 @@ class ExecutionAssignment(ResourceContextModel):
     skill_refs: tuple[DefinitionReference, ...] = ()
     skill_assignment_sources: dict[str, str] = Field(default_factory=dict)
     native_credential_custody: NativeCredentialCustody | None = None
+    bootstrap_create_observation: BootstrapCreateObservation | None = None
     procedure_discoveries: tuple[ProcedureDiscovery, ...] = ()
     procedure_checkpoint: ProcedureCheckpoint | None = None
     # Retained terminal runs, never evicted or reused as the current writer.
@@ -470,6 +519,8 @@ class ExecutionAssignment(ResourceContextModel):
         result = self.serialize_resource_context(handler)
         if self.native_credential_custody is None:
             result.pop("native_credential_custody", None)
+        if self.bootstrap_create_observation is None:
+            result.pop("bootstrap_create_observation", None)
         return result
 
     @model_validator(mode="after")
@@ -559,9 +610,21 @@ class ExecutionWorkerState(BaseModel):
     events: list[WorkerEvent] = Field(default_factory=list)
     enrollments: list[ExecutionWorkerEnrollmentGrant] = Field(default_factory=list)
 
+    def _has_disabled_duration_format(self) -> bool:
+        return any(
+            assignment.limits.wall_seconds in (0, -1)
+            or any(checkpoint is not None and checkpoint.schema_version == "1.2"
+                   for checkpoint in (*assignment.procedure_history, assignment.procedure_checkpoint))
+            for assignment in self.assignments
+        )
+
     def model_post_init(self, __context):
         EXECUTION_WORKER_CONTRACT.require(self.schema_version)
-        if any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
+        if self.schema_version == "1.17" or any(a.bootstrap_create_observation is not None for a in self.assignments):
+            self.schema_version = "1.17"
+        elif self._has_disabled_duration_format():
+            self.schema_version = "1.16"
+        elif self.schema_version != "1.16" and any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
                or a.repository_scope is not None and a.repository_scope.write_mode.value == "read_only"
                for a in self.assignments):
             self.schema_version = "1.15"
@@ -569,7 +632,11 @@ class ExecutionWorkerState(BaseModel):
     @model_serializer(mode="wrap")
     def version_readonly_scope(self, handler):
         result = handler(self)
-        if any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
+        if self.schema_version == "1.17" or any(a.bootstrap_create_observation is not None for a in self.assignments):
+            result["schema_version"] = "1.17"
+        elif self._has_disabled_duration_format() or self.schema_version == "1.16":
+            result["schema_version"] = "1.16"
+        elif any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
                or a.repository_scope is not None and a.repository_scope.write_mode.value == "read_only"
                for a in self.assignments):
             result["schema_version"] = "1.15"

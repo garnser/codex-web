@@ -186,6 +186,21 @@ class SkillSecurityTests(unittest.TestCase):
         self.assertNotIn("shell", calls[0][1])
         self.assertEqual(calls[0][1]["env"], {"PATH": "/usr/local/bin:/usr/bin:/bin"})
 
+    def test_cli_adapter_honors_disabled_duration_and_retains_positive_timeout(self):
+        for value, expected in ((0, None), (-1, None), (12, 12)):
+            calls = []
+            def run(command, **kwargs):
+                calls.append(kwargs)
+                return subprocess.CompletedProcess(command, 0,
+                    stdout='{"version":"2.0.0","risk_score":0,"findings":[]}', stderr="")
+            with self.subTest(value=value):
+                SkillSpectorCliProvider(run=run, timeout_seconds=value).scan(
+                    content="# Safe skill", mode=SkillScanMode.STATIC)
+                self.assertEqual(calls[0]["timeout"], expected)
+                self.assertIs(calls[0]["check"], False)
+        with self.assertRaises(ValueError):
+            SkillSpectorCliProvider(run=run, timeout_seconds=-2)
+
     def test_external_catalog_ingestion_invokes_static_scan_before_publication(self) -> None:
         catalog = SkillCatalogService(SkillSourceStore(self.state), self.skills, clock=lambda: 100.0)
         catalog.create(

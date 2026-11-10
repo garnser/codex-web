@@ -81,7 +81,10 @@ class HomeRecoveryPlannerBudgetTests(unittest.TestCase):
                 self.assertEqual((sql, params), recovery_statement(
                     'action_intents.records.v1', query, postgres=True))
                 self.assertEqual(jit, 'off')
-                self.assertIs(cancellation, parent.cancelled)
+                self.assertIsNot(cancellation, parent.cancelled)
+                self.assertFalse(cancellation.is_set())
+                parent.cancelled.set()
+                self.assertTrue(cancellation.is_set())
                 self.assertGreater(remaining, 0)
                 self.assertLessEqual(remaining, .5)
 

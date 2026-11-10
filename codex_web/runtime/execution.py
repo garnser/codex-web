@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
 
+from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.agent_runtime import (
     AgentRuntimeEvent,
@@ -1528,7 +1529,7 @@ class TurnExecutionService:
                 await asyncio.to_thread(recorder, active, succeeded=succeeded)
         try:
             from codex_web.services.post_turn_readiness import PostTurnReadinessService
-            await PostTurnReadinessService._run_owned(observe, seconds=5.,
+            await PostTurnReadinessService._run_owned(observe, seconds=RuntimePolicy.local_preparation_timeout(5),
                 name='retained-turn-outcome-' + active.assignment_id)
         except Exception:
             self.host._append_bot_event({"type": "retained_turn_outcome_unconfirmed",
@@ -4475,7 +4476,7 @@ class TurnExecutionService:
                     return await asyncio.to_thread(self.home_restart_recovery.input_context, queued,
                         attempt_id=retained_attempt.id, claim_id=admission_claim_id)
                 restart_context = await PostTurnReadinessService._run_owned(prepare_restart_context,
-                    seconds=10, name='home-restart-admission-' + queued.id)
+                    seconds=RuntimePolicy.local_preparation_timeout(10), name='home-restart-admission-' + queued.id)
             reasoning_context = contextlib.nullcontext()
             if self.native_reasoning_input_context is not None:
                 reasoning_context = self.native_reasoning_input_context(queued)
@@ -4998,7 +4999,7 @@ class TurnExecutionService:
                         async def retain_owned():
                             return await asyncio.to_thread(retain)
                         queued = await PostTurnReadinessService._run_owned(retain_owned,
-                            seconds=10, name='home-startup-retention-' + thread_id)
+                            seconds=RuntimePolicy.local_preparation_timeout(10), name='home-startup-retention-' + thread_id)
                         if queued is not None:
                             current = h._get_active_turn_record(thread_id) if callable(getattr(h, '_get_active_turn_record', None)) else h._load_active_turns().get(thread_id)
                             if current != active:

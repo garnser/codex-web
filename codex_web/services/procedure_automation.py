@@ -1,6 +1,8 @@
 """Event-only deterministic procedures owned by existing AutomationRun/checkpoints."""
 from __future__ import annotations
 
+from codex_web.timeout_values import normalize_timeout
+
 import asyncio
 import contextvars
 import hashlib
@@ -78,7 +80,8 @@ class ProcedureAutomationService:
                     or self.controller._scoped_pause_reason(control, actor=actor, project_id=run.project_id)
                     or self.controller._exclusive_goal_scope_reason(control, event)):
                 raise ProcedureAutomationError('procedure_automation_controls_blocked')
-            if run.started_at is not None and self.runs.clock() >= run.started_at + automation.budget.max_duration_seconds:
+            duration = normalize_timeout(automation.budget.max_duration_seconds)
+            if duration is not None and run.started_at is not None and self.runs.clock() >= run.started_at + duration:
                 raise ProcedureAutomationError('procedure_automation_duration_exhausted')
         return automation, actor, event
 
@@ -122,7 +125,7 @@ class ProcedureAutomationService:
         record = await asyncio.to_thread(self.engine.skills.definitions.get_record,
             automation.target.procedure_ref.record_id)
         operational = SkillDefinition.model_validate(record.payload).operational_procedure
-        if operational is None or operational.schema_version != '1.4':
+        if operational is None or operational.schema_version not in {'1.4', '1.5'}:
             raise ProcedureAutomationError('procedure_automation_schema_required')
         await asyncio.to_thread(self.engine._targets, operational, supervisor, actor)
         observed = await self.threads.runner(binding.thread_id)
@@ -385,8 +388,8 @@ class ProcedureAutomationService:
             await self._drive(run,event_id=event_id,revision=revision)
         try:
             automation, _, _ = await asyncio.to_thread(self._definition,run)
-            seconds = automation.budget.max_duration_seconds
-            if run.started_at is not None:
+            seconds = normalize_timeout(automation.budget.max_duration_seconds)
+            if seconds is not None and run.started_at is not None:
                 seconds = max(0.001, min(seconds, run.started_at+seconds-self.runs.clock()))
             return await PostTurnReadinessService._run_owned(operation,seconds=seconds,name='canonical-procedure-'+run.id)
         except BaseException as exc:

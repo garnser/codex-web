@@ -1,6 +1,8 @@
 """Bounded Work custody operations over existing guarded owners, never a second runner."""
 from __future__ import annotations
 
+from codex_web.services.runtime_policy import RuntimePolicy
+
 import time
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -291,5 +293,5 @@ def register_custody_operations(registry, **owners):
         registry.register(CanonicalOperationContract(operation_id=operation, contract_version='1.0',
             resource_types=('repository',), required_capability='work_item.read' if effect == 'read' else 'work_item.steer',
             authority_level='read' if effect == 'read' else 'execute', input_model=CustodyInput,
-            output_contracts=output_contract(operation), effect=effect, timeout_seconds=30),
+            output_contracts=output_contract(operation), effect=effect, timeout_seconds=RuntimePolicy.procedure_operation_timeout(30)),
             CustodyOperation(operation=operation, **owners))

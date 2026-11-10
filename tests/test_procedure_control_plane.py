@@ -1,7 +1,9 @@
 """Private canonical interpreter fixture; registered external owner edge is controlled."""
 import copy
+import asyncio
 import time
 import unittest
+from unittest.mock import patch
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from codex_web.procedure_control_plane import (
@@ -134,18 +136,28 @@ class CanonicalProcedureSchemaTests(unittest.TestCase):
 
 
 class CanonicalProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
-    async def build(self, effect='read'):
+    async def build(self, effect='read', *, timeout_seconds=None, contract_timeout=None, total_timeout=None):
         env=execution_fixture.ProcedureExecutionTests()
         self.env=env
         self.owner=ControlledOwner()
         registry=CanonicalOperationRegistry()
-        registry.register(contract(effect),self.owner)
+        selected_contract = contract(effect)
+        if timeout_seconds is not None:
+            from dataclasses import replace
+            selected_contract = replace(selected_contract, timeout_seconds=(
+                timeout_seconds if contract_timeout is None else contract_timeout))
+        registry.register(selected_contract,self.owner)
         if effect=='mutation':
             from dataclasses import replace
             registry.register(replace(contract(),operation_id='fixture.verify.v1'),self.owner)
         def configure(_):
             env.skills.procedure_control_plane=registry
             value = content(effect)
+            if timeout_seconds is not None:
+                value['schema_version'] = '1.5'
+                value['max_duration_seconds'] = timeout_seconds if total_timeout is None else total_timeout
+                for step in value['steps']:
+                    step['timeout_seconds'] = timeout_seconds
             if self._testMethodName in {
                     'test_known_no_effect_waiting_uses_consumable_diagnostic_after_material_change',
                     'test_interrupted_reconciliation_consumes_old_no_effect_marker'}:
@@ -161,6 +173,30 @@ class CanonicalProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         await env.asyncSetUp()
         self.addCleanup(env.tearDown)
         return env
+
+    async def test_disabled_elapsed_limit_uses_new_pin_and_actual_canonical_owner(self):
+        env=await self.build(timeout_seconds=0)
+        first=await env.advance()
+        self.assertEqual(first.schema_version,'1.2')
+        self.assertIsNone(first.deadline_at)
+        self.assertEqual(first.steps['canonical'].status,'succeeded',first)
+        self.assertEqual((await env.advance()).status,'completed')
+        self.assertEqual(self.owner.calls,1)
+
+    async def test_disabled_step_retains_positive_registered_operation_and_total_caps(self):
+        env=await self.build(timeout_seconds=0,contract_timeout=7,total_timeout=100)
+        observed=[]
+        original=asyncio.wait_for
+        async def timed(operation, timeout):
+            observed.append(timeout)
+            return await original(operation,timeout=timeout)
+        with patch('codex_web.services.procedure_execution.asyncio.wait_for',new=timed):
+            first=await env.advance()
+        self.assertEqual(first.schema_version,'1.1')
+        self.assertIsNotNone(first.deadline_at)
+        self.assertEqual(first.steps['canonical'].status,'succeeded',first)
+        self.assertIn(7,observed)
+        self.assertEqual(self.owner.calls,1)
 
     async def test_real_interpreter_completes_registered_read_without_provider_or_model(self):
         env=await self.build()

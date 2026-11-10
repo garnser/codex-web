@@ -70,6 +70,8 @@ If architecture changes materially while implementing an issue, update the relev
 
 ## Architecture documents
 
+- [Bootstrap creation observations](bootstrap-create-observations.md) — assignment-bound native create correlation, returned identity and separately joined cleanup; historical observations grant no replay authority.
+
 - [External capability providers and ECC consideration](external-capability-evaluation.md) — canonical ownership boundaries, evaluation criteria and revisit triggers; no integration is implied.
 - [Canonical execution contract schema](execution-contract-schema.md) — versioned machine-readable contract derived from canonical work-item state.
 - [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, external reconciliation boundary, terminal outcomes, and transition failure contract.
@@ -166,3 +168,5 @@ The target architecture is:
 ### [Home operator conversation reference](project-home.md)
 
 Revisioned administrator selection of an existing Home conversation; canonical scope and execution authority remain separate from the navigation binding.
+
+- [Execution duration limits](runtime-timeouts.md) — disabled sentinel values, independent caps, configuration and reader compatibility.

@@ -274,6 +274,16 @@ read/discovery service. Branch publication, issue mutation, and pull/merge
 request upsert therefore retain ActionIntent authority, policy, idempotency,
 receipt, verification, Evidence, and SecretBroker semantics regardless of host.
 
+The assignment broker advertises the canonical issue-create parameter schema:
+a required nonblank `title` of at most 256 characters and an optional `body` of
+at most 65,536 characters. Extra fields, including `labels`, are unsupported.
+After existing operation authorization, the broker reuses the provider's parser
+before creating an ActionIntent. Invalid parameters receive an audited HTTP400
+`invalid_issue_create_parameters`; valid parameters and idempotency keys remain
+unchanged. Provider validation remains independent. The operator broker inspector
+displays these canonical request formats without adding mutation controls.
+An earlier failed intent is not repaired or authorized for replay by this change.
+
 GitLab merge-request upserts map canonical draft state to the documented native
 title markers (`Draft:`, `[Draft]`, or `(Draft)`), rather than an unsupported REST
 `draft` parameter. Ready requests remove leading draft markers while preserving

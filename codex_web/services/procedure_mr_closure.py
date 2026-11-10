@@ -7,6 +7,8 @@ and the existing assignment-authorized CodeHost merge-requirement read facade.
 """
 from __future__ import annotations
 
+from codex_web.services.runtime_policy import RuntimePolicy
+
 import inspect
 import json
 import math
@@ -58,7 +60,7 @@ CONTRACT = CanonicalOperationContract(operation_id=OPERATION, contract_version='
     output_contracts=(
         ProcedureValueContract(name='expected_head_sha', type='string', description='Exact qualified MR head; no merge grant.'),
         ProcedureValueContract(name='expected_base_sha', type='string', description='Exact freshly observed target tip.'),
-    ), effect='read', timeout_seconds=120, max_attempts=1)
+    ), effect='read', timeout_seconds=RuntimePolicy.procedure_operation_timeout(120), max_attempts=1)
 
 
 async def _resolved(value):

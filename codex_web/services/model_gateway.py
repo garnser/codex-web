@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from codex_web.timeout_values import normalize_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
+
 import asyncio
 import hashlib
 import json
@@ -593,7 +596,7 @@ class ModelGatewayService:
                     f"model adapter does not support catalog discovery: {provider.adapter_type}"
                 )
             return await asyncio.wait_for(
-                discover(provider, credential=credential), timeout=30.0
+                discover(provider, credential=credential), timeout=normalize_timeout(RuntimePolicy.local_preparation_timeout(30.0))
             )
 
         try:
@@ -2138,7 +2141,7 @@ class ModelGatewayService:
                         else adapter.invoke(provider, model, attempt_request, credential=credential))
                     return await asyncio.wait_for(
                         operation,
-                        timeout=effective_request.timeout_seconds,
+                        timeout=normalize_timeout(effective_request.timeout_seconds),
                     )
                 except asyncio.TimeoutError as exc:
                     if isinstance(adapter, NativeCodexModelProviderAdapter):

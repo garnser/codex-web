@@ -15,9 +15,10 @@ from codex_web.storage.state_store import StateStore
 
 _ORIGIN_INDEX_EPOCH = uuid.uuid4().hex
 
-ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.6", ("1.6",))
+ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.7", ("1.6", "1.7"))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
 ACTION_INTENT_STATE_MIGRATIONS.register("1.5", "1.6", lambda payload: {**payload, "schema_version": "1.6"})
+ACTION_INTENT_STATE_MIGRATIONS.register("1.6", "1.7", lambda payload: {**payload, "schema_version": "1.7"})
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
@@ -124,11 +125,12 @@ class ActionIntentStore:
         if not isinstance(payload, dict):
             raise ValueError("action intent state must be an object")
         version = str(payload.get("schema_version") or "0.0")
-        if version != ACTION_INTENT_STATE_CONTRACT.current:
+        target = version if version in {"1.6", "1.7"} else "1.6"
+        if version != target:
             payload = ACTION_INTENT_STATE_MIGRATIONS.migrate(
                 payload,
                 from_version=version,
-                to_version=ACTION_INTENT_STATE_CONTRACT.current,
+                to_version=target,
             )
         ACTION_INTENT_STATE_CONTRACT.require(payload.get("schema_version", ""))
         return ActionIntentState.model_validate(payload)
@@ -345,7 +347,7 @@ class ActionIntentStore:
 
     def _state(self, records: dict[str, Any]) -> ActionIntentState:
         return self._decode({
-            "schema_version": ACTION_INTENT_STATE_CONTRACT.current,
+            "schema_version": "1.6",
             **{field: [raw for key, raw in sorted(records.items())
                        if key.startswith(field + ":") and raw is not None]
                for field in self._fields},

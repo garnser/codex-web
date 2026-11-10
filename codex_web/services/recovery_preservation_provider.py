@@ -1,5 +1,5 @@
 """Trusted application-registered provider; binding/configuration grants nothing."""
-from codex_web.action_providers import (ACTION_PROVIDER_CONTRACT,ActionDefinition,ActionCapability,
+from codex_web.action_providers import (ActionDefinition,ActionCapability,
     ActionRiskClass,ActionResult,ActionEvidence,ActionVerification)
 from codex_web.recovery_preservation import StoragePreservationRequest, CAPTURE, VERIFY, ACTIONS, SOURCE
 from codex_web.resources import ResourceType
@@ -11,7 +11,7 @@ from codex_web.storage.storage_preservation import StoragePreservationRefused
 
 
 class RecoveryPreservationProvider:
-    contract_version=ACTION_PROVIDER_CONTRACT.current
+    contract_version="1.2"
     provider_type='recovery-storage'
     provider_instance='canonical-state-preservation'
     observation_operation='recovery-storage-preservation'
