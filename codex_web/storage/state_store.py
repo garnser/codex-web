@@ -52,12 +52,22 @@ class _BudgetCancellation:
     def __init__(self, parent=None):
         self._local = threading.Event()
         self._parent = parent
+        # One notification domain follows the budget tree without sharing the
+        # local cancellation state. Parent retirement wakes descendant waiters;
+        # child retirement cannot retire its parent or siblings.
+        self._condition = parent._condition if parent is not None else threading.Condition()
 
     def set(self):
-        self._local.set()
+        with self._condition:
+            self._local.set()
+            self._condition.notify_all()
 
     def is_set(self):
         return self._local.is_set() or (self._parent is not None and self._parent.is_set())
+
+    def wait(self, timeout=None):
+        with self._condition:
+            return self._condition.wait_for(self.is_set, timeout)
 
 
 class StorageOperationBudget:

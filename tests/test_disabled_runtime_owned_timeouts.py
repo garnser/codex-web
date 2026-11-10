@@ -18,6 +18,53 @@ from codex_web.storage.state_store import (
 
 
 class DisabledRuntimePolicyTests(unittest.TestCase):
+    def test_cancel_wait_returns_event_result_for_timeout_and_already_set(self):
+        budget = StorageOperationBudget(0)
+        self.assertFalse(budget.cancelled.wait(0))
+        budget.cancelled.set()
+        self.assertTrue(budget.cancelled.wait(0))
+        self.assertTrue(budget.cancelled.wait())
+
+    def test_parent_cancellation_wakes_blocked_descendant_without_polling(self):
+        parent = StorageOperationBudget(0)
+        child = StorageOperationBudget(-1, parent=parent)
+        descendant = StorageOperationBudget(0, parent=child)
+        self._assert_cancellation_wakes_waiter(parent.cancelled, descendant.cancelled)
+        self.assertTrue(child.cancelled.is_set())
+        self.assertTrue(descendant.cancelled.is_set())
+
+    def test_child_cancellation_wakes_own_waiter_but_keeps_parent_and_sibling_live(self):
+        parent = StorageOperationBudget(0)
+        child = StorageOperationBudget(-1, parent=parent)
+        sibling = StorageOperationBudget(0, parent=parent)
+        self._assert_cancellation_wakes_waiter(child.cancelled, child.cancelled)
+        self.assertFalse(parent.cancelled.wait(0))
+        self.assertFalse(sibling.cancelled.wait(0))
+        parent.remaining()
+        sibling.remaining()
+
+    def _assert_cancellation_wakes_waiter(self, cancelled, waiter_signal):
+        entered = threading.Event()
+        result = []
+        original_wait = waiter_signal._condition.wait
+        def wait(timeout=None):
+            entered.set()
+            return original_wait(timeout)
+        def observe():
+            result.append(waiter_signal.wait())
+        with patch.object(waiter_signal._condition, 'wait', side_effect=wait):
+            thread = threading.Thread(target=observe)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(30))  # fixture deadlock guard
+                cancelled.set()
+                thread.join(30)  # fixture deadlock guard, no latency assertion
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(result, [True])
+            finally:
+                waiter_signal.set()
+                thread.join(30)
+
     def test_existing_and_local_timeout_knobs_accept_disabled_sentinels(self):
         policy = RuntimePolicy(Path('/unused'))
         knobs = [
