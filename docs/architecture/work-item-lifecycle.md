@@ -493,6 +493,36 @@ replicated fencing serialize preparation. Creation is not delivery: only a
 subsequent original native START qualifies the handoff. Existing source sessions,
 bindings, replacement graphs, queues and unknown outcomes remain unchanged.
 
+An actionable current owner with no handoff may use the same preparer when
+positive original native custody is incompatible with the Work's exact requested
+repository scope. This is a distinct `current_work` intent, never a synthetic
+handoff or ACK. Its existing bootstrap reservation is keyed by purpose, tenant,
+Project, Work, original binding and canonical owner. Retry/failure changes do not
+rotate that key: an unbound reservation remains pending, including UNKNOWN and
+cancelled callers. Pending-handoff keys and their finite recovery proof retain
+their existing bytes and meaning; current-work reservations do not use that
+nonce-specific recovery branch.
+
+Only the exact current-work reserved recipient receives pin schema `1.2`, with
+`current_work_intent_sha256` and no handoff nonce. The proof binds the current
+actionable owner and next owner, stage/retry, full source custody, Work resources,
+exact scope, actor/Profile and routing/execution Definitions. Creation guards and
+the final native edge recheck it. Existing original-outcome/ambiguity gates,
+worker lease/fence and native authority checks remain authoritative; the native
+edge excludes only its exact retained admission. The existing narrow initial
+credential-seal compatibility check applies only after this proof passes. A
+handoff appearing, disappearing or becoming accepted cannot reclassify an
+in-flight preparation or pinned input.
+
+Readers now accept pins `1.0`, `1.1` and `1.2`; old pins omit the new field
+entirely and retain their serialized shape. Writers emit `1.2` only for proven
+current-work reservations. Older readers reject this new version: once a `1.2`
+original is retained, rollback requires a reader supporting `1.2` or canonical
+settlement of those originals before reverting. This is a persisted queue
+contract extension, not an assertion of unrestricted code-only rollback. No
+new store, logical reply binding, transport route, UI control or model call is
+introduced; existing owner-routing blockers and recipient projections apply.
+
 A positive original native session whose historical assignment is missing remains
 unverified history. It cannot authorize original resume or new context creation.
 When the original source is terminal and unleased, its tenant-scoped canonical

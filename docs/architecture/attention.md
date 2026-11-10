@@ -65,6 +65,20 @@ The browser/in-app Inbox is the baseline delivery surface and reads `/api/attent
 
 The Inbox shows type, severity, source, due/expiry state, owner, escalation count and source deep link, with deterministic filters and acknowledge/snooze/resolve controls. Source-specific decisions continue through source-domain APIs—for example, approval decisions remain in the canonical ApprovalRequest UI.
 
+Known procedure reasons have short, plain headlines and a concrete inspection
+step. Unknown action outcomes, timeouts, missing actual START/ACK evidence,
+failures and conflicting source/version evidence remain distinct. A timeout or
+observation limit never establishes success, failure or permission to repeat an
+action. Unrecognized reasons retain their original text with generic inspection
+guidance. This is deterministic presentation of existing protocol reasons, not
+an operational Definition catalog or a recovery decision.
+
+The keyboard-accessible **Technical details** disclosure retains the exact
+original reason, type/status, item/source/event IDs, dedupe key, requester,
+evidence and diagnostics. These are escaped display values. The source link and
+all existing canonical action/authority boundaries remain unchanged; resolving
+the Inbox item does not resolve its source condition.
+
 Within a Project, the Inbox list, pagination, badge and Attention mutations use
 the active Project rather than an editable scope filter. Switching Projects
 immediately clears rows, selection and count, cancels list requests, and fences

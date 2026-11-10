@@ -112,7 +112,9 @@ function installAttentionStyles() {
     .attention-card {
       border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
       border-radius: .65rem; padding: .85rem; background: color-mix(in srgb, currentColor 3%, transparent);
+      overflow-wrap: anywhere;
     }
+    .attention-card details { margin-top: .55rem; }
     .attention-card[data-severity="critical"] { border-left: 4px solid var(--danger, #b42318); }
     .attention-card-head { display: flex; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
     .attention-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .35rem .9rem; margin-top: .55rem; }
@@ -137,7 +139,44 @@ function installAttentionStyles() {
   document.head.appendChild(style);
 }
 
+function attentionSummary(reason) {
+  // Presentation of existing protocol reasons only; never decides recovery or authority.
+  const summaries = [
+    ['procedure_unknown_action_outcome', 'We couldn’t confirm whether the action finished',
+      'Open the source and check the saved action result before trying again.'],
+    ['procedure_boundary_failure:TimeoutError', 'The result wasn’t confirmed in time',
+      'Open the source to check what completed. A timeout does not prove that the action failed or succeeded; do not repeat it without checking.'],
+    ['custody_actual_start_and_ack_required', 'We need confirmation that the work started and was accepted',
+      'Check the original delivery, start record and recipient’s reply. Do not send the work again.'],
+    ['procedure_action_failed_or_retry_exhausted', 'Action failed or reached its retry limit',
+      'Open the source to review the failure and retry history before choosing a recovery action.'],
+    ['procedure_action_creation_request_changed', 'Action request changed',
+      'Open the source and compare the original request with the current one before proceeding.'],
+    ['procedure_guarded_observation_budget_exhausted', 'Checks reached their limit',
+      'Open the source to review the last confirmed result. The limit does not establish the action’s outcome.'],
+    ['procedure_outcome_source_or_revision_conflict', 'Result conflicts with its source or version',
+      'Open the source and compare the result’s source and version with the recorded work before accepting it.'],
+    ['procedure_outcome_requires_review', 'A task result needs your review',
+      'Open the source to review the recorded result and supporting evidence.'],
+  ];
+  const raw = String(reason ?? '');
+  const match = summaries.find(([code]) => raw === code || raw.startsWith(`${code}. `));
+  return match ? { headline: match[1], nextStep: match[2] }
+    : { headline: raw || 'Attention needed',
+      nextStep: 'Open the source to review this alert and its available actions.' };
+}
+
+function attentionLabel(value) {
+  // Unknown labels remain intact rather than suggesting an invented state.
+  const labels = { procedure_recovery: 'Procedure recovery', procedure_review: 'Procedure review',
+    open: 'Needs attention', acknowledged: 'Acknowledged', snoozed: 'Snoozed',
+    resolved: 'Resolved', expired: 'Expired', superseded: 'Superseded', escalated: 'Escalated',
+  };
+  return Object.hasOwn(labels, value) ? labels[value] : value;
+}
+
 function attentionCard(item) {
+  const summary = attentionSummary(item.reason);
   const actionable = !["resolved", "expired", "superseded"].includes(item.status);
   const approvalOwned = item.source?.object_type === "approval_request";
   const workItemOwned = item.source?.object_type === "work_item";
@@ -148,28 +187,37 @@ function attentionCard(item) {
     <article class="attention-card" tabindex="0" data-attention-id="${attentionEsc(item.id)}" data-severity="${attentionEsc(item.severity)}">
       <div class="attention-card-head">
         <div>
-          <strong>${attentionEsc(item.reason)}</strong>
-          <div><code>${attentionEsc(item.id)}</code></div>
+          <strong>${attentionEsc(summary.headline)}</strong>
         </div>
         <div>
           <span class="attention-pill">${attentionEsc(item.severity)}</span>
-          <span class="attention-pill">${attentionEsc(item.status)}</span>
+          <span class="attention-pill">${attentionEsc(attentionLabel(item.status))}</span>
         </div>
       </div>
+      <p>${attentionEsc(summary.nextStep)}</p>
       <div class="attention-meta">
-        <span><strong>Type:</strong> ${attentionEsc(item.type)}</span>
+        <span><strong>Type:</strong> ${attentionEsc(attentionLabel(item.type))}</span>
         <span><strong>Project:</strong> ${attentionEsc(item.project_id || "—")}</span>
+        <span><strong>Due:</strong> ${attentionEsc(attentionTime(item.due_at))}</span>
+        <span><strong>Owner:</strong> ${attentionEsc(item.owner_identity_id || "—")}</span>
+      </div>
+      <details>
+        <summary>Technical details</summary>
+        <div class="attention-meta">
+        <span><strong>Original reason:</strong> ${attentionEsc(item.reason)}</span>
+        <span><strong>Item ID:</strong> <code>${attentionEsc(item.id)}</code></span>
+        <span><strong>Original type:</strong> ${attentionEsc(item.type)}</span>
+        <span><strong>Original status:</strong> ${attentionEsc(item.status)}</span>
         <span><strong>Source:</strong> ${attentionEsc(item.source?.object_type)} / ${attentionEsc(item.source?.object_id)}</span>
         <span><strong>Dedupe:</strong> ${attentionEsc(item.dedupe_key || "—")}</span>
         <span><strong>Source event:</strong> ${attentionEsc(item.source?.event_id || "—")}</span>
-        <span><strong>Due:</strong> ${attentionEsc(attentionTime(item.due_at))}</span>
         <span><strong>Expires:</strong> ${attentionEsc(attentionTime(item.expires_at))}</span>
-        <span><strong>Owner:</strong> ${attentionEsc(item.owner_identity_id || "—")}</span>
         <span><strong>Requester:</strong> ${attentionEsc(item.requesting_agent_profile_id || item.requesting_agent_team_id || "—")}</span>
         <span><strong>Evidence:</strong> ${attentionEsc((item.evidence_ids || []).join(", ") || "—")}</span>
         <span><strong>Diagnostics:</strong> ${attentionEsc((item.diagnostic_refs || []).join(", ") || "—")}</span>
         <span><strong>Escalations:</strong> ${attentionEsc(item.escalation_count || 0)}</span>
-      </div>
+        </div>
+      </details>
       <div class="attention-actions">
         ${actionable && item.status !== "acknowledged" ? `<label class="attention-select"><input type="checkbox" data-attention-select value="${attentionEsc(item.id)}" /> Select</label>` : ""}
         ${actionable && item.status !== "acknowledged" ? '<button type="button" class="ghost-button" data-attention-action="acknowledge">Acknowledge</button>' : ""}

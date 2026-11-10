@@ -14,6 +14,7 @@ from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingN
 from codex_web.services.owner_routing import _MissingNativePredecessor, _CancelledRecipientContextRequired
 from codex_web.thread_bootstrap import RecipientBootstrapOrigin
 from codex_web.services.threads import ThreadBootstrapPrestartRefusal, bootstrap_preparation_diagnostic
+from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 
 
 class OwnerRecipientPreparationService:
@@ -26,10 +27,24 @@ class OwnerRecipientPreparationService:
         routing = self.routing
         current = routing.get_state(state.ref)
         handoff = current.handoff
-        if (handoff is None or handoff.status != 'pending' or handoff.requested_at is None
-                or current.ref != state.ref or current.project_id != binding.project_id
-                or handoff != state.handoff):
+        # Fix the invocation mode from the caller's snapshot. An ACK/removal
+        # cannot turn an in-flight pending preparation into current-owner work.
+        current_work = state.handoff is None
+        if (current.ref != state.ref or current.project_id != binding.project_id
+                or (current.organization_id, current.workspace_id, current.project_id)
+                    != (state.organization_id, state.workspace_id, state.project_id)
+                or handoff != state.handoff
+                or (not current_work and (handoff.status != 'pending' or handoff.requested_at is None))):
             raise OwnerRoutingError('owner_recipient_preparation_changed')
+        if current_work:
+            # Share the canonical stage predicate; this adds no alternate lane.
+            from codex_web.services.work_item_continuity import WorkItemContinuityService
+            snapshot = routing.snapshot(current)
+            if (current.closed_at or not WorkItemContinuityService.actionable_owner_stage(current.current_stage)
+                    or snapshot is None
+                    or snapshot.owner(actionable_owner_value(current)) != snapshot.owner(owner)
+                    or set(work_item_repository_scope(current)[1]) != set(writable)):
+                raise OwnerRoutingError('owner_recipient_preparation_changed')
         if not originals_checked:
             routing.require_resolved_originals(current)
         if discover:
@@ -94,7 +109,7 @@ class OwnerRecipientPreparationService:
         proof = {'work_item_ref': current.ref, 'organization_id': current.organization_id,
             'workspace_id': current.workspace_id, 'project_id': current.project_id,
             'owner': owner, 'binding': binding.model_dump(mode='json'),
-            'handoff': handoff.model_dump(mode='json'), 'stage': current.current_stage,
+            'handoff': handoff.model_dump(mode='json') if handoff is not None else None, 'stage': current.current_stage,
             'retry_attempt': current.execution.retry.attempt,
             'owner_checksum': routing._work_item_owner_checksum(current),
             'writable': sorted(writable), 'resources': sorted(current.resource_ids),
@@ -106,12 +121,23 @@ class OwnerRecipientPreparationService:
             'execution_definition': execution_definition}
         if cancelled_source is not None:
             proof['cancelled_source'] = cancelled_source
+        if handoff is None:
+            proof['intent'] = 'current_work'
+            proof['current_owner'] = current.current_owner
+            proof['next_owner'] = current.next_owner
         return proof
 
-    @staticmethod
-    def logical_id(state, binding, owner, writable):
+    def logical_id(self, state, binding, owner, writable):
         # Same established key: a new context belongs to the genuine Work/nonce
         # and original reply binding, never a cancelled assignment's resume.
+        if state.handoff is None:
+            # One durable attempt per Work/binding/owner. Retry counters,
+            # observations and failures must not rotate an UNKNOWN reservation.
+            logical = {'purpose': 'current-work-recipient-v1', 'work_item_ref': state.ref,
+                'organization_id': state.organization_id, 'workspace_id': state.workspace_id,
+                'project_id': state.project_id, 'binding_id': binding.id,
+                'owner': self.routing.snapshot(state).owner(owner)}
+            return OwnerRecipientPreparationService.digest(logical)[:32]
         logical = {'work_item_ref': state.ref, 'organization_id': state.organization_id,
             'workspace_id': state.workspace_id, 'project_id': state.project_id,
             'owner': owner, 'writable': sorted(writable),
@@ -127,7 +153,7 @@ class OwnerRecipientPreparationService:
         """
         proof, profile, actor = self.context(state, binding, owner, writable,
             discover=False, lookup_actor=lookup_actor, originals_checked=originals_checked)
-        if 'cancelled_source' not in proof:
+        if 'cancelled_source' not in proof and proof.get('intent') != 'current_work':
             raise OwnerRoutingError('owner_recipient_native_custody_unverified')
         token = self.logical_id(state, binding, owner, writable)
         def checked(bound, physical):
@@ -138,7 +164,8 @@ class OwnerRecipientPreparationService:
                     or bound.execution_workspace_id != assignment.execution_workspace_id
                     or assignment.subject is None or assignment.subject.kind != 'thread_bootstrap'
                     or assignment.subject.ref != bound.bootstrap_id
-                    or bound.thread_id in {binding.thread_id, proof['cancelled_source']['source_thread_id']}):
+                    or bound.thread_id in {binding.thread_id,
+                        proof.get('cancelled_source', {}).get('source_thread_id')}):
                 raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
             session = self.routing.sessions.native_custody(bound.thread_id)
             if session is not None and (
@@ -163,6 +190,31 @@ class OwnerRecipientPreparationService:
         except ThreadBootstrapBindingNotFoundError:
             return None
 
+    def current_work_attribution(self, state, binding, owner, writable, recipient, *, lookup_actor=None, originals_checked=False):
+        """Prove this recipient is the existing current-work reservation.
+
+        Ordinary compatible candidates retain their existing 1.1 contract. Only
+        the exact distinct reservation can carry a current-work 1.2 witness.
+        """
+        if state.handoff is not None:
+            return None
+        actor = (lookup_actor or self.routing.control_actor)()
+        token = self.logical_id(state, binding, owner, writable)
+        try:
+            bound = self.routing.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
+        except ThreadBootstrapBindingNotFoundError:
+            return None
+        if bound.thread_id != recipient.thread_id:
+            return None
+        proof, _, _ = self.context(state, binding, owner, writable, discover=False,
+            lookup_actor=lookup_actor, originals_checked=originals_checked)
+        checked = self.prepared_binding(state, binding, owner, writable,
+            lookup_actor=lookup_actor, originals_checked=True)
+        if (checked is None or checked.assignment_id != recipient.assignment_id
+                or checked.execution_id != recipient.execution_id):
+            raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
+        return self.attribution(proof)
+
     @staticmethod
     def digest(value):
         return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -172,10 +224,15 @@ class OwnerRecipientPreparationService:
         # Delivery/error bookkeeping may advance while the genuine intent is
         # unchanged. Actor, Profile, source custody, definitions and scope may not.
         value = {key: item for key, item in proof.items() if key != 'handoff'}
-        value['handoff'] = {key: proof['handoff'][key] for key in ('from_agent', 'to_agent', 'requested_at')}
+        value['handoff'] = ({key: proof['handoff'][key] for key in ('from_agent', 'to_agent', 'requested_at')}
+            if proof['handoff'] is not None else None)
         return cls.digest(value)
 
     def recoverable(self, assignment, proof, profile, logical_id):
+        # Existing typed finite recovery belongs to a genuine pending nonce.
+        # Current-work UNKNOWN/refusal retains its original reservation instead.
+        if proof.get('intent') == 'current_work':
+            return False
         failure = assignment.failure
         details = failure.details if failure is not None else {}
         scope = assignment.repository_scope
@@ -231,8 +288,8 @@ class OwnerRecipientPreparationService:
 
     async def prepare(self, state, binding, owner, *, writable_repository_ids):
         writable = tuple(writable_repository_ids)
-        # Only the actual pending handoff has a stable logical invocation.
-        # Routine watchdog work without one cannot mint native bootstraps here.
+        # Pending handoffs and actionable current work have distinct stable
+        # reservations. Context creation itself is neither delivery nor ACK.
         try:
             proof, profile, actor = await asyncio.to_thread(self.context, state, binding, owner, writable)
         except OwnerRoutingError as exc:
@@ -258,6 +315,7 @@ class OwnerRecipientPreparationService:
 
         async def operation():
             nonlocal recovery_predecessor
+            await asyncio.to_thread(guard)
             # Another legitimate admission may have finished while we waited.
             try:
                 return await asyncio.to_thread(self.routing.compatible_pin, state, binding, owner,
@@ -268,7 +326,7 @@ class OwnerRecipientPreparationService:
             await asyncio.to_thread(guard)
             physical = token
             origin = RecipientBootstrapOrigin(token, 0, self.attribution(proof),
-                work_item_ref=proof['work_item_ref'], handoff_requested_at=proof['handoff']['requested_at'],
+                work_item_ref=proof['work_item_ref'], handoff_requested_at=(proof['handoff'] or {}).get('requested_at'),
                 binding_id=binding.id, actor_id=proof['actor_id'])
             bootstrap_id = 'bootstrap-' + physical
             try:
@@ -337,6 +395,7 @@ class OwnerRecipientPreparationService:
                     or bound.assignment_id != existing.id
                     or bound.thread_id == binding.thread_id):
                 raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
+            await asyncio.to_thread(guard)
             return await asyncio.to_thread(self.routing.compatible_pin, state, binding, owner,
                 writable_repository_ids=writable)
 

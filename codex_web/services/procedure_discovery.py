@@ -963,10 +963,26 @@ class NativeProcedureAdmissionService:
             discovery = discovery.model_copy(update={'blockers':(*discovery.blockers,*markers)})
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
         if assignment is not None:
-            from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
+            from codex_web.services.execution_workers import (
+                ProcedureDiscoveryLeaseRefusal, ProcedureHistoryExhaustedError,
+            )
             try:
                 await asyncio.to_thread(self.workers.record_procedure_discovery, assignment.id, discovery,
                     expected_fence=assignment.fence, actor=self.control_actor)
+            except ProcedureDiscoveryLeaseRefusal as exc:
+                # Only this canonical writer guard is a local preinput witness.
+                # Native resume/start has not been entered by this admission;
+                # generic worker, storage and transport errors remain unknown.
+                message = ('The assignment lease is no longer live. Repair its canonical custody '
+                    'before explicitly retrying this retained request.')
+                raise ExecutionPrestartRefusal(status_code=409, detail={
+                    'code': 'execution_preflight_blocked', 'message': message,
+                    'retryable': True, 'blockers': [{
+                        'code': 'procedure_assignment_lease_unavailable', 'message': message,
+                        'retryable': True, 'target_type': 'execution_assignment',
+                        'target_id': assignment.id, 'remediation_route': '/api/execution-workers',
+                    }],
+                }) from exc
             except ProcedureHistoryExhaustedError as exc:
                 message = 'This assignment has retained its maximum procedure history. Renew the assignment before retrying the retained request.'
                 raise ExecutionPrestartRefusal(status_code=409, detail={

@@ -919,6 +919,30 @@ These scheduling boundaries retain the same actor, CSRF, assurance, tenant,
 authority and audit arguments and denial behavior; they grant no authority,
 cache no authorization decision and do not extend supervision deadlines.
 
+Bound native continuation, session reacquisition and bootstrap-healing admission
+also run blocking current-session validation through the session's existing
+settled custody executor. The per-Thread start lock remains held, pending work
+is tracked, and cancellation joins the actual validation owner before propagating
+without a late native start. Existing current authority and guarded provider-send
+checks remain mandatory. This keeps blocking validation off the shared event
+loop; it does not prove the cause of a historical lease failure or remove
+possible contention within one session's serial supervision executor.
+
+The canonical procedure-discovery writer distinguishes its live-lease refusal
+with a `WorkerLeaseError` subtype. Native procedure admission translates only
+that trusted local subtype into the existing preinput refusal, before this
+request reaches native resume/start capture or input. The original queue claim
+and snapshot remain unchanged; current possible/positive native observations,
+active turns, changed claims and retirement still fence its disposition. The
+existing preflight inspector shows the assignment lease blocker and links to
+worker custody repair. It does not automatically renew, replace, retry, grant
+bootstrap recovery or retire scheduling. Broker discovery inside an already
+started turn retains ordinary worker-lease error semantics.
+
+Generic worker/storage/transport exceptions and historical UNKNOWN records
+cannot acquire this classification from matching text or absent receipts. No
+historical proof is backfilled, lease limit raised or provider result inferred.
+
 Retained worker history must not monopolize the lock used by current heartbeat
 and lease transactions. Read-only worker snapshots do not take that mutation
 lock; targeted authority-changing operations recheck current rows in the
