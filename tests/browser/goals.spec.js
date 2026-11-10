@@ -309,6 +309,39 @@ test('Goal workspace exposes canonical health, provenance, decomposition and com
   expect(posts).toEqual([]);
 });
 
+for (const phase of ['started', 'terminal_pending_usage', 'settled']) {
+  test(`Goal Home delivery distinguishes ${phase} from Goal completion`, async ({ page }) => {
+    const posts = [];
+    await mockGoalApis(page, posts);
+    await page.route('**/api/goals/goal-a/execution-bindings?*', async (route) => {
+      await route.fulfill({ json: { items: [{
+        id: 'home-binding', status: 'active', goal_revision: 4,
+        provider_id: 'openai', runtime_id: 'codex', agent_session_id: 'home-session',
+        execution_owner_id: 'operator', execution_mode: 'application_continuation',
+        home_continuation: {
+          model_calls: phase === 'settled' ? 1 : 0,
+          input_tokens: phase === 'settled' ? 17 : 0,
+          output_tokens: phase === 'settled' ? 9 : 0,
+          delivery: { phase, usage_id: phase === 'settled' ? 'runtime-usage-test' : null },
+        },
+      }], count: 1 } });
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+    await page.locator('#goals-button').click();
+    const binding = page.locator('.goal-execution-binding');
+    await expect(binding).toContainText(`Home delivery: ${phase}`);
+    await expect(binding).toContainText(`Accounted model calls: ${phase === 'settled' ? 1 : 0}`);
+    await expect(binding).toContainText(`usage: ${phase === 'settled' ? 'runtime-usage-test' : 'not recorded'}`);
+    if (phase === 'terminal_pending_usage') {
+      await expect(binding).toContainText('Execution terminal; accounting pending');
+    } else {
+      await expect(binding).not.toContainText('Execution terminal; accounting pending');
+    }
+    await expect(binding).not.toContainText('Runtime: completed');
+    expect(posts).toEqual([]);
+  });
+}
+
 test('Goal planning is explicit and review/reconcile mutations use canonical APIs', async ({ page }) => {
   const posts = [];
   await mockGoalApis(page, posts);
