@@ -79,6 +79,15 @@
           {stage: 'native_owner', exception_type: '<script>sentinel-private<\/script>'}]}];
       attempts[0].can_retry = false;
     }
+    if (new URLSearchParams(location.search).has('selectedPreparation')) {
+      attempts[0].blockers = [{code: 'procedure_unsupported_enforcement', message: 'Original selected enforcement refusal',
+        native_preparation_diagnostics: [
+          {stage: 'native_owner', exception_type: 'RuntimeError', code: 'procedure_assignment_fence_expired_or_revoked'},
+          {stage: '<img src=x onerror=alert(1)>', exception_type: 'sentinel-private'},
+          {stage: 'session_attestation', exception_type: '<script>sentinel-private<\/script>'},
+          {stage: 'credential_custody', exception_type: 'PermissionError', code: 'sentinel-private'}]}];
+      attempts[0].can_retry = false;
+    }
     if (new URLSearchParams(location.search).has('ownerRecovery')) {
       attempts[0].queued_turn_snapshot = {id: 'owner-recovery-retained',
         owner_lane_recovery: {failed_assignment_id: 'lost-owner-assignment',

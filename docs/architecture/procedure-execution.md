@@ -812,3 +812,26 @@ failures still refuse. No timeout, lease lifetime, permission, retry, queue or
 native-input protocol is extended. Existing preflight diagnostics and retry
 surfaces remain authoritative; this correction alone is not evidence of the cause
 or resolution of a historical live refusal.
+
+### Selected native-preparation diagnostics (#2043)
+
+Selected-provider fallback retains its unsupported outcome when live preparation
+cannot be proved. Phase/type observations use the same closed diagnostic helper
+as empty-scope preparation. Selected refusals emit `native_preparation_diagnostics`
+in existing opaque preflight-blocker metadata; the published empty producer and
+old records retain `native_empty_preparation_diagnostics`. Readers prefer an
+explicit generic field and otherwise accept the legacy field, projecting only
+one set. The old sanitizer name remains an alias. No DTO/Definition/record-format
+version or second diagnostic object/store is introduced.
+
+Only finite phase/exception categories and explicitly allowlisted canonical
+ProcedureExecutionError codes survive. Raw exception messages, arbitrary custom
+class names, traces, commands, paths and credential references are never copied.
+Failed discovery/history retains closed diagnostic blocker markers, with its
+original unsupported outcome/first blocker and selection intact. Known credential
+refusals keep their existing nonretryable contract. Diagnostics do not establish
+non-start, authorize retries, reopen credential custody or bypass current native
+attestation. The existing inspector renders the generic field alongside legacy
+empty diagnostics without adding an operator action. Historical failures do not
+gain a diagnosis retroactively; controlled fixture refusal proves retention,
+not the cause of a previously observed live failure.
