@@ -325,11 +325,94 @@ test("Inbox renders canonical requester and evidence provenance", async ({ page 
   await page.getByRole("button", { name: /Inbox/ }).click();
 
   const card = page.locator('[data-attention-id="attention-0"]');
+  await card.getByText('Technical details', { exact: true }).click();
   await expect(card).toContainText("Dedupe: dedupe-0");
   await expect(card).toContainText("Source event: event-1");
   await expect(card).toContainText("Requester: agent-profile-a");
   await expect(card).toContainText("Evidence: evidence-1, evidence-2");
   await expect(card).toContainText("Diagnostics: run:exec-1");
+});
+
+test('Inbox explains procedure alerts without confusing unknown outcomes, timeouts or missing delivery proof', async ({ page }) => {
+  const suffix = '. Inspect the pinned checkpoint and ActionIntent; reconcile unknown effects before advancing. Do not replay configuration or restart actions.';
+  const cases = [
+    ['procedure_unknown_action_outcome', 'We couldn’t confirm whether the action finished', 'check the saved action result before trying again'],
+    ['procedure_boundary_failure:TimeoutError', 'The result wasn’t confirmed in time', 'does not prove that the action failed or succeeded'],
+    ['custody_actual_start_and_ack_required', 'We need confirmation that the work started and was accepted', 'Do not send the work again'],
+    ['procedure_outcome_source_or_revision_conflict', 'Result conflicts with its source or version', 'before accepting it'],
+    ['procedure_action_failed_or_retry_exhausted', 'Action failed or reached its retry limit', 'review the failure and retry history'],
+    ['procedure_action_creation_request_changed', 'Action request changed', 'compare the original request'],
+    ['procedure_guarded_observation_budget_exhausted', 'Checks reached their limit', 'does not establish the action’s outcome'],
+    ['procedure_outcome_requires_review', 'A task result needs your review', 'supporting evidence'],
+  ];
+  const rows = cases.map(([reason], index) => ({ ...item(index), project_id: 'project-a',
+    type: reason.startsWith('procedure_outcome_') ? 'procedure_review' : 'procedure_recovery',
+    source: { object_type: 'procedure_run', object_id: `procedure-${index}`, event_id: `event-${index}` },
+    reason: reason.startsWith('procedure_outcome_') ? reason : reason + suffix,
+  }));
+  await page.route('**/api/attention?**', route => route.fulfill({ json: {
+    attention_items: rows, total: rows.length, next_cursor: null,
+  }}));
+  await page.goto(fixture);
+  await page.getByRole('button', { name: /Inbox/ }).click();
+  for (const [index, [, headline, guidance]] of cases.entries()) {
+    const card = page.locator(`[data-attention-id="attention-${index}"]`);
+    await expect(card.locator('.attention-card-head strong')).toHaveText(headline);
+    await expect(card.locator('p')).toContainText(guidance);
+    await expect(card.locator('details')).not.toHaveAttribute('open', '');
+    await expect(card.getByRole('button', { name: 'Resolve', exact: true })).toBeVisible();
+    await expect(card.getByRole('link', { name: 'Open source' })).toHaveAttribute('href', rows[index].deep_link);
+  }
+  const unknown = page.locator('[data-attention-id="attention-0"]');
+  const disclosure = unknown.getByText('Technical details', { exact: true });
+  await disclosure.focus();
+  await page.keyboard.press('Enter');
+  await expect(unknown.locator('details')).toHaveAttribute('open', '');
+  await expect(unknown.locator('details')).toContainText(rows[0].reason);
+  await expect(unknown.locator('details')).toContainText('Item ID: attention-0');
+  await expect(unknown.locator('details')).toContainText('Source: procedure_run / procedure-0');
+  await expect(unknown.locator('details')).toContainText('Source event: event-0');
+  await expect(unknown.locator('details')).toContainText('Dedupe: dedupe-0');
+  await expect(unknown.locator('details')).toContainText('Evidence: evidence-1, evidence-2');
+  await expect(unknown.locator('details')).toContainText('Diagnostics: run:exec-1');
+  await expect(unknown.locator('.attention-pill').last()).toHaveText('Needs attention');
+});
+
+test('Inbox retains escaped future reasons and canonical source actions', async ({ page }) => {
+  const future = 'future_procedure_reason:<img src=x onerror="window.inboxInjected=true">';
+  const rows = [
+    { ...item(0), reason: future, dedupe_key: '<script>bad()</script>', type: 'future.kind' },
+    { ...item(1), reason: 'Please review this approval', project_id: 'project-a' },
+    { ...item(2), reason: 'procedure_unknown_action_outcome_changed' },
+  ];
+  const actions = [];
+  await page.route('**/api/**', route => {
+    if (route.request().method() === 'POST') actions.push({
+      path: new URL(route.request().url()).pathname,
+      body: JSON.parse(route.request().postData() || '{}'),
+    });
+    return route.fulfill({ json: { attention_items: rows, total: rows.length, next_cursor: null } });
+  });
+  await page.goto(fixture);
+  await page.getByRole('button', { name: /Inbox/ }).click();
+  const card = page.locator('[data-attention-id="attention-0"]');
+  await expect(card.locator('.attention-card-head strong')).toHaveText(future);
+  await expect(card.locator('p')).toContainText('Open the source to review this alert');
+  await card.getByText('Technical details', { exact: true }).click();
+  await expect(card.locator('details')).toContainText(future);
+  await expect(card.locator('details')).toContainText('Dedupe: <script>bad()</script>');
+  await expect(card.locator('img, script')).toHaveCount(0);
+  expect(await page.evaluate(() => window.inboxInjected)).toBeUndefined();
+  await expect(page.locator('[data-attention-id="attention-2"] .attention-card-head strong'))
+    .toHaveText('procedure_unknown_action_outcome_changed');
+  await expect(card.getByRole('button', { name: 'Provide info & retry' })).toBeVisible();
+  const approval = page.locator('[data-attention-id="attention-1"]');
+  await expect(approval.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+  await expect(approval.getByRole('button', { name: 'Reject', exact: true })).toBeVisible();
+  await expect(approval.getByRole('button', { name: 'Resolve', exact: true })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Acknowledge', exact: true }).click();
+  await expect.poll(() => actions.length).toBe(1);
+  expect(actions[0]).toEqual({ path: '/api/attention/attention-0/acknowledge', body: {} });
 });
 
 test("Inbox remains usable at phone width without horizontal overflow", async ({ page }) => {
