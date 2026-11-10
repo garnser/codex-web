@@ -108,6 +108,79 @@ class DefinitionObservationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.observe_reads(lambda view: self.service.get_record(record.record_id))
 
+    def test_guarded_raw_comparison_never_refetches_or_accepts_changed_data(self):
+        record = self._draft()
+        raw = self.state.get(self.store.namespace)
+        def inspect(view):
+            first = view.get_record(record.record_id)
+            first.payload['roles'][0]['description'] = 'caller-owned mutation'
+            with patch.object(self.state, 'get', side_effect=AssertionError('guard refetched storage')):
+                view.require_current(self.service, raw)
+                self.assertEqual(view.get_record(record.record_id).payload, record.payload)
+                changed = {**raw, 'records': []}
+                with self.assertRaisesRegex(ValueError, 'changed before guarded use'):
+                    view.require_current(self.service, changed)
+        self.service.observe_reads(inspect)
+
+    def test_missing_raw_is_distinct_from_an_empty_or_malformed_envelope(self):
+        self.state.delete(self.store.namespace)
+        def inspect(view):
+            self.assertEqual(view.list_records(), [])
+            view.require_current(self.service, None)
+            for changed in ({}, {'schema_version': '1.0', 'records': []},
+                            {'schema_version': '1.0', 'records': 'invalid'}):
+                with self.assertRaisesRegex(ValueError, 'changed before guarded use'):
+                    view.require_current(self.service, changed)
+        self.service.observe_reads(inspect)
+
+    def test_raw_guard_rejects_closed_foreign_and_other_thread_observations(self):
+        self._draft()
+        raw = self.state.get(self.store.namespace)
+        escaped = []
+        def inspect(view):
+            escaped.append(view)
+            other = registry_fixture.DefinitionRegistryService(self.store)
+            with self.assertRaises(DefinitionError):
+                view.require_current(other, raw)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                with self.assertRaises(ValueError):
+                    pool.submit(view.require_current, self.service, raw).result()
+        self.service.observe_reads(inspect)
+        with self.assertRaises(ValueError):
+            escaped[0].require_current(self.service, raw)
+
+    def test_current_view_rejects_changed_service_or_decoder_hooks_and_backends(self):
+        record = self._draft()
+        raw = self.state.get(self.store.namespace)
+        def inspect(view):
+            view.get_record(record.record_id)  # Prewarm the actual canonical decoder.
+            original = self.service.get_record
+            with patch.object(self.service, 'get_record', side_effect=original):
+                with self.assertRaises(DefinitionError):
+                    view.require_current(self.service, raw)
+            original_decoder = self.store._decode
+            with patch.object(self.store, '_decode', side_effect=original_decoder):
+                with self.assertRaises(DefinitionError):
+                    view.require_current(self.service, raw)
+            with patch.object(self.store, 'store', SimpleNamespace()):
+                with self.assertRaises(ValueError):
+                    view.require_current(self.service, raw)
+            view.require_current(self.service, raw)
+        self.service.observe_reads(inspect)
+
+    def test_predecoded_records_do_not_cache_effective_time_authorization(self):
+        record = self.service.publish(self._draft().record_id, DefinitionPublishRequest(actor='publisher'))
+        self.store.update(lambda records: [item.model_copy(update={
+            'effective_from': 1, 'effective_until': 100}) if item.record_id == record.record_id else item
+            for item in records])
+        def inspect(view):
+            request = dict(definition_id=record.definition_id, kind=record.kind)
+            self.assertEqual(view.resolve(**request, now=50).record_id, record.record_id)
+            # Same view and decoded cache, but a fresh effective-time judgment.
+            with self.assertRaises(DefinitionNotFoundError):
+                view.resolve(**request, now=100)
+        self.service.observe_reads(inspect)
+
 
 class SkillObservationTests(unittest.TestCase):
     setUp = skill_fixture.ProcedureTests.setUp

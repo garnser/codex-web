@@ -405,16 +405,29 @@ class ExecutionWorkerStore:
             self.store.record_update(self.worker_namespace, worker_id, apply, default=None)
             return result[0]
 
-    def transition_assignment(self, worker_id, assignment_id, updater, *, retained_event_ids=(), guard_rows=None):
+    def transition_assignment(self, worker_id, assignment_id, updater, *, retained_event_ids=(), guard_rows=None,
+                              validate_guards=None):
         """Read actor/assignment and append transition events in one transaction.
 
         A repository lock alone does not fence a second store facade or an SQL
         writer wait. The callback must run after the database writer is owned.
+        validate_guards may compare prepared data with these actual locked rows;
+        it must finish synchronously before the ordinary transition updater.
         """
+        if validate_guards is not None and not callable(validate_guards):
+            raise TypeError('assignment guard validator must be callable')
         with operation_lock(self._lock):
             self._ensure_records()
             result = []
             def apply(rows):
+                if validate_guards is not None:
+                    validation = validate_guards(rows)
+                    if inspect.isawaitable(validation) or inspect.isgenerator(validation) or inspect.isasyncgen(validation):
+                        if inspect.iscoroutine(validation) or inspect.isgenerator(validation):
+                            validation.close()
+                        raise ValueError('assignment guard validator must be synchronous')
+                    if validation is not None:
+                        raise ValueError('assignment guard validator must return None')
                 raw_worker = rows[self.worker_namespace][worker_id]
                 raw_assignment = rows[self.assignment_namespace][assignment_id]
                 workers = [ExecutionWorker.model_validate(raw_worker)] if raw_worker else []

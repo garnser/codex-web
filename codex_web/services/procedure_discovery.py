@@ -106,9 +106,13 @@ class ProcedureDiscoveryService:
         )
 
     def discover(self, context: OperationContext, *, previous: ProcedureDiscovery | None = None,
-                 _include_supporting_context: bool = True):
+                 _include_supporting_context: bool = True, _definitions=None):
         """Return metadata plus bounded untrusted input; never throw lookup as no-match."""
         actor = context.actor
+        definitions = _definitions or self.skills.definitions
+        read_options = {'_definitions': _definitions} if _definitions is not None else {}
+        if _definitions is not None:
+            self.skills.definitions.require_read_observation(_definitions)
         now = float(self.clock())
         fingerprint = checksum({
             "actor": actor.identity_id, "organization": actor.organization_id,
@@ -174,10 +178,10 @@ class ProcedureDiscoveryService:
                 raise ValueError("procedure_required_skill_limit")
             for required in context.required_skill_refs:
                 try:
-                    self.skills.validate_reference(required, actor=actor, project_id=context.project_id)
-                    required_record = self.skills.definitions.get_record(required.record_id)
+                    self.skills.validate_reference(required, actor=actor, project_id=context.project_id, **read_options)
+                    required_record = definitions.get_record(required.record_id)
                     if required_record.payload.get("operational_procedure") is not None:
-                        self.skills.validate_required_procedure(required, actor=actor, project_id=context.project_id)
+                        self.skills.validate_required_procedure(required, actor=actor, project_id=context.project_id, **read_options)
                 except Exception as exc:
                     reason = exc.code if isinstance(exc, SkillResolutionFailure) else "required_skill_unavailable"
                     candidates.append(ProcedureCandidate(reference=required, outcome="blocked", reasons=(reason,)))
@@ -185,7 +189,7 @@ class ProcedureDiscoveryService:
                     outcome = "inaccessible"
             if blockers:
                 return result()
-            records = [r for r in self.skills.definitions.list_records(kind=SKILL_DEFINITION_KIND)
+            records = [r for r in definitions.list_records(kind=SKILL_DEFINITION_KIND)
                        if self._visible(r, context)
                        and (r.published_at is not None or r.lifecycle in {
                            DefinitionLifecycle.PUBLISHED, DefinitionLifecycle.DISABLED, DefinitionLifecycle.QUARANTINED})]
@@ -214,7 +218,7 @@ class ProcedureDiscoveryService:
             for record in sorted(effective.values(), key=lambda r: (r.definition_id, r.record_id)):
                 # Verify selectors before trusting them to reject a candidate.
                 # Engine compatibility is relevant only after applicability.
-                record = self.skills.definitions.validate_record_integrity(record)
+                record = definitions.validate_record_integrity(record)
                 skill = SkillDefinition.model_validate(record.payload)
                 p = skill.operational_procedure
                 if p is None:
@@ -282,7 +286,7 @@ class ProcedureDiscoveryService:
                 except DefinitionCompatibilityError:
                     reasons.append("procedure_incompatible")
                 try:
-                    self.skills.validate_required_procedure(ref, actor=actor, project_id=context.project_id)
+                    self.skills.validate_required_procedure(ref, actor=actor, project_id=context.project_id, **read_options)
                 except SkillResolutionFailure as exc:
                     reasons.append(exc.code)
                 except SkillNotFound:
@@ -339,7 +343,8 @@ class ProcedureDiscoveryService:
             if selected:
                 outcome = "matched"
                 selection = self.skills.context_for_refs(tuple(selected), actor=actor, project_id=context.project_id,
-                    objective=context.operation or context.task or "", max_chars=max_context_characters)
+                    objective=context.operation or context.task or "", max_chars=max_context_characters,
+                    **read_options)
                 # Consult the declarative contract as well as ordinary Skill
                 # instructions. The selected operation's dependencies remain
                 # descriptive data, never an implicit step execution plan.
@@ -471,7 +476,23 @@ class NativeProcedureAdmissionService:
             raise ValueError("native preparation assignment custody changed")
         return current
 
-    def _native_policy(self, assignment, actor, project, sandbox):
+    def _preparation_profile(self, assignment, actor, project, _definitions=None):
+        profiles = self.execution_profiles
+        if _definitions is not None:
+            from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
+            # A custom resolver retains its complete current guarded call.
+            if (type(profiles) is ExecutionProfileDefinitionService
+                    and getattr(profiles.resolve, '__self__', None) is profiles
+                    and getattr(profiles.resolve, '__func__', None) is _CANONICAL_PROFILE_RESOLVE
+                    and getattr(profiles.record, '__self__', None) is profiles
+                    and getattr(profiles.record, '__func__', None) is _CANONICAL_PROFILE_RECORD
+                    and profiles.registry is self.discovery.skills.definitions):
+                self.discovery.skills.definitions.require_read_observation(_definitions)
+                profiles = ExecutionProfileDefinitionService(_definitions)
+        return profiles.resolve(assignment.execution_profile_id,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
+
+    def _native_policy(self, assignment, actor, project, sandbox, *, _definitions=None):
         """Existing exact profile permits isolated preparation, never host operations.
 
         Tool-level operational enforcement is unavailable. A successful no-match
@@ -483,8 +504,7 @@ class NativeProcedureAdmissionService:
         if assignment is None or self.execution_profiles is None:
             return "native_tools", "canonical:execution-profile-unresolved"
         try:
-            profile, ref = self.execution_profiles.resolve(assignment.execution_profile_id,
-                organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
+            profile, ref = self._preparation_profile(assignment, actor, project, _definitions)
             if ref != assignment.execution_profile_definition:
                 return "native_tools", "canonical:execution-profile-pin-changed"
             # Definition reads may span an ordinary worker heartbeat/renewal.
@@ -551,13 +571,14 @@ class NativeProcedureAdmissionService:
         except Exception:
             return "native_tools", "canonical:execution-policy-unavailable"
 
-    def _preparation_context(self, assignment, actor, project, sandbox, request_checksum, *, require_operations=True):
+    def _preparation_context(self, assignment, actor, project, sandbox, request_checksum, *, require_operations=True,
+                             _definitions=None):
         assignment = self._current_preparation_assignment(assignment)
-        enforcement, source = self._native_policy(assignment, actor, project, sandbox)
+        enforcement, source = self._native_policy(assignment, actor, project, sandbox,
+            **({'_definitions': _definitions} if _definitions is not None else {}))
         if enforcement not in {"bounded_read_only", "isolated_preparation"}:
             raise ValueError("native preparation policy changed")
-        profile, _ = self.execution_profiles.resolve(assignment.execution_profile_id,
-            organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
+        profile, _ = self._preparation_profile(assignment, actor, project, _definitions)
         if require_operations and not {"procedure.read", "procedure.start", "procedure.advance"}.issubset(profile.control_plane_operations):
             raise ValueError("current execution Definition does not declare procedure operations")
         context = OperationContext(actor=actor, project_id=project.id,
@@ -571,7 +592,7 @@ class NativeProcedureAdmissionService:
         return context
 
     def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected, *, validate_credentials=True,
-                               _include_supporting_context=True, _diagnostics=None):
+                               _include_supporting_context=True, _diagnostics=None, _definitions=None):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
         from codex_web.native_empty_preparation import closed_native_preparation_diagnostics, CANONICAL_CODES
@@ -590,20 +611,23 @@ class NativeProcedureAdmissionService:
         if self.native_session_attestor is None or self.procedure_execution is None:
             raise ValueError("native provider preparation is unavailable")
         context = checked('preparation_context', lambda: self._preparation_context(
-            assignment, actor, project, sandbox, request_checksum))
+            assignment, actor, project, sandbox, request_checksum,
+            **({'_definitions': _definitions} if _definitions is not None else {})))
         expected_context = context
         def validate():
             current = checked('session_attestation', lambda: self._current_preparation_assignment(assignment))
             checked('session_attestation', lambda: self._attest_native_session(current))
             # Attestation itself may span a renewal; its return is not authority.
             current = checked('native_owner', lambda: self._current_preparation_assignment(current))
-            checked('native_owner', lambda: self.procedure_execution.validate_native_preparation(current, selected, actor))
+            checked('native_owner', lambda: self.procedure_execution.validate_native_preparation(current, selected, actor,
+                **({'_definitions': _definitions} if _definitions is not None else {})))
             if validate_credentials:
                 current = checked('credential_custody', lambda: self._current_preparation_assignment(current))
                 checked('credential_custody', lambda: self.procedure_execution.validate_native_credential_custody(
-                    current, selected, actor))
+                    current, selected, actor, **({'_definitions': _definitions} if _definitions is not None else {})))
             def consistent_context():
-                if self._preparation_context(current, actor, project, sandbox, request_checksum) != expected_context:
+                if self._preparation_context(current, actor, project, sandbox, request_checksum,
+                        **({'_definitions': _definitions} if _definitions is not None else {})) != expected_context:
                     raise ValueError("native preparation context changed")
             checked('preparation_context', consistent_context)
         validate()
@@ -615,7 +639,8 @@ class NativeProcedureAdmissionService:
         proof = NativeProviderPreparation(tuple(selected), source, validate, context=context)
         with native_provider_preparation(proof):
             discovery, text = checked('discovery', lambda: self.discovery.discover(context,
-                _include_supporting_context=_include_supporting_context))
+                _include_supporting_context=_include_supporting_context,
+                **({'_definitions': _definitions} if _definitions is not None else {})))
         def consistent_selection():
             if not discovery.admitted or tuple(discovery.selected) != tuple(selected):
                 raise ProcedureAdmissionError(discovery)
@@ -626,7 +651,7 @@ class NativeProcedureAdmissionService:
         from codex_web.services.native_procedure_preparation import attest_prepared_session
         return attest_prepared_session(assignment, self.procedure_execution, self.native_session_attestor)
 
-    def _seal_initial_credentials(self, assignment, selected, actor, validate):
+    def _seal_initial_credentials(self, assignment, selected, actor, validate, *, metadata_references=()):
         options = {}
         from codex_web.runtime.execution import TurnExecutionService
         attestor, preparer = self.native_session_attestor, self.native_session_preparer
@@ -643,22 +668,54 @@ class NativeProcedureAdmissionService:
                 return native_session_observation(proof, attestor=attestor,
                     procedures=self.procedure_execution)
             options['prepare_session'] = prepare
-        return self.procedure_execution.admit_initial_native_credentials(
-            assignment, selected, actor, validate, **options)
+        owner = self.procedure_execution
+        from codex_web.services.procedure_execution import (
+            ProcedureExecutionService, _CANONICAL_INITIAL_CREDENTIAL_ADMIT, _CANONICAL_INITIAL_SEAL_CHECK)
+        # Only the canonical owner opts into explicit data sharing. Extensions
+        # keep their original call signature and complete guarded validation.
+        def canonical_reads():
+            return (type(self) is NativeProcedureAdmissionService and type(owner) is ProcedureExecutionService
+                and self.procedure_execution is owner
+                and self.native_session_attestor is attestor and self.native_session_preparer is preparer
+                and getattr(owner.admit_initial_native_credentials, '__self__', None) is owner
+                and getattr(owner.admit_initial_native_credentials, '__func__', None) is _CANONICAL_INITIAL_CREDENTIAL_ADMIT
+                and all(getattr(getattr(self, name), '__self__', None) is self
+                    and getattr(getattr(self, name), '__func__', None) is original
+                    for name, original in _CANONICAL_SEAL_READS.items())
+                and getattr(self.discovery.discover, '__self__', None) is self.discovery
+                and getattr(self.discovery.discover, '__func__', None) is _CANONICAL_DISCOVER
+                and _CANONICAL_INITIAL_SEAL_CHECK(owner))
+        if canonical_pair and canonical_reads():
+            def observed(reader):
+                if reader is None:
+                    return owner.admit_initial_native_credentials(assignment, selected, actor, validate, **options)
+                # Prewarm data before the writer. The same current judgments
+                # run again after actual raw guard comparison under the CAS.
+                validate(self._current_preparation_assignment(assignment), _definitions=reader)
+                def current(current_assignment):
+                    if not canonical_reads():
+                        raise ValueError('Native preparation metadata owner changed before guarded use')
+                    return validate(current_assignment, _definitions=reader)
+                fresh_assignment = self._current_preparation_assignment(assignment)
+                return owner.admit_initial_native_credentials(fresh_assignment, selected, actor, current,
+                    _definitions=reader, **options)
+            return owner.skills.observe_definition_reads(metadata_references or selected, observed)
+        return owner.admit_initial_native_credentials(assignment, selected, actor, validate, **options)
 
     def _admit_initial_native_credentials(self, assignment, selected, actor, project, sandbox, request_checksum, *, _diagnostics=None):
         # An explicit writer on the initial path only. Shared preparation and
         # guarded input remain read-only, including on resumed native sessions.
         expected, _ = self._preparation_discovery(assignment, actor, project, sandbox,
             request_checksum, selected, validate_credentials=False, _diagnostics=_diagnostics)
-        def validate(current):
+        def validate(current, *, _definitions=None):
             # Supporting Memory retrieval appends a canonical audit. Recheck all
             # selection/authority/attestation guards here, never start a nested
             # writer from the credential transaction. Guidance is retrieved
             # through the ordinary path again after the credential CAS.
             fresh, _ = self._preparation_discovery(current, actor, project, sandbox,
                 request_checksum, selected, validate_credentials=False, _include_supporting_context=False,
-                _diagnostics=_diagnostics)
+                _diagnostics=_diagnostics,
+                **({'_definitions': _definitions} if _definitions is not None else {}))
             if fresh.context_checksum != expected.context_checksum:
                 raise ValueError("initial native credential preparation changed")
         return self._seal_initial_credentials(
@@ -732,7 +789,7 @@ class NativeProcedureAdmissionService:
         return await asyncio.to_thread(prepare)
 
     def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references, *,
-                                     _include_supporting_context=True, _diagnostics=None):
+                                     _include_supporting_context=True, _diagnostics=None, _definitions=None):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
         from codex_web.native_empty_preparation import closed_empty_preparation_diagnostics
@@ -746,8 +803,7 @@ class NativeProcedureAdmissionService:
                     *diagnostics, {'stage': stage, 'exception_type': bootstrap_exception_type(exc)}])
                 raise
         def physical_scope():
-            profile, _ = self.execution_profiles.resolve(assignment.execution_profile_id,
-                organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
+            profile, _ = self._preparation_profile(assignment, actor, project, _definitions)
             workspace = self.workers.workspaces.get(assignment.execution_workspace_id, self.control_actor)
             lease = self.workers.workspaces.store.lease(workspace.lease_id)
             if (profile.workspace_mode != "scratch" or profile.repository_access != "none"
@@ -759,7 +815,8 @@ class NativeProcedureAdmissionService:
                 raise ValueError("physical scope is not exactly empty")
         def preparation_context():
             return checked('preparation_context', lambda: self._preparation_context(
-                assignment, actor, project, sandbox, request_checksum, require_operations=False))
+                assignment, actor, project, sandbox, request_checksum, require_operations=False,
+                **({'_definitions': _definitions} if _definitions is not None else {})))
         def validate():
             def attest():
                 if self.native_session_attestor is None or self.procedure_execution is None:
@@ -785,7 +842,8 @@ class NativeProcedureAdmissionService:
                 return False
             try:
                 checked('candidate_validation', lambda: self.procedure_execution.validate_native_preparation(
-                    self._current_preparation_assignment(assignment), (reference,), actor, require_targets=False))
+                    self._current_preparation_assignment(assignment), (reference,), actor, require_targets=False,
+                    **({'_definitions': _definitions} if _definitions is not None else {})))
             except Exception:
                 validation_failed.append(True)
                 return False
@@ -794,7 +852,8 @@ class NativeProcedureAdmissionService:
         proof = NativeProviderPreparation((),source,validate,context=context,exclude_empty=excludes)
         with native_provider_preparation(proof):
             discovery, text = checked('discovery', lambda: self.discovery.discover(context,
-                _include_supporting_context=_include_supporting_context))
+                _include_supporting_context=_include_supporting_context,
+                **({'_definitions': _definitions} if _definitions is not None else {})))
         def consistent():
             # Check unavailable observations even when another candidate was
             # excluded successfully and the full ordered inventory is unchanged.
@@ -967,7 +1026,7 @@ class NativeProcedureAdmissionService:
             # A first no-match still seals an empty procedure scope. A later
             # publication cannot turn an already used bootstrap into a grant.
             def seal_empty():
-                def validate(current):
+                def validate(current, *, _definitions=None):
                     if empty_preparation_references is not None:
                         # Rebuild the same attested empty physical scope under
                         # the credential CAS, including candidate exclusions and
@@ -976,7 +1035,8 @@ class NativeProcedureAdmissionService:
                         try:
                             fresh, _ = self._empty_preparation_discovery(current, actor, project,
                                 sandbox, request_checksum, empty_preparation_references,
-                                _include_supporting_context=False)
+                                _include_supporting_context=False,
+                                **({'_definitions': _definitions} if _definitions is not None else {}))
                         except _EmptyPreparationCandidatesChanged as exc:
                             raise ExecutionPrestartRefusal(status_code=409, detail={
                                 "code": "procedure_native_preparation_changed",
@@ -990,7 +1050,8 @@ class NativeProcedureAdmissionService:
                         # A genuine zero-candidate discovery has no attested
                         # exclusions; retain its original plain-context check.
                         fresh_context = self.discovery.assignment_context(context, current, actor=actor)
-                        fresh, _ = self.discovery.discover(fresh_context, _include_supporting_context=False)
+                        fresh, _ = self.discovery.discover(fresh_context, _include_supporting_context=False,
+                            **({'_definitions': _definitions} if _definitions is not None else {}))
                     # The plain zero-candidate branch has no empty-proof callback;
                     # it must also preserve errors caught by discovery as unknown.
                     if fresh.outcome == 'failed':
@@ -1004,7 +1065,8 @@ class NativeProcedureAdmissionService:
                             "message": "Current empty native preparation differs from its initial admission",
                         })
                 return self._seal_initial_credentials(
-                    self._current_preparation_assignment(assignment), (), actor, validate)
+                    self._current_preparation_assignment(assignment), (), actor, validate,
+                    metadata_references=empty_preparation_references or ())
             try:
                 assignment = await asyncio.to_thread(seal_empty)
             except Exception as exc:
@@ -1252,3 +1314,11 @@ _CANONICAL_DISCOVERY_CONTEXT_READS = {
     for name in ('action_context', 'assignment_context', 'resource_facts')
 }
 _CANONICAL_CAPABILITY_RESOLVE = ProcedureExecutionCapabilityService.resolve
+
+from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService as _PreparationProfiles
+_CANONICAL_PROFILE_RESOLVE = _PreparationProfiles.resolve
+_CANONICAL_PROFILE_RECORD = _PreparationProfiles.record
+_CANONICAL_DISCOVER = ProcedureDiscoveryService.discover
+_CANONICAL_SEAL_READS = {name: getattr(NativeProcedureAdmissionService, name)
+    for name in ('_empty_preparation_discovery', '_preparation_discovery', '_preparation_context',
+                 '_native_policy', '_preparation_profile', '_current_preparation_assignment', '_attest_native_session')}
