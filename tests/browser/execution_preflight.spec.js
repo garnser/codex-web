@@ -281,3 +281,18 @@ test('owner recovery exposes exact failed custody, Goal and reconciliation actio
   await expect(card.locator('img,script')).toHaveCount(0);
   expect(await page.evaluate(() => window.__apiCalls.filter(item => item.method === 'POST'))).toEqual([]);
 });
+
+ test('selected preparation shows closed canonical diagnostics without retry or unsafe text', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?selectedPreparation');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const card = page.locator('.message.tool');
+  await expect(card).toContainText('Original selected enforcement refusal');
+  await expect(card).toContainText('Native preparation: native_owner · exception RuntimeError · code procedure_assignment_fence_expired_or_revoked');
+  await expect(card).toContainText('Native preparation: credential_custody · exception PermissionError');
+  await expect(card).toContainText('Original preflight: preflight-thread-turn-1');
+  await expect(card).toContainText('Diagnostics do not authorize retry or prove non-start.');
+  await expect(card).not.toContainText('sentinel-private');
+  await expect(card.locator('img,script')).toHaveCount(0);
+  await expect(page.getByRole('button', {name: 'Retry', exact: true})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__apiCalls.filter(item => item.method === 'POST'))).toEqual([]);
+});

@@ -664,10 +664,15 @@ class ExecutionPreflightService:
             if not isinstance(item, dict):
                 continue
             value = dict(item)
-            from codex_web.native_empty_preparation import closed_empty_preparation_diagnostics
-            diagnostics = closed_empty_preparation_diagnostics(value.pop('native_empty_preparation_diagnostics', None))
+            from codex_web.native_empty_preparation import closed_native_preparation_diagnostics
+            # One opaque diagnostic projection; preserve the published empty key
+            # for old records, prefer the generic key when explicitly present.
+            legacy = value.pop('native_empty_preparation_diagnostics', None)
+            generic = value.pop('native_preparation_diagnostics', None)
+            key = 'native_preparation_diagnostics' if generic is not None else 'native_empty_preparation_diagnostics'
+            diagnostics = closed_native_preparation_diagnostics(generic if generic is not None else legacy)
             if diagnostics:
-                value['native_empty_preparation_diagnostics'] = diagnostics
+                value[key] = diagnostics
             # Reserved controller witness cannot be supplied by provider/HTTP detail.
             value.pop('local_preinput_refusal', None)
             if local_preinput_refusal is not None:

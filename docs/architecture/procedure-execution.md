@@ -790,3 +790,48 @@ refusals; diagnostics neither authorize retry nor establish provider non-start.
 Messages, arbitrary exception names and provider payloads are excluded. Current
 input and credential-CAS checks still repeat the original proof; no scope is
 inferred, no queued original is changed, and no diagnostic grants authority.
+
+
+### Current custody during native preparation
+
+Native discovery and native-session attestation may span an ordinary worker lease
+renewal. Preparation re-reads the assignment through the existing canonical
+worker owner before current liveness/capability checks, after session attestation,
+and before each candidate or credential proof. An attestor return value is not
+an assignment authority. Only `updated_at` and the lease's `expires_at` and
+`renewed_at` may differ from the expected snapshot. The worker, fence, lease token
+and acquisition, requester, Profile/Definition, runtime, repository/Resource scope,
+original deadline, credential seal and procedure/input history remain exact.
+
+This applies to empty-scratch preparation and already-sealed selected procedures.
+Initial selected and empty credential admission refresh before the existing
+owner's pre-CAS liveness projection, then advance through the same guarded CAS
+and return the canonical sealed assignment; subsequent validation uses that
+owned result. Real expiry, revoked or changed custody and native broker/isolation
+failures still refuse. No timeout, lease lifetime, permission, retry, queue or
+native-input protocol is extended. Existing preflight diagnostics and retry
+surfaces remain authoritative; this correction alone is not evidence of the cause
+or resolution of a historical live refusal.
+
+### Selected native-preparation diagnostics (#2043)
+
+Selected-provider fallback retains its unsupported outcome when live preparation
+cannot be proved. Phase/type observations use the same closed diagnostic helper
+as empty-scope preparation. Selected refusals emit `native_preparation_diagnostics`
+in existing opaque preflight-blocker metadata; the published empty producer and
+old records retain `native_empty_preparation_diagnostics`. Readers prefer an
+explicit generic field and otherwise accept the legacy field, projecting only
+one set. The old sanitizer name remains an alias. No DTO/Definition/record-format
+version or second diagnostic object/store is introduced.
+
+Only finite phase/exception categories and explicitly allowlisted canonical
+ProcedureExecutionError codes survive. Raw exception messages, arbitrary custom
+class names, traces, commands, paths and credential references are never copied.
+Failed discovery/history retains closed diagnostic blocker markers, with its
+original unsupported outcome/first blocker and selection intact. Known credential
+refusals keep their existing nonretryable contract. Diagnostics do not establish
+non-start, authorize retries, reopen credential custody or bypass current native
+attestation. The existing inspector renders the generic field alongside legacy
+empty diagnostics without adding an operator action. Historical failures do not
+gain a diagnosis retroactively; controlled fixture refusal proves retention,
+not the cause of a previously observed live failure.
