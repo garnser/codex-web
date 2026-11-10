@@ -1,6 +1,7 @@
 """Assignment adapters; private owners, no application composition or native work."""
 import asyncio
 import copy
+import threading
 import unittest
 from types import SimpleNamespace as NS
 from unittest.mock import Mock, AsyncMock
@@ -144,6 +145,83 @@ class AssignmentReasoningTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(2)], return_exceptions=True)
         self.assertEqual(len(self.fixture.store.load().activations),1)
         self.assertTrue(any(isinstance(result,dict) for result in results))
+
+    def gated_preparation(self):
+        """Hold the actual context worker; events, not elapsed time, order it."""
+        loop = asyncio.get_running_loop()
+        entered, finished = asyncio.Event(), asyncio.Event()
+        release = threading.Event()
+        original = self.fixture.service.prepare
+
+        def prepare(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            try:
+                release.wait()
+                return original(*args, **kwargs)
+            finally:
+                loop.call_soon_threadsafe(finished.set)
+
+        self.fixture.service.prepare = prepare
+        return entered, finished, release
+
+    async def test_cancelled_create_joins_context_worker_without_late_persistence(self):
+        entered, finished, release = self.gated_preparation()
+        persist = Mock(wraps=self.fixture.service.persist_prepared)
+        self.fixture.service.persist_prepared = persist
+        task = asyncio.create_task(self.call("executive.activation.create", self.request()))
+        try:
+            await entered.wait()
+            task.cancel()
+            # Drain cancellation callbacks while the worker cannot complete.
+            # This is an ownership assertion, with no wall-clock SLA.
+            for _ in range(20):
+                await asyncio.sleep(0)
+            self.assertFalse(task.done(), "Cancelled create abandoned its running context worker")
+            self.assertFalse(finished.is_set())
+            persist.assert_not_called()
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await finished.wait()
+            persist.assert_not_called()
+            self.assertEqual(self.fixture.store.load().activations, [])
+            self.assertEqual(self.fixture.gateway.requests, [])
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            await finished.wait()
+
+    async def test_changed_custody_after_preparation_refuses_before_persistence(self):
+        entered, finished, release = self.gated_preparation()
+        persist = Mock(wraps=self.fixture.service.persist_prepared)
+        self.fixture.service.persist_prepared = persist
+        task = asyncio.create_task(self.call("executive.activation.create", self.request()))
+        try:
+            await entered.wait()
+            self.live.fence += 1
+            release.set()
+            with self.assertRaises(HTTPException):
+                await task
+            await finished.wait()
+            persist.assert_not_called()
+            self.assertEqual(self.fixture.store.load().activations, [])
+            self.assertEqual(self.fixture.gateway.requests, [])
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            await finished.wait()
+
+    async def test_prepare_dependency_timeout_propagates_without_persistence(self):
+        failure = TimeoutError("controlled context dependency timeout")
+        self.fixture.service.prepare = Mock(side_effect=failure)
+        persist = Mock(wraps=self.fixture.service.persist_prepared)
+        self.fixture.service.persist_prepared = persist
+        with self.assertRaises(TimeoutError) as caught:
+            await self.call("executive.activation.create", self.request())
+        self.assertIs(caught.exception, failure)
+        persist.assert_not_called()
+        self.assertEqual(self.fixture.store.load().activations, [])
+        self.assertEqual(self.fixture.gateway.requests, [])
 
     async def test_canonical_consult_current_status_cas_prevents_duplicate_model(self):
         created = await self.call("executive.activation.create",self.request())
