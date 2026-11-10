@@ -49,8 +49,10 @@ class _AdministrativeProvider(ReferenceActionProvider):
 
     @staticmethod
     def _reference_request(request):
-        # The broker receives the real issue contract. Translate only inside
-        # this synthetic provider to retain the reference write/receipt oracle.
+        # Only issue.create uses the real title/body contract. Other synthetic
+        # actions retain their original reference-provider parameters unchanged.
+        if request.action_id != 'code-host.issue.create':
+            return request
         return request.model_copy(update={'parameters': {
             'key': request.parameters['title'], 'value': request.parameters.get('body', ''),
         }})

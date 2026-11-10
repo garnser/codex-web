@@ -70,8 +70,11 @@ Each admitted process session owns one serial supervision executor and one
 bounded diagnostic executor. These are lifecycle resources, not admission or
 scheduling authorities. The watchdog validates worker/assignment/delegation and
 resource bounds before renewal. Each validation and renewal wait is bounded by
-the lesser of ten seconds and the remaining last validated lease. There is no
-lease extension for delayed validation and no cached resource-limit bypass.
+the remaining last validated lease and explicit assignment deadline, intersected
+with the configured local-preparation cap when enabled (ten seconds by default).
+Setting `CODEX_WEB_LOCAL_PREPARATION_TIMEOUT_SECONDS` to `0` or `-1` disables only
+that elapsed cap. There is no lease extension for delayed validation and no
+cached resource-limit bypass.
 If the exact renewal operation completed within its original budget but its
 result was observed after the predecessor lease expired, its returned live lease
 can bound one fresh authority read. That read retains the original operation's
