@@ -84,7 +84,7 @@
           <button type="button" class="ghost-button" data-action-provider-toggle="${escapeHtml(binding.id)}" ${pending || refreshRequired ? "disabled" : ""} aria-label="${escapeHtml(refreshRequired ? "Refresh required for" : next)} ActionProvider binding ${escapeHtml(binding.id)}">${buttonLabel}</button>
         </div>
         ${renderSecurity(binding.security_policy)}
-        ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts currently available from this binding.</small>'}
+        ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts.</small>'}
       </div>`;
     }).join("") || '<div class="comm-entry"><strong>No ActionProvider bindings in this workspace.</strong></div>';
     focusReference(list);
@@ -118,7 +118,7 @@
         resourceError ? `resource labels unavailable: ${resourceError}` : null,
         projectError ? `project labels unavailable: ${projectError}` : null,
       ].filter(Boolean);
-      setStatus(`${items.length} provider bindings · ${unavailable} unavailable/disabled.${warnings.length ? ` ${warnings.join(" · ")}` : ""}`);
+      setStatus(`${items.length} bindings · ${unavailable} unavailable/disabled. This view does not prepare or execute actions.${warnings.length ? ` ${warnings.join(" · ")}` : ""}`);
       window.dispatchEvent(new CustomEvent("codex:action-provider-rendered", {
         detail: { items, resources, projects },
       }));
