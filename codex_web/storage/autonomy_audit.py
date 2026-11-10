@@ -93,6 +93,42 @@ class AutonomyAuditStore:
         if not isinstance(meta.get("next_sequence"), int) or meta["next_sequence"] < 0:
             raise ValueError("invalid audit records sequence")
 
+    def read_control(self, *fields: str) -> dict[str, Any]:
+        """Read selected control keys without materializing immutable history."""
+        if not self.store.record_collection_exists(self.namespace):
+            if self.store.contains(self.namespace):
+                raise ValueError('bounded audit read requires keyed canonical records')
+            return {}  # Truly absent store; no read-triggered migration/write.
+        raw = self.store.record_get_many(self.namespace,
+            ('schema_version', self.meta_key, *fields))
+        AUTONOMY_AUDIT_CONTRACT.require(str(raw.get('schema_version') or ''))
+        self._validate_meta(raw.get(self.meta_key))
+        return raw
+
+    def scoped_records(self, *, organization_id: str, workspace_id: str,
+                       limit: int = 200, record_id: str | None = None,
+                       redaction_targets: tuple[str, ...] | None = None) -> tuple[AutonomyAuditRecord, ...]:
+        partition = AutonomyAuditRecord.partition_for(organization_id, workspace_id)
+        control = self.read_control()
+        if not control:
+            return ()
+        rows = self.store.audit_record_rows(self.namespace, partition_id=partition,
+            limit=max(1, min(limit, 1000)), record_id=record_id,
+            redaction_targets=redaction_targets)
+        result = tuple(AutonomyAuditRecord.model_validate(raw) for raw in rows)
+        if (len(result) > max(1, min(limit, 1000))
+                or len({r.id for r in result}) != len(result)
+                or any(r.partition_id != partition
+                    or (r.payload.organization_id, r.payload.workspace_id) != (organization_id, workspace_id)
+                    or record_id is not None and r.id != record_id
+                    or redaction_targets is not None and (r.payload.kind != 'redaction'
+                        or r.payload.target_audit_record_id not in redaction_targets)
+                    for r in result)
+                or redaction_targets is None and any(a.sequence <= b.sequence
+                    for a, b in zip(result, result[1:]))):
+            raise ValueError('canonical bounded audit result changed')
+        return result
+
     def load(self) -> AutonomyAuditState:
         self._ensure_records()
         return self._decode(self.store.get(self.namespace))

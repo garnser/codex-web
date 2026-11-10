@@ -685,6 +685,44 @@ class PostgresStateStore:
         return (list(self.record_items(namespace).values()) if rows is None else
                 [self._decode(row) for row in rows])
 
+    def audit_record_rows(self, namespace: str, *, partition_id: str, limit: int,
+                          record_id: str | None = None,
+                          redaction_targets: tuple[str, ...] | None = None) -> list[Any]:
+        """Bound scoped audit payload hydration; no legacy/full-history fallback."""
+        if (namespace != 'autonomy_audit' or type(partition_id) is not str
+                or type(limit) is not int or not 1 <= limit <= 1000
+                or record_id is not None and type(record_id) is not str
+                or redaction_targets is not None and (record_id is not None
+                    or not isinstance(redaction_targets, tuple)
+                    or not 1 <= len(redaction_targets) <= 1000
+                    or any(type(x) is not str for x in redaction_targets))):
+            raise ValueError('invalid bounded audit query')
+        prefix = state_record_storage_key(namespace, 'record:')
+        where = ("namespace COLLATE \"C\" >= %s AND namespace COLLATE \"C\" < %s "
+            "AND payload::json->>'partition_id' = %s")
+        parameters = [prefix, prefix + '\uffff', partition_id]
+        if record_id is not None:
+            where += " AND payload::json->>'id' = %s"
+            parameters.append(record_id)
+        if redaction_targets is not None:
+            where += (" AND payload::json->'payload'->>'kind' = 'redaction'"
+                " AND payload::json->'payload'->>'target_audit_record_id' = ANY(%s)")
+            parameters.append(list(redaction_targets))
+            query = ("SELECT payload FROM (SELECT payload, ROW_NUMBER() OVER (PARTITION BY "
+                "payload::json->'payload'->>'target_audit_record_id' ORDER BY "
+                "(payload::json->>'sequence')::bigint DESC) AS chosen FROM codex_state_documents WHERE "
+                + where + ") AS selected WHERE chosen=1 LIMIT %s")
+        else:
+            query = ("SELECT payload FROM codex_state_documents WHERE " + where
+                + " ORDER BY (payload::json->>'sequence')::bigint DESC LIMIT %s")
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                if not self._record_collection_exists_in_cursor(cursor, namespace):
+                    raise ValueError('bounded audit read requires keyed canonical records')
+                cursor.execute(query, (*parameters, limit))
+                rows = cursor.fetchall()
+        return [self._decode(row) for row in rows]
+
     def record_count(self, namespace: str) -> int:
         with self._read_connection() as connection:
             with connection.cursor() as cursor:

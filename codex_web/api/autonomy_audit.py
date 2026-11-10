@@ -66,15 +66,16 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
         limit: int = Query(default=200, ge=1, le=1000),
     ) -> dict[str, Any]:
         actor = reader(request)
-        rows = service.list_records(
-            organization_id=actor.organization_id,
-            workspace_id=actor.workspace_id,
-            limit=limit,
-        )
-        return {
-            "items": [service.public_record(item) for item in rows],
-            "count": len(rows),
-        }
+        try:
+            rows = service.list_records(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                limit=limit,
+            )
+            return {"items": service.public_records(rows), "count": len(rows)}
+        except ValueError as exc:
+            raise HTTPException(status_code=409,
+                detail="autonomy_audit_bounded_read_unavailable") from exc
 
     @router.get("/metrics")
     def metrics(request: Request) -> dict[str, Any]:
@@ -127,7 +128,14 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
             )
         except AutonomyAuditError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"item": service.public_record(item)}
+        except ValueError as exc:
+            raise HTTPException(status_code=409,
+                detail="autonomy_audit_bounded_read_unavailable") from exc
+        try:
+            return {"item": service.public_record(item)}
+        except ValueError as exc:
+            raise HTTPException(status_code=409,
+                detail="autonomy_audit_bounded_read_unavailable") from exc
 
     @router.post("/verify")
     async def verify(
