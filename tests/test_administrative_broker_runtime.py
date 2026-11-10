@@ -47,9 +47,20 @@ class _AdministrativeProvider(ReferenceActionProvider):
             'required_authority': ('repository.issue.create',),
         }),)
 
+    @staticmethod
+    def _reference_request(request):
+        # The broker receives the real issue contract. Translate only inside
+        # this synthetic provider to retain the reference write/receipt oracle.
+        return request.model_copy(update={'parameters': {
+            'key': request.parameters['title'], 'value': request.parameters.get('body', ''),
+        }})
+
+    async def prepare(self, request, **kwargs):
+        return await super().prepare(self._reference_request(request), **kwargs)
+
     async def execute(self, request, **kwargs):
         self.calls += 1
-        result = await super().execute(request, **kwargs)
+        result = await super().execute(self._reference_request(request), **kwargs)
         if self.unknown:
             raise RuntimeError('Synthetic response lost after provider write')
         return result
@@ -143,7 +154,7 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def submit(self,key='fixture-prerequisite'):
         return await self._request('POST','/api/repository-actions/issue/create?repository_resource_id='+self.target.id,
-            payload={'parameters':{'key':'prerequisite','value':'fixture issue'},'idempotency_key':key})
+            payload={'parameters':{'title':'prerequisite','body':'fixture issue'},'idempotency_key':key})
 
     async def test_canonical_receipt_verification_and_idempotent_reopen(self):
         status,_,body = await self.submit()
@@ -158,6 +169,7 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.provider.calls,1)
         self.assertEqual(intent['requested_by'], self.admin.identity_id)
         self.assertEqual(intent['request']['resource_ids'], [self.target.id])
+        self.assertEqual(intent['request']['parameters'], {'title':'prerequisite','body':'fixture issue'})
         self.assertNotIn(self.assignment.lease.lease_token, json.dumps(history))
         self.assertIsNone(self.assignment.repository_scope)
         self.assertEqual(self.assignment.resource_ids,())
@@ -288,7 +300,7 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
             resource_type=ResourceType.REPOSITORY), actor=self.admin)
         status, _, body = await self._request('POST',
             '/api/repository-actions/issue/create?repository_resource_id='+foreign.id,
-            payload={'parameters':{'key':'foreign','value':'forbidden'}})
+            payload={'parameters':{'title':'foreign','body':'forbidden'}})
         self.assertEqual(status, 403, body)
         self.assertEqual(self.provider.calls, 0)
         self.assertEqual(self.intents.store.load().intents, [])
