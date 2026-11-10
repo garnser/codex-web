@@ -790,3 +790,25 @@ refusals; diagnostics neither authorize retry nor establish provider non-start.
 Messages, arbitrary exception names and provider payloads are excluded. Current
 input and credential-CAS checks still repeat the original proof; no scope is
 inferred, no queued original is changed, and no diagnostic grants authority.
+
+
+### Current custody during native preparation
+
+Native discovery and native-session attestation may span an ordinary worker lease
+renewal. Preparation re-reads the assignment through the existing canonical
+worker owner before current liveness/capability checks, after session attestation,
+and before each candidate or credential proof. An attestor return value is not
+an assignment authority. Only `updated_at` and the lease's `expires_at` and
+`renewed_at` may differ from the expected snapshot. The worker, fence, lease token
+and acquisition, requester, Profile/Definition, runtime, repository/Resource scope,
+original deadline, credential seal and procedure/input history remain exact.
+
+This applies to empty-scratch preparation and already-sealed selected procedures.
+Initial selected and empty credential admission refresh before the existing
+owner's pre-CAS liveness projection, then advance through the same guarded CAS
+and return the canonical sealed assignment; subsequent validation uses that
+owned result. Real expiry, revoked or changed custody and native broker/isolation
+failures still refuse. No timeout, lease lifetime, permission, retry, queue or
+native-input protocol is extended. Existing preflight diagnostics and retry
+surfaces remain authoritative; this correction alone is not evidence of the cause
+or resolution of a historical live refusal.

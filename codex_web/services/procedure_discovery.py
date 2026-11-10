@@ -437,6 +437,24 @@ class NativeProcedureAdmissionService:
         self.reasoning_preparation = None
         self.bootstrap_bindings = None
 
+    def _current_preparation_assignment(self, expected):
+        """Point-read exact custody; only normal same-owner renewal may differ.
+
+        Do not trust an attestor's return value or reuse an expired read snapshot.
+        Observational timestamps and lease renewal timestamps do not change
+        custody. Every other field, including the token/acquisition and input,
+        credential and procedure history, remains an exact comparison target.
+        """
+        current = self.workers.assignment_for_execution(expected.execution_id, actor=self.control_actor)
+        if (expected.lease is None or current.lease is None
+                or expected.lease.model_copy(update={
+                    "expires_at": current.lease.expires_at,
+                    "renewed_at": current.lease.renewed_at}) != current.lease
+                or expected.model_copy(update={"lease": current.lease,
+                    "updated_at": current.updated_at}) != current):
+            raise ValueError("native preparation assignment custody changed")
+        return current
+
     def _native_policy(self, assignment, actor, project, sandbox):
         """Existing exact profile permits isolated preparation, never host operations.
 
@@ -453,6 +471,8 @@ class NativeProcedureAdmissionService:
                 organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
             if ref != assignment.execution_profile_definition:
                 return "native_tools", "canonical:execution-profile-pin-changed"
+            # Definition reads may span an ordinary worker heartbeat/renewal.
+            assignment = self._current_preparation_assignment(assignment)
             source = f"definition:{ref.record_id}@{ref.revision}#{ref.checksum}"
             if profile.dependency_egress:
                 # No-match preparation may use its separately governed HTTPS
@@ -516,6 +536,7 @@ class NativeProcedureAdmissionService:
             return "native_tools", "canonical:execution-policy-unavailable"
 
     def _preparation_context(self, assignment, actor, project, sandbox, request_checksum, *, require_operations=True):
+        assignment = self._current_preparation_assignment(assignment)
         enforcement, source = self._native_policy(assignment, actor, project, sandbox)
         if enforcement not in {"bounded_read_only", "isolated_preparation"}:
             raise ValueError("native preparation policy changed")
@@ -527,6 +548,7 @@ class NativeProcedureAdmissionService:
             resource_ids=assignment.resource_ids, operation=None, request_checksum=request_checksum,
             policy_source=source, policy_allows=True, enforcement=enforcement,
             **self.discovery.resource_facts(assignment.resource_ids, actor))
+        assignment = self._current_preparation_assignment(assignment)
         context = self.discovery.assignment_context(context, assignment, actor=actor)
         if context.worker_capabilities is None or context.provider_capabilities is None:
             raise ValueError("native preparation capabilities unavailable")
@@ -541,11 +563,15 @@ class NativeProcedureAdmissionService:
         context = self._preparation_context(assignment, actor, project, sandbox, request_checksum)
         expected_context = context
         def validate():
-            self.native_session_attestor(assignment, self.procedure_execution)
-            self.procedure_execution.validate_native_preparation(assignment, selected, actor)
+            current = self._current_preparation_assignment(assignment)
+            self.native_session_attestor(current, self.procedure_execution)
+            # Attestation itself may span a renewal; its return is not authority.
+            current = self._current_preparation_assignment(current)
+            self.procedure_execution.validate_native_preparation(current, selected, actor)
             if validate_credentials:
-                self.procedure_execution.validate_native_credential_custody(assignment, selected, actor)
-            if self._preparation_context(assignment, actor, project, sandbox, request_checksum) != expected_context:
+                current = self._current_preparation_assignment(current)
+                self.procedure_execution.validate_native_credential_custody(current, selected, actor)
+            if self._preparation_context(current, actor, project, sandbox, request_checksum) != expected_context:
                 raise ValueError("native preparation context changed")
         validate()
         source = "canonical:native-provider-preparation:" + checksum({
@@ -576,7 +602,7 @@ class NativeProcedureAdmissionService:
             if fresh.context_checksum != expected.context_checksum:
                 raise ValueError("initial native credential preparation changed")
         return self.procedure_execution.admit_initial_native_credentials(
-            assignment, selected, actor, validate)
+            self._current_preparation_assignment(assignment), selected, actor, validate)
 
     async def prepare_automation(self, *, project, actor, thread_id, execution_id,
                                  assignment_id, expected_fence, sandbox, definition,
@@ -678,9 +704,11 @@ class NativeProcedureAdmissionService:
             def attest():
                 if self.native_session_attestor is None or self.procedure_execution is None:
                     raise ValueError("physical scope is not attested")
-                self.native_session_attestor(assignment, self.procedure_execution)
+                current = self._current_preparation_assignment(assignment)
+                self.native_session_attestor(current, self.procedure_execution)
             checked('session_attestation', attest)
-            checked('native_owner', lambda: self.procedure_execution.validate_native_preparation_owner(assignment))
+            checked('native_owner', lambda: self.procedure_execution.validate_native_preparation_owner(
+                self._current_preparation_assignment(assignment)))
             checked('physical_scope', physical_scope)
             preparation_context()
         validate()
@@ -696,7 +724,7 @@ class NativeProcedureAdmissionService:
                 return False
             try:
                 checked('candidate_validation', lambda: self.procedure_execution.validate_native_preparation(
-                    assignment, (reference,), actor, require_targets=False))
+                    self._current_preparation_assignment(assignment), (reference,), actor, require_targets=False))
             except Exception:
                 return False
             excluded.append(reference)
@@ -815,6 +843,7 @@ class NativeProcedureAdmissionService:
                 request_checksum=request_checksum, policy_source=policy_source, policy_allows=True, enforcement=enforcement,
                 **await asyncio.to_thread(self.discovery.resource_facts, targets, actor))
             if assignment is not None:
+                assignment = await asyncio.to_thread(self._current_preparation_assignment, assignment)
                 context = await asyncio.to_thread(self.discovery.assignment_context, context, assignment, actor=actor)
                 if context.worker_capabilities is None or context.provider_capabilities is None:
                     from dataclasses import replace
@@ -886,7 +915,8 @@ class NativeProcedureAdmissionService:
                             "code": "procedure_native_preparation_changed",
                             "message": "Current empty native preparation differs from its initial admission",
                         })
-                return self.procedure_execution.admit_initial_native_credentials(assignment, (), actor, validate)
+                return self.procedure_execution.admit_initial_native_credentials(
+                    self._current_preparation_assignment(assignment), (), actor, validate)
             try:
                 assignment = await asyncio.to_thread(seal_empty)
             except Exception as exc:
