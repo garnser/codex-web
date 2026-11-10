@@ -125,18 +125,26 @@ class DefinitionRegistryStore:
 class _DefinitionRawObservation:
     def __init__(self, owner, raw):
         self._owner = owner
+        self._backend = owner.store
         self._raw = raw
         self._thread = threading.get_ident()
         self._active = True
+        self._decoded = {}
 
     def require_owner(self, owner):
-        if not self._active or owner is not self._owner or threading.get_ident() != self._thread:
+        if (not self._active or owner is not self._owner or owner.store is not self._backend
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_CAN_OBSERVE(owner)):
             raise ValueError("Definition read observation is foreign, closed or on another thread")
 
     def load(self, owner, *, matches=None):
         self.require_owner(owner)
+        key = tuple(sorted((matches or {}).items()))
+        if key in self._decoded:
+            return [item.model_copy(deep=True) for item in self._decoded[key]]
         if self._raw is None:
-            return owner._decode(None, matches=matches)
+            self._decoded[key] = owner._decode(None, matches=matches)
+            return []
         records = self._raw.get("records", [])
         if not isinstance(records, list):
             raise ValueError("definition registry records must be a list")
@@ -147,13 +155,23 @@ class _DefinitionRawObservation:
         # ordinary load_matching semantics instead of becoming a global scan.
         payload = {"schema_version": self._raw["schema_version"],
                    "records": [deepcopy(item) for item in selected]}
-        return owner._decode(payload, matches=matches)
+        decoded = owner._decode(payload, matches=matches)
+        self._decoded[key] = [item.model_copy(deep=True) for item in decoded]
+        return decoded
+
+    def require_current(self, owner, raw):
+        """Compare actual guarded data; this does not retain a permission."""
+        self.require_owner(owner)
+        if raw != self._raw:
+            raise ValueError('Definition read observation changed before guarded use')
 
     def close(self):
         self._active = False
         self._raw = None
+        self._decoded.clear()
 
 
 _CANONICAL_LOAD = DefinitionRegistryStore.load
 _CANONICAL_LOAD_MATCHING = DefinitionRegistryStore.load_matching
 _CANONICAL_DECODE = DefinitionRegistryStore._decode
+_CANONICAL_CAN_OBSERVE = DefinitionRegistryStore.can_observe_reads

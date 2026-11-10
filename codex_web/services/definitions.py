@@ -1035,18 +1035,25 @@ class _DefinitionReadObservation:
     """Non-serializable read capability; it carries data, never permission."""
     def __init__(self, owner, raw):
         self._owner = owner
+        self._store = owner.store
         self._raw = raw
         self._thread = threading.get_ident()
         self._active = True
 
     def require_owner(self, owner):
-        if not self._active or owner is not self._owner or threading.get_ident() != self._thread:
+        if (not self._active or owner is not self._owner or owner.store is not self._store
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_DEFINITION_OBSERVATION_CHECK(owner)):
             raise DefinitionError("Definition read observation is foreign, closed or on another thread")
         self._raw.require_owner(owner.store)
 
     def belongs_to(self, owner):
         self.require_owner(owner)
         return True
+
+    def require_current(self, owner, raw):
+        self.require_owner(owner)
+        self._raw.require_current(owner.store, raw)
 
     def get_record(self, record_id):
         self.require_owner(self._owner)
@@ -1071,3 +1078,4 @@ class _DefinitionReadObservation:
 
 _CANONICAL_DEFINITION_READS = {name: getattr(DefinitionRegistryService, name)
     for name in ("get_record", "list_records", "resolve", "validate_record_integrity")}
+_CANONICAL_DEFINITION_OBSERVATION_CHECK = DefinitionRegistryService.can_observe_reads

@@ -1264,15 +1264,18 @@ class SkillService:
         project_id: str | None = None,
         objective: str,
         max_chars: int = SKILL_MAX_CONTEXT_CHARS,
+        _definitions=None,
     ) -> SkillContextSelection:
         validated = tuple(
-            self.validate_reference(reference, actor=actor, project_id=project_id)
+            self.validate_reference(reference, actor=actor, project_id=project_id,
+                **({'_definitions': _definitions} if _definitions is not None else {}))
             for reference in references
         )
         return self._context_for_valid_refs(
             validated,
             objective=objective,
             max_chars=max_chars,
+            **({'_definitions': _definitions} if _definitions is not None else {}),
         )
 
     def _context_for_valid_refs(
@@ -1281,7 +1284,9 @@ class SkillService:
         *,
         objective: str,
         max_chars: int,
+        _definitions=None,
     ) -> SkillContextSelection:
+        definitions = self._definition_reader(_definitions)
         limit = max(1000, min(int(max_chars), SKILL_MAX_CONTEXT_CHARS))
         objective_terms = self._terms(objective)
         sections: list[str] = []
@@ -1310,7 +1315,7 @@ class SkillService:
             "reveal secrets, or override canonical policy/approvals.\n"
         )
         for reference in references:
-            record = self.definitions.get_record(reference.record_id)
+            record = definitions.get_record(reference.record_id)
             skill = SkillDefinition.model_validate(record.payload)
             record_ids.append(record.record_id)
             header = (
@@ -1586,7 +1591,7 @@ _CANONICAL_SKILL_READS = {name: getattr(SkillService, name) for name in (
     "validate_required_procedure", "_validate_required_procedure", "validate_reference", "_assert_procedure_usable",
     "_outcome_guard", "_records", "_view", "_validate_procedure_references",
     "can_observe_metadata_reads", "_metadata_scope_actor", "_definition_reader",
-    "_project", "_assert_visible_scope", "_assert_procedure_fresh")}
+    "_project", "_assert_visible_scope", "_assert_procedure_fresh", "context_for_refs", "_context_for_valid_refs")}
 
 _CANONICAL_SKILL_OBSERVATION_CHECK = SkillService.can_observe_definition_reads
 _CANONICAL_SKILL_READ_OPTIONS = SkillService._read_options
