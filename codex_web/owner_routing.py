@@ -73,7 +73,7 @@ class OwnerRoutingPin(BaseModel):
     fields. This pin adds no credentials, permissions or native outcome claims.
     """
     model_config = ConfigDict(extra='forbid', frozen=True)
-    schema_version: Literal['1.0', '1.1'] = '1.0'
+    schema_version: Literal['1.0', '1.1', '1.2'] = '1.0'
     binding: OwnerRoutingBinding
     work_item_ref: str = Field(min_length=1, max_length=500)
     stage: str = Field(min_length=1, max_length=128)
@@ -83,11 +83,15 @@ class OwnerRoutingPin(BaseModel):
     original_thread_id: str = Field(min_length=1, max_length=256)
 
     recipient: OwnerRoutingRecipient | None = None
+    current_work_intent_sha256: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
 
     @model_validator(mode='after')
     def versioned_recipient(self):
-        if (self.schema_version == '1.1') != (self.recipient is not None):
+        if (self.schema_version in {'1.1', '1.2'}) != (self.recipient is not None):
             raise ValueError('recipient witness requires explicit owner-routing 1.1')
+        if ((self.schema_version == '1.2') != (self.current_work_intent_sha256 is not None)
+                or (self.schema_version == '1.2' and self.handoff_requested_at is not None)):
+            raise ValueError('current-work recipient requires explicit owner-routing 1.2 without handoff')
         if self.schema_version == '1.0' and self.binding.schema_version != '1.0':
             raise ValueError('legacy pin requires legacy binding')
         return self
@@ -95,6 +99,8 @@ class OwnerRoutingPin(BaseModel):
     @model_serializer(mode='wrap')
     def preserve_legacy_shape(self, handler):
         result = handler(self)
+        if self.schema_version != '1.2':
+            result.pop('current_work_intent_sha256', None)
         if self.schema_version == '1.0':
             result.pop('recipient', None)
         return result
