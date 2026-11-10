@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -431,11 +432,19 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         claimed = self.service.claim(ActionIntentClaimRequest(worker_id="worker"),
                                      actor=self.worker_actor, intent_id=intent.id)
         entered = asyncio.Event()
+        release = threading.Event()
+        receipt_threads = []
         original = self.service._append_receipt
         loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
         def slow_receipt(*args, **kwargs):
+            receipt_thread = threading.get_ident()
+            receipt_threads.append(receipt_thread)
             loop.call_soon_threadsafe(entered.set)
-            time.sleep(0.15)
+            # A deliberately synchronous implementation must fail the thread
+            # witness without deadlocking the event loop inside this fixture.
+            if receipt_thread != loop_thread:
+                release.wait()
             return original(*args, **kwargs)
         app = FastAPI()
 
@@ -447,21 +456,38 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.service, "_append_receipt", side_effect=slow_receipt):
             task = asyncio.create_task(self.service.execute_claimed(claimed.id, worker_id="worker",
                                                                     actor=self.worker_actor))
-            await asyncio.wait_for(entered.wait(), 2)
-            self.assertFalse(task.done())
-            started = time.perf_counter()
-            async with httpx.AsyncClient(
-                transport=transport,
-                base_url="http://test",
-            ) as client:
-                response = await asyncio.wait_for(
-                    client.get("/api/qualification-ping"),
-                    0.08,
-                )
-            self.assertEqual(response.status_code, 200)
-            self.assertLess(time.perf_counter() - started, 0.08)
-            self.assertFalse(task.done())
-            self.assertEqual((await task).status, ActionIntentStatus.SUCCEEDED)
+            entry_task = asyncio.create_task(entered.wait())
+            try:
+                # These bounds detect fixture deadlock, not a response SLA.
+                done, _ = await asyncio.wait({task, entry_task}, timeout=60,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                self.assertTrue(done, "action neither reached receipt storage nor completed")
+                if task in done:
+                    await task  # Surface an early service error before entry.
+                self.assertTrue(entered.is_set(), "action completed without receipt storage")
+                self.assertTrue(receipt_threads)
+                self.assertTrue(all(thread != loop_thread for thread in receipt_threads),
+                                "receipt storage ran on the event-loop thread")
+                self.assertFalse(task.done())
+                self.assertFalse(release.is_set())
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://test",
+                ) as client:
+                    response = await asyncio.wait_for(
+                        client.get("/api/qualification-ping"), 60)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"ok": True})
+                self.assertFalse(release.is_set())
+                self.assertFalse(task.done())
+            finally:
+                release.set()
+                entry_task.cancel()
+                await asyncio.gather(entry_task, return_exceptions=True)
+                # Join the same action and its real receipt before unpatching
+                # storage or tearing down the temporary database. Never cancel it.
+                result = await asyncio.wait_for(asyncio.shield(task), 60)
+            self.assertEqual(result.status, ActionIntentStatus.SUCCEEDED)
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()
