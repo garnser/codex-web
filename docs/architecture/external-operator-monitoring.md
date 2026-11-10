@@ -63,6 +63,29 @@ second create. A GitHub outage retains the last issue inventory and current host
 observations; stale inventory inhibits automatic launches. No observation failure
 is treated as proof of successful business work.
 
+Observer timestamp freshness and inspection coverage are separate facts. The
+reduced snapshot preserves only a closed `inspection_status` enum (`complete`,
+`incomplete`, `unknown`), a bounded failed-thread count and a boolean inspection
+result for each retained thread. A declared complete inspection cannot override
+failed thread reads, malformed/truncated inventory or inspection-failure
+conditions. Error messages and condition details are not retained. Older
+snapshots without a boolean completeness flag have unknown project coverage;
+their valid individual runner samples can still establish positive observations.
+
+A recent incomplete or unknown inspection produces one stable coverage signal,
+subject to the existing persistence, issue deduplication and launch bounds.
+Successful complete inspection makes that coverage signal noncurrent. Stale
+snapshots instead produce the existing stale-observer signal, and failed or stale
+thread samples cannot refresh runner-failure evidence. Retained runner failures
+expose `observation_status`: `observed_failure` for a fresh positive observation,
+`not_observed` after a fresh successful read of that same thread without the
+failure, and `unknown` when that read is unavailable. A missing thread, even in
+a complete inventory, does not prove that its runner recovered. Historical
+failure metadata, last-positive timestamps and existing issue/launch receipts
+remain intact. None of these observation states closes an issue or authorizes
+recovery, replacement, execution or replay. `summary.json` exposes current
+inspection coverage separately from service liveness and readiness.
+
 Private JSON checkpoints hold observation metadata and launch/session/result
 receipts. Message text, thread names, arbitrary runner diagnostics and secrets
 are excluded from the reduced observer snapshot. Checkpoints are atomically
