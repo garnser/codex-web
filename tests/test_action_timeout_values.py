@@ -11,6 +11,7 @@ from codex_web.action_intents import ActionIntentClaimRequest, ActionIntentState
 from codex_web.action_providers import ActionDefinition
 from codex_web.services.capacity import CapacityService
 from codex_web.services.action_intents import ActionIntentLeaseError
+from codex_web.services.action_providers import ActionRequirementError
 from codex_web.services.code_host_action_contract import CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
 from codex_web.storage.capacity import CapacityStore
 from tests import test_action_intents as fixture_module
@@ -23,6 +24,82 @@ class ActionTimeoutValuesTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.f.asyncTearDown()
+
+    async def test_real_owned_verification_accepts_its_initial_and_later_canonical_claim_renewals(self):
+        f = self.f
+        intent = f._create(timeout_seconds=0)
+        f.service.claim(ActionIntentClaimRequest(worker_id="worker", lease_seconds=30),
+            actor=f.worker_actor, intent_id=intent.id)
+        expected = f.service._mark_executing(intent.id, "worker", f.worker_actor)
+        clock = [expected.lease.acquired_at + 1]
+        entered, tick, renewed = (asyncio.Event() for _ in range(3))
+        original_renew = f.service.renew_claim
+        loop = asyncio.get_running_loop()
+        renewals = []
+
+        def renew(*args, **kwargs):
+            value = original_renew(*args, **kwargs)
+            renewals.append(value)
+            if len(renewals) >= 2:
+                loop.call_soon_threadsafe(renewed.set)
+            return value
+
+        async def controlled_wait(_duration):
+            await tick.wait()
+            tick.clear()
+
+        async def verification():
+            f.service._check_ready_intent(f.service.get(intent.id, f.actor), expected)
+            entered.set()
+            await renewed.wait()
+            # The expected snapshot's old lease can expire while the SAME
+            # acquisition generation remains canonically renewed and live.
+            f.service._check_ready_intent(f.service.get(intent.id, f.actor), expected)
+            return "verified"
+
+        with patch("codex_web.services.action_intents.time.time", side_effect=lambda: clock[0]), \
+                patch("codex_web.services.action_intents.asyncio.sleep", side_effect=controlled_wait), \
+                patch.object(f.service, "renew_claim", side_effect=renew):
+            task = asyncio.create_task(f.service._await_owned_action(verification, expected, f.worker_actor))
+            entry_task = asyncio.create_task(entered.wait())
+            try:
+                done, _ = await asyncio.wait((task, entry_task),
+                    timeout=30, return_when=asyncio.FIRST_COMPLETED)  # fixture deadlock guard
+                if task in done:
+                    await task  # surface the actual strict-verification failure
+                self.assertTrue(entered.is_set())
+                clock[0] = expected.lease.expires_at + 0.5
+                tick.set()
+                self.assertEqual(await asyncio.wait_for(asyncio.shield(task), 30), "verified")
+            finally:
+                entry_task.cancel()
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, entry_task, return_exceptions=True)
+        self.assertGreaterEqual(len(renewals), 2)
+
+    async def test_readiness_renewal_proof_rejects_changed_generation_expiry_and_other_intent_fields(self):
+        f = self.f
+        intent = f._create(timeout_seconds=0)
+        f.service.claim(ActionIntentClaimRequest(worker_id="worker", lease_seconds=30),
+            actor=f.worker_actor, intent_id=intent.id)
+        expected = f.service._mark_executing(intent.id, "worker", f.worker_actor)
+        now = expected.lease.acquired_at + 1
+        with patch("codex_web.services.action_intents.time.time", return_value=now):
+            current = f.service.renew_claim(intent.id, "worker", 30, actor=f.worker_actor,
+                                           expected_acquired_at=expected.lease.acquired_at)
+            f.service._check_ready_intent(current, expected)
+            for changes in ({"owner": "other"}, {"acquired_at": expected.lease.acquired_at + .5},
+                            {"expires_at": now}, {"expires_at": expected.lease.expires_at - .5},
+                            {"renewed_at": expected.lease.acquired_at - 1}, {"renewed_at": now + 1},
+                            {"expires_at": float("inf")}):
+                with self.subTest(changes=changes), self.assertRaises(ActionRequirementError):
+                    f.service._check_ready_intent(current.model_copy(update={
+                        "lease": current.lease.model_copy(update=changes)}), expected)
+            for changes in ({"lease": None}, {"attempt": current.attempt + 1},
+                            {"requested_by": "other"}, {"status": ActionIntentStatus.UNCERTAIN}):
+                with self.subTest(changes=changes), self.assertRaises(ActionRequirementError):
+                    f.service._check_ready_intent(current.model_copy(update=changes), expected)
 
     async def test_explicit_disabled_does_not_inherit_positive_definition(self):
         for value in (0, -1):

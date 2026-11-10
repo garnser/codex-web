@@ -332,6 +332,49 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
                         if route.path == "/api/executive/activations" and "POST" in route.methods)
         return endpoint, request
 
+    async def test_context_disabled_values_and_local_default_join_actual_preparation(self):
+        original_prepare = self.service.prepare
+        real_wait_for = asyncio.wait_for
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        for configured, expected in ((0, None), (-1, None), (None, None), (60, 60)):
+            with self.subTest(configured=configured):
+                entered, finished = asyncio.Event(), asyncio.Event()
+                release = threading.Event()
+                threads = []
+                def held(payload, *, actor):
+                    threads.append(threading.get_ident())
+                    loop.call_soon_threadsafe(entered.set)
+                    try:
+                        if threading.get_ident() != loop_thread:
+                            release.wait()
+                        return original_prepare(payload, actor=actor)
+                    finally:
+                        loop.call_soon_threadsafe(finished.set)
+                # Explicit positive limits remain positive even while the local
+                # default is disabled; no clock-speed assertion is needed.
+                with patch.dict('os.environ', {'CODEX_WEB_LOCAL_PREPARATION_TIMEOUT_SECONDS': '0'}), \
+                     patch.object(self.service, 'prepare', side_effect=held), \
+                     patch('codex_web.api.executive_management.asyncio.wait_for', wraps=real_wait_for) as wait:
+                    endpoint, request = self._create_endpoint(timeout=configured)
+                    task = asyncio.create_task(endpoint(ExecutiveActivationCreate(
+                        subject='Held context', request='Prepare under the selected duration',
+                        requested_role_ids=('cto',)), request))
+                    try:
+                        await real_wait_for(entered.wait(), 60)
+                        self.assertTrue(all(thread != loop_thread for thread in threads))
+                        self.assertEqual(wait.call_args_list[0].kwargs['timeout'], expected)
+                        progress = asyncio.Event()
+                        loop.call_soon(progress.set)
+                        await real_wait_for(progress.wait(), 60)
+                        self.assertFalse(task.done())
+                        self.assertFalse(release.is_set())
+                    finally:
+                        release.set()
+                        result = await real_wait_for(asyncio.shield(task), 60)
+                        await real_wait_for(finished.wait(), 60)
+                    self.assertIn('item', result)
+
     async def test_executor_queue_expiry_never_invokes_prepare_or_persist(self):
         loop = asyncio.get_running_loop()
         executor = ThreadPoolExecutor(max_workers=1)

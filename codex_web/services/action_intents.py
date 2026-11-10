@@ -609,7 +609,7 @@ class ActionIntentService:
             binding = self.execution.registry.binding(binding_id,actor)
             provider = self.execution.registry.provider(binding.provider_type,binding.provider_instance,actor=actor)
             definition = self.execution._definition(provider,request.action_id)
-            read_only_observation = (binding.enabled and provider.provider_type == "gitlab" and provider.contract_version == "1.2"
+            read_only_observation = (binding.enabled and provider.provider_type == "gitlab" and provider.contract_version in {"1.2", "1.3"}
                 and (binding.project_id is None or binding.project_id == request.project_id)
                 and (not binding.resource_ids or set(request.resource_ids).issubset(binding.resource_ids))
                 and definition.capabilities.read and definition.required_authority_level == "read"
@@ -1839,6 +1839,24 @@ class ActionIntentService:
         # Only bookkeeping may differ. Security is the exact observation
         # admitted by this invocation, including its decision identity/time.
         refreshed = {"updated_at", "procedure_discoveries"}
+        if (current is not None and current.status == expected.status == ActionIntentStatus.EXECUTING
+                and current.lease is not None and expected.lease is not None
+                and current.lease != expected.lease):
+            before, after = expected.lease, current.lease
+            before_renewed = before.acquired_at if before.renewed_at is None else before.renewed_at
+            after_renewed = after.acquired_at if after.renewed_at is None else after.renewed_at
+            # The canonical renewal keeps the original acquisition generation.
+            # Prove that narrow evolution before retaining full intent equality;
+            # a new claim, lost owner, expiry, or arbitrary lease edit is refused.
+            if (before.owner == after.owner and before.acquired_at == after.acquired_at
+                    and after.renewed_at is not None
+                    and all(math.isfinite(value) for value in (
+                        before.acquired_at, before_renewed, before.expires_at,
+                        after.acquired_at, after_renewed, after.expires_at))
+                    and before.acquired_at <= before_renewed < before.expires_at
+                    and before_renewed <= after_renewed <= time.time() < after.expires_at
+                    and before.expires_at <= after.expires_at):
+                expected = expected.model_copy(update={"lease": after})
         if (current is None or current.status not in {ActionIntentStatus.EXECUTING,
                 ActionIntentStatus.UNCERTAIN, ActionIntentStatus.REQUIRES_RECONCILIATION}
                 or current.model_dump(exclude=refreshed) != expected.model_dump(exclude=refreshed)

@@ -108,6 +108,36 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reference.record_id, published.record_id)
         self.assertEqual(reference.revision, published.revision)
 
+    def test_schema_1_3_registry_publishes_canonical_procedure_disabled_duration(self) -> None:
+        from tests.test_procedure_automation import automation_payload
+        for duration in (0, -1):
+            with self.subTest(duration=duration):
+                payload = automation_payload()
+                payload['budget']['max_duration_seconds'] = duration
+                draft = self.registry.create_draft(DefinitionDraftCreate(
+                    definition_id=f'canonical-off-{duration}', kind=AUTOMATION_KIND,
+                    definition_schema_version='1.3', payload=payload, actor='operator'))
+                published = self.registry.publish(draft.record_id, DefinitionPublishRequest(actor='operator'))
+                self.assertEqual(published.definition_schema_version, '1.3')
+                self.assertEqual(published.payload['target']['kind'], 'canonical_procedure')
+                self.assertEqual(published.payload['budget']['max_duration_seconds'], duration)
+
+    def test_legacy_registry_versions_reject_disabled_duration_keep_positive(self) -> None:
+        for version in ('1.0', '1.1', '1.2'):
+            positive = self._payload()
+            accepted = self.registry.create_draft(DefinitionDraftCreate(
+                definition_id=f'positive-{version}', kind=AUTOMATION_KIND,
+                definition_schema_version=version, payload=positive, actor='operator'))
+            self.assertEqual(accepted.payload['budget']['max_duration_seconds'], 900)
+            for duration in (0, -1):
+                with self.subTest(version=version, duration=duration):
+                    payload = self._payload()
+                    payload['budget']['max_duration_seconds'] = duration
+                    with self.assertRaisesRegex(ValueError, 'requires Automation schema 1.3'):
+                        self.registry.create_draft(DefinitionDraftCreate(
+                            definition_id=f'off-{version}-{duration}', kind=AUTOMATION_KIND,
+                            definition_schema_version=version, payload=payload, actor='operator'))
+
     def test_definition_registry_versions_and_resolves_automation(self) -> None:
         draft = self.registry.create_draft(
             DefinitionDraftCreate(

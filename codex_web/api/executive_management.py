@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.observability import log_event, operation_stage
+from codex_web.timeout_values import normalize_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.executive_roles import (
     ExecutiveActivationCreate,
     ExecutiveActivationStatus,
@@ -38,7 +40,7 @@ from codex_web.storage.executive_activations import (
 def build_executive_management_router(
     service: ExecutiveManagementService,
     *,
-    context_timeout_seconds: float = 5.0,
+    context_timeout_seconds: float | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/executive",
@@ -186,7 +188,9 @@ def build_executive_management_router(
             with operation_stage(logging.getLogger(__name__), "executive.context.stage", "prepare_wait",
                 organization_id=actor.organization_id, workspace_id=actor.workspace_id):
                 prepared = await asyncio.wait_for(
-                    task, timeout=max(0.001, float(context_timeout_seconds)),
+                    task, timeout=normalize_timeout(
+                        RuntimePolicy.local_preparation_timeout(5.0)
+                        if context_timeout_seconds is None else context_timeout_seconds),
                 )
         except TimeoutError as exc:
             # wait_for cancels its task on expiry; an inner TimeoutError completes

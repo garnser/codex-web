@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from codex_web.timeout_values import normalize_timeout
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -330,12 +331,13 @@ class HomeOperatorCoordinationActionProvider:
             if self.service.target_repository_fields(context[5], actor) != (repository_id, writable, read_only):
                 denied("Target repository custody changed during input admission")
             original = self.service.broker.action_intents.get(intent.id, actor)
+            timeout = normalize_timeout(original.timeout_seconds)
             if (original.status != "executing" or original.request != request or original.attempt != 1
                     or original.execution_id != current.execution_id or original.lease is None
                     or original.lease.owner != f"control-plane-broker:{current.assigned_worker_id}"
                     or original.lease.expires_at <= self.service.broker._clock()
                     or original.execution_started_at is None
-                    or original.execution_started_at + original.timeout_seconds <= self.service.broker._clock()):
+                    or (timeout is not None and original.execution_started_at + timeout <= self.service.broker._clock())):
                 denied("Original Home action custody changed before input admission")
             return context
         guard()

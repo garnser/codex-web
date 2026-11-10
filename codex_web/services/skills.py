@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from codex_web.timeout_values import normalize_timeout
 from typing import Any, Callable
 
 from codex_web.agent_profiles import AgentProfileUpdate
@@ -319,7 +320,10 @@ class SkillService:
             if (ref.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
                     and (procedure.schema_version not in {'1.3', '1.5'} or procedure.input_protocol != 'code-host-mr-procedure-input.v2')):
                 raise SkillConflict('Guarded readiness requires procedure 1.3 and versioned v2 input')
-            if step.timeout_seconds > operation.timeout_seconds or step.max_attempts > operation.retry_max_attempts:
+            step_timeout = normalize_timeout(step.timeout_seconds)
+            operation_timeout = normalize_timeout(operation.timeout_seconds)
+            if (operation_timeout is not None and (step_timeout is None or step_timeout > operation_timeout)
+                    or step.max_attempts > operation.retry_max_attempts):
                 raise SkillConflict("procedure step exceeds registered operation timeout/retry bounds")
             if step.kind in {"diagnostic", "verification"} and operation.required_authority_level != "read":
                 raise SkillConflict("diagnostic/verification must reference a read-only operation")

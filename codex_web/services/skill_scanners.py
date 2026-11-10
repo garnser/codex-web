@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Protocol
 
+from codex_web.timeout_values import normalize_timeout
 from codex_web.identity import TenantScope
 from codex_web.skill_security import (
     SkillFindingSeverity,
@@ -196,7 +197,8 @@ class SkillSpectorCliProvider:
     ) -> None:
         self.executable = executable
         self.run = run
-        self.timeout_seconds = min(max(float(timeout_seconds), 1.0), 300.0)
+        duration = normalize_timeout(timeout_seconds)
+        self.timeout_seconds = min(max(duration, 1.0), 300.0) if duration is not None else None
         self.parser = parser or SkillSpectorJsonParser()
 
     @staticmethod

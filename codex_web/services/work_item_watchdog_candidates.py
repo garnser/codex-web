@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from codex_web.work_item_wait import current_unchanged_wait
+from codex_web.timeout_values import normalize_timeout
 from codex_web.models import WorkItemState
 
 
@@ -69,30 +70,37 @@ class WorkItemWatchdogCandidatePolicy:
             return ("split_brain", now - state.updated_at)
         if current_unchanged_wait(state):
             return None
+        handoff_time_warning_disabled = False
         if state.handoff and state.handoff.status == "pending":
             delivery = state.handoff.delivery
             if delivery is not None:
                 waiting = delivery.status == "awaiting_dispatch"
-                clock_start = state.handoff.requested_at if waiting else delivery.started_at
-                if clock_start is None:
+                timeout = normalize_timeout(self.handoff_delivery_timeout_seconds()
+                    if waiting else self.handoff_timeout_seconds())
+                if timeout is not None:
+                    clock_start = state.handoff.requested_at if waiting else delivery.started_at
+                    if clock_start is None:
+                        return None
+                    pending_age = now - clock_start
+                    if pending_age >= timeout:
+                        return ("handoff_delivery_expired" if waiting else "pending_handoff", pending_age)
+                    # A queued handoff has its own enabled deadline; stale
+                    # implementation age cannot promote it prematurely.
                     return None
-                pending_age = now - clock_start
-                timeout = self.handoff_delivery_timeout_seconds() if waiting else self.handoff_timeout_seconds()
-                if pending_age >= timeout:
-                    return ("handoff_delivery_expired" if waiting else "pending_handoff", pending_age)
-                # A queued handoff has its own deadline; stale implementation
-                # age cannot promote it into a premature coordination exception.
-                return None
-            pending_age = now - state.handoff.requested_at
-            if pending_age >= min(self.handoff_timeout_seconds(), 300.0):
-                return ("pending_handoff", pending_age)
+                handoff_time_warning_disabled = True
+            else:
+                pending_age = now - state.handoff.requested_at
+                timeout = normalize_timeout(self.handoff_timeout_seconds())
+                if timeout is not None and pending_age >= min(timeout, 300.0):
+                    return ("pending_handoff", pending_age)
+                handoff_time_warning_disabled = timeout is None
         owner = self.coerce_owner(state.current_owner or state.next_owner)
         if not owner:
             return ("unowned", now - state.updated_at)
         age = now - state.last_meaningful_update_at
         if state.current_stage == "failed_with_action_owner":
             return ("blocked_lane", age)
-        if age >= self.sla_threshold_seconds(state):
+        if not handoff_time_warning_disabled and age >= self.sla_threshold_seconds(state):
             return ("stale_lane", age)
         return None
 

@@ -44,7 +44,7 @@ class HomeOperatorFollowup:
         record = self.runs.definitions.registry.get_record(reference.record_id)
         if (reference != run.definition_ref or automation.lifecycle != 'enabled'
                 or automation.target.kind != AutomationTargetKind.HOME_OPERATOR
-                or record.definition_schema_version != '1.1'
+                or record.definition_schema_version not in {'1.1', '1.2', '1.3'}
                 or record.scope_type not in {DefinitionScope.WORKSPACE, DefinitionScope.PROJECT}
                 or record.scope_type == DefinitionScope.PROJECT and record.scope_id != 'home'
                 or record.published_by != automation.owner_identity_id):
