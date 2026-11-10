@@ -919,6 +919,21 @@ These scheduling boundaries retain the same actor, CSRF, assurance, tenant,
 authority and audit arguments and denial behavior; they grant no authority,
 cache no authorization decision and do not extend supervision deadlines.
 
+The canonical procedure-discovery writer distinguishes its live-lease refusal
+with a `WorkerLeaseError` subtype. Native procedure admission translates only
+that trusted local subtype into the existing preinput refusal, before this
+request reaches native resume/start capture or input. The original queue claim
+and snapshot remain unchanged; current possible/positive native observations,
+active turns, changed claims and retirement still fence its disposition. The
+existing preflight inspector shows the assignment lease blocker and links to
+worker custody repair. It does not automatically renew, replace, retry, grant
+bootstrap recovery or retire scheduling. Broker discovery inside an already
+started turn retains ordinary worker-lease error semantics.
+
+Generic worker/storage/transport exceptions and historical UNKNOWN records
+cannot acquire this classification from matching text or absent receipts. No
+historical proof is backfilled, lease limit raised or provider result inferred.
+
 Retained worker history must not monopolize the lock used by current heartbeat
 and lease transactions. Read-only worker snapshots do not take that mutation
 lock; targeted authority-changing operations recheck current rows in the
