@@ -138,7 +138,10 @@ class EmptyNativePreparationSealingTests(unittest.IsolatedAsyncioTestCase):
                 name='New provider candidate', instructions='Exact private provider declaration',
                 operational_procedure=self.env.content), actor=f.actor)
             f.skills.publish(created['skillId'], created['recordId'], SkillPublish(), actor=f.actor)
-        await self.changed_before_cas(add, ValueError)
+        error = await self.changed_before_cas(add, ExecutionPrestartRefusal)
+        self.assertEqual(error.detail['code'], 'procedure_native_preparation_changed')
+        self.assertEqual(error.detail['native_empty_preparation_diagnostics'],
+            [{'stage': 'candidate_consistency', 'exception_type': 'ValueError'}])
 
     async def test_current_empty_workspace_lease_must_remain_exactly_empty(self):
         def change():

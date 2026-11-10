@@ -87,6 +87,19 @@ native input guard repeat the same current procedure selection, security, instru
 and attestation checks without that optional retrieval. Ordinary preparation
 still retrieves bounded supporting context; it grants no credential authority.
 
+An empty-scope candidate consistency refusal inside initial credential sealing
+is a typed local pre-input refusal only when no candidate validator failed.
+The exact ordered candidate comparison and supported-exclusion requirement remain
+mandatory. The queue retains that same original as blocked with the existing
+`procedure_native_preparation_changed` code and closed candidate-consistency
+diagnostic. Hidden validator errors, failed discovery (including storage errors)
+and attestor failures remain uncertain;
+neither their prose nor a transported matching error code proves non-input.
+Positive native receipts and changed admission claims retain precedence. Historical
+unknown requests are never reclassified by this change. This reuses existing
+preflight/blocker/inspector contracts and adds no persisted schema version or
+automatic retry, credential grant, provider call or new recovery authority.
+
 A canonical transaction rechecks the live worker, lease/fence, workspace,
 selected Definitions, bindings, security and policy before sealing the finite
 reference union and its provenance once. Only an unused pending bootstrap may
