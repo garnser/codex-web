@@ -125,6 +125,15 @@ class GoalContinuationEventService:
                 outcome="ignored",
                 reason="binding_not_found_or_ambiguous",
             )
+        if getattr(binding, 'project_continuation', None) is not None:
+            worker = getattr(self.continuation, 'worker_continuation', None)
+            if worker is None:
+                return GoalContinuationEventResult(outcome='held', binding_id=binding.id, reason='project_goal_owner_unavailable')
+            # Provider status cannot release a reservation. The owned worker
+            # terminal callback and its exact usage must both have settled it.
+            _, next_turn = await worker.settle_pending(binding, scope=scope)
+            return GoalContinuationEventResult(outcome='continued' if next_turn else 'held',
+                binding_id=binding.id, continuation=next_turn, reason='project_original_terminal_reconciliation')
         if getattr(binding, "home_continuation", None) is not None:
             home = getattr(self.continuation, "home_continuation", None)
             if home is None:

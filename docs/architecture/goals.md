@@ -6,6 +6,49 @@ The core rule is:
 
 > **Goal state is application data. Models may propose plans for a Goal; they do not own Goal lifecycle, budgets, health, progress, or authority.**
 
+### Assignment-bound Project continuation
+
+Application continuation for an ordinary Project's existing Codex worker enters
+the canonical TurnService queue and TurnExecution admission. A ready generic
+AgentSession is not worker-transport attestation; its direct native mutation
+route continues to refuse unsupported enforcement. Home retains its separate
+selected human-administrator, finite-budget and host-authority restrictions.
+
+The existing GoalExecutionBinding owner retains an optional typed
+`project_continuation` facet before queueing one original input. It pins the
+Goal revision and exact root refs, current execution owner, canonical Session,
+worker-assignment fingerprint and original input checksum. The reservation ID
+is also the requested execution identity, not an authority-bearing source
+label. Final native admission checks the current binding lease, Goal/autonomy
+scope, Profile/Definition and assignment/fence again. Actual START attribution
+remains in the canonical preflight correlation, response and receipt; terminal
+provider status alone cannot release the original. Accounted usage must match
+the same Session, native turn, assignment and execution workspace.
+
+An uncertain start, cancelled caller or lost queue response retains the original;
+it never falls into generic continuation retry. Idle Session state, missing
+process handles or absent queue entries do not prove no effects. The Goal
+binding inspector shows retained phase, queue/assignment/root identity and
+pending accounting separately from successful execution.
+
+The existing native-recovery cycle re-adopts only an exact positively queued
+preflight after a finite binding lease expires; it preserves the same input and
+never polls an idle Goal for model work. Expired reserved inputs without that
+proof become UNKNOWN. Runtime-usage notifications use the same recovery owner
+to reconcile a retained terminal waiting for late accounting. Only the winning
+terminal/usage settlement may request a normal subsequent continuation.
+Unknown measured token/count/cost values stay null cumulatively. Disabled Goal
+ceilings do not demand unavailable measurements; a finite corresponding ceiling
+refuses another input while the relevant cumulative measurement is unknown.
+The conservative reservation counter is distinct from measured model calls.
+
+The binding state contract is **1.3**, reading 1.0–1.3 through the canonical
+additive migrations. Legacy bindings acquire no delivery, grant or new native
+effect; the absent optional facet is omitted in their serialization. Old
+readers that support only 1.2 must reject 1.3; downgrade cannot discard a
+retained original. There is no physical database schema change, parallel
+journal, bulk history rewrite or retrospective native outcome backfill.
+
 ## Canonical Goal state
 
 A Goal records:

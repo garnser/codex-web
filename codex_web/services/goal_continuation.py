@@ -52,6 +52,7 @@ class GoalContinuationService:
         self.autonomy = autonomy
         self.owner_id = owner_id
         self.home_continuation = None
+        self.worker_continuation = None
         self.lease_seconds = max(1.0, float(lease_seconds))
         self.max_recovery_attempts = max(1, int(max_recovery_attempts))
         self.retry_base_seconds = max(0.0, float(retry_base_seconds))
@@ -236,6 +237,10 @@ class GoalContinuationService:
             retained = await self.home_continuation.reconcile(binding, scope=scope)
             if retained is not None:
                 return retained
+        if self.worker_continuation is not None and self.worker_continuation.handles(binding):
+            retained = await self.worker_continuation.reconcile(binding, scope=scope)
+            if retained is not None:
+                return retained
 
         claimed = self.bindings.claim_continuation(
             binding.id,
@@ -253,6 +258,8 @@ class GoalContinuationService:
 
         if self.home_continuation is not None and self.home_continuation.handles(claimed):
             return await self.home_continuation.dispatch(claimed, scope=scope)
+        if self.worker_continuation is not None and self.worker_continuation.handles(claimed):
+            return await self.worker_continuation.dispatch(claimed, scope=scope)
 
         try:
             result = await self.agent_sessions.start_turn(

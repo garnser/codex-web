@@ -4433,12 +4433,20 @@ async def _reconcile_native_goal_runners():
         await goal_continuation_recovery_service.reconcile_native_scope(
             scope=TenantScope(organization_id=organization_id, workspace_id=workspace_id),
             observer=owner_lane_recovery_service.native_goal_blocker)
+        await goal_continuation_recovery_service.reconcile_retained_worker_scope(
+            scope=TenantScope(organization_id=organization_id, workspace_id=workspace_id))
 
 
 async def _recover_home_event_runs():
     followup = getattr(app.state, "home_operator_followup", None)
     if followup is not None:
         await followup.recover_pending()
+    rows = await asyncio.to_thread(goal_execution_binding_store.load)
+    scopes = {(item.organization_id, item.workspace_id) for item in rows.bindings
+        if item.project_continuation is not None}
+    for organization_id, workspace_id in sorted(scopes):
+        await goal_continuation_recovery_service.reconcile_retained_worker_scope(
+            scope=TenantScope(organization_id=organization_id, workspace_id=workspace_id))
 
 
 native_recovery_service = NativeRecoveryService(
@@ -5190,11 +5198,21 @@ goal_continuation_service.home_continuation = home_goal_continuation
 home_restart_recovery_service.goal_continuation = home_goal_continuation
 home_goal_continuation.restart_recovery = home_restart_recovery_service
 control_plane_broker_service.home_operator_host.goal_input_authorizer = home_goal_continuation.authorize_input
+from codex_web.services.project_goal_continuation import ProjectGoalContinuation
+project_goal_continuation = ProjectGoalContinuation(continuation=goal_continuation_service,
+    turns=turn_service, identity=identity_service, profiles=agent_profile_service,
+    execution_profiles=execution_profile_definition_service, workers=execution_worker_service,
+    bootstrap_bindings=thread_bootstrap_binding_service, usage=agent_runtime_usage_store)
+goal_continuation_service.worker_continuation = project_goal_continuation
+turn_execution_service.project_goal_admission = project_goal_continuation.queued_admission
 def _project_home_goal_native_start(attempt):
     try:
         owner_routing_service.project_native_start(attempt)
     finally:
-        home_goal_continuation.project_native_start(attempt)
+        try:
+            home_goal_continuation.project_native_start(attempt)
+        finally:
+            project_goal_continuation.project_native_start(attempt)
 execution_preflight_service.queued_start_observer = _project_home_goal_native_start
 app.state.home_goal_continuation = home_goal_continuation
 
@@ -5203,7 +5221,10 @@ async def _record_home_retained_terminal(active, *, succeeded):
         await home_child_terminal_service.record_terminal(active, succeeded=succeeded)
     finally:
         try:
-            await home_goal_continuation.record_terminal(active, succeeded=succeeded)
+            try:
+                await home_goal_continuation.record_terminal(active, succeeded=succeeded)
+            finally:
+                await project_goal_continuation.record_terminal(active, succeeded=succeeded)
         finally:
             try:
                 await home_restart_recovery_service.record_terminal(active, succeeded=succeeded)
@@ -5213,12 +5234,24 @@ async def _record_home_retained_terminal(active, *, succeeded):
 turn_execution_service.retained_turn_outcome_recorder = _record_home_retained_terminal
 automation_execution_service.home_operator_followup = home_operator_followup
 control_plane_broker_service.home_operator_host.event_input_authorizer = home_operator_followup.authorize_input
-turn_execution_service.procedure_admission.input_authorizer = (
-    control_plane_broker_service.home_operator_host.authorize_native_input
-)
-turn_execution_service.native_input_guard_factory = (
-    control_plane_broker_service.home_operator_host.prepare_native_input_guard
-)
+def _authorize_current_native_input(**kwargs):
+    control_plane_broker_service.home_operator_host.authorize_native_input(**kwargs)
+    project_goal_continuation.authorize_input(**kwargs)
+
+def _prepare_current_native_input_guard(**kwargs):
+    home = control_plane_broker_service.home_operator_host.prepare_native_input_guard(**kwargs)
+    project = project_goal_continuation.prepare_native_input_guard(**kwargs)
+    if home is None:
+        return project
+    if project is None:
+        return home
+    def both():
+        home()
+        return project()
+    return both
+
+turn_execution_service.procedure_admission.input_authorizer = _authorize_current_native_input
+turn_execution_service.native_input_guard_factory = _prepare_current_native_input_guard
 home_overview_service = HomeOverviewService(
     projects=project_service,
     work_items=work_item_service,

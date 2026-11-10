@@ -797,6 +797,11 @@ class TurnExecutionService:
             raise AutomatedAdmissionPaused(status_code=409, detail=reason)
 
     def _project_dispatch_validator(self, queued):
+        goal_admission = getattr(self, 'project_goal_admission', None)
+        if goal_admission is not None:
+            validator = goal_admission(queued)
+            if validator is not None:
+                return validator
         if getattr(queued, "owner_lane_recovery", None) is not None:
             recovery = getattr(self, "owner_lane_recovery", None)
             if recovery is None:
@@ -843,8 +848,9 @@ class TurnExecutionService:
                 return None
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
-            return {"code": str(detail.get("code") or "owner_recovery_blocked")
-                    if getattr(queued, "owner_lane_recovery", None) is not None else "project_delegation_blocked",
+            code = str(detail.get('code') or 'owner_recovery_blocked')
+            return {"code": code if code == 'project_goal_continuation_blocked'
+                    or getattr(queued, 'owner_lane_recovery', None) is not None else 'project_delegation_blocked',
                 "message": str(detail.get("message") or
                 "Project delegation blocked: its canonical admission service is unavailable")[:500]}
         return self.automation_wait_reason(queued.source)
@@ -3275,9 +3281,8 @@ class TurnExecutionService:
                 input_admission_validator = await asyncio.to_thread(self.native_input_guard_factory,
                     project=project, actor=actor, execution_id=canonical_execution_id,
                     assignment_id=assignment_id, source=source,
-                    **({"request_checksum": hashlib.sha256(message.encode()).hexdigest(),
-                        "input_execution_id": requested_execution_id}
-                       if source.removeprefix("queued:").startswith(("home-operator-automation:", "home-goal-continuation:")) else {}))
+                    request_checksum=hashlib.sha256(message.encode()).hexdigest(),
+                    input_execution_id=requested_execution_id)
 
             if (procedure_discovery is not None and procedure_discovery.admitted
                     and (procedure_discovery.selected or "canonical:native-empty-physical-scope:" in procedure_discovery.policy_source

@@ -82,6 +82,10 @@ class GoalContinuationRecoveryService:
         )
 
     def _expired_active_outcome_known(self, binding, *, scope: TenantScope) -> bool:
+        if getattr(binding, 'project_continuation', None) is not None:
+            # Only its retained-original owner can reconcile this input.
+            # Never use a ready/idle Session as evidence of no native effects.
+            return True
         if getattr(binding, "home_continuation", None) is not None:
             # Original queued/started Home input is reconciled by the same owner.
             # Session status alone never proves that input was not sent.
@@ -109,6 +113,32 @@ class GoalContinuationRecoveryService:
                 changed += await asyncio.to_thread(self.bindings.note_native_runner_blocker,
                     binding, scope=scope, reason=reason)
         return changed
+
+    async def reconcile_retained_worker_scope(self, *, scope: TenantScope, now: float | None = None):
+        """Reconcile retained input evidence, never poll an idle model.
+
+        A queued original needs positive preflight proof for lease renewal.
+        Expired reservations become UNKNOWN; actual owned terminal+usage may
+        settle once. IDLE or merely started inputs never generate model work.
+        """
+        owner = getattr(self.continuation, 'worker_continuation', None)
+        if owner is None:
+            return ()
+        current_time = time.time() if now is None else float(now)
+        rows = await asyncio.to_thread(self.bindings.list_all, scope=scope)
+        results = []
+        for binding in rows:
+            progress = getattr(binding, 'project_continuation', None)
+            delivery = progress.delivery if progress else None
+            if not owner.handles(binding) or delivery is None:
+                continue
+            if delivery.phase != 'terminal_pending_usage' and (
+                    not self._eligible(binding, now=current_time)
+                    or binding.status != GoalExecutionBindingStatus.ACTIVE
+                    or delivery.phase not in {'reserved', 'queued'}):
+                continue
+            results.append(await owner.reconcile(binding, scope=scope))
+        return tuple(results)
 
     async def recover_scope(
         self,
