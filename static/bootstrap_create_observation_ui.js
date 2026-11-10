@@ -1,4 +1,4 @@
-import { escapeHtml } from './role_admin_shared.js';
+import { esc as escapeHtml } from './reference_links.js';
 import { timeText } from './execution_worker_presenters.js';
 
 export function bootstrapCreateObservationHtml(item) {
