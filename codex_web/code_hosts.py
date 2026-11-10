@@ -39,6 +39,21 @@ class CodeHostUnsupportedCapabilityError(CodeHostError):
     pass
 
 
+class CodeHostInvalidRequestError(CodeHostError):
+    """A code-owned read protocol constraint, not a provider absence fact."""
+
+
+class CodeHostArtifactUnavailableError(CodeHostError):
+    """Positive artifact metadata refusal; never proof a member is absent."""
+
+    def __init__(self, *, expired: bool) -> None:
+        if type(expired) is not bool:
+            raise TypeError('artifact expiration classification must be boolean')
+        self.expired = expired
+        super().__init__('Archive metadata reports expiration' if expired
+                         else 'Current metadata does not establish a downloadable archive')
+
+
 # Provider-neutral query protocol, not a mutable operational definition.
 PULL_REQUEST_QUERY_STATES = ("open", "closed", "all")
 
@@ -58,7 +73,7 @@ def validate_artifact_member_path(path: str) -> str:
         or any(char in path for char in "\\:%")
         or any(part in {"", ".", ".."} for part in path.split("/"))
     ):
-        raise CodeHostError("artifact member_path must be a bounded relative path without traversal")
+        raise CodeHostInvalidRequestError("artifact member_path must be a bounded relative path without traversal")
     return path
 
 

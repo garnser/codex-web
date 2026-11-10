@@ -5,7 +5,7 @@
   const { referenceAttributes, focusReference, esc: escapeHtml } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
-  const { timeText, listText, safeLink, governanceHtml, researchLinks, observationPolicyHtml, continuationInputHtml } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
+  const { timeText, listText, digestText, safeLink, governanceHtml, researchLinks, observationPolicyHtml, continuationInputHtml, artifactSharingHtml } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
   await import(`${BASE}/static/derived_artifact_admission.js`);
   let refreshGeneration = 0;
   let actor = null;
@@ -89,14 +89,6 @@
     return matchesSearch(item);
   }
 
-  function verificationVisible(item) {
-    return matchesSearch(item);
-  }
-
-  function digestText(digest) {
-    return digest ? `${digest.algorithm}:${digest.value}` : "none";
-  }
-
   function invalidateButton(kind, item) {
     if (!canMutateRecord(item.producer_identity_id)) return "";
     const active = kind === "artifact" ? item.lifecycle === "active" : item.lifecycle === "valid";
@@ -120,6 +112,7 @@
         <small>Supersedes: ${escapeHtml(item.supersedes_id || "none")} · superseded by: ${escapeHtml(item.superseded_by_id || "none")} · retention: ${timeText(item.retention_expires_at)}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${continuationInputHtml(item)}
+        ${artifactSharingHtml(item)}
         ${governanceHtml(governanceFor(item.id))}
         ${invalidateButton("artifact", item)}
       </details>`;
@@ -143,6 +136,7 @@
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${observationPolicyHtml(item)}
         ${continuationInputHtml(item)}
+        ${artifactSharingHtml(item)}
         ${governanceHtml(governanceFor(item.id))}
         ${invalidateButton("evidence", item)}
       </details>`;
@@ -152,7 +146,7 @@
   function renderVerifications() {
     const host = document.getElementById("verification-list");
     if (!host) return;
-    const rows = verifications.filter(verificationVisible);
+    const rows = verifications.filter(matchesSearch);
     host.innerHTML = rows.map((item) => `<details class="comm-entry" ${referenceAttributes('verification',item.id)}>
       <summary><strong>${escapeHtml(item.result)} · ${item.independent ? "independent" : "producer-related"} · ${escapeHtml(item.method)}</strong></summary>
       <small>ID: ${escapeHtml(item.id)} · verifier: ${escapeHtml(item.verifier_identity_id)} · verified: ${timeText(item.verified_at)}</small>

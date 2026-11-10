@@ -435,6 +435,25 @@ class NativeProcedureAdmissionService:
         self.native_session_attestor = None
         self.procedure_execution = None
         self.reasoning_preparation = None
+        self.bootstrap_bindings = None
+
+    def _current_preparation_assignment(self, expected):
+        """Point-read exact custody; only normal same-owner renewal may differ.
+
+        Do not trust an attestor's return value or reuse an expired read snapshot.
+        Observational timestamps and lease renewal timestamps do not change
+        custody. Every other field, including the token/acquisition and input,
+        credential and procedure history, remains an exact comparison target.
+        """
+        current = self.workers.assignment_for_execution(expected.execution_id, actor=self.control_actor)
+        if (expected.lease is None or current.lease is None
+                or expected.lease.model_copy(update={
+                    "expires_at": current.lease.expires_at,
+                    "renewed_at": current.lease.renewed_at}) != current.lease
+                or expected.model_copy(update={"lease": current.lease,
+                    "updated_at": current.updated_at}) != current):
+            raise ValueError("native preparation assignment custody changed")
+        return current
 
     def _native_policy(self, assignment, actor, project, sandbox):
         """Existing exact profile permits isolated preparation, never host operations.
@@ -452,7 +471,14 @@ class NativeProcedureAdmissionService:
                 organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
             if ref != assignment.execution_profile_definition:
                 return "native_tools", "canonical:execution-profile-pin-changed"
+            # Definition reads may span an ordinary worker heartbeat/renewal.
+            assignment = self._current_preparation_assignment(assignment)
             source = f"definition:{ref.record_id}@{ref.revision}#{ref.checksum}"
+            if profile.dependency_egress:
+                # No-match preparation may use its separately governed HTTPS
+                # transport. Selected procedures still require the original
+                # no-egress session attestor and remain unsupported here.
+                source += ";dependency-egress:1.0"
             observed = time.time()
             if ((assignment.organization_id, assignment.workspace_id, assignment.project_id) !=
                     (actor.organization_id, actor.workspace_id, project.id)
@@ -510,6 +536,7 @@ class NativeProcedureAdmissionService:
             return "native_tools", "canonical:execution-policy-unavailable"
 
     def _preparation_context(self, assignment, actor, project, sandbox, request_checksum, *, require_operations=True):
+        assignment = self._current_preparation_assignment(assignment)
         enforcement, source = self._native_policy(assignment, actor, project, sandbox)
         if enforcement not in {"bounded_read_only", "isolated_preparation"}:
             raise ValueError("native preparation policy changed")
@@ -521,26 +548,48 @@ class NativeProcedureAdmissionService:
             resource_ids=assignment.resource_ids, operation=None, request_checksum=request_checksum,
             policy_source=source, policy_allows=True, enforcement=enforcement,
             **self.discovery.resource_facts(assignment.resource_ids, actor))
+        assignment = self._current_preparation_assignment(assignment)
         context = self.discovery.assignment_context(context, assignment, actor=actor)
         if context.worker_capabilities is None or context.provider_capabilities is None:
             raise ValueError("native preparation capabilities unavailable")
         return context
 
     def _preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, selected, *, validate_credentials=True,
-                               _include_supporting_context=True):
+                               _include_supporting_context=True, _diagnostics=None):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
+        from codex_web.native_empty_preparation import closed_native_preparation_diagnostics, CANONICAL_CODES
+        from codex_web.services.threads import bootstrap_exception_type
+        from codex_web.services.procedure_execution import ProcedureExecutionError
+        def checked(stage, operation):
+            try:
+                return operation()
+            except Exception as exc:
+                if _diagnostics is not None:
+                    entry = {'stage':stage,'exception_type':bootstrap_exception_type(exc)}
+                    if type(exc) is ProcedureExecutionError and exc.code in CANONICAL_CODES:
+                        entry['code'] = exc.code
+                    _diagnostics[:] = closed_native_preparation_diagnostics([*_diagnostics,entry])
+                raise
         if self.native_session_attestor is None or self.procedure_execution is None:
             raise ValueError("native provider preparation is unavailable")
-        context = self._preparation_context(assignment, actor, project, sandbox, request_checksum)
+        context = checked('preparation_context', lambda: self._preparation_context(
+            assignment, actor, project, sandbox, request_checksum))
         expected_context = context
         def validate():
-            self.native_session_attestor(assignment, self.procedure_execution)
-            self.procedure_execution.validate_native_preparation(assignment, selected, actor)
+            current = checked('session_attestation', lambda: self._current_preparation_assignment(assignment))
+            checked('session_attestation', lambda: self.native_session_attestor(current, self.procedure_execution))
+            # Attestation itself may span a renewal; its return is not authority.
+            current = checked('native_owner', lambda: self._current_preparation_assignment(current))
+            checked('native_owner', lambda: self.procedure_execution.validate_native_preparation(current, selected, actor))
             if validate_credentials:
-                self.procedure_execution.validate_native_credential_custody(assignment, selected, actor)
-            if self._preparation_context(assignment, actor, project, sandbox, request_checksum) != expected_context:
-                raise ValueError("native preparation context changed")
+                current = checked('credential_custody', lambda: self._current_preparation_assignment(current))
+                checked('credential_custody', lambda: self.procedure_execution.validate_native_credential_custody(
+                    current, selected, actor))
+            def consistent_context():
+                if self._preparation_context(current, actor, project, sandbox, request_checksum) != expected_context:
+                    raise ValueError("native preparation context changed")
+            checked('preparation_context', consistent_context)
         validate()
         source = "canonical:native-provider-preparation:" + checksum({
             "assignment":assignment.id,"fence":assignment.fence,"execution":assignment.execution_id,
@@ -549,38 +598,114 @@ class NativeProcedureAdmissionService:
             capability_sources=(*context.capability_sources, source))
         proof = NativeProviderPreparation(tuple(selected), source, validate, context=context)
         with native_provider_preparation(proof):
-            discovery, text = self.discovery.discover(context,
-                _include_supporting_context=_include_supporting_context)
-        if not discovery.admitted or tuple(discovery.selected) != tuple(selected):
-            raise ProcedureAdmissionError(discovery)
+            discovery, text = checked('discovery', lambda: self.discovery.discover(context,
+                _include_supporting_context=_include_supporting_context))
+        def consistent_selection():
+            if not discovery.admitted or tuple(discovery.selected) != tuple(selected):
+                raise ProcedureAdmissionError(discovery)
+        checked('candidate_consistency', consistent_selection)
         return discovery, text
 
-    def _admit_initial_native_credentials(self, assignment, selected, actor, project, sandbox, request_checksum):
+    def _admit_initial_native_credentials(self, assignment, selected, actor, project, sandbox, request_checksum, *, _diagnostics=None):
         # An explicit writer on the initial path only. Shared preparation and
         # guarded input remain read-only, including on resumed native sessions.
         expected, _ = self._preparation_discovery(assignment, actor, project, sandbox,
-            request_checksum, selected, validate_credentials=False)
+            request_checksum, selected, validate_credentials=False, _diagnostics=_diagnostics)
         def validate(current):
             # Supporting Memory retrieval appends a canonical audit. Recheck all
             # selection/authority/attestation guards here, never start a nested
             # writer from the credential transaction. Guidance is retrieved
             # through the ordinary path again after the credential CAS.
             fresh, _ = self._preparation_discovery(current, actor, project, sandbox,
-                request_checksum, selected, validate_credentials=False, _include_supporting_context=False)
+                request_checksum, selected, validate_credentials=False, _include_supporting_context=False,
+                _diagnostics=_diagnostics)
             if fresh.context_checksum != expected.context_checksum:
                 raise ValueError("initial native credential preparation changed")
         return self.procedure_execution.admit_initial_native_credentials(
-            assignment, selected, actor, validate)
+            self._current_preparation_assignment(assignment), selected, actor, validate)
+
+    async def prepare_automation(self, *, project, actor, thread_id, execution_id,
+                                 assignment_id, expected_fence, sandbox, definition,
+                                 input_snapshot_id, request_checksum, automation_run_id):
+        """Seal an unused native bootstrap for its real event input (#1982).
+
+        This is preparation only: no native input, START or procedure checkpoint.
+        Full ordinary discovery selects the credential scope; the Automation
+        target must belong to it. Existing admitted custody is never enlarged.
+        """
+        import asyncio
+        import hashlib
+        import json
+        from codex_web.services.procedure_execution import ProcedureExecutionError, bounded_data
+
+        def prepare():
+            engine = self.procedure_execution
+            if engine is None or self.native_session_attestor is None:
+                raise ProcedureExecutionError("procedure_automation_preparation_owner_unavailable")
+            current_actor = engine.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+            if not current_actor.has_same_authority(actor):
+                raise ProcedureExecutionError("procedure_automation_preparation_actor_changed")
+            assignment = engine.get(assignment_id, current_actor)
+            engine._live(assignment)
+            if ((assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    != (project.organization_id, project.workspace_id, project.id)
+                    or assignment.created_by != current_actor.identity_id
+                    or assignment.execution_id != execution_id
+                    or assignment.fence != expected_fence or assignment.sandbox != sandbox
+                    or not thread_id):
+                raise ProcedureExecutionError("procedure_automation_preparation_assignment_changed")
+            if self.bootstrap_bindings is None:
+                raise ProcedureExecutionError("procedure_automation_preparation_binding_unavailable")
+            bootstrap = self.bootstrap_bindings.get_by_thread(thread_id, current_actor)
+            if ((bootstrap.assignment_id, bootstrap.execution_id, bootstrap.execution_workspace_id)
+                    != (assignment.id, assignment.execution_id, assignment.execution_workspace_id)):
+                raise ProcedureExecutionError("procedure_automation_preparation_thread_changed")
+            artifact = engine.evidence.get_artifact(input_snapshot_id, actor=current_actor)
+            previous = assignment.procedure_checkpoint
+            reused = (previous is not None and previous.definition == definition
+                and previous.input_snapshot_id == input_snapshot_id)
+            if ((artifact.source != "automation-run:" + automation_run_id and not reused)
+                    or artifact.execution_id != execution_id
+                    or artifact.execution_workspace_id != assignment.execution_workspace_id
+                    or set(artifact.resource_ids) != set(assignment.resource_ids)):
+                raise ProcedureExecutionError("procedure_automation_preparation_input_scope")
+            raw, _ = engine._content(input_snapshot_id, current_actor, assignment)
+            canonical = json.dumps(bounded_data(json.loads(raw)), sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode()
+            if hashlib.sha256(canonical).hexdigest() != request_checksum:
+                raise ProcedureExecutionError("procedure_automation_preparation_input_changed")
+            context = self._preparation_context(assignment, current_actor, project,
+                sandbox, request_checksum)
+            discovery, _ = self.discovery.discover(context)
+            selected = tuple(discovery.selected)
+            if definition not in selected:
+                raise ProcedureExecutionError("procedure_automation_preparation_target_unselected")
+            custody = assignment.native_credential_custody
+            if custody is not None and custody.admitted_at is None:
+                assignment = self._admit_initial_native_credentials(assignment, selected,
+                    current_actor, project, sandbox, request_checksum)
+            # Same physical attestation/current full selection for both initial
+            # sealing and already-admitted use; never reopen an empty/old seal.
+            self._preparation_discovery(assignment, current_actor, project, sandbox,
+                request_checksum, selected)
+            return assignment
+        return await asyncio.to_thread(prepare)
 
     def _empty_preparation_discovery(self, assignment, actor, project, sandbox, request_checksum, references, *,
-                                     _include_supporting_context=True):
+                                     _include_supporting_context=True, _diagnostics=None):
         from dataclasses import replace
         from codex_web.services.native_procedure_preparation import NativeProviderPreparation, native_provider_preparation
-        if self.native_session_attestor is None or self.procedure_execution is None:
-            raise ValueError("physical scope is not attested")
-        def validate():
-            self.native_session_attestor(assignment, self.procedure_execution)
-            self.procedure_execution.validate_native_preparation_owner(assignment)
+        from codex_web.native_empty_preparation import closed_empty_preparation_diagnostics
+        from codex_web.services.threads import bootstrap_exception_type
+        diagnostics = _diagnostics if _diagnostics is not None else []
+        def checked(stage, operation):
+            try:
+                return operation()
+            except Exception as exc:
+                diagnostics[:] = closed_empty_preparation_diagnostics([
+                    *diagnostics, {'stage': stage, 'exception_type': bootstrap_exception_type(exc)}])
+                raise
+        def physical_scope():
             profile, _ = self.execution_profiles.resolve(assignment.execution_profile_id,
                 organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=project.id)
             workspace = self.workers.workspaces.get(assignment.execution_workspace_id, self.control_actor)
@@ -592,9 +717,22 @@ class NativeProcedureAdmissionService:
                     or workspace.writable_repository_ids != () or lease is None
                     or lease.resource_ids != () or lease.resource_modes != {}):
                 raise ValueError("physical scope is not exactly empty")
-            self._preparation_context(assignment, actor, project, sandbox, request_checksum, require_operations=False)
+        def preparation_context():
+            return checked('preparation_context', lambda: self._preparation_context(
+                assignment, actor, project, sandbox, request_checksum, require_operations=False))
+        def validate():
+            def attest():
+                if self.native_session_attestor is None or self.procedure_execution is None:
+                    raise ValueError("physical scope is not attested")
+                current = self._current_preparation_assignment(assignment)
+                self.native_session_attestor(current, self.procedure_execution)
+            checked('session_attestation', attest)
+            checked('native_owner', lambda: self.procedure_execution.validate_native_preparation_owner(
+                self._current_preparation_assignment(assignment)))
+            checked('physical_scope', physical_scope)
+            preparation_context()
         validate()
-        context = self._preparation_context(assignment, actor, project, sandbox, request_checksum, require_operations=False)
+        context = preparation_context()
         source = "canonical:native-empty-physical-scope:" + checksum({
             "assignment":assignment.id,"fence":assignment.fence,"workspace":assignment.execution_workspace_id,
             "definitions":[ref.model_dump(mode="json") for ref in references],"policy":context.policy_source})
@@ -605,17 +743,20 @@ class NativeProcedureAdmissionService:
             if reference not in references:
                 return False
             try:
-                self.procedure_execution.validate_native_preparation(assignment, (reference,), actor, require_targets=False)
+                checked('candidate_validation', lambda: self.procedure_execution.validate_native_preparation(
+                    self._current_preparation_assignment(assignment), (reference,), actor, require_targets=False))
             except Exception:
                 return False
             excluded.append(reference)
             return True
         proof = NativeProviderPreparation((),source,validate,context=context,exclude_empty=excludes)
         with native_provider_preparation(proof):
-            discovery, text = self.discovery.discover(context,
-                _include_supporting_context=_include_supporting_context)
-        if not excluded or tuple(candidate.reference for candidate in discovery.candidates) != tuple(references):
-            raise ValueError("physical-scope candidates changed or are unsupported")
+            discovery, text = checked('discovery', lambda: self.discovery.discover(context,
+                _include_supporting_context=_include_supporting_context))
+        def consistent():
+            if not excluded or tuple(candidate.reference for candidate in discovery.candidates) != tuple(references):
+                raise ValueError("physical-scope candidates changed or are unsupported")
+        checked('candidate_consistency', consistent)
         return discovery, text
 
     def _reasoning_context(self, assignment, actor, project, sandbox, request_checksum):
@@ -722,22 +863,30 @@ class NativeProcedureAdmissionService:
                 request_checksum=request_checksum, policy_source=policy_source, policy_allows=True, enforcement=enforcement,
                 **await asyncio.to_thread(self.discovery.resource_facts, targets, actor))
             if assignment is not None:
+                assignment = await asyncio.to_thread(self._current_preparation_assignment, assignment)
                 context = await asyncio.to_thread(self.discovery.assignment_context, context, assignment, actor=actor)
                 if context.worker_capabilities is None or context.provider_capabilities is None:
                     from dataclasses import replace
                     context = replace(context, enforcement="native_tools")
         discovery, text = await asyncio.to_thread(self.discovery.discover, context)
         empty_preparation_references = None
+        empty_preparation_diagnostics = []
+        selected_preparation_diagnostics = []
         if (not is_reasoning and assignment is not None and assignment.resource_ids == () and discovery.candidates
                 and context.enforcement in {"bounded_read_only", "isolated_preparation"}
                 and self.native_session_attestor is not None and self.procedure_execution is not None):
             try:
                 references = tuple(candidate.reference for candidate in discovery.candidates)
                 discovery, text = await asyncio.to_thread(self._empty_preparation_discovery,
-                    assignment, actor, project, sandbox, request_checksum, references)
+                    assignment, actor, project, sandbox, request_checksum, references,
+                    _diagnostics=empty_preparation_diagnostics)
                 empty_preparation_references = references
-            except Exception:
-                pass  # Unknown/unsupported scope retains the original refusal.
+            except Exception as exc:
+                if not empty_preparation_diagnostics:
+                    from codex_web.services.threads import bootstrap_exception_type
+                    empty_preparation_diagnostics.append({
+                        'stage': 'fallback', 'exception_type': bootstrap_exception_type(exc)})
+                # Unknown/unsupported scope retains the original refusal.
         if (not is_reasoning and assignment is not None and discovery.outcome == "unsupported_enforcement"
                 and discovery.selected and len(discovery.blockers) == 1
                 and discovery.blockers[0].startswith("procedure_tool_enforcement_unsupported:")
@@ -747,18 +896,23 @@ class NativeProcedureAdmissionService:
                 custody = assignment.native_credential_custody
                 if custody is not None and custody.admitted_at is None:
                     assignment = await asyncio.to_thread(self._admit_initial_native_credentials,
-                        assignment, discovery.selected, actor, project, sandbox, request_checksum)
+                        assignment, discovery.selected, actor, project, sandbox, request_checksum,
+                        _diagnostics=selected_preparation_diagnostics)
                 discovery, text = await asyncio.to_thread(self._preparation_discovery,
-                    assignment, actor, project, sandbox, request_checksum, discovery.selected)
+                    assignment, actor, project, sandbox, request_checksum, discovery.selected,
+                    _diagnostics=selected_preparation_diagnostics)
             except Exception as exc:
                 from codex_web.services.procedure_execution import ProcedureExecutionError
                 if isinstance(exc, ProcedureExecutionError) and exc.code.startswith("procedure_credential_"):
                     raise ExecutionPrestartRefusal(status_code=409, detail={
                         "code": exc.code, "message": "Native procedure credential custody requires a fresh authorized bootstrap",
                         "retryable": False, "remediation_route": "/api/execution-workers/assignments"}) from exc
-                # Preserve the genuine unsupported refusal; no weaker no-match
-                # or preparation claim when any live proof is unavailable.
-                pass
+                if not selected_preparation_diagnostics:
+                    from codex_web.services.threads import bootstrap_exception_type
+                    selected_preparation_diagnostics.append({
+                        'stage':'fallback','exception_type':bootstrap_exception_type(exc)})
+                # The original unsupported outcome/first blocker remain. Closed
+                # diagnostic categories cannot install preparation or retry proof.
         if (not is_reasoning and assignment is not None and discovery.admitted
                 and self.procedure_execution is not None and not discovery.selected and assignment.native_credential_custody is not None
                 and assignment.native_credential_custody.admitted_at is None):
@@ -787,7 +941,8 @@ class NativeProcedureAdmissionService:
                             "code": "procedure_native_preparation_changed",
                             "message": "Current empty native preparation differs from its initial admission",
                         })
-                return self.procedure_execution.admit_initial_native_credentials(assignment, (), actor, validate)
+                return self.procedure_execution.admit_initial_native_credentials(
+                    self._current_preparation_assignment(assignment), (), actor, validate)
             try:
                 assignment = await asyncio.to_thread(seal_empty)
             except Exception as exc:
@@ -800,6 +955,12 @@ class NativeProcedureAdmissionService:
                         "code": exc.code, "message": "Native procedure credential custody requires a fresh authorized bootstrap",
                         "retryable": False, "remediation_route": "/api/execution-workers/assignments"}) from exc
                 raise
+        from codex_web.native_empty_preparation import closed_native_preparation_diagnostics
+        selected_diagnostics = closed_native_preparation_diagnostics(selected_preparation_diagnostics)
+        if not discovery.admitted and selected_diagnostics:
+            markers = tuple('native_preparation_diagnostic:' + row['stage'] + ':' + row['exception_type']
+                + (':' + row['code'] if 'code' in row else '') for row in selected_diagnostics)
+            discovery = discovery.model_copy(update={'blockers':(*discovery.blockers,*markers)})
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
         if assignment is not None:
             from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
@@ -817,9 +978,13 @@ class NativeProcedureAdmissionService:
                     }],
                 }) from exc
         if not discovery.admitted:
+            from codex_web.native_empty_preparation import closed_empty_preparation_diagnostics
+            diagnostics = closed_empty_preparation_diagnostics(empty_preparation_diagnostics)
             raise ExecutionPrestartRefusal(status_code=409, detail={
                 "code": "procedure_" + discovery.outcome, "message": "; ".join(discovery.blockers),
                 "procedure_discovery": discovery.model_dump(mode="json"), "remediation_route": "/api/skills",
+                **({'native_preparation_diagnostics': selected_diagnostics} if selected_diagnostics else
+                   {'native_empty_preparation_diagnostics': diagnostics} if diagnostics else {}),
             })
         return discovery, text
 
@@ -997,6 +1162,7 @@ def install_native_procedure_admission(turns, sessions, discovery, workers, hist
     admission = NativeProcedureAdmissionService(discovery, workers, history, control_actor, execution_profiles)
     admission.native_session_attestor = getattr(turns, "attest_native_provider_preparation", None)
     admission.procedure_execution = procedure_execution
+    admission.bootstrap_bindings = getattr(turns, "bootstrap_bindings", None)
     turns.procedure_admission = admission
     sessions.procedure_admission = admission.agent_session_admission
     return admission

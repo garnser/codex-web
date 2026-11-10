@@ -275,6 +275,16 @@ class AssignmentBoundAgentModelEgressBroker:
         with contextlib.suppress(Exception):
             await writer.wait_closed()
 
+    async def _resolve_addresses(self, endpoint):
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                self._blocking_pool(),
+                partial(socket.getaddrinfo, endpoint.host, endpoint.port,
+                        type=socket.SOCK_STREAM),
+            ),
+            timeout=self.upstream_connect_timeout_seconds,
+        )
+
     async def _open_upstream(
         self,
         endpoint: AgentRuntimeModelEgressEndpoint,
@@ -282,14 +292,7 @@ class AssignmentBoundAgentModelEgressBroker:
         last_error: BaseException | None = None
         for attempt in range(self.upstream_connect_attempts):
             try:
-                addresses = await asyncio.wait_for(
-                    asyncio.get_running_loop().run_in_executor(
-                        self._blocking_pool(),
-                        partial(socket.getaddrinfo, endpoint.host, endpoint.port,
-                                type=socket.SOCK_STREAM),
-                    ),
-                    timeout=self.upstream_connect_timeout_seconds,
-                )
+                addresses = await self._resolve_addresses(endpoint)
                 seen: set[tuple[int, str, int]] = set()
                 candidates: list[tuple[int, int, tuple]] = []
                 for family, _kind, protocol, _canonical, address in addresses:
@@ -354,6 +357,9 @@ class AssignmentBoundAgentModelEgressBroker:
             f"{self.upstream_connect_attempts} attempts"
         ) from last_error
 
+    async def _validate_connected(self):
+        """Model transport preserves its existing admission semantics."""
+
     async def _handle(
         self,
         reader: asyncio.StreamReader,
@@ -393,6 +399,7 @@ class AssignmentBoundAgentModelEgressBroker:
                 endpoint
             )
             self._writers.add(upstream_writer)
+            await self._validate_connected()
             self.connections += 1
             writer.write(
                 b"HTTP/1.1 200 Connection Established\r\n"
@@ -460,6 +467,62 @@ class AssignmentBoundAgentModelEgressBroker:
             self.socket_path.unlink()
         shutil.rmtree(self._root, ignore_errors=True)
 
+
+
+class AssignmentBoundDependencyEgressBroker(AssignmentBoundAgentModelEgressBroker):
+    """Separate child-facing capability; model endpoint policy stays unchanged."""
+
+    def __init__(self, allowed_hosts, *, validator):
+        from codex_web.public_https_destination import validate_public_https_host
+        hosts = tuple(validate_public_https_host(host) for host in allowed_hosts)
+        super().__init__(
+            (AgentRuntimeModelEgressEndpoint(host, 443) for host in hosts),
+            validator=validator, validation_cache_seconds=0,
+        )
+        self._username = "dependency-download"
+
+    @property
+    def mount_destination(self):
+        return Path("/run/agent-dependency-egress")
+
+    @property
+    def proxy_url(self):
+        return f"http://{self._username}:{self.capability}@127.0.0.1:8789"
+
+    MAX_HANDLER_TASKS = 16
+
+    def _accept(self, reader, writer):
+        # Unlike the trusted model runtime, repository children hold this
+        # capability. Bound their host-side handlers/header buffers/DNS futures.
+        if len(self._handler_tasks) >= self.MAX_HANDLER_TASKS:
+            self.denied_connections += 1
+            writer.close()
+            return
+        super()._accept(reader, writer)
+
+    def _destination(self, target):
+        # Never log untrusted target text (which may echo its proxy capability).
+        try:
+            return super()._destination(target)
+        except (ValueError, AgentRuntimeModelEgressDeniedError):
+            raise AgentRuntimeModelEgressDeniedError("dependency destination is not approved") from None
+
+    async def _validate_connected(self):
+        # DNS/connect may outlive a lease or policy change. Revalidate before
+        # giving the child a usable tunnel; failure closes the connected socket.
+        await self._validate_current_async()
+
+    async def _resolve_addresses(self, endpoint):
+        from codex_web.public_https_destination import resolve_public_https_destination
+        candidates = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                self._blocking_pool(),
+                partial(resolve_public_https_destination, endpoint.host, endpoint.port),
+            ), timeout=self.upstream_connect_timeout_seconds,
+        )
+        # The common transport connects these numeric addresses, never the hostname.
+        return tuple((family, socket.SOCK_STREAM, protocol, "", address)
+                     for family, protocol, address in candidates)
 
 AGENT_MODEL_EGRESS_RELAY_SCRIPT = r"""
 import select

@@ -264,16 +264,16 @@ class GuardedProjectionBudgetTests(unittest.IsolatedAsyncioTestCase):
                 clock=time.time, _provider_result=writer)
             try:
                 result = await ProcedureExecutionService._provider_result_owned(
-                    owner, None, None, SimpleNamespace(id='synthetic-budget'), None, None, None)
+                    owner, None, None, SimpleNamespace(id='synthetic-budget', action_id=GUARDED), None, None, None)
                 return result, settled.is_set(), commits
             except TimeoutError:
                 self.assertTrue(settled.is_set(), 'A timeout cannot leave an unjoined writer')
                 self.assertEqual(commits, [])
                 raise
 
-        # A legacy operation keeps its whole five-second cooperative bound.
+        # A guarded operation obeys its original short absolute deadline.
         with self.assertRaises(TimeoutError):
-            await project(None, 5.05)
+            await project(time.time() + 5, 5.05)
         # New guarded projection may exceed five seconds, within its original D.
         result, settled, commits = await project(time.time() + 20, 5.05)
         self.assertEqual((result, settled, commits),

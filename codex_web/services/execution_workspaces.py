@@ -113,18 +113,24 @@ class ExecutionWorkspaceService:
     def _lease_active(lease: ExecutionWorkspaceLease, now: float) -> bool:
         return lease.released_at is None and lease.expires_at > now
 
-    @staticmethod
     def _isolated_git_write_overlap_allowed(
+        self,
         *,
         resource_id: str,
         requested_mode: LeaseMode,
         requested_workspace: ExecutionWorkspace,
         active_mode: LeaseMode,
         active_workspace: ExecutionWorkspace | None,
+        requested_paths: dict[str, tuple[Path, Path, LeaseMode]],
     ) -> bool:
-        """Return whether two writes are isolated by distinct Git worktrees."""
+        """Preserve WRITE/WRITE; allow proven independent READ/WRITE checkouts.
 
-        return (
+        Mixed overlap needs the backend's canonical physical path contract and
+        a completed, exact repository member. A Git kind label alone cannot
+        turn shared Resource or unproven legacy paths into isolated snapshots.
+        """
+
+        if (
             requested_mode == LeaseMode.WRITE
             and active_mode == LeaseMode.WRITE
             and requested_workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE
@@ -140,7 +146,53 @@ class ExecutionWorkspaceService:
                 ExecutionWorkspaceStatus.INTEGRATED,
             }
             and resource_id in active_workspace.writable_repository_ids
-        )
+        ):
+            return True
+        if ({requested_mode, active_mode} != {LeaseMode.READ, LeaseMode.WRITE}
+                or requested_workspace.kind != ExecutionWorkspaceKind.GIT_WORKTREE
+                or active_workspace is None or active_workspace.id == requested_workspace.id
+                or active_workspace.kind != ExecutionWorkspaceKind.GIT_WORKTREE
+                or active_workspace.status not in {ExecutionWorkspaceStatus.ACTIVE,
+                    ExecutionWorkspaceStatus.CONFLICTED, ExecutionWorkspaceStatus.INTEGRATED}
+                or resource_id not in requested_paths):
+            return False
+        members = [member for member in active_workspace.repository_members
+            if member.resource_id == resource_id and member.access_mode == active_mode]
+        if len(members) != 1:
+            return False
+        member = members[0]
+        expected = self._planned_git_member_path(active_workspace.id, resource_id,
+            active_workspace.repository_resource_id, active_mode)
+        if expected is None or not member.workspace_path or not member.source_path:
+            return False
+        source, requested, declared_mode = requested_paths[resource_id]
+        actual = Path(member.workspace_path).resolve()
+        if (declared_mode != requested_mode or actual != expected
+                or Path(member.source_path).resolve() != source
+                or not actual.is_dir() or not member.base_revision or not member.head_revision):
+            return False
+        if (active_mode == LeaseMode.WRITE and resource_id not in active_workspace.writable_repository_ids
+                or active_mode == LeaseMode.READ and (resource_id in active_workspace.writable_repository_ids
+                    or member.branch_name is not None or member.head_revision != member.base_revision)):
+            return False
+        # Plans are canonical backend paths, not user/request destination fields.
+        # Neither checkout may alias/nest in the other or its shared source.
+        return not any(left == right or left.is_relative_to(right) or right.is_relative_to(left)
+            for left, right in ((requested, actual), (requested, source), (actual, source)))
+
+    def _planned_git_member_path(self, workspace_id, resource_id, primary_id, mode):
+        planner = getattr(self.backend, "git_workspace_path", None)
+        if not callable(planner):
+            return None
+        member_id = workspace_id if resource_id == primary_id else self._member_workspace_id(
+            workspace_id, resource_id, access_mode=mode)
+        try:
+            planned = planner(member_id)
+            if not isinstance(planned, Path) or not planned.is_absolute():
+                return None
+            return planned.resolve()
+        except (OSError, ValueError, ExecutionWorkspaceBackendError):
+            return None
 
     @staticmethod
     def _append_event(state, event: ExecutionWorkspaceEvent) -> None:
@@ -223,12 +275,18 @@ class ExecutionWorkspaceService:
             item for item in resources
             if item.resource_type == ResourceType.REPOSITORY
         ]
-        if repository_resource_id is None and not writable_repository_ids and len(repositories) == 1:
+        read_only_repository_ids = tuple(request.read_only_repository_ids)
+        readonly_primary = request.lease_mode == LeaseMode.READ and repository_resource_id in read_only_repository_ids
+        if repository_resource_id is None and not writable_repository_ids and not read_only_repository_ids and len(repositories) == 1:
             repository_resource_id = repositories[0].id
-            writable_repository_ids = (repository_resource_id,)
+            if request.lease_mode == LeaseMode.READ:
+                read_only_repository_ids = (repository_resource_id,)
+                readonly_primary = True
+            else:
+                writable_repository_ids = (repository_resource_id,)
         elif repository_resource_id is None and writable_repository_ids:
             repository_resource_id = writable_repository_ids[0]
-        elif repository_resource_id is not None and not writable_repository_ids:
+        elif repository_resource_id is not None and not writable_repository_ids and not readonly_primary:
             writable_repository_ids = (repository_resource_id,)
 
         for resource_id in writable_repository_ids:
@@ -244,12 +302,12 @@ class ExecutionWorkspaceService:
         if (
             repository_resource_id is not None
             and repository_resource_id not in writable_repository_ids
+            and not readonly_primary
         ):
             raise ExecutionWorkspaceConflictError(
                 "primary repository must be included in writable repository set"
             )
 
-        read_only_repository_ids = tuple(request.read_only_repository_ids)
         for resource_id in read_only_repository_ids:
             resource = by_id.get(resource_id)
             if resource is None:
@@ -1169,13 +1227,13 @@ class ExecutionWorkspaceService:
             if request.scratch
             else (
                 ExecutionWorkspaceKind.GIT_WORKTREE
-                if writable_repository_ids
+                if repository_resource_id is not None
                 else ExecutionWorkspaceKind.RESOURCE_LEASE
             )
         )
         branch_name = (
             deterministic_branch_name(request.subject.key, request.execution_id)
-            if kind == ExecutionWorkspaceKind.GIT_WORKTREE
+            if kind == ExecutionWorkspaceKind.GIT_WORKTREE and writable_repository_ids
             else None
         )
         if len(request.resource_ids) > self.quota.max_resources_per_workspace:
@@ -1208,7 +1266,7 @@ class ExecutionWorkspaceService:
         )
 
         source_paths: dict[str, Path] = {}
-        if writable_repository_ids:
+        if repository_resource_id is not None:
             for resource_id in writable_repository_ids:
                 source_paths[resource_id] = self._repository_source_path(
                     resource_by_id[resource_id],
@@ -1219,13 +1277,25 @@ class ExecutionWorkspaceService:
                 source_paths[resource_id] = self._repository_source_path(
                     resource_by_id[resource_id],
                     project,
-                    allow_project_fallback=False,
+                    allow_project_fallback=(resource_id == repository_resource_id),
                 )
             normalized_sources = [str(path) for path in source_paths.values()]
             if len(normalized_sources) != len(set(normalized_sources)):
                 raise ExecutionWorkspaceConflictError(
                     "repository members must resolve to distinct canonical source paths"
                 )
+
+        requested_paths = {}
+        for resource_id, source in source_paths.items():
+            mode = resource_modes[resource_id]
+            # Legacy READ leases over mutable-member declarations do not prove
+            # a detached immutable checkout and keep the former refusal.
+            if (mode == LeaseMode.READ and resource_id not in read_only_repository_ids
+                    or mode == LeaseMode.WRITE and resource_id not in writable_repository_ids):
+                continue
+            planned = self._planned_git_member_path(workspace_id, resource_id, repository_resource_id, mode)
+            if planned is not None:
+                requested_paths[resource_id] = (source.resolve(), planned, mode)
 
         lease = ExecutionWorkspaceLease(
             id=lease_id,
@@ -1256,6 +1326,8 @@ class ExecutionWorkspaceService:
             kind=kind,
             resource_ids=request.resource_ids,
             repository_resource_id=repository_resource_id,
+            read_only_primary_repository_id=(repository_resource_id
+                if repository_resource_id in read_only_repository_ids and not writable_repository_ids else None),
             writable_repository_ids=writable_repository_ids,
             lease_id=lease_id,
             branch_name=branch_name,
@@ -1318,6 +1390,7 @@ class ExecutionWorkspaceService:
                         requested_workspace=workspace,
                         active_mode=active_mode,
                         active_workspace=active_workspace,
+                        requested_paths=requested_paths,
                     ):
                         continue
                     conflicting.append(resource_id)
@@ -1517,12 +1590,12 @@ class ExecutionWorkspaceService:
                 source = source_paths[resource_id]
                 provisioned = self.backend.provision_git_readonly(
                     source,
-                    self._member_workspace_id(
+                    (workspace_id if resource_id == repository_resource_id else self._member_workspace_id(
                         workspace_id,
                         resource_id,
                         access_mode=LeaseMode.READ,
-                    ),
-                    None,
+                    )),
+                    request.base_revision if resource_id == repository_resource_id else None,
                 )
                 provisioned_members.append(
                     (
@@ -1532,7 +1605,8 @@ class ExecutionWorkspaceService:
                             access_mode=LeaseMode.READ,
                             source_path=str(source),
                             workspace_path=str(provisioned.path),
-                            sandbox_path=self._readonly_sandbox_path(resource_id),
+                            sandbox_path=(str(provisioned.path) if resource_id == repository_resource_id
+                                          else self._readonly_sandbox_path(resource_id)),
                             branch_name=None,
                             base_revision=provisioned.base_revision,
                             head_revision=provisioned.head_revision,

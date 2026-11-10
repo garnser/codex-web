@@ -537,6 +537,11 @@ canonical service identity, operation/capability, target, authority decision and
 Definition revision, response class and denial reason. Request bodies and secret
 material are never stored in broker audit state. Operators inspect the effective
 broker scope and audit linkage through the existing execution-worker surface.
+The worker-facing operations catalog omits the operator-only `audit_href`;
+that link remains on the operator assignment projection (#2026). Audit inspection
+still requires the existing admin/MFA API path and is not a worker allowlisted
+operation. This presentation boundary grants no new capability and needs no
+operator UI change: the existing audit inspector and its guarded link remain.
 
 ### Network policy
 
@@ -1136,6 +1141,14 @@ operation permission before creating a canonical ActionIntent. Historical profil
 requester identity alone cannot grant administrative permission. Administrative target
 configuration does not replace independent review, required CI, provider receipts,
 reconciliation of unknown outcomes, or release/deployment requirements.
+
+Broker procedure admission uses the exact target in the canonical authority
+decision's request, including when the administrative scratch assignment has no
+repository execution resources. Repository action dispatch reuses that target;
+it does not resolve a second target after procedure admission. Environment and
+other operational facts still come from the canonical Resource. A repository
+query selects a declared target, but request parameters, names and paths cannot
+supply missing environmental facts or broaden the assignment's filesystem scope.
 
 Old readers do not understand catalog schema `1.1`; publishing that schema requires
 an explicitly qualified code upgrade before configuring the administrative profile.
@@ -1737,6 +1750,14 @@ retry claim is reserved before renewal, and only the same positively unstarted
 original is requeued after success. Possible resume/start observations, custody
 uncertainty, changed claims, later attempts and automation never authorize this
 automatic renewal. Failed or interrupted renewal stays in canonical recovery.
+A known pre-input renewal refusal retains both the original typed exhaustion
+and its exact assignment target and the current structured renewal blockers.
+The existing retained Retry rechecks the normal renewal guards; it does not
+reset history or bypass pending executor work. Cancellation or possible native
+resume/start evidence remains reconciliation-required. Older generic blocked
+records without typed history can use ordinary same-original Retry to obtain a
+fresh canonical admission refusal, then retry its recorded typed prerequisite;
+absence of evidence alone never upgrades an unknown outcome.
 The existing queue and preflight inspector represent these states; no new UI
 authority or alternative native transport is introduced.
 
@@ -1762,3 +1783,367 @@ It does not extend handoff/ACK deadlines, alter canonical replacement routing,
 weaken current authority or native custody checks, or claim delivery from an
 attempt. Existing event details remain the operator audit/UI source; the
 activity projection alone excludes explicitly unsuccessful attempts.
+
+### Detached queue ownership and admission recovery
+
+A scheduled queue drain owns its continuation independently of the request or
+completion event that wakes it. It copies that caller's context, preserving
+identity, correlation and admission controls, but drops the caller-owned storage
+operation budget. Storage work called directly still observes its existing
+budget; native admission, worker leases, execution limits and provider deadlines
+are unchanged. This is not permission to retry an uncertain native write.
+
+The existing normal preflight Retry can recover an original still in the durable
+`admitting` phase. Its atomic retry claim competes with `begin_queued_start` on the
+same canonical record. If Retry wins, it revokes the old admission token and
+restores the SAME retained input through the ordinary queue; the old owner cannot
+cross the begin gate or overwrite the new claim with a late disposition. If begin
+wins, the canonical phase is `reconciliation_required`; Retry cannot claim or
+requeue it. Missing receipts, elapsed time and native idleness are not nonstart
+proof. The existing queue/preflight UI Retry and UNKNOWN displays remain the
+operator surfaces; no new recovery endpoint, outcome assertion or policy gate is
+introduced.
+
+
+### Home event run preinput reconciliation
+
+A Home event run does not own the bootstrap execution ID: its retained input
+uses the distinct `home-followup-{run_id}` identity. Generic assignment outcome
+lookup cannot settle a local refusal of that input. The Home owner projects a
+versioned controller witness from a committed typed first-attempt preinput
+refusal into the original Automation run as FAILED. A blocker code, missing
+receipt, idle process, expired clock, or provider detail is not such a witness.
+
+The existing operator Automation-run Reconcile API and Automations run history
+also offer explicit cancellation of **expired Home scheduling**. Its optional
+`cancel_unknown_home: true` request is accepted only for the exact canonical
+BLOCKED original, unchanged source/message/Profile/tenant/scope, and no positive
+START or unresolved resume. Current Home native activity prevents cancellation.
+The run becomes CANCELLED with an explicit UNKNOWN native outcome; the original
+snapshot, claim, refusal and history remain untouched. This neither interrupts
+a native turn nor renews or replays an expired input. Legacy rows without a
+typed witness never become automatic failures.
+
+Run settlement holds the canonical preflight namespace writer fence together
+with the run and active-turn guards. Retry or begin/START winning first prevents
+settlement. Cancellation winning first leaves normal Home final-send authority
+checking the now-terminal run. Partial or ambiguous exact-input inventory leaves the
+run unresolved. No new cancel endpoint, state schema, ledger, or runtime budget
+is introduced. The UI confirms scheduling cancellation and displays the
+canonical result reason; it cannot supply a native-outcome assertion.
+
+Exact Home inputs use derived tenant/execution aliases within the existing
+preflight collection, maintained before admission and backfilled by the normal
+resumable startup index preparation. The ready marker requires a complete pass
+through authoritative originals; reconciliation still rereads those originals
+under its namespace fence. The number of unrelated historical inputs in the
+permanent Home conversation does not bound its usable lifetime.
+
+Home follow-up operator reconciliation revalidates the original authenticated
+origin (including session revocation and step-up) before comparing fresh canonical
+membership with the Automation owner. Credential-free owner resolution is not an
+authentication assertion: its PRIMARY assurance must not be compared to, or replace,
+the HTTP operator's MFA/local-trusted session. Native and restart input authority
+comparisons remain unchanged.
+
+Home child terminal recording owns only its bounded checkpoint. After the canonical
+event and Automation Run admission are durable, the existing native-recovery keyed
+coordinator owns Home launch by exact Run ID. Its copied context clears only the
+retired storage-operation budget; actor, tenant and correlation context remain.
+The launch uses the unchanged Automation grant as its own finite operation budget,
+coalesces repeated wakes, and shares normal coordinator shutdown/join semantics.
+Fresh Definition, event, Home selection, custody and native-send checks remain
+mandatory. ADMITTED records survive a lost/stopped process and may be recovered;
+claimed RUNNING records are never automatically replayed. Joined owner failure
+records an unconfirmed launch, not success or NOT-SENT.
+
+The existing explicit expired-scheduling cancellation can also handle a claimed
+Home Run with no preflight. Complete exact-execution index, canonical Home queue,
+active-input and current bootstrap/assignment/worker/selection checks share the
+Run writer barrier. Missing namespaces, malformed/partial input inventory, a
+matching lazy queued original, any admission/capture/START, or active Home refuse
+that path. Current positively retired Home custody is sufficient for this
+scheduling-only action; warming a native session is not required. CANCELLED keeps
+the native outcome UNKNOWN and all original records. A late queued original stays
+retained and must fail the existing current-RUNNING native-input guard; cancellation
+never resends, interrupts a native turn, invents a preflight, or releases custody.
+
+
+### Persisted runtime-usage recovery notifications
+
+EventHub synchronous telemetry listeners run on worker threads. After canonical
+terminal usage has been persisted, the application requests a thread-safe wake
+from the existing NativeRecoveryService. RuntimeSupervisor binds that service to
+its lifecycle loop before native runtimes start; workers never discover or create
+a global loop. A single pending callback coalesces worker bursts and dispatches
+only the explicitly bound Home recovery cycle, on its existing bounded keyed
+coordinator key. Other recovery cycles are unchanged. Terminal usage bypasses the ordinary
+recovery cooldown so a completed one-shot Home settlement wake cannot consume a
+later usage event. Nonterminal telemetry does not request this recovery wake.
+
+The handoff preserves correlation and other ContextVars, clearing only the
+publisher's storage-operation budget. Shutdown disables/cancels pending callbacks
+and joins the existing recovery coordinator. Generic physical-execution outcome
+reconciliation cannot suppress Home's independent wake; Home still validates its
+exact logical Run, native terminal, tenant, assignment/fence and canonical usage
+before accounting. Missing usage remains pending. Notifications create no native
+input, retry, fabricated outcome, new ledger or periodic poll. Existing Automation
+history and Operations diagnostics expose the resulting canonical settlement;
+no new UI control or response contract is required.
+
+
+Historical Home terminal accounting (#1952) resolves the unique stable canonical
+Session under the original tenant, Home Project, provider/runtime and native
+session identity. A normal custody resume may move that Session to a successor
+assignment/execution without rewriting old usage. Accounting therefore requires
+the exact usage Session ID and original assignment/execution/workspace,
+provider/runtime and native-turn tuple, rather than requiring current Session
+custody to remain historical. The original positive terminal/checkpoint and
+budget checks, and final same-Run/same-terminal CAS, remain authoritative. This
+read-only join needs no current lease and confers no input or replay authority;
+missing, ambiguous or mismatched evidence remains pending. Existing Automation
+history displays settlement; no new UI, ledger, schema or polling is introduced.
+
+#### Governed public dependency HTTPS egress
+
+Execution Profile catalog schema `1.4` adds an optional `dependency_egress`
+envelope with exact `allowed_hosts` (ASCII FQDNs, at most 32). It requires an
+exact Project-scoped published Definition and the worker `network` capability.
+Schemas `1.0`–`1.3` reject the envelope; seeds and existing pins remain unchanged.
+Operators edit this policy through Execution Profiles in Definitions, validate
+and publish normally, then explicitly select the profile for a fresh assignment.
+Publication does not repin existing assignments.
+
+This transport supports the assignment-bound OpenAI Codex runtime with the inner
+`danger-full-access` mode. Bubblewrap still enforces `network.enabled=false` and
+its private network namespace. There is no generic DNS, host-network interface,
+resolver-file mount, container socket, or host-mutation grant. Other runtime
+adapters refuse the profile until they provide an equivalent explicit child
+environment contract.
+
+A separate assignment-owned CONNECT broker checks the current lease, fence,
+requester authority and exact published profile pin. It permits only declared
+hosts on port 443, rejects the entire DNS answer set if any route is non-public,
+and connects validated numeric addresses without a second DNS resolution. It
+revalidates after connection and before exposing the tunnel. Existing session
+supervision revokes connections when authority/policy changes; shutdown joins
+all owned broker handlers. HTTP redirects to another host require that host to
+be independently declared and public. This is bounded public HTTPS egress,
+not a domain-content firewall or a general-purpose network grant.
+
+Only the separate dependency capability enters the explicit repository child
+`HTTPS_PROXY`/`https_proxy` policy (and HTTP proxy variables for clients that use
+CONNECT for HTTPS). Trusted model proxy credentials never enter this policy.
+Managed validation subprocesses inherit this approved child environment, so
+ordinary pip HTTPS downloads use the same governed transport. Model-provider
+and control-plane sockets, credentials and authorities remain separate.
+
+Preparation without a selected operational procedure records the explicit
+`dependency-egress:1.0` policy source. Existing no-egress native procedure
+attestation refuses a session with this broker. Use the preparation profile to
+acquire approved inputs and run download-dependent checks, then a fresh existing
+offline profile for procedures requiring that seal; do not weaken the seal or
+reuse old custody. Real acceptance requires an explicitly published opt-in
+profile, fresh canonical assignment and bounded dependency download/check under
+that assignment. A host DNS lookup or a unit-test proxy is not that acceptance.
+
+
+### Explicit dependency HTTPS scratch transport qualification
+
+Run `CODEX_WEB_TEST_DEPENDENCY_HTTPS=1 python -m unittest tests.test_dependency_egress_transport`
+to test the existing dependency broker/relay through the real Bubblewrap backend
+in a temporary workspace. The test downloads the pinned pip 25.3 wheel without
+installing it and checks the exact size and SHA-256 independently of registry
+metadata. It also checks that direct public and host-loopback connections remain
+isolated and that the child has no model credentials. The fixture uses only the
+separate dependency capability and approved exact package hosts; it publishes no
+Definition, creates no canonical assignment, and changes no live worker or queue.
+
+The ordinary deterministic suite skips this explicit Internet qualification.
+Passing it establishes scratch package transport, not live native/managed-session
+adoption, Definition publication or production acceptance. Those remain with the
+existing operator workflow using a separately approved qualification Project and
+fresh custody; preserve existing pins, active assignments and uncertain actions.
+
+### Replaced native predecessor retirement
+
+Stale-thread replacement enters the existing turn-admission lock before fresh
+bootstrap creation or routing/active-marker transfer. A live predecessor must
+have exact current bootstrap/session custody, no active turn, completion or
+steering handoff, zero pending executor work, and no running/unknown managed
+validation. The existing process-session cancellation owner rechecks its fence
+and READY origins under canonical writers, releases workspace ownership while
+preserving every file/Git reference, and joins the owned process. Only then can
+replacement creation and graph/routing publication proceed under that same
+admission lock. An input that waited on the lock rechecks the replacement route
+before any resume/input. Unknown admission/native outcomes and retained queue
+records are not terminalized, erased, replayed, or treated as NOT-SENT.
+
+Terminal lease-free predecessors remain historical evidence; any registered or
+concurrently stopping process is joined through its existing manager before
+successor creation. A failed/cancelled stop retains its registered owner so
+absence cannot be mistaken for successful cleanup. Missing, foreign,
+changed or unowned live custody fails visibly before creating a successor;
+legacy conversations without assignment custody retain their existing path.
+Provider archive remains a separate discovery/provider action and never grants
+permission to cancel active work. A failed successor creation leaves the fenced
+predecessor and preserved files available for ordinary explicit recovery; no
+second successor is silently created by cleanup. Existing runner, preflight,
+worker-event and replacement surfaces expose the exact custody and refusal;
+no additional operator mutation or retention registry is introduced.
+
+### Native bootstrap Session resource custody
+
+Normal thread creation supplies the canonical bootstrap binding's admitted
+`resource_ids` to the provider-neutral Session request and Session adoption.
+The binding projects the actual assignment resources, including admitted
+read-only resources; caller hints and provider responses cannot add resources.
+This metadata exists before the first model input, so cancelling an unused
+bootstrap does not leave an incomplete native-custody resource join. Existing
+cancelled-recipient tenant, Profile, assignment, workspace, worker and resource
+checks remain authoritative. This producer correction does not backfill or
+rewrite historical Sessions, reinterpret UNKNOWN inputs, or grant new access.
+
+### Terminal cleanup across runtime managers
+
+Replacement visits every registered process or CLI manager with the exact
+canonical terminal assignment witness. Each implementation, including the
+Mammouth CLI adapter, rejects a changed terminal row or remaining lease before
+cleanup. An absent session is a no-op only after that validation. Registered
+owners and CLI private HOME state remain discoverable until cleanup joins; a
+failed or cancelled cleanup preserves them for a later owner. This changes no
+queue, native outcome, workspace retention, or replacement authority (#1967).
+
+### Codex per-turn instruction delivery
+
+The pinned Codex0.160 app-server protocol accepts `developerInstructions` on
+`thread/start` and `thread/resume`, but not `turn/start`. The Codex adapter
+forwards supplied creation instructions and delivers each turn's already
+composed instructions through `additionalContext`, an object with the stable
+`codex-web:developer-instructions` key and `kind: application`. This includes
+fresh initial turns that correctly skip resume and reused native sessions.
+The existing bounded Skill selection and explicit untrusted/non-authority
+wrapper remain intact; the adapter neither parses instruction markers nor
+changes their trust, scope or permission rules. It does not inject assignment
+broker authority into unbound sessions or depend on resume overriding a loaded
+thread. Other runtime adapters and native START/custody guards are unchanged.
+
+### Repository READ custody
+
+A repository execution with an effective READ lease (including `repository-write`
+with the `read-only` sandbox) records an explicit read-only primary, zero writable
+repositories, and a `read_only` repository scope. The primary and additional READ
+contexts come from the same canonical selectors and retain their source/evidence.
+Explicit writable collections are refused under READ; a coordinated Project policy
+does not silently widen that selection. Retained human/connector ingress freezes
+these same READ selectors before admission.
+
+The workspace primary is a real read-only Git member and supplies the actual cwd;
+all selected repository lease modes and members must be READ. It is not an
+orchestration workspace or an absent scope. Assignment admission and the local
+mount owner require the read-only sandbox and exact primary/member/lease metadata.
+WRITE and publication owners still require actual writable repositories and WRITE
+members/leases. A read-only primary does not satisfy those controls.
+
+The optional target/workspace `read_only_primary_repository_id` is omitted for
+legacy rows. Legacy target/scope/workspace serialization and legacy-only worker
+and workspace state versions remain unchanged (1.14 and 1.8 respectively). State
+containing the new READ representation emits worker 1.15 / workspace 1.9; the
+existing migration owners accept older versions without a startup backfill or
+historical authority rewrite. Older readers reject the new target/scope/workspace
+representation. Deployment must qualify compatible readers/writers before new
+admission; rollback readability after those rows exist is not promised. No SQL
+schema migration, grant, or credential expansion is implied.
+
+Existing Run and broker scope views display the exact WRITE/READ sets and write
+mode. The selected primary is distinct from the mutable primary; process metadata
+reports the read-only primary separately instead of labelling it writable.
+
+### Definition-driven custom broker eligibility
+
+Custom execution-profile names do not need a code-owned transport allowlist.
+Broker construction, public capability metadata and operation admission use the
+same scoped execution-profile resolver and require the assignment's exact current
+Definition reference. A custom profile must declare at least one recognized broker
+operation. Its advertised and permitted operation IDs are limited to that declared,
+recognized set; unknown declarations do not become operations. Catalog discovery
+(`control_plane.operations.list`) is not an implicit grant when a profile declares
+only `procedure.read`, `procedure.start` and `procedure.advance`.
+
+The four released profile IDs (`orchestration-only`, `repository-write`,
+`orchestration-admin`, `project-governor`) retain their existing compatibility
+behavior. That fixed set is not a mutable profile catalog and must not acquire new
+names. It preserves released catalogs whose declarations may be empty; existing
+operation-specific READY, Home, administrative, governor and context-read owners
+continue to enforce their declarations and authority. No retrospective Definition
+or assignment migration is required by this custom-profile transport correction.
+
+Eligibility is not effective authority. Every request still passes the existing
+worker/requester Identity, tenant/Project/Resource, assignment lease and fence,
+operation Authority, audit and canonical adapter checks. Procedure and credential
+admission remain their existing owners. A missing or superseded custom pin, an
+unresolvable profile, or an empty/unsupported declaration disables transport and
+refuses dispatch; it does not grant a default contract or trigger native input.
+Existing broker capability views expose the exact catalog without a new UI action.
+This correction does not diagnose or claim to fix any separate worker-start error.
+
+### Trusted-local Codex runtime HOME with read-only repositories
+
+The trusted-local credential owner may supply an ephemeral typed runtime-HOME
+mount for a read-only Codex assignment (#1985). This is the existing configured
+ambient sign-in HOME, not a per-assignment credential copy or repository grant.
+The launch owner revalidates its canonical grant and configured path immediately
+before spawn. The backend requires the exact assignment/worker/fence and runtime
+identity, a canonical absolute existing directory, and no parent/child overlap
+with the workspace, repository mounts or Git metadata. It binds that directory
+at the identical path for native runtime state only. Stored assignment, Profile
+and request data cannot select this mount. Existing delegated launches and the
+read-only rejection of generic writable repository mounts remain unchanged.
+Read-only describes repository authority; trusted-local sign-in continues to
+share the operator's configured ambient Codex state under its existing boundary.
+
+The trusted-local launch grant records the initial lease expiry for inspection;
+that fixed timestamp is not a separate session cutoff. Continued runtime use
+revalidates the current canonical assignment lease/fence and assignment deadline,
+including leases renewed by the existing session watchdog. Renewal neither
+changes the configured ambient HOME nor reissues credential authority.
+
+### Replacement of admitted READ repository custody
+
+Fresh thread settings retain the actual admitted READ primary and all READ
+contexts with zero writable repositories. Preference/resume/next-turn settings
+writes preserve that existing tuple only when repository and execution-profile
+selection is absent or exactly unchanged; explicit writes are never discarded. A read-only inner sandbox alone does
+not normalize repository access or change legacy mutable settings semantics.
+
+Normal web and bot replacement may repair the historical primary-as-writable
+settings alias only from the existing predecessor retirement owner's canonical
+READ target/scope, exact current execution Definition, actual READ workspace
+members and original READ lease modes. That proof remains valid after normal
+terminal retirement has released its lease and joined the owned process. The
+selected Profile/revision, creator tenant, primary and secondary repository set
+must still agree; extra explicit writable IDs or conflicting metadata refuse.
+The ordinary creator independently performs fresh Profile and worker admission.
+The same effective tuple supplies replacement provenance and successor settings.
+
+This does not mutate historical settings, native outcomes, retained requests or
+workspace bytes, copy sealed preparation, widen authority, or permit READ plus
+explicit WRITE. Existing WRITE and orchestration replacement behavior remains
+unchanged. No durable DTO/schema/state version changes are introduced; existing
+settings and scope inspectors expose the canonical READ versus WRITE values.
+
+### Pending handoff pins and initial native credential sealing
+
+A pending handoff's original recipient witness may precede the same assignment's
+first native credential seal (#1993). After ordinary current lineage, Work,
+Profile, scope, worker and lease validation, recipient validation reuses the
+existing exact initial-seal compatibility check. All recipient fields other than
+the authority checksum must remain identical. The admitted seal must match the
+current requester, worker and fence; current references must equal its recorded
+runtime and procedure references. Reconstructing only the pre-seal runtime
+references must reproduce the original checksum exactly.
+
+The original pin is never rewritten. Missing or inconsistent sealing evidence,
+unrecorded references, other authority changes, changed custody/Work/nonce or
+unresolved native originals still refuse. This creates no input, retry, ACK,
+delivery, grant or provider effect, and changes no stored schema or UI control.

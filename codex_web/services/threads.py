@@ -89,6 +89,11 @@ _BOOTSTRAP_PREPARATION_STAGES = frozenset({
     'resource_context_validation', 'session_workspace_validation',
     'runtime_request_preparation', 'admission_before_provider_start',
 })
+# The post-provider guard is a closed lifecycle phase, never a pre-start
+# no-effect witness. Keep diagnostic acceptance restricted to the earlier set.
+_BOOTSTRAP_LIFECYCLE_STAGES = _BOOTSTRAP_PREPARATION_STAGES | frozenset({
+    'admission_after_provider_start',
+})
 _BOOTSTRAP_EXCEPTION_TYPES = frozenset({
     'TimeoutError', 'ValueError', 'TypeError', 'LookupError',
     'OSError', 'RuntimeError', 'AssertionError', 'Exception',
@@ -1067,7 +1072,7 @@ class ThreadService:
         preparation_stage = 'request_validation'
         def preparing(stage):
             nonlocal preparation_stage
-            if stage not in _BOOTSTRAP_PREPARATION_STAGES:
+            if stage not in _BOOTSTRAP_LIFECYCLE_STAGES:
                 raise ValueError('Invalid bootstrap preparation stage')
             preparation_stage = stage
         def before_provider_start():
@@ -1428,6 +1433,7 @@ class ThreadService:
             assignment_id=binding.assignment_id,
             execution_workspace_id=binding.workspace_id,
             worker_id=status.worker_id,
+            resource_ids=binding.resource_ids,
             model=model or project.model,
         )
         effective_runtime_binding = getattr(
@@ -1439,15 +1445,25 @@ class ThreadService:
             effective_runtime_binding,
             session,
         )
+        provider_started_here = False
+        preprovider_guard_pending = False
         try:
             if admission_guard is not None:
                 stage('admission_before_provider_start')
+                preprovider_guard_pending = True
                 await PostTurnReadinessService._run_owned(
                     lambda: asyncio.to_thread(admission_guard), seconds=5.,
                     name='thread-admission-current-guard')
+                preprovider_guard_pending = False
             if before_provider_start is not None:
                 before_provider_start()
+            provider_started_here = True
             runtime_result = await runtime_adapter.create_session(runtime_request)
+            if admission_guard is not None:
+                stage('admission_after_provider_start')
+                await PostTurnReadinessService._run_owned(
+                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    name='thread-admission-current-guard')
             response = runtime_result.payload
         except asyncio.CancelledError as exc:
             # This session already owns a registered worker fence. Request
@@ -1472,10 +1488,24 @@ class ThreadService:
                 raise exc from cleanup_error
             raise
         except Exception as exc:
+            # _run_owned joins the actual guard (including its to_thread owner)
+            # before raising. Only this controller-owned pre-provider boundary
+            # may correlate a fresh recipient reservation with settled cleanup.
+            refusal = None
+            if (preprovider_guard_pending and recipient_origin is not None
+                    and not provider_started_here):
+                from codex_web.thread_bootstrap import BootstrapPreproviderRefusal
+                refusal = BootstrapPreproviderRefusal(
+                    bootstrap_id=bootstrap_id, execution_id=execution_id,
+                    error_type=type(exc).__name__, origin=recipient_origin,
+                    guard_deadline_exceeded=(isinstance(exc, TimeoutError)
+                        and str(exc) == 'Post-turn readiness operation deadline exceeded'),
+                    error_http_status=(exc.status_code if isinstance(exc, HTTPException) else None))
             with contextlib.suppress(Exception):
-                await session_manager.complete(
+                cleanup_operation = session_manager.complete(
                     binding.assignment_id,
                     succeeded=False,
+                    **({'preprovider_refusal': refusal} if refusal is not None else {}),
                     failure_code=(
                         "codex_thread_start_failed"
                         if effective_runtime_binding is None
@@ -1487,6 +1517,24 @@ class ThreadService:
                     ),
                     failure_message=(str(exc).strip() or type(exc).__name__)[:500],
                 )
+                if refusal is None:
+                    await cleanup_operation
+                else:
+                    # Keep cancellation, actual process teardown and terminal
+                    # witness CAS under one joined cleanup owner. A cancelled
+                    # coordinator cannot leave its synchronous writer behind.
+                    cleanup = asyncio.create_task(cleanup_operation)
+                    cancelled = False
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                        except Exception:
+                            break
+                    cleanup.result()
+                    if cancelled:
+                        raise asyncio.CancelledError
             raise
 
         thread = response.get("thread", response) if isinstance(response, dict) else {}
@@ -1569,6 +1617,10 @@ class ThreadService:
             read_only_repository_resource_ids=(
                 binding.repository_target.read_only_repository_ids
             ),
+            **({'admitted_repository_target':binding.repository_target,
+                'admitted_repository_scope':binding.repository_scope}
+               if getattr(binding, 'repository_scope', None) is not None
+                and binding.repository_scope.write_mode == 'read_only' else {}),
             **({"resource_context":resource_context} if resource_context is not None else {}),
             execution_profile_id=getattr(binding, "execution_profile_id", None),
         )

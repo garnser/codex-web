@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from codex_web.models import BotBinding, ThreadRunSettings
 from codex_web.definitions import DefinitionReference
+from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTarget
 from codex_web.security import security_boundary_instructions
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
 
@@ -57,13 +58,41 @@ class ThreadExecutionSettingsService:
         skill_refs: tuple[DefinitionReference, ...] | None = None,
         resource_context=None,
         resource_context_supplied=False,
+        admitted_repository_target: RepositoryExecutionTarget | None = None,
+        admitted_repository_scope: RepositoryExecutionScope | None = None,
     ) -> ThreadRunSettings:
+        admitted_read = admitted_repository_target is not None or admitted_repository_scope is not None
+        if admitted_read:
+            target, scope = admitted_repository_target, admitted_repository_scope
+            if (not isinstance(target, RepositoryExecutionTarget)
+                    or not isinstance(scope, RepositoryExecutionScope)
+                    or scope.write_mode != 'read_only' or scope.writable_repository_ids
+                    or target.mutable_repository_id is not None or target.read_only_primary_repository_id is None
+                    or (target.organization_id,target.workspace_id,target.project_id)
+                        != (scope.organization_id,scope.workspace_id,scope.project_id)
+                    or set(target.read_only_repository_ids) != set(scope.read_only_repository_ids)
+                    or repository_resource_id != target.read_only_primary_repository_id
+                    or writable_repository_resource_ids
+                    or set(read_only_repository_resource_ids or ()) != set(scope.read_only_repository_ids)):
+                raise ValueError('admitted READ repository settings require exact primary/scope and zero explicit writes')
         all_settings = None
         current = (
             self.get_setting(thread_id)
             if self.get_setting is not None
             else None
         ) or ThreadRunSettings()
+        # Preference/resume writes must not turn a previously admitted READ
+        # selection into WRITE merely by retaining its primary. This preserves
+        # an unchanged tuple; only the typed admission input above can create
+        # or normalize READ settings. Runtime admission remains authoritative.
+        preserve_read = bool(current.repository_resource_id
+            and not current.writable_repository_resource_ids
+            and current.repository_resource_id in current.read_only_repository_resource_ids
+            and repository_resource_id in (None, current.repository_resource_id)
+            and writable_repository_resource_ids in (None, ())
+            and (read_only_repository_resource_ids is None
+                 or read_only_repository_resource_ids == current.read_only_repository_resource_ids)
+            and execution_profile_id in (None, current.execution_profile_id))
         if resource_context_supplied or resource_context is not None:
             current.resource_context=resource_context
         if sandbox is not None:
@@ -97,10 +126,12 @@ class ThreadExecutionSettingsService:
                     if value and value.strip()
                 )
             )
-        # The primary target is the mutable checkout by definition. Keep this
-        # invariant canonical even when UI/profile updates arrive as separate
-        # partial settings requests.
-        if current.repository_resource_id:
+        # An admitted READ primary is distinct from a mutable primary. Sandbox
+        # preference alone is not proof of either repository access mode.
+        if admitted_read:
+            current.writable_repository_resource_ids = ()
+            current.read_only_repository_resource_ids = admitted_repository_scope.read_only_repository_ids
+        elif current.repository_resource_id and not preserve_read:
             current.writable_repository_resource_ids = (
                 current.repository_resource_id,
                 *(
@@ -193,10 +224,12 @@ class ThreadExecutionSettingsService:
             or "Agent"
         ).strip()
         role_key = role.lower()
-        base_url = self.internal_base_url()
         lines = [
             "codex-web structured work-item contract. These rules are mandatory for GitLab-driven work.",
-            f"Use `{base_url}/api/work-items` as the system of record for ownership, handoff, and progress.",
+            "Use `${CODEX_WEB_CONTROL_PLANE_URL}/api/work-items` through the current assignment-bound HTTP broker as the system of record for ownership, handoff, and progress.",
+            "Discover exact supported methods and paths with GET `${CODEX_WEB_CONTROL_PLANE_URL}/api/control-plane-broker/operations`; use its `work_item.read` and `work_item.progress` operations. Descriptor presence does not grant authority.",
+            "Resolve CODEX_WEB_CONTROL_PLANE_URL inside the current native execution environment and bypass proxies only for that assignment broker request. Do not substitute a host/internal URL, direct host localhost, raw provider API, credentials, or MCP availability for this channel.",
+            "If the assignment broker environment or required operation is unavailable, record that exact limitation and preserve uncertain mutation outcomes; do not retry a mutation or fall back to the host admin API.",
             "Before calling a work-item endpoint, URL-encode the full GitLab ref path with `urllib.parse.quote(ref, safe='')`.",
             "Do not rely on Slack narration alone. Every meaningful GitLab work step must also update codex-web state.",
             "",

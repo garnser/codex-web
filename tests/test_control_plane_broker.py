@@ -422,9 +422,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             audit=ControlPlaneBrokerAuditStore(self.sqlite),
             limits=ControlPlaneBrokerLimits(
                 max_request_bytes=1024,
-                # Discovery includes the publication parameter contract. Keep
-                # the fixture bounded while allowing that supported response.
-                max_response_bytes=32768,
+                # Ordinary catalogs use the same finite response budget as
+                # application/native brokers. Limit tests retain explicit bounds.
                 max_concurrent_requests=2,
                 max_requests_per_minute=8,
             ),
@@ -1138,6 +1137,31 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "unsupported pull request merge parameters"):
                     parse({**minimal, "expected_head_sha": "a" * 40, field: value})
 
+    async def test_worker_catalog_omits_operator_audit_link_without_granting_audit_access(self):
+        status, _, catalog = await self._request("GET", "/api/control-plane-broker/operations")
+        self.assertEqual(status, 200, catalog)
+        self.assertTrue(catalog["enabled"])
+        # OLD must reach this actual socket response, not fail on a new helper.
+        self.assertNotIn("audit_href", catalog,
+            "Worker catalog must not advertise an operator-only audit route")
+
+        from codex_web.api.execution_workers import _operator_assignment
+        operator = _operator_assignment(self.assignment, SimpleNamespace(service=self.service))
+        inspection = operator["brokered_control_plane"]
+        audit_href = f"/api/control-plane-broker/audit?assignment_id={self.assignment.id}"
+        self.assertEqual(inspection["audit_href"], audit_href)
+        self.assertEqual(catalog["operations"], inspection["operations"])
+        # Omission is a presentation correction, never a new worker route.
+        status, headers, refused = await self._request("GET", audit_href)
+        self.assertEqual(status, 403, refused)
+        self.assertEqual(refused["error"]["message"], "control-plane path is not allowlisted")
+        event = next(item for item in self.service.audit.load().events
+                     if item.correlation_id == headers["x-correlation-id"])
+        self.assertEqual(event.assignment_id, self.assignment.id)
+        self.assertEqual(event.response_status, 403)
+        self.assertIsNone(event.operation_id)
+        self.assertEqual(event.denial_reason, "control-plane path is not allowlisted")
+
     async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
         with patch.object(
             self.service,
@@ -1153,6 +1177,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         requester_actor.assert_called_once_with(self.assignment)
         self.assertIn("x-correlation-id", headers)
         self.assertTrue(payload["enabled"])
+        self.assertEqual(self.service.limits.max_response_bytes,
+                         ControlPlaneBrokerLimits().max_response_bytes)
+        wire = self.broker._response(status, payload,
+                                    correlation_id=headers["x-correlation-id"])
+        self.assertLessEqual(len(wire), self.service.limits.max_response_bytes)
         self.assertEqual(payload["project_id"], "project-a")
         self.assertEqual(payload["transport"], "assignment-bound-unix-socket")
         context = payload["assignment_context"]
@@ -1971,7 +2000,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "GET", f"/api/work-items/{quote(self.other_ref, safe='')}?view=coordination"
         )
         self.assertEqual(denied, 403)
-        current = {"ref": self.ref, "next_action": "x" * 20000}
+        current = {"ref": self.ref,
+                   "next_action": "x" * self.service.limits.max_response_bytes}
         with patch.object(self.work_items, "get", AsyncMock(return_value=current)):
             status, _, payload = await self._request(
                 "GET", f"/api/work-items/{quote(self.ref, safe='')}?view=coordination"
@@ -2292,6 +2322,27 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
         context_reads = {"goal.read", "decision.read", "skill.procedure.read"}
+        # Request contracts are shared. Only source capture additionally reports
+        # observational assignment metadata; it never asserts runtime admission.
+        capture_context = {
+            "admitted_repository_resource_ids": [],
+            "metadata_compatible": False,
+            "admission_checked": False,
+            "requires": "Current authenticated worker, exact Work owner, Profile, lease, fence and member proof",
+            "blocked_reason": "source_capture_admitted_repository_context_or_worker_missing",
+        }
+
+        def shared_request_metadata(items):
+            shared = []
+            for item in items:
+                if item["id"] == "repository.source.capture":
+                    self.assertEqual({key: item[key] for key in capture_context}, capture_context)
+                    # Strip only the exact documented observation, preserving
+                    # comparison of all static request, scope and permission data.
+                    item = {key: value for key, value in item.items() if key not in capture_context}
+                shared.append(item)
+            return shared
+
         operator_items = result.json()["items"]
         undeclared_items = self.service.public_assignment_capability(self.assignment)["operations"]
         self.assertTrue(context_reads.issubset({item["id"] for item in operator_items}))
@@ -2299,7 +2350,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item for item in result.json()["items"]
                           if not item["id"].startswith(("project.", "operator."))
                           and item["id"] != "repository.pull-request.ready"
-                          and item["id"] not in context_reads], undeclared_items)
+                          and item["id"] not in context_reads], shared_request_metadata(undeclared_items))
         # Engine recognition in the operator catalog is not an opt-in declaration.
         self.assertTrue(any(item["id"] == "operator.host.inspect" for item in result.json()["items"]))
         self.assertFalse(any(item["id"] == "operator.host.inspect" for item in
@@ -2341,7 +2392,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         declared_items = self.service.public_assignment_capability(self.assignment)["operations"]
         self.assertEqual([item for item in operator_items
                           if not item["id"].startswith(("project.", "operator."))
-                          and item["id"] != "repository.pull-request.ready"], declared_items)
+                          and item["id"] != "repository.pull-request.ready"], shared_request_metadata(declared_items))
         self.assertTrue(context_reads.issubset({item["id"] for item in declared_items}))
         for stale_or_missing in (old_reference, None):
             self.assignment.execution_profile_definition = stale_or_missing
@@ -2441,7 +2492,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_gitlab_artifacts_use_assignment_resource_and_credential_boundary(self) -> None:
-        from codex_web.code_hosts import CodeHostError, CodeHostUnsupportedCapabilityError
+        from codex_web.code_hosts import CodeHostUnsupportedCapabilityError
         from codex_web.resources import ResourceCreate, ResourceProvenance, ResourceType
         from codex_web.services.resources import ResourceCatalogService
         from codex_web.storage.resource_catalog import ResourceCatalogStore
@@ -2533,11 +2584,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("provider-secret", json.dumps(service.audit.load().model_dump(mode="json")))
         observed = len(calls)
         for path, error in (
-            ("?member_path=../index.html", CodeHostError),
-            ("?member_path=%2Findex.html", CodeHostError),
-            ("?member_path=html%5Cindex.html", CodeHostError),
-            ("?member_path=html%00index.html", CodeHostError),
-            ("?member_path=", CodeHostError),
+            ("?member_path=../index.html", ControlPlaneBrokerRequestError),
+            ("?member_path=%2Findex.html", ControlPlaneBrokerRequestError),
+            ("?member_path=html%5Cindex.html", ControlPlaneBrokerRequestError),
+            ("?member_path=html%00index.html", ControlPlaneBrokerRequestError),
+            ("?member_path=", ControlPlaneBrokerRequestError),
             ("?member_path=a&member_path=b", ControlPlaneBrokerRequestError),
             ("?max_bytes=327681", ControlPlaneBrokerRequestError),
         ):

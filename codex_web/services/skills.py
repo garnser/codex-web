@@ -132,6 +132,7 @@ class SkillService:
         self.thread_inherited_skill_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None
         self.clock = clock
         self.procedure_actions = None
+        self.procedure_control_plane = None
         self.procedure_resources = None
         self.procedure_scope_actor = None
         self.outcome_drafts = None
@@ -151,9 +152,11 @@ class SkillService:
             ProcedureDefinitionScopeActor, _CANONICAL_SCOPE_CHECK,
         )
         from codex_web.services.resources import ResourceCatalogService, _CANONICAL_RESOURCE_SERVICE_CHECK
+        from codex_web.procedure_control_plane import canonical_metadata_registry
         return (_CANONICAL_SKILL_OBSERVATION_CHECK(self)
                 and self._read_options is _CANONICAL_SKILL_READ_OPTIONS
                 and self._context is _CANONICAL_SKILL_CONTEXT
+                and (self.procedure_control_plane is None or canonical_metadata_registry(self.procedure_control_plane))
                 and self.procedure_resources is resources
                 and type(resources) is ResourceCatalogService
                 and _CANONICAL_RESOURCE_SERVICE_CHECK(resources)
@@ -222,9 +225,10 @@ class SkillService:
         # Close the view before legacy validation can enter source content I/O.
         return callback(None) if result is fallback else result
 
-    def bind_procedure_contracts(self, *, actions, resources, scope_actor) -> None:
+    def bind_procedure_contracts(self, *, actions, resources, scope_actor, control_plane=None) -> None:
         """Bind trusted metadata readers, not execution or credential transports."""
         self.procedure_actions = actions
+        self.procedure_control_plane = control_plane
         self.procedure_resources = resources
         self.procedure_scope_actor = scope_actor
 
@@ -292,6 +296,14 @@ class SkillService:
                     raise SkillConflict("procedure Resource selector type is incompatible")
         from codex_web.authority import AUTHORITY_LEVEL_RANK, AuthorityLevel
         for step in procedure.steps:
+            if step.control_plane is not None:
+                registry = getattr(self, "procedure_control_plane", None)
+                if registry is None:
+                    raise SkillConflict("procedure canonical operation registry is unavailable")
+                try:
+                    registry.validate_step(procedure, step)
+                except ValueError as exc:
+                    raise SkillConflict(str(exc)) from exc
             if step.action is None:
                 continue
             if self.procedure_actions is None:

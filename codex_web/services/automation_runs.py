@@ -123,6 +123,7 @@ class AutomationRunService:
         dedupe_key_override: str | None = None,
         attempt: int = 1,
         work_item_ref: str | None = None,
+        canonical_invocation_prefix: str | None = None,
     ) -> AutomationAdmissionResult:
         if definition_ref is None:
             automation, reference = self.definitions.resolve(
@@ -217,7 +218,8 @@ class AutomationRunService:
             updated_at=now,
             completed_at=now if status == AutomationRunStatus.BLOCKED else None,
         )
-        saved = self.store.append(run)
+        saved = (self.store.append(run, canonical_invocation_prefix=canonical_invocation_prefix)
+                 if canonical_invocation_prefix is not None else self.store.append(run))
         inserted = saved.id == run.id
         return AutomationAdmissionResult(
             run=saved,
@@ -478,6 +480,7 @@ class AutomationTriggerAdmissionBridge:
         self.event_triggers = event_triggers
         self.bus = bus
         self.launch_handler = launch_handler
+        self.procedure_handler = None
 
     def set_launch_handler(
         self,
@@ -680,7 +683,12 @@ class AutomationTriggerAdmissionBridge:
     def install(self) -> Callable[[], None]:
         async def on_event(event: CanonicalEventEnvelope) -> None:
             for match in self.event_triggers.matches(event):
-                await self._launch(self._admit_event_match(event, match))
+                if match.automation.target.kind == AutomationTargetKind.CANONICAL_PROCEDURE:
+                    if self.procedure_handler is None:
+                        raise ValueError('Canonical procedure Automation owner is unavailable')
+                    await self.procedure_handler(event, match)
+                else:
+                    await self._launch(self._admit_event_match(event, match))
             await self._launch(self._admit_schedule(event))
 
         return self.bus.subscribe(on_event)

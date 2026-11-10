@@ -114,6 +114,9 @@ class WorkerVerificationAdapter:
             self.denied('Original Resource-context requester is no longer authorized')
 
     def visible(self, record, assignment, actor):
+        if record.provider == 'governed-artifact-sharing.v1':
+            from codex_web.services.artifact_sharing_reads import validate_shared_input
+            validate_shared_input(self.broker,record,assignment,actor)
         self.scope(assignment, record.work_item_ref)
         if (getattr(record, 'project_id', None) not in (None, assignment.project_id)
                 or not set(record.resource_ids).issubset(set(assignment.resource_ids))):
@@ -159,7 +162,8 @@ class WorkerVerificationAdapter:
             # substitute for the original context requester's current API authority.
             requester=self.context_requester(current)
             decision=self.broker._authorize(current,resolved.operation,actor=requester,
-                resource_ids=(self.broker._writable_repository_id(current),))
+                resource_ids=(self.broker._operation_repository_id(current,resolved.operation.id,resolved.query,actor=requester)
+                    if resolved.operation.id in {'repository.source.capture','verification.artifact.share'} else self.broker._writable_repository_id(current),))
 
         if worker.service_token_id is not None:
             token = next((t for t in self.broker.identity.store.load().service_tokens
@@ -197,9 +201,9 @@ class WorkerVerificationAdapter:
             self.denied('Pinned execution/Agent Profile no longer effective')
         api_path = resolved.operation.path_template.replace('{id}', resolved.target_ref or '')
         try:
-            # This one broker-only operation has no public HTTP handler. Its
-            # authenticated transport and scoped capability were checked above.
-            if resolved.operation.id != 'upgrade.approval.request':
+            # These exact broker-only operations have no public HTTP handler.
+            # Their authenticated transport and scoped capability were checked above.
+            if resolved.operation.id not in {'upgrade.approval.request','repository.source.capture','verification.artifact.share'}:
                 ApiAuthorizationService(self.broker.authority).authorize_operation(
                     resolved.operation.method, api_path, worker)
         except ApiAuthorizationError:
@@ -209,7 +213,9 @@ class WorkerVerificationAdapter:
             self.denied('Current canonical procedure admission unavailable')
         discovery = procedures.inspect_current(assignment=current, actor=requester,
             operation=resolved.operation, resource_ids=current.resource_ids, payload=payload)
-        if not discovery.admitted or discovery.selected:
+        # Source and shared INFO are not Verifications: governing instructions
+        # remain admitted normally, without claiming action/QA proof.
+        if not discovery.admitted or (discovery.selected and resolved.operation.id not in {'repository.source.capture','verification.artifact.share'}):
             self.denied('Verification requires current admitted unmediated procedure scope')
         return worker, requester, decision
 
@@ -435,6 +441,15 @@ class WorkerVerificationAdapter:
         worker, requester, _ = self.principals(assignment, worker_actor, resolved, validator, {})
         service = self.service()
         if resolved.operation.id == 'verification.read':
+            from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
+            from codex_web.services.worker_mr_assignment_reviews import WorkerMRAssignmentReviewAdapter
+            if resolved.query.get('method') == [ASSIGNMENT_REVIEW_METHOD]:
+                return WorkerMRAssignmentReviewAdapter(self,
+                    execution_roles=self.broker.execution_roles, preflights=self.broker.execution_preflights).lookup(
+                        assignment, worker_actor, resolved, validator)
+            from codex_web.services.worker_ci_verifications import CI_METHOD, WorkerCIPrerequisiteVerificationAdapter
+            if resolved.query.get('method') == [CI_METHOD]:
+                return WorkerCIPrerequisiteVerificationAdapter(self).lookup(assignment, worker_actor, resolved, validator)
             from codex_web.services.worker_mr_verifications import MR_METHODS, WorkerMRVerificationAdapter
             if resolved.query.get('method') in tuple([method] for method in MR_METHODS):
                 return WorkerMRVerificationAdapter(self).lookup(assignment, worker_actor, resolved, validator)

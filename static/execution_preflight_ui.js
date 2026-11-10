@@ -177,6 +177,22 @@ export function createExecutionPreflightUi({
             return `Native preparation: ${stage} · exception ${exception}\nOriginal preflight: ${attempt.id}\n`
               + 'Inspect this retained original; diagnostics do not authorize retry.';
           }),
+          ...blockers.flatMap(blocker => {
+            const stages = ['session_attestation', 'native_owner', 'physical_scope', 'preparation_context',
+              'candidate_validation', 'candidate_consistency', 'discovery', 'fallback', 'credential_custody'];
+            const exceptions = ['TimeoutError', 'ValueError', 'TypeError', 'LookupError', 'OSError',
+              'RuntimeError', 'AssertionError', 'Exception', 'AttributeError', 'NameError', 'KeyError',
+              'IndexError', 'PermissionError', 'FileNotFoundError', 'NotImplementedError'];
+            const generic = Array.isArray(blocker.native_preparation_diagnostics);
+            const diagnostics = generic ? blocker.native_preparation_diagnostics : blocker.native_empty_preparation_diagnostics;
+            const rows = Array.isArray(diagnostics) ? diagnostics.slice(0, stages.length) : [];
+            const codes = ['procedure_assignment_fence_expired_or_revoked', 'procedure_resource_lease_expired_or_revoked',
+              'procedure_worker_identity_revoked', 'procedure_canonical_provider_hook_unavailable'];
+            return rows.filter(row => row && stages.includes(row.stage) && exceptions.includes(row.exception_type))
+              .map(row => `${generic ? 'Native preparation' : 'Empty-scope preparation'}: ${row.stage} · exception ${row.exception_type}`
+                + `${codes.includes(row.code) ? ' · code ' + row.code : ''}\n`
+                + `Original preflight: ${attempt.id}\nDiagnostics do not authorize retry or prove non-start.`);
+          }),
           ...blockers.filter(blocker => blocker.code === 'native_session_scope_incompatible').map(blocker =>
             `Native session ${blocker.agent_session_id} · previous assignment ${blocker.previous_assignment_id} · refused assignment ${blocker.assignment_id}\n`
             + `Previous repositories: ${(blocker.original_resource_ids || []).join(', ')}\n`

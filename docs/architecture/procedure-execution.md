@@ -65,6 +65,22 @@ by native input/discovery admission and does not acquire provider SecretUse.
 Both that action requester and the actual authenticated worker must currently
 be allowed to use every admitted credential reference.
 
+Event-only procedure Automations also use this same initial native preparation
+owner (#1982, #1977). After retaining the actual AutomationRun and its input
+Artifact, the bridge verifies the current requester, exact thread/bootstrap,
+assignment/fence, execution/workspace and Artifact source/scope. It compares the
+canonical parsed input checksum, preserving formatting-equivalent originals.
+Full normal discovery determines the selected set, which must include the exact
+Automation target; the existing physical session attestor and credential CAS
+seal that entire set on an unused pending bootstrap. No native input, native
+START, model call or fake checkpoint is created by preparation. A missing
+preparation owner refuses pending custody. An already sealed or historical
+assignment is not reopened or retrofitted. After awaited preparation the bridge
+rereads the original Run, controls, input, handoff nonce and selected custody
+before the ordinary interpreter start, whose credential guard remains mandatory.
+This uses existing inspector custody/Run blockers; no new UI authority or schema
+is introduced, and live event-only supervision still needs operational qualification.
+
 Supporting Memory retrieval appends its normal canonical retrieval audit outside
 the credential transaction. Locked credential revalidation and the selected-procedure
 native input guard repeat the same current procedure selection, security, instruction-capacity
@@ -241,7 +257,7 @@ interpreter does not claim arbitrary existing operational adapters are supported
 
 An optional implementation adapter registered with the existing ActionProvider
 registry can project an exact provider/action/contract's legacy result into this
-contract. GitLab contract 1.2 supports typed READY and merge receipt projections;
+contract. GitLab contract 1.2 supports typed branch-publication, READY and merge receipt projections;
 the stored flat `ActionResult` remains unchanged for verification/reconciliation.
 The procedure owner requires the same succeeded canonical intent, current receipt,
 attempt, request/key, tenant/Project/execution and Resource attribution. Supported
@@ -294,6 +310,19 @@ Role authority and canonical approval quorum are required separately, including
 at ActionIntent creation and provider dispatch. Provider binding security policy
 still constrains filesystem, process and network effects. Expired fences, revoked
 worker identities or changed scope cannot be overridden by a stored policy allow.
+
+Initial branch publication uses an ordinary current durable action step with
+`code-host.branch.publish`. Its pure result projection binds the original
+resource, workspace, normalized branch/head, remote-absence mode, existing MR
+identity and idempotency key; the existing provider still owns workspace
+attestation, remote compare-and-swap and fresh branch verification. Original
+receipt and ActionIntent verification produce separate canonical Evidence.
+Projection does not read a later checkout or repeat publication. A later declared
+read-only exact-head MR observation can verify continuation without marking READY,
+approving QA or merging. The publication-recovery procedure remains restricted to
+its original admitted failure witnesses; it is not initial-publication coverage.
+Existing procedure/ActionIntent/Evidence inspectors expose these proofs; no new UI
+control or privilege is introduced (#2014).
 
 ### Assignment-bound procedure and Executive adapters
 
@@ -535,3 +564,274 @@ and Role checks. The observation never crosses a provider/network checkpoint or
 request. Custom Governance filters and different tenants retain ordinary separate
 filter calls. This changes no stored format, authority or observation deadline;
 there is no additional operator UI setting.
+
+## Read-only CI and dependency readiness
+
+The registered GitLab `code-host.pull-request.observe-ci` action observes one
+explicit MR/head in Development. Its current native head pipeline must appear in
+a complete, bounded same-head pipeline/job inventory. Truncation, changing
+inventory, foreign job provenance and unsupported downstream bridges refuse a
+complete observation. A successful read is distinct from green CI: pending,
+failed and unknown remain explicit typed outputs. No rerun, installation or host
+operation is performed. A successful merge pipeline must also positively carry
+the exact current MR head SHA.
+
+The provider accepts an explicit canonical prerequisite validator; absent
+composition returns `needs_input`. It reads three distinct independent canonical
+Verification/Evidence/Artifact receipts using method
+`ci-dependency-readiness.v1`. Bounded SHA-256 content binds repository/head, Work,
+actual target resource and Development environment. Dependency provenance and
+runtime receipts must agree on ABI/platform. Evidence.digest and the original
+Verification.findings marker `ci_readiness_manifest_sha256:<sha256>` both bind
+exact reviewed content. `profile_reference_sha256` is SHA-256 of the complete
+canonical DefinitionReference serialized as sorted compact JSON (not a label or
+only its payload checksum). The runtime attribution must match
+its exact canonical assignment, profile reference and compatible worker/service
+identity. Target purpose/coordination observations are data, never helper-install
+permission. Privileged work still requires its separately registered operation,
+current authority and actual ApprovalRequest. An approval-reference string or a
+source/security review cannot substitute for that grant.
+
+Procedure result adapters preserve original ActionIntent/receipt identity. A
+procedure must explicitly gate on `readiness=ready_for_validation`; success of the
+read itself never authorizes a dependent mutation. No new definition is published
+or assigned automatically. Existing canonical procedure/run and evidence views
+expose the receipt, typed blockers and accountable next owner; this adds no
+operator control or parallel state. Diagnostic workers retain their existing
+network-off, secret-free sandbox.
+
+Native reviewers can use the existing `verification.create` operation with the
+fixed `ci-dependency-readiness.v1` request schema. It accepts only original
+Artifact/Evidence identities, exact source/digest/target and a request identity;
+the server reads the bounded report and derives the result and digest marker.
+Current Work ownership, requester/worker/Profile/lease, explicit target Resource
+admission and original rows are checked again under the canonical append writer.
+Repeated identical requests resolve the original review; response loss uses the
+exact method/Work/source read. An unknown lookup never authorizes replay.
+Actual verifier independence is calculated against all referenced producers.
+Two native roles sharing one service identity cannot independently review each
+other's records; genuinely distinct existing producer/reviewer principals or an
+authorized human review are needed. No actor, result, grant or approval can be
+provided in this request, and review never installs a helper or grants host use.
+
+
+Runtime receipts explicitly declare `execution_target_kind`. The supported
+`canonical-native-assignment` basis is the canonical native assignment, worker,
+profile reference and current lease/fence. Its target report must identify that
+same actual canonical worker service identity; labels cannot substitute. It
+does not attest a GitLab runner,
+container image or its Python ABI. `external-ci-job` has no registered runtime
+attestor in this slice and remains `needs_input` with an accountable owner and
+`external_ci_runtime_attested=false`. A trusted server-injected
+`execution_target_requirement` resolves the actual published workflow's required
+basis; missing requirements or a native report offered against an external
+requirement remain unready. This requirement is never taken from caller text or
+a weaker request option. No Workspace or operational grant is added by a report.
+
+CI procedure output declarations use an optional string (`required: false`) for
+`execution_target_kind`. When current prerequisites do not establish a target,
+the scalar projection omits that field; raw original provider prerequisites
+retain their explicit null. Missing facts remain `needs_input` or `blocked`,
+without a sentinel target or a new nullable procedure type. The original receipt
+and verification Evidence prove the bounded observation only; their successful
+read does not turn those dispositions into readiness, approval, or merge consent.
+
+
+### Pending handoff preparation belongs to the admitted Automation Run
+
+A matching custody Automation may observe a genuine pending handoff before its
+recipient has a compatible native bootstrap. Read-only selection must not create
+that bootstrap, and deterministic ownership must not fall through to model
+reasoning merely because preparation has not completed (#1989).
+
+The bridge first validates the current published policy, Work/nonce, supervisor
+Role/Profile, repository context and live idle custody, then durably admits its
+existing Automation Run. The invocation portion of its dedupe key identifies the
+Automation/procedure semantic IDs and exact Work/nonce. A separate suffix pins
+the original published references and supervisor custody/scope. The existing Run
+writer atomically coalesces that invocation even when competing observations
+carry different custody suffixes. A changed supervisor or Definition therefore
+blocks the original Run instead of minting another attempt. Existing Runs with
+the former target/input key retain their original interpretation.
+
+Only the Run's existing coordinator owner may enter recipient preparation. It
+rechecks current controls, exact custody and required consumed ApprovalRequest,
+then delegates to the normal `prepare_compatible_pin` owner. That owner retains
+its existing narrow eligibility, exact nonce reservation, current Profile and
+scope, fencing and before-worker recovery rules. Ambiguous, missing or UNKNOWN
+original custody is never a generic create/retry signal. No native input, ACK,
+new handoff, role binding or grant is synthesized by the bridge.
+
+After an await, the owner rereads the Run, controls, policy and pinned context
+before full recipient selection, the existing governed input Artifact/custody
+claim, native credential preparation and procedure start. The first preparation
+clock is persisted on the Run and survives failures, claiming and restart; the
+finite duration is not renewed. Startup recovery resumes the same admitted Run.
+Archived/expired handoffs remain historical and cannot be recreated by recovery.
+
+This changes internal admission/deduplication only. No stored field or schema is
+added, and legacy serialization is unchanged. Existing Work, Automation Run,
+preflight and checkpoint inspectors expose the retained typed refusal or normal
+completion; no additional UI control or authority path is introduced.
+
+### Material Work continuation of existing invocations
+
+Initial Automation filters govern admission, not the lifetime of an already
+admitted invocation (#1995). The normal async Work publisher first delivers its
+existing event, then observes closed ACK/progress/handoff notifications. Existing
+watchdog observations also notify the bridge before initial-filter matching.
+The notification reloads canonical Work, checks tenant/Project and the exact
+original handoff nonce, and schedules only existing admitted/running Runs through
+their existing coordinator. It never creates an event, Run, input or authority.
+
+The original event, published references, input Artifact, custody, controls,
+duration and advance bounds remain enforced by the existing owner. Unchanged
+observations do not advance a waiting step; UNKNOWN effects are reconciled rather
+than replayed. Accepted-owner workflow is not suppressed by an existing-Run wake,
+and an observation failure cannot prevent committed ACK owner continuation.
+Retired or changed custody refuses; a checkpoint is never transferred to a new
+supervisor. These notifications add no polling, model traffic or stored format.
+
+
+### Explicit retired supervisor scheduling disposition
+
+A legitimately cancelled bootstrap does not complete its retained procedure.
+An authenticated administrator (MFA, or the existing administrative service
+scopes) may explicitly request `cancel_retired_procedure: true` through
+`POST /api/automation-runs/{run_id}/reconcile` or the existing Run inspector.
+The original authenticated origin is revalidated; a credential-free identity
+lookup is not authentication. This operation is separate from Home unknown
+cancellation and from native cancellation or replacement (#2001).
+
+The canonical owner requires the exact original bootstrap, worker, execution,
+workspace and tenant; cancellation must have removed its lease and advanced its
+original fence exactly once. The current published Automation and procedure
+references, governed original input and checkpoint must still agree. This
+terminal scheduling-only operation does not require the original event to remain
+in the bounded canonical event journal. Its durable Run trigger is preserved;
+ordinary admission and active execution still require the original event and
+all source/filter guards. Event pruning grants no execution authority. Completed
+steps retain normal proof checks. Unstarted steps must have no reservations.
+A waiting/refused canonical READ may retain its exact valid diagnostic. The
+existing handoff-dispatch owner can also positively settle its original waiting
+mutation from canonical retained Work history: accepted snapshots of the exact
+original nonce must agree on every field except the archival `reason_code`
+annotation. Normal history archival may add that annotation without changing the
+ACK; it is neither discarded from history nor used as proof. All other handoff
+and delivery facts remain exact, with qualified delivery and its original
+canonical preflight START/correlation/Evidence, current original recipient
+identity/Profile/custody, and immutable input target/fence. The same existing
+read-only delivery matcher and native attribution validator own this observation;
+no execute, reconcile, dispatch, preparation, or fake LIVE context is called.
+A newer current handoff is not substituted for this historical original. Missing,
+conflicting or truncated canonical originals cannot be replaced by an operator
+journal. Other waiting mutation, running, reconciliation-required, judgment
+invocation, unsettled provider receipt, or unresolved native Work originals refuse disposition.
+Historical known effects and all diagnostic references are preserved: waiting
+is never described as proof that no historical effects occurred.
+
+Under the existing canonical SQLite writer fence the owner compares the full
+original Run and assignment and revalidates current authority and references.
+Only Run scheduling becomes `cancelled`, with an explicit result reason and
+completion timestamp for that scheduling disposition. The original custody,
+checkpoint, input, nonce, trigger, dedupe key, attempts, execution and Evidence
+references are not changed. No schema, automatic retry, owner transfer, native
+input, ActionIntent execution, rollback or checkpoint success is introduced.
+A later genuine event may undergo ordinary admission; this action neither
+creates that event nor authorizes it. Missing or uncertain originals remain
+visible for their existing reconciliation owner instead of being erased.
+
+
+### Interrupted provider-result settlement
+
+A completed, canonically verified provider effect can outlive interruption of its
+local result projection. Result projection, governed output/proof writes and
+checkpoint CAS use one joined cooperative storage owner bounded by the original
+step start/timeout, procedure deadline and current live assignment lease/deadline.
+The guarded-readiness action retains its existing shared observation deadline.
+There is no separate five-second projection allowance or new deployment knob.
+Ordinary projection preserves the canonical action's declared verification
+requirement: a successful read whose contract does not require provider
+verification may project its governed output and Evidence. This does not qualify
+it for interruption settlement, which always requires actual positive provider
+verification as well as the completed original receipt.
+
+Only an interruption after a positive exact canonical original can record a
+closed `provider_result_projection` diagnostic through existing governed INFO
+Evidence. It binds the current assignment/fence/run/Definition/input, step,
+original request/key/intent/attempt, completed receipt and actual verified
+verification. Recording itself requires remaining original allowance and current
+ownership; inability to record leaves the actual provider ledger intact without
+manufacturing recoverability. This diagnostic is not completion or QA Evidence.
+
+A later advance may settle that same server-recorded original by read-only
+projection, retaining matching partial deterministic Evidence. The INFO diagnostic remains
+in canonical run/step source lineage and the existing Attention Evidence links;
+it is never inserted into the exact declared PASS proof map. It does not create/claim/execute an ActionIntent, call provider verify,
+replace a key, or reset the original step clock. Current Role, Definition, input,
+lease/resource custody, proof and checkpoint CAS guards still apply. Missing,
+revoked, malformed or foreign diagnostics and changed originals refuse. UNKNOWN
+provider effects remain under their ordinary reconciliation owner. Legacy
+untyped `TimeoutError`/`recovery_required` states are not reclassified or reopened.
+An expired or retired assignment/run cannot borrow new custody; a successful
+original ledger remains reportable even when its historical procedure cannot be
+operationally resumed. Existing procedure/Evidence inspectors expose the current
+state and INFO diagnostic; no new UI mutation, ledger or Definition kind exists.
+
+### Empty native preparation refusal diagnostics
+
+The attested empty-physical-scope fallback retains a bounded closed observation
+of local session attestation, native owner, physical scope, preparation context,
+candidate validation/consistency, discovery or otherwise unclassified fallback
+failures (#2036). These stage and
+safe exception categories accompany the original discovery refusal through the
+canonical preflight projection and existing inspector. Candidate failures remain
+refusals; diagnostics neither authorize retry nor establish provider non-start.
+Messages, arbitrary exception names and provider payloads are excluded. Current
+input and credential-CAS checks still repeat the original proof; no scope is
+inferred, no queued original is changed, and no diagnostic grants authority.
+
+
+### Current custody during native preparation
+
+Native discovery and native-session attestation may span an ordinary worker lease
+renewal. Preparation re-reads the assignment through the existing canonical
+worker owner before current liveness/capability checks, after session attestation,
+and before each candidate or credential proof. An attestor return value is not
+an assignment authority. Only `updated_at` and the lease's `expires_at` and
+`renewed_at` may differ from the expected snapshot. The worker, fence, lease token
+and acquisition, requester, Profile/Definition, runtime, repository/Resource scope,
+original deadline, credential seal and procedure/input history remain exact.
+
+This applies to empty-scratch preparation and already-sealed selected procedures.
+Initial selected and empty credential admission refresh before the existing
+owner's pre-CAS liveness projection, then advance through the same guarded CAS
+and return the canonical sealed assignment; subsequent validation uses that
+owned result. Real expiry, revoked or changed custody and native broker/isolation
+failures still refuse. No timeout, lease lifetime, permission, retry, queue or
+native-input protocol is extended. Existing preflight diagnostics and retry
+surfaces remain authoritative; this correction alone is not evidence of the cause
+or resolution of a historical live refusal.
+
+### Selected native-preparation diagnostics (#2043)
+
+Selected-provider fallback retains its unsupported outcome when live preparation
+cannot be proved. Phase/type observations use the same closed diagnostic helper
+as empty-scope preparation. Selected refusals emit `native_preparation_diagnostics`
+in existing opaque preflight-blocker metadata; the published empty producer and
+old records retain `native_empty_preparation_diagnostics`. Readers prefer an
+explicit generic field and otherwise accept the legacy field, projecting only
+one set. The old sanitizer name remains an alias. No DTO/Definition/record-format
+version or second diagnostic object/store is introduced.
+
+Only finite phase/exception categories and explicitly allowlisted canonical
+ProcedureExecutionError codes survive. Raw exception messages, arbitrary custom
+class names, traces, commands, paths and credential references are never copied.
+Failed discovery/history retains closed diagnostic blocker markers, with its
+original unsupported outcome/first blocker and selection intact. Known credential
+refusals keep their existing nonretryable contract. Diagnostics do not establish
+non-start, authorize retries, reopen credential custody or bypass current native
+attestation. The existing inspector renders the generic field alongside legacy
+empty diagnostics without adding an operator action. Historical failures do not
+gain a diagnosis retroactively; controlled fixture refusal proves retention,
+not the cause of a previously observed live failure.

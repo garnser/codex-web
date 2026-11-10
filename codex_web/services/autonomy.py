@@ -16,6 +16,7 @@ from codex_web.action_intents import (
 from codex_web.action_providers import ActionRequest
 from codex_web.autonomy import AutonomyCycleOutcome, AutonomyObservation, AutonomyReasoningResult
 from codex_web.canonical_events import CanonicalEventType
+from codex_web.work_item_wait import current_unchanged_wait
 from codex_web.identity import AuthenticationActor
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.action_intents import ActionIntentService
@@ -61,6 +62,7 @@ class AutonomyService:
         self.action_intents = action_intents
         self.controller = controller
         self.canonical_events = canonical_events
+        self.procedure_event_handler = None
 
     def _actions(self) -> ActionExecutionService:
         if self.action_execution is None:
@@ -97,12 +99,19 @@ class AutonomyService:
     ) -> dict[str, Any]:
         """Route watchdog reasoning through canonical event + autonomy controls."""
 
+        if work_item is not None and current_unchanged_wait(work_item):
+            return {"ok": True, "ignored": True, "reason": "work_item_unchanged_wait",
+                "threadId": binding.thread_id}
         dispatch_context = {}
         if work_item is not None:
             primary, writable = work_item_repository_scope(work_item)
-            payload = {**payload, "resource_ids": list(dict.fromkeys(
-                [*getattr(work_item, "resource_ids", ()), *writable]
-            ))}
+            # These matching fields come from the canonical Work snapshot, never
+            # watchdog caller aliases. Keep legacy payload fields for consumers.
+            payload = {**payload, "work_item_ref": work_item.ref,
+                "handoff_status": work_item.handoff.status if work_item.handoff is not None else "none",
+                "resource_ids": list(dict.fromkeys(
+                    [*getattr(work_item, "resource_ids", ()), *writable]
+                ))}
             if getattr(work_item, "goal_id", None):
                 payload["goal_id"] = work_item.goal_id
             dispatch_context = {
@@ -228,6 +237,15 @@ class AutonomyService:
             tenant_id=organization_id,
             workspace_id=workspace_id,
         )
+        if self.procedure_event_handler is not None:
+            handled = await self.procedure_event_handler(delivery.event)
+            if handled and handled.get('handled'):
+                cycle = await self.controller.process(delivery.event,
+                    AutonomyObservation(deterministic_resolved=True, reasoning_score=0,
+                        reason='Canonical procedure observation: '+str(handled.get('code') or handled.get('status') or 'retained')[:200]),
+                    cycle_key=cycle_key)
+                return {**handled, 'ok':True, 'ignored':True,
+                    'reason':'canonical_procedure_owned', 'autonomyCycleId':cycle.id}
         if not delivery.inserted:
             return {
                 "ok": True,
@@ -346,6 +364,7 @@ class AutonomyService:
                     and state.current_stage
                     in self.ACTIONABLE_OWNER_STAGES
                     and not state.closed_at
+                    and not current_unchanged_wait(state)
                     and not (
                         state.handoff
                         and state.handoff.status == "pending"
@@ -510,6 +529,7 @@ class AutonomyService:
                 for state in states.values()
                 if state.project_id == project_id
                 and d.coerce_owner(actionable_owner_value(state)) == "release manager"
+                and not current_unchanged_wait(state)
                 and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
                 and (now - d.owner_activity_timestamp(state)) >= d.release_validation_sla_seconds()
             ]
@@ -569,6 +589,7 @@ class AutonomyService:
                 states = await asyncio.to_thread(d.load_work_item_states)
                 owned = [state for state in states.values()
                     if state.project_id == project_id and state.current_stage in self.ACTIONABLE_OWNER_STAGES
+                    and not current_unchanged_wait(state)
                     and recovery.owns(binding, state)]
                 owned.sort(key=lambda state: (d.owner_activity_timestamp(state), state.ref))
                 recovery_work = (await asyncio.to_thread(recovery.select_current_work, binding, owned)
@@ -699,7 +720,12 @@ class AutonomyService:
                         current.current_stage = "implementation_active"
                         current.next_owner = sender
                         current.next_action = (
-                            f"{sender}: reconcile the expired delivery to {recipient} and renew only after its exact blocker changes."
+                            f"{sender}: review current Work readiness and required evidence for {recipient}. "
+                            "Resolve unresolved original native outcomes and current custody or authority denials first. "
+                            "If validation or the next business stage is genuinely ready, request a new normal handoff; "
+                            "its dispatch prepares the recipient under that current nonce. "
+                            "Do not require preparation against the archived nonce, blindly renew unchanged failures, "
+                            "or replay an original input."
                             if awaiting_delivery else
                             f"{sender}: reconcile the expired intake to {recipient}; no pending acknowledgement remains."
                         )

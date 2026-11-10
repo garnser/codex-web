@@ -11,6 +11,8 @@ import math
 import time
 import uuid
 from dataclasses import replace
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 from contextvars import ContextVar
 
 _current_input_witness = ContextVar("procedure_current_input_witness", default=None)
@@ -42,6 +44,27 @@ class ProcedureExecutionError(ActionRequirementError):
         super().__init__(code)
 
 
+class _ProviderResultInterruption(BaseModel):
+    """Governed diagnostic payload, never a caller or checkpoint mutation DTO."""
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    schema_version: Literal["1.0"] = "1.0"
+    phase: Literal["provider_result_projection"] = "provider_result_projection"
+    assignment_id: str
+    fence: int = Field(ge=1)
+    procedure_run_id: str
+    definition_checksum: str
+    step_id: str
+    intent_id: str
+    attempt: int = Field(ge=1)
+    request_checksum: str
+    idempotency_key: str
+    input_snapshot_id: str
+    input_snapshot_checksum: str
+    receipt_id: str
+    verification_id: str
+    started_at: float
+
+
 def bounded_data(value, limit=16384):
     raw = json.dumps(value, sort_keys=True, allow_nan=False)
     if len(raw.encode()) > limit or _contains_secret_material(raw):
@@ -52,7 +75,7 @@ def bounded_data(value, limit=16384):
 class ProcedureExecutionService:
     def __init__(self, *, workers, skills, discovery, intents, evidence, identity,
                  authority, approvals, attention, control_actor, worker_runtime=None,
-                 models=None, worker_actor=None, clock=None, mr_observation_configuration=None):
+                 models=None, worker_actor=None, clock=None, mr_observation_configuration=None, control_plane=None):
         self.workers, self.skills, self.discovery = workers, skills, discovery
         self.intents, self.evidence, self.identity = intents, evidence, identity
         self.authority, self.approvals, self.attention = authority, approvals, attention
@@ -61,6 +84,7 @@ class ProcedureExecutionService:
         self.clock = clock or time.time
         self.outcome_drafts = None
         self.mr_observation_configuration = mr_observation_configuration
+        self.control_plane = control_plane
 
     def get(self, assignment_id, actor):
         item = self.workers.store.assignment(assignment_id)
@@ -606,18 +630,21 @@ class ProcedureExecutionService:
             raise ProcedureExecutionError("procedure_rollback_unavailable_or_incompatible")
         return binding, provider, definition, request
 
-    def start(self, assignment_id, *, definition, input_snapshot_id, actor):
+    def start(self, assignment_id, *, definition, input_snapshot_id, actor, expected_fence=None):
         try:
-            return self._start(assignment_id, definition=definition, input_snapshot_id=input_snapshot_id, actor=actor)
+            return self._start(assignment_id, definition=definition, input_snapshot_id=input_snapshot_id, actor=actor,
+                **({"expected_fence":expected_fence} if expected_fence is not None else {}))
         except (ProcedureExecutionError, ProcedureAdmissionError):
             raise
         except Exception as exc:
             raise ProcedureExecutionError(getattr(exc, "code", "procedure_start_boundary_failure:" + type(exc).__name__)) from exc
 
-    def _start(self, assignment_id, *, definition, input_snapshot_id, actor):
+    def _start(self, assignment_id, *, definition, input_snapshot_id, actor, expected_fence=None):
         actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
         assignment = self.get(assignment_id, actor)
         self._live(assignment)
+        if expected_fence is not None and assignment.fence != expected_fence:
+            raise ProcedureExecutionError('procedure_expected_fence_changed')
         custody = assignment.native_credential_custody
         if custody is not None:
             if custody.admitted_at is None:
@@ -950,10 +977,14 @@ class ProcedureExecutionService:
                 self._targets(procedure, assignment, actor,
                     **({"_resources": _resources} if _resources is not None else {}))
             action_steps = [step for step in procedure.steps if step.action]
-            if not action_steps:
+            if not action_steps and not any(step.control_plane for step in procedure.steps):
                 raise ProcedureExecutionError("procedure_native_provider_action_missing")
             for step in procedure.steps:
-                if step.kind in {"mutation", "recovery"} and step.action is None:
+                if step.control_plane is not None:
+                    if self.control_plane is None or self.skills.procedure_control_plane is not self.control_plane:
+                        raise ProcedureExecutionError("procedure_canonical_owner_unavailable")
+                    self.control_plane.validate_step(procedure, step)
+                if step.kind in {"mutation", "recovery"} and step.action is None and step.control_plane is None:
                     raise ProcedureExecutionError("procedure_native_mutation_owner_unsupported")
                 if step.action is None:
                     continue
@@ -1325,6 +1356,12 @@ class ProcedureExecutionService:
             elif step.action:
                 if evidence.source != f"action-intent:{state.action_intent_id}":
                     raise ProcedureExecutionError("procedure_provider_evidence_provenance_mismatch")
+            elif step.control_plane:
+                if (evidence.source != self._step_origin(assignment, step.id)
+                        or evidence.producer_identity_id != actor.identity_id
+                        or evidence.work_item_ref != assignment.work_item_ref
+                        or evidence.metadata.get("canonical_operation") != step.control_plane.operation_id):
+                    raise ProcedureExecutionError("procedure_canonical_evidence_provenance_mismatch")
             elif step.judgment and evidence.source not in state.invocation_ids:
                 raise ProcedureExecutionError("procedure_judgment_evidence_provenance_mismatch")
             if requirement.kind == "artifact" and not evidence.artifact_ids:
@@ -1473,22 +1510,197 @@ class ProcedureExecutionService:
                 proofs[name] = evidence.id
         return {"outputs": outputs, "evidence": proofs}
 
-    async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
-        # Projection includes canonical Evidence writes. Keep that blocking work
-        # off the shared loop, and join the actual owner before cancellation can
-        # release the procedure's caller. Existing cooperative store budgets
-        # bound the operation and prevent a cancelled owner making later commits.
-        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+    def _complete_step_result(self, assignment, step, actor, procedure, result, *, deadline=None, guard=None):
+        checkpoint = assignment.procedure_checkpoint
+        state = checkpoint.steps[step.id]
+        bounded_data(result)
+        if (not isinstance(result, dict) or set(result) != {"outputs", "evidence"}
+            or not isinstance(result["evidence"], dict)
+            or any(not isinstance(v, str) or not v or len(v) > 200 for v in result["evidence"].values())
+            or len(set(result["evidence"].values())) != len(result["evidence"])):
+            raise ProcedureExecutionError("procedure_output_contract_invalid")
+        # The INFO interruption remains governed canonical Evidence with exact
+        # run/step source and the existing Attention link, not declared PASS proof.
+        state.evidence = result["evidence"]
+        self._record_outputs(assignment, step, state, result.get("outputs", {}), actor)
+        self._proof(assignment, step, state, actor)
+        positive_deadline = deadline if deadline is not None else self._guarded_readonly_deadline(assignment, procedure, step)
+        if guard is not None:
+            guard()  # Fresh custody/authority after governed output/proof I/O.
+        state.status = "succeeded"; checkpoint.status = "ready"; state.not_before = None
+        if state.failure_code == "procedure_provider_result_settlement_required":
+            state.failure_code = None; checkpoint.failure_code = None
+        return self._save(assignment, checkpoint, positive_deadline=positive_deadline)
+
+    def _provider_result_deadline(self, assignment, step, intent, actor):
         deadline = self.readonly_operation_deadline(intent, actor)
+        if deadline is not None:
+            return deadline  # Preserve the guarded-readiness shared deadline.
+        current = self.get(assignment.id, actor)
+        self._live(current)
+        pin = current.procedure_checkpoint
+        if (current.fence != assignment.fence or pin is None
+                or self.run_id(pin) != self.run_id(assignment.procedure_checkpoint)
+                or pin.revision != assignment.procedure_checkpoint.revision
+                or pin.status != "running" or pin.current_step_id != step.id
+                or pin.steps[step.id].status != "running"
+                or pin.steps[step.id].action_intent_id != intent.id
+                or pin.steps[step.id].started_at is None):
+            raise ProcedureExecutionError("procedure_provider_result_owner_changed")
+        current_actor = self._actor(current)
+        if not current_actor.has_same_authority(actor):
+            raise ProcedureExecutionError("procedure_actor_changed")
+        procedure = self._procedure(current, current_actor)
+        inputs = self._inputs(current, current_actor, procedure)
+        self._protected(current, step, current_actor, procedure, inputs)
+        binding, _, _, request = self._request(step, current, current_actor, procedure,
+            self._step_inputs(step, pin, inputs, current_actor, current))
+        if (binding.id != intent.binding_id
+                or intent.work_item_ref != self._action_work_item_ref(current, request, current_actor, intent=intent)
+                or self.intents._idempotency_request_identity(request)
+                    != self.intents._idempotency_request_identity(intent.request)):
+            raise ProcedureExecutionError("procedure_action_request_changed")
+        deadline = min(pin.deadline_at, pin.steps[step.id].started_at + step.timeout_seconds,
+            current.lease.expires_at,
+            current.deadline_at if current.deadline_at is not None else float('inf'))
+        if not math.isfinite(deadline) or self.clock() >= deadline:
+            raise ProcedureExecutionError("procedure_provider_result_budget_exhausted")
+        return deadline
+
+    def _positive_result_original(self, assignment, step, intent, receipt, history, actor, *, require_provider_verification=True):
+        # Read-only prerequisite, never provider verification or a missing-result
+        # inference. The projector independently enforces every origin/output fact.
+        current = self.intents.get(intent.id, actor)
+        canonical = self.intents.store.load(intent_id=intent.id)
+        verification = next((v for v in history.verifications if v.id == intent.last_verification_id), None)
+        canonical_receipt = next((r for r in canonical.receipts if receipt is not None and r.id == receipt.id), None)
+        canonical_verification = next((v for v in canonical.verifications if v.id == intent.last_verification_id), None)
+        if (current != intent or canonical_receipt != receipt or canonical_verification != verification
+                or intent.status != "succeeded" or intent.attempt != assignment.procedure_checkpoint.steps[step.id].attempts
+                or intent.id != assignment.procedure_checkpoint.steps[step.id].action_intent_id
+                or receipt is None or receipt.result is None or receipt.outcome != "completed"
+                or receipt.id != intent.last_receipt_id or receipt.intent_id != intent.id
+                or receipt.attempt != intent.attempt or receipt.result.status != "succeeded"
+                or receipt.result.provider_binding_id != intent.binding_id
+                or (receipt.provider_type, receipt.provider_instance, receipt.action_id,
+                    receipt.idempotency_key, receipt.correlation_id)
+                    != (intent.provider_type, intent.provider_instance, intent.action_id,
+                        intent.idempotency_key, intent.correlation_id)
+                or (intent.provider_type, intent.provider_instance, intent.action_id)
+                    != (step.action.provider_type, step.action.provider_instance, step.action.action_id)
+                or intent.request.idempotency_key != intent.idempotency_key
+                or intent.requested_by != assignment.procedure_checkpoint.actor_identity_id
+                or intent.idempotency_key != self._step_origin(assignment, step.id, intent=True)
+                or (intent.organization_id, intent.workspace_id, intent.project_id, intent.execution_id)
+                    != (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.execution_id)
+                or intent.work_item_ref != self._action_work_item_ref(assignment, intent.request, actor, intent=intent)
+                or verification is None or verification.intent_id != intent.id or not verification.verified
+                or (require_provider_verification and (verification.provider_verification is None
+                    or not verification.provider_verification.verified))
+                or not math.isfinite(verification.verified_at)
+                or verification.verified_at < max(receipt.result.completed_at, receipt.received_at)):
+            raise ProcedureExecutionError("procedure_provider_result_original_not_settled")
+
+    def _result_interruption(self, assignment, step, intent, receipt):
+        pin = assignment.procedure_checkpoint
+        return _ProviderResultInterruption(assignment_id=assignment.id, fence=assignment.fence,
+            procedure_run_id=self.run_id(pin), definition_checksum=pin.definition.checksum,
+            step_id=step.id, intent_id=intent.id, attempt=intent.attempt,
+            request_checksum=checksum(intent.request.model_dump(mode="json")),
+            idempotency_key=intent.idempotency_key, input_snapshot_id=pin.input_snapshot_id,
+            input_snapshot_checksum=pin.input_snapshot_checksum, receipt_id=receipt.id, verification_id=intent.last_verification_id,
+            started_at=pin.steps[step.id].started_at)
+
+    def _validate_result_interruption(self, assignment, step, intent, receipt, actor):
+        state = assignment.procedure_checkpoint.steps[step.id]
+        reference = state.evidence.get("provider_result_interruption")
+        if not reference:
+            raise ProcedureExecutionError("procedure_provider_result_interruption_missing")
+        diagnostic = self.evidence.get_evidence(reference, actor=actor)
+        if (diagnostic.lifecycle != "valid"
+                or (diagnostic.organization_id, diagnostic.workspace_id)
+                    != (assignment.organization_id, assignment.workspace_id)
+                or (diagnostic.retention_expires_at is not None
+                    and diagnostic.retention_expires_at <= self.clock())
+                or set(diagnostic.resource_ids) - set(assignment.resource_ids)
+                or diagnostic.artifact_ids):
+            raise ProcedureExecutionError("procedure_provider_result_interruption_invalid")
+        try:
+            recorded = _ProviderResultInterruption.model_validate_json(
+                diagnostic.metadata["provider_result_interruption"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProcedureExecutionError("procedure_provider_result_interruption_invalid") from exc
+        if (recorded != self._result_interruption(assignment, step, intent, receipt)
+                or diagnostic.evidence_type != "policy_evaluation" or diagnostic.result != "info"
+                or diagnostic.provider != "canonical-procedure-owner"
+                or diagnostic.source != self._step_origin(assignment, step.id)
+                or diagnostic.producer_identity_id != actor.identity_id
+                or diagnostic.project_id != assignment.project_id
+                or diagnostic.work_item_ref != intent.work_item_ref
+                or diagnostic.execution_id != assignment.execution_id
+                or diagnostic.execution_workspace_id != assignment.execution_workspace_id
+                or tuple(diagnostic.resource_ids) != tuple(intent.resource_ids)):
+            raise ProcedureExecutionError("procedure_provider_result_interruption_changed")
+
+    async def _provider_result_owned(self, assignment, step, intent, receipt, history, actor):
+        # Projection includes canonical Evidence writes. Keep its joined writer
+        # and cooperative storage budget within the existing step/run/live lease.
+        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+            # Keep the guarded-readiness projection window and its canonical
+            # shared deadline exactly as before; its tail already has guards.
+            deadline = self.readonly_operation_deadline(intent, actor)
+            async def guarded_projection():
+                self.readonly_operation_deadline(intent, actor)
+                result = await asyncio.to_thread(self._provider_result,
+                    assignment, step, intent, receipt, history, actor)
+                self.readonly_operation_deadline(intent, actor)
+                return result
+            return await PostTurnReadinessService._run_owned(guarded_projection,
+                seconds=deadline - self.clock(), name="procedure-provider-result-" + intent.id)
+        deadline = self._provider_result_deadline(assignment, step, intent, actor)
+        # Ordinary projection retains the actual action's verification contract.
+        # Minting or using an interruption witness below remains strictly verified.
+        def guard():
+            self._provider_result_deadline(assignment, step, intent, actor)
+            self._positive_result_original(assignment, step, intent, receipt, history, actor,
+                require_provider_verification=intent.verification_required)
+        guard()
         async def operation():
-            self.readonly_operation_deadline(intent, actor)
+            await asyncio.to_thread(guard)
             result = await asyncio.to_thread(self._provider_result,
                 assignment, step, intent, receipt, history, actor)
-            self.readonly_operation_deadline(intent, actor)
-            return result
-        return await PostTurnReadinessService._run_owned(operation,
-            seconds=deadline - self.clock() if deadline is not None else 5.,
-            name="procedure-provider-result-" + intent.id)
+            await asyncio.to_thread(guard)
+            procedure = self._procedure(assignment, actor)
+            return await asyncio.to_thread(self._complete_step_result,
+                assignment, step, actor, procedure, result, deadline=deadline,
+                guard=guard)
+        try:
+            return await PostTurnReadinessService._run_owned(operation,
+                seconds=deadline - self.clock(), name="procedure-provider-result-" + intent.id)
+        except TimeoutError as exc:
+            # _run_owned has joined its child before this diagnostic append.
+            # Do not reinterpret provider uncertainty or manufacture PASS proof.
+            self._positive_result_original(assignment, step, intent, receipt, history, actor)
+            remaining = self._provider_result_deadline(assignment, step, intent, actor) - self.clock()
+            def record_interruption():
+                self._provider_result_deadline(assignment, step, intent, actor)
+                diagnostic = self.evidence.create_evidence(EvidenceCreate(project_id=assignment.project_id,
+                    work_item_ref=intent.work_item_ref, execution_id=assignment.execution_id,
+                    execution_workspace_id=assignment.execution_workspace_id, resource_ids=intent.resource_ids,
+                    evidence_type="policy_evaluation", result="info", provider="canonical-procedure-owner",
+                    source=self._step_origin(assignment, step.id), observed_at=self.clock(),
+                    summary="Verified original retained; provider-result projection interrupted",
+                    metadata={"provider_result_interruption":self._result_interruption(
+                        assignment, step, intent, receipt).model_dump_json()}), actor=actor)
+                self._provider_result_deadline(assignment, step, intent, actor)
+                assignment.procedure_checkpoint.steps[step.id].evidence = {
+                    "provider_result_interruption":diagnostic.id}
+            async def diagnostic_operation():
+                return await asyncio.to_thread(record_interruption)
+            await PostTurnReadinessService._run_owned(diagnostic_operation,
+                seconds=remaining, name="procedure-result-interruption-" + intent.id)
+            raise ProcedureExecutionError("procedure_provider_result_settlement_required") from exc
 
     def creation_discovery(self, payload, actor):
         if not payload.execution_id:
@@ -1650,9 +1862,35 @@ class ProcedureExecutionService:
                 self.mr_observation_configuration, now=self.clock())
         return resolve_policy(self.mr_observation_configuration, now=self.clock())
 
+    def canonical_original_retry_guard(self, intent):
+        """Bind outside the writer; returned original-row CAS callback performs no I/O."""
+        from codex_web.procedure_control_plane import current_original_intent
+        original = current_original_intent(self, intent)
+        if original is None:
+            return None
+        registration, context, digest = original
+        context.validate_current()
+        guard = getattr(registration.adapter, "guard_original_retry", None)
+        if not callable(guard):
+            raise ProcedureExecutionError("procedure_original_retry_admission_denied")
+        def check(current):
+            if (current.id != intent.id or checksum(current.request.model_dump(mode="json")) != digest
+                    or not guard(context, current)):
+                raise ProcedureExecutionError("procedure_original_retry_admission_denied")
+        return check
+
     def provider_admission_current(self, intent, actor, phase):
         """Read-only durable-step check, reusable under canonical writer locks."""
         with verification_stage('admission'):
+            from codex_web.procedure_control_plane import current_original_intent
+            original = current_original_intent(self, intent)
+            if original is not None:
+                registration, context, digest = original
+                context.validate_current()
+                if (checksum(intent.request.model_dump(mode='json')) != digest
+                        or not registration.adapter.admit_original(context, intent, intent.request, phase)):
+                    raise ProcedureExecutionError("procedure_original_intent_admission_denied")
+                return True
             if not intent.execution_id:
                 return False
             assignment = self.workers.assignment_for_execution(intent.execution_id, actor=actor)
@@ -1739,18 +1977,20 @@ class ProcedureExecutionService:
         except (ArtifactEvidenceError, ArtifactContentError, IdentityError, ApiAuthorizationError) as exc:
             raise ProcedureExecutionError("procedure_governed_input_invalid") from exc
 
-    async def advance(self, assignment_id, *, actor, run_id=None, current_input_snapshot_id=None):
+    async def advance(self, assignment_id, *, actor, run_id=None, current_input_snapshot_id=None, expected_fence=None):
         token = _current_input_witness.set((assignment_id, run_id, current_input_snapshot_id)
             if current_input_snapshot_id is not None else None)
         try:
             from codex_web.services.async_operations import run_settled
             await run_settled(lambda: self._admit_current_input(assignment_id, actor, run_id))
-            return await self._advance_with_outcomes(assignment_id, actor=actor, run_id=run_id)
+            return await self._advance_with_outcomes(assignment_id, actor=actor, run_id=run_id,
+                **({"expected_fence":expected_fence} if expected_fence is not None else {}))
         finally:
             _current_input_witness.reset(token)
 
-    async def _advance_with_outcomes(self, assignment_id, *, actor, run_id=None):
-        assignment = await self._advance(assignment_id, actor=actor, run_id=run_id)
+    async def _advance_with_outcomes(self, assignment_id, *, actor, run_id=None, expected_fence=None):
+        assignment = await self._advance(assignment_id, actor=actor, run_id=run_id,
+            **({"expected_fence":expected_fence} if expected_fence is not None else {}))
         if self.outcome_drafts is not None and assignment.procedure_checkpoint.status in {
             "completed", "recovered", "recovery_required"
         }:
@@ -1760,13 +2000,18 @@ class ProcedureExecutionService:
             await self.outcome_drafts.on_completion(assignment, actor)
         return assignment
 
-    async def _advance(self, assignment_id, *, actor, run_id=None):
+    async def _advance(self, assignment_id, *, actor, run_id=None, expected_fence=None):
         assignment = self.get(assignment_id, actor)
+        if expected_fence is not None and assignment.fence != expected_fence:
+            raise ProcedureExecutionError('procedure_expected_fence_changed')
         self._require_current_run(assignment, run_id)
-        self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if assignment.procedure_checkpoint is None:
             raise ProcedureExecutionError("procedure_checkpoint_missing")
         checkpoint = assignment.procedure_checkpoint
+        settlement_only = any(s.failure_code == "procedure_provider_result_settlement_required"
+            for s in checkpoint.steps.values())
+        if not settlement_only:
+            self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if checkpoint.status in {"completed", "recovered", "recovery_required"}:
             return assignment
         try:
@@ -1776,11 +2021,34 @@ class ProcedureExecutionService:
             self._live(assignment)
             if self.clock() >= checkpoint.deadline_at:
                 raise ProcedureExecutionError("procedure_duration_budget_exhausted")
+            if settlement_only:
+                # Validate the server-owned diagnostic before generic UNKNOWN or
+                # rollback recovery can touch the original. Rejection stays in
+                # this read-only lane on every subsequent advance as well.
+                marked = [(name, value) for name, value in checkpoint.steps.items()
+                    if value.failure_code == "procedure_provider_result_settlement_required"]
+                if len(marked) != 1 or marked[0][0] != checkpoint.current_step_id:
+                    raise ProcedureExecutionError("procedure_provider_result_interruption_invalid")
+                name, pending = marked[0]
+                declared = next((s for s in procedure.steps if s.id == name), None)
+                if (declared is None or declared.action is None or pending.status != "reconciliation_required"
+                        or not pending.action_intent_id
+                        or any(value.status == "reconciliation_required" and value is not pending
+                               for value in checkpoint.steps.values())):
+                    raise ProcedureExecutionError("procedure_provider_result_interruption_invalid")
+                original = self.intents.get(pending.action_intent_id, actor)
+                history = self.intents.store.load(intent_id=original.id)
+                receipt = next((r for r in history.receipts if r.id == original.last_receipt_id), None)
+                self._positive_result_original(assignment, declared, original, receipt, history, actor)
+                self._validate_result_interruption(assignment, declared, original, receipt, actor)
+                pending.status = "running"
             # No later mutation while ANY previous effect is uncertain.
             unknown = next((s for s in checkpoint.steps.values() if s.status == "reconciliation_required"), None)
-            if unknown and not unknown.action_intent_id:
+            canonical_unknown = unknown is not None and any(
+                declared.control_plane and checkpoint.steps[declared.id] is unknown for declared in procedure.steps)
+            if unknown and not unknown.action_intent_id and not canonical_unknown:
                 raise ProcedureExecutionError("procedure_worker_outcome_requires_recovery")
-            if unknown:
+            if unknown and not canonical_unknown:
                 intent = self.intents.get(unknown.action_intent_id, self.control_actor)
                 if intent.rollback_checkpoint is not None and intent.status != "rolled_back":
                     from codex_web.action_intents import ActionIntentReconcileRequest
@@ -1826,6 +2094,8 @@ class ProcedureExecutionService:
             values = self._step_inputs(step, checkpoint, inputs, actor, assignment)
             if state.started_at is None or state.status in {"pending", "waiting", "awaiting_approval"}:
                 state.started_at = self.clock()
+            if step.control_plane:
+                return await self._advance_canonical(assignment, step, actor, procedure, inputs, values)
             if step.recovery:
                 result = await self._rollback(assignment, step, actor, procedure, inputs)
                 if result is None:
@@ -1834,37 +2104,45 @@ class ProcedureExecutionService:
                 binding, _, _, request = self._request(step, assignment, actor, procedure, values)
                 checkpoint.status = "running"; state.status = "running"
                 assignment = self._save(assignment, checkpoint)
-                intent = self.intents.create(ActionIntentCreate(binding_id=binding.id, request=request,
-                    execution_id=assignment.execution_id, work_item_ref=assignment.work_item_ref,
-                    timeout_seconds=step.timeout_seconds,
-                    policy_decision=ActionDecisionSnapshot(
-                        decision_id=f"procedure-policy:{assignment.id}:{checkpoint.revision}",
-                        outcome="allow", source="canonical:procedure-step",
-                        definition_refs=(checkpoint.definition,),
-                        capabilities=tuple(p.capability for p in step.permissions),
-                        evaluated_at=self.clock(), expires_at=assignment.lease.expires_at,
-                        reasons=("Exact published step, current Role authority and canonical approval quorum checked",
-                            "Live assignment, worker, Resource lease, material preconditions and secret references checked",
-                            "Registered provider security policy remains enforced; protected gates recheck before effects",
-                            *(("Current-use input witness Artifact: " + self._input_sources(assignment)[-1],)
-                                if _current_input_witness.get() is not None else ()))),
-                    retry_policy=ActionIntentRetryPolicy(max_attempts=step.max_attempts, backoff_seconds=step.retry_backoff_seconds)), actor=actor)
-                state.action_intent_id = intent.id
-                checkpoint.status = "running"; state.status = "running"
-                assignment = self._save(assignment, checkpoint)
-                if self.worker_actor is None:
-                    raise ProcedureExecutionError("procedure_action_worker_unavailable")
-                if intent.status == ActionIntentStatus.PENDING:
-                    intent = self.intents.claim(ActionIntentClaimRequest(worker_id="procedure:" + assignment.id,
-                        lease_seconds=max(10, min(3600, step.timeout_seconds + 10))),
-                        intent_id=intent.id, actor=self.worker_actor)
-                    if intent is None:
+                settlement = state.failure_code == "procedure_provider_result_settlement_required"
+                if settlement:
+                    intent = self.intents.get(state.action_intent_id, actor)
+                    history = self.intents.store.load(intent_id=intent.id)
+                    receipt = next((r for r in history.receipts if r.id == intent.last_receipt_id), None)
+                    self._positive_result_original(assignment, step, intent, receipt, history, actor)
+                    self._validate_result_interruption(assignment, step, intent, receipt, actor)
+                else:
+                    intent = self.intents.create(ActionIntentCreate(binding_id=binding.id, request=request,
+                        execution_id=assignment.execution_id, work_item_ref=assignment.work_item_ref,
+                        timeout_seconds=step.timeout_seconds,
+                        policy_decision=ActionDecisionSnapshot(
+                            decision_id=f"procedure-policy:{assignment.id}:{checkpoint.revision}",
+                            outcome="allow", source="canonical:procedure-step",
+                            definition_refs=(checkpoint.definition,),
+                            capabilities=tuple(p.capability for p in step.permissions),
+                            evaluated_at=self.clock(), expires_at=assignment.lease.expires_at,
+                            reasons=("Exact published step, current Role authority and canonical approval quorum checked",
+                                "Live assignment, worker, Resource lease, material preconditions and secret references checked",
+                                "Registered provider security policy remains enforced; protected gates recheck before effects",
+                                *(("Current-use input witness Artifact: " + self._input_sources(assignment)[-1],)
+                                    if _current_input_witness.get() is not None else ()))),
+                        retry_policy=ActionIntentRetryPolicy(max_attempts=step.max_attempts, backoff_seconds=step.retry_backoff_seconds)), actor=actor)
+                    state.action_intent_id = intent.id
+                    checkpoint.status = "running"; state.status = "running"
+                    assignment = self._save(assignment, checkpoint)
+                    if self.worker_actor is None:
+                        raise ProcedureExecutionError("procedure_action_worker_unavailable")
+                    if intent.status == ActionIntentStatus.PENDING:
+                        intent = self.intents.claim(ActionIntentClaimRequest(worker_id="procedure:" + assignment.id,
+                            lease_seconds=max(10, min(3600, step.timeout_seconds + 10))),
+                            intent_id=intent.id, actor=self.worker_actor)
+                        if intent is None:
+                            return assignment
+                        intent = await self.intents.execute_claimed(intent.id, "procedure:" + assignment.id, actor=self.worker_actor)
+                    elif intent.status in {"claimed", "executing"}:
+                        # Another delivery owns the intent. Existing stale-claim recovery
+                        # determines known-unstarted versus uncertain, never this runner.
                         return assignment
-                    intent = await self.intents.execute_claimed(intent.id, "procedure:" + assignment.id, actor=self.worker_actor)
-                elif intent.status in {"claimed", "executing"}:
-                    # Another delivery owns the intent. Existing stale-claim recovery
-                    # determines known-unstarted versus uncertain, never this runner.
-                    return assignment
                 state.attempts = intent.attempt
                 if intent.status in {"uncertain", "requires_reconciliation"}:
                     state.status = "reconciliation_required"; checkpoint.status = "reconciliation_required"
@@ -1882,7 +2160,13 @@ class ProcedureExecutionService:
                 receipt = next((r for r in history.receipts if r.id == intent.last_receipt_id), None)
                 if receipt is None or receipt.result is None:
                     raise ProcedureExecutionError("procedure_action_receipt_missing")
-                result = await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
+                # Persist the observed original attempt before its owned result
+                # writer; recovery never borrows an unrecorded later attempt.
+                if intent.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
+                    result = await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
+                else:
+                    assignment = self._save(assignment, checkpoint)
+                    return await self._provider_result_owned(assignment, step, intent, receipt, history, actor)
             elif step.worker:
                 if state.attempts >= step.max_attempts:
                     raise ProcedureExecutionError("procedure_diagnostic_retry_exhausted")
@@ -1895,18 +2179,7 @@ class ProcedureExecutionService:
                     assignment, step, code, values), timeout=step.timeout_seconds + 5)
             else:
                 result = await self._judgment(assignment, step, actor, values)
-            bounded_data(result)
-            if (not isinstance(result, dict) or set(result) != {"outputs", "evidence"}
-                or not isinstance(result["evidence"], dict)
-                or any(not isinstance(v, str) or not v or len(v) > 200 for v in result["evidence"].values())
-                or len(set(result["evidence"].values())) != len(result["evidence"])):
-                raise ProcedureExecutionError("procedure_output_contract_invalid")
-            state.evidence = result["evidence"]
-            self._record_outputs(assignment, step, state, result.get("outputs", {}), actor)
-            self._proof(assignment, step, state, actor)
-            positive_deadline = self._guarded_readonly_deadline(assignment, procedure, step)
-            state.status = "succeeded"; checkpoint.status = "ready"; state.not_before = None
-            return self._save(assignment, checkpoint, positive_deadline=positive_deadline)
+            return self._complete_step_result(assignment, step, actor, procedure, result)
         except (ProcedureExecutionError, ProcedureAdmissionError) as exc:
             if exc.code == "procedure_checkpoint_conflict":
                 raise
@@ -1918,7 +2191,27 @@ class ProcedureExecutionService:
         step = next((s for s in procedure.steps if s.id == checkpoint.current_step_id), None) if 'procedure' in locals() else None
         state = checkpoint.steps[step.id] if step else None
         if state:
+            if settlement_only:
+                # Keep the typed lane even when current authority, diagnostics
+                # or original proofs refuse; never fall through into recovery.
+                state.failure_code = "procedure_provider_result_settlement_required"
+                state.status = "reconciliation_required"
+                checkpoint.status = "reconciliation_required"
+                await self._attention(assignment, code, step.failure.escalation_owner_identity_id)
+                return self._save(assignment, checkpoint)
             state.failure_code = code
+            if (step.action and code == "procedure_provider_result_settlement_required"):
+                state.status = "reconciliation_required"
+                checkpoint.status = "reconciliation_required"
+                await self._attention(assignment, code, step.failure.escalation_owner_identity_id)
+                return self._save(assignment, checkpoint)
+            if step.control_plane and step.kind in {"mutation", "recovery"} and state.attempts:
+                # A later authority/lease/metadata failure cannot retroactively
+                # prove that a previously owned canonical effect did not happen.
+                state.status = "reconciliation_required"
+                checkpoint.status = "reconciliation_required"
+                await self._attention(assignment, code, step.failure.escalation_owner_identity_id)
+                return self._save(assignment, checkpoint)
             state.status = "verification_failed" if step.kind == "verification" else "failed"
         checkpoint.status = "recovery_required"
         if step and (step.worker or step.judgment) and state.attempts > locals().get("attempts_before", state.attempts) and state.attempts < step.max_attempts and not code.startswith(("procedure_assignment", "procedure_current_authority", "procedure_material", "procedure_secret", "procedure_worker_", "procedure_judgment_usage_budget")):
@@ -1928,7 +2221,128 @@ class ProcedureExecutionService:
         if step and step.failure.recovery_step_id and code not in {"procedure_current_authority_denied", "procedure_material_preconditions_changed"}:
             checkpoint.recovery_step_id = step.failure.recovery_step_id
             checkpoint.status = "ready"
+        if step and step.failure.escalation_owner_policy:
+            code += ":canonical_work_owner_resolution_required"
         await self._attention(assignment, code, step.failure.escalation_owner_identity_id if step else None)
+        return self._save(assignment, checkpoint)
+
+    async def _advance_canonical(self, assignment, step, actor, procedure, inputs, values):
+        from codex_web.procedure_control_plane import (
+            CanonicalOperationResult, CanonicalProcedureContext, CanonicalPreviousStep, original_intent_scope,
+        )
+        registry = self.control_plane
+        if registry is None or getattr(self.skills, "procedure_control_plane", None) is not registry:
+            raise ProcedureExecutionError("procedure_canonical_owner_unavailable")
+        registration = registry.validate_step(procedure, step)
+        contract = registration.contract
+        typed = contract.input_model.model_validate(values, strict=True)
+        checkpoint = assignment.procedure_checkpoint
+        state = checkpoint.steps[step.id]
+        resuming = state.attempts > 0
+        # Consume the exact previous diagnostic at the RUNNING reservation.
+        # If reconciliation is interrupted after an effect, its old waiting
+        # witness cannot authorize that effect again on a later delivery.
+        diagnostic_refs = []
+        operation_code = None
+        for evidence_id in state.evidence.values():
+            proof = self.evidence.get_evidence(evidence_id, actor=actor)
+            if (proof.lifecycle == "valid" and proof.result == "info"
+                    and proof.producer_identity_id == actor.identity_id
+                    and proof.source == self._step_origin(assignment, step.id)
+                    and proof.execution_id == assignment.execution_id
+                    and proof.project_id == assignment.project_id
+                    and proof.work_item_ref == assignment.work_item_ref
+                    and proof.metadata.get("canonical_operation") == contract.operation_id):
+                diagnostic = json.loads(proof.metadata.get("canonical_result", "{}"))
+                code = diagnostic.get("code")
+                expected_code = (code + ":canonical_work_owner_resolution_required"
+                    if isinstance(code, str) and step.failure.escalation_owner_policy else code)
+                if (diagnostic.get("disposition") == "waiting"
+                        and isinstance(code, str) and expected_code == state.failure_code):
+                    diagnostic_refs.append(proof.id)
+                    operation_code = code
+        previous_step = CanonicalPreviousStep(status=state.status,
+            failure_code=state.failure_code, diagnostic_evidence_ids=tuple(diagnostic_refs),
+            operation_code=operation_code)
+        state.failure_code = None
+        state.evidence = {}
+        if not resuming:
+            state.attempts = 1
+        state.status = "running"
+        checkpoint.status = "running"
+        assignment = self._save(assignment, checkpoint)
+        checkpoint = assignment.procedure_checkpoint
+        state = checkpoint.steps[step.id]
+
+        def validate_current():
+            current = self.get(assignment.id, actor)
+            pin = current.procedure_checkpoint
+            if (current.fence != assignment.fence or pin is None
+                    or pin.id != checkpoint.id or pin.revision != checkpoint.revision
+                    or pin.current_step_id != step.id or pin.steps[step.id].status != "running"):
+                raise ProcedureExecutionError("procedure_canonical_owner_changed")
+            self._protected(current, step, self._actor(current), procedure, inputs)
+
+        context = CanonicalProcedureContext(assignment=assignment, checkpoint=checkpoint,
+            step=step, requester_actor=actor, worker_actor=self.worker_actor, previous_step=previous_step,
+            resource_ids=tuple(self._targets(procedure, assignment, actor)[step.control_plane.resource_selector]),
+            validate_current=validate_current,
+            _original_scope=lambda ctx, original_id, digest: original_intent_scope(
+                self, registration, ctx, original_id, digest))
+        validate_current()
+        handler = registration.adapter.reconcile if resuming and contract.effect == "mutation" else registration.adapter.execute
+        try:
+            result = CanonicalOperationResult.model_validate(await asyncio.wait_for(
+                handler(context, typed), timeout=step.timeout_seconds))
+            bounded_data(result.model_dump(mode="json"))
+            validate_current()
+        except asyncio.CancelledError:
+            # Persisted RUNNING remains reconcilable; cancellation cannot prove no effect.
+            raise
+        except Exception as exc:
+            result = CanonicalOperationResult(disposition="reconciliation_required" if contract.effect == "mutation" else "refused",
+                code="procedure_canonical_boundary:" + type(exc).__name__)
+        result_data = bounded_data({"operation": contract.operation_id, "facts": result.facts,
+            "original_references": result.original_references, "disposition":result.disposition,
+            "code":result.code})
+        if result.disposition != "succeeded":
+            diagnostic = self.evidence.create_evidence(EvidenceCreate(project_id=assignment.project_id,
+                work_item_ref=assignment.work_item_ref, execution_id=assignment.execution_id,
+                execution_workspace_id=assignment.execution_workspace_id, resource_ids=assignment.resource_ids,
+                evidence_type="policy_evaluation", result="info", provider="canonical-procedure-owner",
+                source=self._step_origin(assignment, step.id), observed_at=self.clock(),
+                summary="Canonical step has not proved completion",
+                metadata={"canonical_operation":contract.operation_id,
+                    "canonical_result":json.dumps(result_data, sort_keys=True)}), actor=actor)
+            state.evidence = {"canonical_disposition":diagnostic.id}
+            state.status = "reconciliation_required" if result.disposition == "reconciliation_required" else "waiting" if result.disposition == "waiting" else "failed"
+            checkpoint.status = "reconciliation_required" if state.status == "reconciliation_required" else "waiting" if state.status == "waiting" else "recovery_required"
+            state.failure_code = result.code or "procedure_canonical_" + result.disposition
+            if step.failure.escalation_owner_policy:
+                # A coordination Role reference is not a human/service Identity.
+                # Keep its canonical observation in Evidence and expose the
+                # unresolved routing blocker instead of inventing an assignee.
+                state.failure_code += ":canonical_work_owner_resolution_required"
+            await self._attention(assignment, state.failure_code, step.failure.escalation_owner_identity_id)
+            return self._save(assignment, checkpoint)
+        # This is evidence of this canonical operation's bounded observation, not
+        # a relabelled original provider receipt or inferred native completion.
+        state.evidence = {}
+        self._record_outputs(assignment, step, state, result.outputs, actor)
+        for requirement in step.expected_evidence:
+            proof = self.evidence.create_evidence(EvidenceCreate(project_id=assignment.project_id,
+                work_item_ref=assignment.work_item_ref, execution_id=assignment.execution_id,
+                execution_workspace_id=assignment.execution_workspace_id, resource_ids=assignment.resource_ids,
+                evidence_type="artifact_verification" if requirement.kind in {"verification", "rollback_verification"} else "test_result",
+                artifact_ids=(state.output_snapshot_id,),
+                result="pass", provider="canonical-procedure-owner", source=self._step_origin(assignment, step.id),
+                observed_at=self.clock(), summary="Canonical control-plane step observation",
+                metadata={"canonical_operation":contract.operation_id, "canonical_result":json.dumps(result_data, sort_keys=True)}), actor=actor)
+            state.evidence[requirement.name] = proof.id
+        self._proof(assignment, step, state, actor)
+        state.status = "succeeded"
+        state.failure_code = None
+        checkpoint.status = "ready"
         return self._save(assignment, checkpoint)
 
     async def _judgment(self, assignment, step, actor, values):

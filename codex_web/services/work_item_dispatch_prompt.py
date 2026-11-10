@@ -4,6 +4,7 @@ import urllib.parse
 from collections.abc import Callable
 
 from codex_web.models import WorkItemState
+from codex_web.work_item_wait import wait_state_ineligibility
 from codex_web.services.work_item_dependencies import actionable_owner_value
 
 
@@ -28,6 +29,38 @@ class WorkItemDispatchPromptPolicy:
             "Do not label normal CI waiting failed, hand it back solely to wait, poll with "
             "model calls or retry unchanged CI. Route only evidenced code defects to the "
             "implementer and actual runner/dependency faults to the CI/runtime owner."
+        )
+        if wait_state_ineligibility(state) is None:
+            wait_instructions += (
+                " If the current blocker and prerequisites are unchanged, read the Work's "
+                "wait_checkpoint_context.input_sha256 and submit progress with "
+                'wait_checkpoint={"schema_version":"1.0","expected_input_sha256":"<exact current hash>"}. '
+                "Keep the existing owner/stage/blocker/action; an optional note is retained as "
+                "an audit receipt without another automatic self-wake. This declares no remote "
+                "absence/readiness proof. New material evidence, including a material note-only "
+                "update, uses normal progress without wait_checkpoint."
+            )
+        elif state.handoff and state.handoff.status == "pending":
+            wait_instructions += (
+                " Unchanged-wait receipts are unavailable while this handoff is pending. "
+                "Use the canonical recipient acknowledgement path first; do not replace it "
+                "with a wait receipt or change the sender's lane to manufacture eligibility."
+            )
+        elif state.closed_at or state.current_stage == "closed":
+            wait_instructions += " This Work is closed; do not submit an unchanged-wait receipt."
+        else:
+            wait_instructions += (
+                " Do not submit wait_checkpoint for this current state. If actual evidence "
+                "shows a blocker, first record truthful structured progress with its actual "
+                "owner, stage, concrete blocker and next_action. Then re-read current Work; "
+                "only an eligible unchanged blocked lane can acknowledge a separate wait receipt. "
+                "Never invent a blocker or mark an active lane failed solely because CI is pending."
+            )
+        wait_instructions += (
+            " A refused wait is not an acknowledged wait or new prerequisite evidence. "
+            "Do not repeatedly submit it or post refusal-only progress notes as a substitute; "
+            "re-read the canonical refusal and current state. Genuine new material evidence, "
+            "including a note-only update, still uses normal progress."
         )
         findings_suffix = wait_instructions
         if state.blocking_findings:

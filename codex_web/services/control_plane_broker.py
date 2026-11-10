@@ -45,12 +45,16 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerLimits,
     ControlPlaneBrokerOperation,
     WorkItemOwnerDispatchRequest,
+    WorkItemPortfolioQuery,
 )
 from codex_web.code_hosts import (
     PULL_REQUEST_QUERY_STATES,
     normalize_pull_request_state,
     CodeHostCapability,
     CodeHostError,
+    CodeHostArtifactUnavailableError,
+    CodeHostInvalidRequestError,
+    CodeHostUnsupportedCapabilityError,
     CodeHostProviderBinding,
     CodeHostTransientError,
 )
@@ -109,6 +113,15 @@ from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmis
 from codex_web.services.home_host_output import OUTPUT_READ
 from codex_web.services.home_operator_coordination import OPERATIONS as HOME_COORDINATION_OPERATIONS, HomeProjectMessage
 
+from codex_web.services.worker_source_capture import OPERATION as SOURCE_CAPTURE_OPERATION
+from codex_web.services.worker_artifact_sharing import (
+    OPERATION as ARTIFACT_SHARE_OPERATION, resolve as resolve_artifact_share_operation,
+    WorkerArtifactSharingAdapter, public_contract as artifact_share_contract,
+)
+from codex_web.services.worker_shared_inputs import (
+    OPERATION as SHARED_INPUT_OPERATION, WorkerSharedInputsAdapter,
+    public_contract as shared_input_contract,
+)
 from codex_web.services.worker_verifications import (
     OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
     WorkerVerificationAdapter,
@@ -165,6 +178,9 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     *HOME_COORDINATION_OPERATIONS,
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
+    SOURCE_CAPTURE_OPERATION,
+    ARTIFACT_SHARE_OPERATION,
+    SHARED_INPUT_OPERATION,
     ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
         path_template="/api/agent-upgrade-approvals", capability="upgrade.approval.request",
         authority_level=AuthorityLevel.PREPARE),
@@ -493,10 +509,9 @@ _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS = (
     _RECONCILABLE_REPOSITORY_ACTION_IDS | {CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID}
 )
 
-# These profiles execute different workloads but share the same narrow broker
-# boundary. The broker never grants generic network or localhost access: every
-# request is still operation-allowlisted, tenant/project scoped, authorized,
-# fenced, rate limited, and audited below.
+# Released compatibility behavior only. Do not append mutable profile names:
+# custom profiles enter through the exact current Definition declaration below.
+# These four retain their existing operation-specific authority/declaration owners.
 CONTROL_PLANE_EXECUTION_PROFILES = frozenset(
     {"orchestration-only", "repository-write", "orchestration-admin", "project-governor"}
 )
@@ -520,6 +535,9 @@ class ControlPlaneBrokerService:
         service_instance_id: str | None = None,
         execution_profiles=None,
         execution_workers=None,
+        execution_roles=None,
+        execution_preflights=None,
+        artifact_sharing_policies=None,
         work_graph=None,
         mr_observation_configuration=None,
         operator: WorkItemOperatorService | None = None,
@@ -532,6 +550,9 @@ class ControlPlaneBrokerService:
         self.work_items = work_items
         self.execution_profiles = execution_profiles
         self.execution_workers = execution_workers
+        self.execution_roles = execution_roles
+        self.execution_preflights = execution_preflights
+        self.artifact_sharing_policies = artifact_sharing_policies
         self.work_graph = work_graph
         self.mr_observation_configuration = mr_observation_configuration
         self.operator = operator or WorkItemOperatorService(work_items)
@@ -566,6 +587,15 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        if item.id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import public_contract
+            result.update(public_contract())
+        if item.id == "work_item.list":
+            result["query_parameters"] = WorkItemPortfolioQuery.model_json_schema()
+            result["query_parameters"]["description"] = (
+                "Bounded current-Project coordination metadata. project_id defaults to the "
+                "assignment Project; kind/view/resource selectors are not supported. "
+                "Procedure availability is observational and grants no execution.")
         reasoning_model = {"procedure.start": ProcedureStart, "procedure.advance": ProcedureAdvance,
             "executive.activation.create": ExecutiveActivationCreate}.get(item.id)
         if reasoning_model is not None:
@@ -601,6 +631,11 @@ class ControlPlaneBrokerService:
             result['query_parameters'] = {'allowed': False}
             result['effect'] = 'One retained input in an existing explicitly declared project thread; queue acceptance does not verify native start or task completion'
             result['response_loss'] = 'Inspect the original canonical intent and retained input; no replacement key or automatic replay'
+        if item.id == 'operator.project.delegation.read':
+            result['required_query_parameters'] = ['intent_id']
+            result['optional_query_parameters'] = ['event_id']
+            result['scope'] = 'Exact original Home delegation under current Home declaration and Project authority; historical metadata, no execution grant'
+            result['effect'] = 'Bounded parent receipt and exact child admission, START and terminal facts; missing outcomes remain unknown; no task bodies or transcripts'
         if item.id == 'operator.project.threads.list':
             result['required_query_parameters'] = ['project_id']
             result['optional_query_parameters'] = ['limit', 'cursor']
@@ -631,6 +666,18 @@ class ControlPlaneBrokerService:
                     "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
+                from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD, AssignmentReviewRequest
+                result["request_body"]["methods"].append(ASSIGNMENT_REVIEW_METHOD)
+                result["request_body"]["MR_assignment_review"] = {
+                    "method": ASSIGNMENT_REVIEW_METHOD, "schema": AssignmentReviewRequest.model_json_schema(),
+                    "effect": "Record exact current-role-policy assignment review from governed QA-produced manifest and retained implementation/publication/START/accepted-handoff proofs; not merge consent or principal independence",
+                    "policy": "Requires explicit current execution-role-catalog schema1.1 assignment_role opt-in; no caller identity/result overrides"}
+                from codex_web.services.worker_ci_verifications import CI_METHOD, CIPrerequisiteReviewRequest
+                result["request_body"]["methods"].append(CI_METHOD)
+                result["request_body"]["CI_prerequisite_review"] = {
+                    "method":CI_METHOD,"schema":CIPrerequisiteReviewRequest.model_json_schema(),
+                    "effect":"Review original managed current-scope CI prerequisite facts using the actual independent worker identity; no caller result, source facts, approval or host grant",
+                    "same_identity_roles":"Not independent; require an actually distinct canonical producer/verifier principal"}
                 from codex_web.services.worker_mr_verifications import METHOD, CONTINUATION_METHOD, MR_METHODS, MRObservationRequest
                 result["request_body"]["methods"].extend(MR_METHODS)
                 result["request_body"]["MR_observation"] = {
@@ -642,6 +689,15 @@ class ControlPlaneBrokerService:
                     "continuation": "Use v1 Artifact with published procedure1.2/input.v1; v2 requires procedure1.3/input.v2 and canonical server Configuration. Original policy snapshot is immutable; new same-head facts may start a settled next run. Reconcile exact original source after response loss; never blind replay."}
             if item.id == "verification.read":
                 result["required_query_parameters"] = ["work_item_ref", "source"]
+                from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
+                result["MR_assignment_review_query"] = {
+                    "required": ["method", "work_item_ref", "source"], "method": ASSIGNMENT_REVIEW_METHOD,
+                    "source": "sha256:<original reviewer assignment/request digest>",
+                    "effect": "Read exact original review only; unknown is not permission to replay"}
+                from codex_web.services.worker_ci_verifications import CI_METHOD
+                result["CI_prerequisite_review_query"] = {"required":["method","work_item_ref","source"],
+                    "method":CI_METHOD,"source":"sha256:<original reviewer assignment/request digest>",
+                    "effect":"Read same original review; unknown lookup never authorizes replay"}
                 from codex_web.services.worker_mr_verifications import METHOD, MR_METHODS
                 result["MR_observation_query"] = {"required": ["method", "source"],
                     "method": METHOD, "methods": list(MR_METHODS), "source": "sha256:<original assignment/request digest>",
@@ -663,6 +719,12 @@ class ControlPlaneBrokerService:
             )
         if item.id == "repository.read.delivery-evidence":
             result["supported_action_ids"] = sorted(_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS)
+            result["key_lookup"] = {
+                "path_template": "/api/action-intents/delivery-evidence",
+                "required_query_parameters": ["action_id", "idempotency_key"],
+                "max_key_characters": 500,
+                "absence_is_not_permission_to_replay": True,
+            }
             result["inspection"] = {
                 "read_only": True,
                 "superseded_execution_receipts": True,
@@ -730,6 +792,14 @@ class ControlPlaneBrokerService:
                     "records bounded issue scope without changing the execution subject"
                 ),
             }
+        if item.id == ARTIFACT_SHARE_OPERATION.id:
+            result.update(artifact_share_contract())
+            result['request_body'] = artifact_share_contract()['request_schema']
+            result['scope'] = 'Exact admitted source repository plus canonical target Work under explicit Project sharing policy; data only'
+            result['query_parameters'] = {'repository_resource_id':'One explicit admitted READ/WRITE source repository; must match capture'}
+            result['verifier'] = 'No Verification or independent QA produced'
+        if item.id == SHARED_INPUT_OPERATION.id:
+            result.update(shared_input_contract())
         return result
 
     @staticmethod
@@ -771,13 +841,40 @@ class ControlPlaneBrokerService:
             "effective_authority_requires_operation_checks": True,
         }
 
+    def _broker_profile_operations(self, assignment: ExecutionAssignment) -> frozenset[str] | None:
+        # None denotes the released four-profile behavior, not a new grant.
+        # Every custom name requires its exact current canonical declaration.
+        if assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES:
+            return None
+        if (self.execution_profiles is None or not assignment.execution_profile_id
+                or assignment.execution_profile_definition is None or not assignment.project_id):
+            raise ControlPlaneBrokerDeniedError("current pinned broker execution profile is unavailable")
+        try:
+            profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+        except (AttributeError, ValueError, LookupError, DefinitionCompatibilityError, DefinitionConflictError) as exc:
+            raise ControlPlaneBrokerDeniedError("current broker execution profile cannot be resolved") from exc
+        if reference != assignment.execution_profile_definition:
+            raise ControlPlaneBrokerDeniedError("broker execution profile pin is no longer current")
+        supported = frozenset(profile.control_plane_operations) & _OPERATION_BY_ID.keys()
+        if not supported:
+            raise ControlPlaneBrokerDeniedError("execution profile declares no supported broker operations")
+        return frozenset(supported)
+
     def public_assignment_capability(
         self,
         assignment: ExecutionAssignment,
     ) -> dict[str, Any]:
-        enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
+        try:
+            declared = self._broker_profile_operations(assignment)
+            enabled = True
+        except ControlPlaneBrokerDeniedError:
+            declared = frozenset()
+            enabled = False
         context = self._public_assignment_context(assignment) if enabled else None
-        operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        operations = [self.public_operation(item) for item in OPERATIONS
+                      if declared is None or item.id in declared] if enabled else []
         declared_reads = set()
         if enabled and self.execution_profiles is not None:
             try:
@@ -790,6 +887,16 @@ class ControlPlaneBrokerService:
                 pass
         operations = [op for op in operations if op["id"] not in CONTEXT_READ_IDS or op["id"] in declared_reads]
         for item in operations:
+            if item['id'] == SOURCE_CAPTURE_OPERATION.id:
+                scope = assignment.repository_scope
+                repositories = sorted((set(scope.writable_repository_ids) | set(scope.read_only_repository_ids))
+                    & set(assignment.resource_ids)) if scope is not None else []
+                item['admitted_repository_resource_ids'] = repositories
+                item['metadata_compatible'] = bool(repositories and self.local_execution_worker is not None)
+                item['admission_checked'] = False
+                item['requires'] = 'Current authenticated worker, exact Work owner, Profile, lease, fence and member proof'
+                if not item['metadata_compatible']:
+                    item['blocked_reason'] = 'source_capture_admitted_repository_context_or_worker_missing'
             if item['id'] == 'repository.read.merge-requirements':
                 declared = False
                 try:
@@ -1027,11 +1134,25 @@ class ControlPlaneBrokerService:
                 "absolute-form/control-plane proxy targets are not allowed"
             )
         path = parsed.path
+        if path == SOURCE_CAPTURE_OPERATION.path_template:
+            if method != SOURCE_CAPTURE_OPERATION.method:
+                raise ControlPlaneBrokerRequestError('Source capture requires POST')
+            return _ResolvedOperation(operation=SOURCE_CAPTURE_OPERATION,target_ref=None,
+                query=parse_qs(parsed.query,keep_blank_values=True))
         reasoning = resolve_reasoning_operation(method, path)
         if reasoning is not None:
             operation, target = reasoning
             return _ResolvedOperation(operation=operation, target_ref=target,
                 query=parse_qs(parsed.query, keep_blank_values=True))
+        sharing = resolve_artifact_share_operation(method,path)
+        if sharing is not None:
+            operation,target = sharing
+            return _ResolvedOperation(operation=operation,target_ref=target,query=parse_qs(parsed.query,keep_blank_values=True))
+        if path == SHARED_INPUT_OPERATION.path_template:
+            if method != 'GET':
+                raise ControlPlaneBrokerRequestError('Shared-input lookup requires GET')
+            return _ResolvedOperation(operation=SHARED_INPUT_OPERATION,target_ref=None,
+                query=parse_qs(parsed.query,keep_blank_values=True))
         verification_operation = resolve_verification_operation(method, path)
         if verification_operation is not None:
             operation, target = verification_operation
@@ -1187,6 +1308,12 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
+        if path == "/api/action-intents/delivery-evidence":
+            operation = _OPERATION_BY_ID["repository.read.delivery-evidence"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError("delivery evidence lookup accepts GET only")
+            return _ResolvedOperation(operation=operation, target_ref=None,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         action_intent_prefix = "/api/action-intents/"
         action_intent_suffix = (
             "/delivery-evidence" if path.endswith("/delivery-evidence") else "/reconcile"
@@ -1229,7 +1356,8 @@ class ControlPlaneBrokerService:
             operation = _OPERATION_BY_ID["work_item.list"]
             if method != operation.method:
                 raise ControlPlaneBrokerDeniedError("method is not allowed for work-item list")
-            return _ResolvedOperation(operation=operation, target_ref=None, query=query)
+            return _ResolvedOperation(operation=operation, target_ref=None,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         prefix = "/api/work-items/"
         if not path.startswith(prefix):
             raise ControlPlaneBrokerDeniedError("control-plane path is not allowlisted")
@@ -1324,6 +1452,12 @@ class ControlPlaneBrokerService:
             ) from exc
 
     def _operation_repository_id(self, assignment, operation_id, query, *, actor=None):
+        if operation_id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import repository_id
+            return repository_id(assignment,query)
+        if operation_id == ARTIFACT_SHARE_OPERATION.id:
+            from codex_web.services.worker_artifact_sharing import source_repository_id
+            return source_repository_id(assignment,query)
         if assignment.execution_profile_id != "orchestration-admin":
             return (self._read_repository_id(assignment, query)
                     if operation_id.startswith("repository.read.")
@@ -1856,10 +1990,9 @@ class ControlPlaneBrokerService:
     ):
         if operation.id == "repository.pull-request.ready":
             self._ready_declaration(assignment)
-        if assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES:
-            raise ControlPlaneBrokerDeniedError(
-                "assignment execution profile does not permit control-plane broker access"
-            )
+        declared = self._broker_profile_operations(assignment)
+        if declared is not None and operation.id not in declared:
+            raise ControlPlaneBrokerDeniedError("operation is not declared by the current pinned execution profile")
         if not assignment.project_id:
             raise ControlPlaneBrokerDeniedError(
                 "control-plane broker requires an assignment project"
@@ -1917,6 +2050,8 @@ class ControlPlaneBrokerService:
         repository_read = operation.id.startswith("repository.read.")
         if ("repository_resource_id" in resolved.query and not repository_read
                 and not operation.id.startswith("project.")
+                and operation.id != SOURCE_CAPTURE_OPERATION.id
+                and operation.id != ARTIFACT_SHARE_OPERATION.id
                 and assignment.execution_profile_id != "orchestration-admin"):
             raise ControlPlaneBrokerRequestError(
                 "repository_resource_id is only supported for repository fact reads"
@@ -1940,7 +2075,9 @@ class ControlPlaneBrokerService:
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if operation.id.startswith("project.") or operation.id.startswith("verification.") or operation.id == "upgrade.approval.request":
+        if operation.id == ARTIFACT_SHARE_OPERATION.id:
+            resource_ids = (self._operation_repository_id(assignment,operation.id,resolved.query,actor=requester_actor),)
+        elif operation.id.startswith("project.") or operation.id.startswith("verification.") or operation.id == "upgrade.approval.request":
             resource_ids = (self._writable_repository_id(assignment),)
         elif (
             operation.id.startswith("repository.")
@@ -1975,8 +2112,34 @@ class ControlPlaneBrokerService:
         self, assignment: ExecutionAssignment, requester_actor: AuthenticationActor,
         intent_id: str | None, query: dict[str, list[str]],
     ) -> dict[str, Any]:
-        if self.action_intents is None or intent_id is None:
+        if self.action_intents is None:
             raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
+        if intent_id is None:
+            if (set(query) - {"project_id", "repository_resource_id", "action_id", "idempotency_key"}
+                    or any(len(values) != 1 for values in query.values())
+                    or not {"action_id", "idempotency_key"}.issubset(query)
+                    or ("project_id" in query and query["project_id"] != [assignment.project_id])):
+                raise ControlPlaneBrokerRequestError("Exact action_id and idempotency_key selectors required")
+            action_id = query["action_id"][0]
+            key = query["idempotency_key"][0]
+            if (action_id not in _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS
+                    or not 1 <= len(key) <= 500 or key != key.strip()):
+                raise ControlPlaneBrokerRequestError("Invalid delivery evidence action or bounded original key")
+            if action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                self._ready_declaration(assignment)
+            repository_id = self._operation_repository_id(
+                assignment, "repository.read.delivery-evidence", query, actor=requester_actor)
+            binding = self._repository_action_binding(
+                action_registry=self.action_intents.execution.registry,
+                actor=requester_actor, project_id=assignment.project_id,
+                repository_id=repository_id, action_id=action_id)
+            intent = self.action_intents.store.find_idempotent(
+                assignment.organization_id, assignment.workspace_id, binding.id, action_id, key)
+            if intent is None:
+                return {"outcome": "unknown", "absence_is_not_permission_to_replay": True}
+            # The index locates identity only; reuse every ordinary by-ID
+            # record disclosure and READY origin check below.
+            intent_id = intent.id
         intent = self.action_intents.get(intent_id, requester_actor)
         if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             self._ready_declaration(assignment)
@@ -2085,8 +2248,27 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
+        portfolio_query = None
+        if operation.id == "work_item.list":
+            # Reject unsupported/foreign queries before inspecting any procedure.
+            # No metadata request may nominate a repository or environment.
+            if body or any(len(values) != 1 for values in resolved.query.values()):
+                raise ControlPlaneBrokerRequestError("Work portfolio requires one value per query field and no body")
+            query = {key: values[0] for key, values in resolved.query.items()}
+            query.setdefault("project_id", assignment.project_id)
+            if query["project_id"] != assignment.project_id:
+                raise ControlPlaneBrokerDeniedError("work-item list project differs from assignment scope")
+            try:
+                portfolio_query = WorkItemPortfolioQuery.model_validate(query)
+            except ValidationError as exc:
+                raise ControlPlaneBrokerRequestError("invalid bounded Work portfolio query (limit must be an integer from 1 to 100); supported fields are project_id, owner, stage, q, limit, cursor") from exc
+
+        catalog_discovery = None
         if self.procedure_admission is not None:
-            procedure_targets = tuple(getattr(state, "resource_ids", ()) or assignment.resource_ids)
+            # The immutable authority request retains the target resolved for
+            # this operation, including administrative scratch assignments.
+            procedure_targets = tuple(authority_decision.request.resource_ids
+                or getattr(state, "resource_ids", ()) or assignment.resource_ids)
             from codex_web.procedure_reconciliation import current_reconciliation_scope
             recovery = current_reconciliation_scope()
             if recovery is not None:
@@ -2095,8 +2277,18 @@ class ControlPlaneBrokerService:
                 source_state = self._state_for_target(assignment, str(payload.get("source_ref") or ""))
                 target_state = self._state_for_target(assignment, str(payload.get("target_ref") or ""))
                 procedure_targets = tuple(dict.fromkeys((*source_state.resource_ids, *target_state.resource_ids)))
-            await self.procedure_admission(assignment=assignment, actor=requester_actor,
-                operation=operation, resource_ids=procedure_targets, payload=payload)
+            if operation.id in {"control_plane.operations.list", "work_item.list"}:
+                # Catalog/Project portfolio inspection is not an operational admission. Keep the
+                # authenticated/Profile-filtered descriptors readable even when
+                # a procedure cannot run; this observation grants no execution
+                # and cannot consume the assignment's admission history.
+                catalog_discovery = await run_settled(lambda:
+                    self.procedure_admission.inspect_current(assignment=assignment,
+                        actor=requester_actor, operation=operation,
+                        resource_ids=procedure_targets, payload=payload))
+            else:
+                await self.procedure_admission(assignment=assignment, actor=requester_actor,
+                    operation=operation, resource_ids=procedure_targets, payload=payload)
 
         if assignment.execution_profile_id == "orchestration-admin":
             # Administrative coordination never impersonates an implementer or
@@ -2146,7 +2338,13 @@ class ControlPlaneBrokerService:
             adapter = self.home_operator_coordination
             if adapter is None:
                 raise ControlPlaneBrokerDeniedError('Home coordination is unavailable')
-            if operation.id == 'operator.project.threads.list':
+            if operation.id == 'operator.project.delegation.read':
+                if body or set(resolved.query) - {'intent_id', 'event_id'} or 'intent_id' not in resolved.query or any(
+                        len(v) != 1 or not v[0] for v in resolved.query.values()):
+                    raise ControlPlaneBrokerRequestError('Home delegation read requires exact identifiers and no body')
+                result = await run_settled(lambda: adapter.delegation_status(assignment_id=assignment.id,
+                    fence=assignment.fence, query={k:v[0] for k,v in resolved.query.items()}))
+            elif operation.id == 'operator.project.threads.list':
                 if body or set(resolved.query) - {'project_id', 'limit', 'cursor'} or any(
                         len(v) != 1 or not v[0] for v in resolved.query.values()) or 'project_id' not in resolved.query:
                     raise ControlPlaneBrokerRequestError('Home inspection requires one explicit target Project and no body')
@@ -2166,13 +2364,35 @@ class ControlPlaneBrokerService:
             from codex_web.services.worker_upgrade_approvals import WorkerUpgradeApprovalAdapter
             result = await WorkerUpgradeApprovalAdapter(self).request(
                 assignment, worker_actor, resolved, payload, assignment_validator)
+        elif operation.id == SOURCE_CAPTURE_OPERATION.id:
+            from codex_web.services.worker_source_capture import WorkerSourceCaptureAdapter
+            result = await run_settled(lambda: WorkerSourceCaptureAdapter(self).capture(
+                assignment,worker_actor,resolved,payload,assignment_validator))
+        elif operation.id == ARTIFACT_SHARE_OPERATION.id:
+            result = await run_settled(lambda: WorkerArtifactSharingAdapter(self,
+                policies=self.artifact_sharing_policies).share(assignment,worker_actor,resolved,payload,assignment_validator))
+        elif operation.id == SHARED_INPUT_OPERATION.id:
+            if body:
+                raise ControlPlaneBrokerRequestError('Shared-input lookup accepts no request body')
+            result = await run_settled(lambda: WorkerSharedInputsAdapter(self).read(
+                assignment,worker_actor,resolved,assignment_validator))
         elif operation.id.startswith("verification."):
             adapter = WorkerVerificationAdapter(self)
             if operation.id == 'verification.create':
                 if resolved.query:
                     raise ControlPlaneBrokerRequestError('Verification write does not accept query parameters')
                 from codex_web.services.worker_mr_verifications import MR_METHODS, WorkerMRVerificationAdapter
-                if payload.get('method') in MR_METHODS:
+                from codex_web.services.worker_ci_verifications import CI_METHOD, WorkerCIPrerequisiteVerificationAdapter
+                from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
+                from codex_web.services.worker_mr_assignment_reviews import WorkerMRAssignmentReviewAdapter
+                if payload.get('method') == ASSIGNMENT_REVIEW_METHOD:
+                    result = await WorkerMRAssignmentReviewAdapter(adapter,
+                        execution_roles=self.execution_roles, preflights=self.execution_preflights).create(
+                            assignment, worker_actor, resolved, payload, assignment_validator)
+                elif payload.get('method') == CI_METHOD:
+                    result = await asyncio.to_thread(WorkerCIPrerequisiteVerificationAdapter(adapter).create,
+                        assignment, worker_actor, resolved, payload, assignment_validator)
+                elif payload.get('method') in MR_METHODS:
                     result = await WorkerMRVerificationAdapter(adapter).create(
                         assignment, worker_actor, resolved, payload, assignment_validator)
                 else:
@@ -2204,6 +2424,16 @@ class ControlPlaneBrokerService:
             result = {"edge": edge.model_dump(mode="json")}
         elif operation.id == "control_plane.operations.list":
             result = self.public_assignment_capability(assignment)
+            # This route is worker-facing. Keep the operator audit inspection
+            # link on the operator assignment projection, not this allowlist.
+            result.pop("audit_href", None)
+            if catalog_discovery is not None:
+                result["procedure_availability"] = {
+                    "discovery": catalog_discovery.model_dump(mode="json"),
+                    "execution_authorized": False,
+                    "assignment_history_recorded": False,
+                    "history_capacity_checked": False,
+                }
         elif operation.id == "deployment.local.status":
             result = self._local_deployment_status()
         elif operation.id == "deployment.local.install":
@@ -2240,8 +2470,32 @@ class ControlPlaneBrokerService:
                 elif getattr(exc, "transport_failure", False) is True:
                     message = "Governed repository read transport failed."
                     code = "repository_read_transport_error"
+                elif operation.id != "repository.read.artifact-download":
+                    # Preserve the released unknown/internal classification of
+                    # other repository reads; this boundary is artifact-only.
+                    raise
+                elif isinstance(exc, CodeHostInvalidRequestError):
+                    raise ControlPlaneBrokerRequestError(
+                        "Governed repository read request violates its bounded protocol.",
+                        status_code=400, code="repository_read_request_invalid",
+                    ) from None
+                elif isinstance(exc, CodeHostArtifactUnavailableError):
+                    code = ("repository_artifact_expired" if exc.expired
+                            else "repository_artifact_unavailable")
+                    message = ("Current artifact metadata reports the archive expired." if exc.expired
+                               else "Current artifact metadata does not establish a downloadable archive.")
+                elif isinstance(exc, CodeHostUnsupportedCapabilityError):
+                    code = "repository_read_unsupported"
+                    message = "The provider does not support this governed repository read."
+                elif isinstance(exc, CodeHostTransientError):
+                    code = "repository_read_transient_error"
+                    message = "Governed repository read failed transiently; verified facts are unavailable."
                 else:
-                    raise  # Unknown/internal failures retain their original classification.
+                    # A declared domain refusal (for example foreign job
+                    # identity or malformed size) is not verified absence. Do
+                    # not expose provider messages, paths or credential data.
+                    code = "repository_read_unverified"
+                    message = "Governed repository read could not establish verified facts."
                 # A hidden/inaccessible repository can also return404. This is
                 # never an absence witness or permission to publish/retry.
                 raise ControlPlaneBrokerRequestError(
@@ -2482,15 +2736,14 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
             result = {"item": recovered.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
+            repository_id, = authority_decision.request.resource_ids
             result = await self._execute_repository_action(
                 assignment=assignment,
                 worker_actor=actor,
                 requester_actor=requester_actor,
                 operation=operation,
                 payload=payload,
-                repository_id=self._operation_repository_id(
-                    assignment, operation.id, resolved.query, actor=requester_actor
-                ),
+                repository_id=repository_id,
             )
         elif operation.id == "action_intent.reconcile":
             if self.action_intents is None:
@@ -2555,32 +2808,17 @@ class ControlPlaneBrokerService:
                     requester_actor=requester_actor,
                 )
         elif operation.id == "work_item.list":
-            requested_project = (
-                resolved.query.get("project_id", [assignment.project_id])[0]
-                if resolved.query
-                else assignment.project_id
-            )
-            if requested_project != assignment.project_id:
-                raise ControlPlaneBrokerDeniedError(
-                    "work-item list project differs from assignment scope"
-                )
-            raw_limit = (resolved.query.get("limit") or [None])[0]
-            try:
-                limit = int(raw_limit) if raw_limit is not None else None
-            except ValueError as exc:
-                raise ControlPlaneBrokerRequestError(
-                    "work-item list limit must be an integer"
-                ) from exc
+            assert portfolio_query is not None
             result = await self.work_items.list(
-                project_id=assignment.project_id,
-                owner=(resolved.query.get("owner") or [None])[0],
-                stage=(resolved.query.get("stage") or [None])[0],
-                q=(resolved.query.get("q") or [None])[0],
-                limit=limit,
-                cursor=(resolved.query.get("cursor") or [None])[0],
-                release_gate=None,
-                scope=actor.tenant,
+                **portfolio_query.model_dump(), release_gate=None, scope=actor.tenant,
             )
+            if catalog_discovery is not None:
+                result["procedure_availability"] = {
+                    "discovery": catalog_discovery.model_dump(mode="json"),
+                    "execution_authorized": False,
+                    "assignment_history_recorded": False,
+                    "history_capacity_checked": False,
+                }
         elif operation.id == "work_item.read":
             assert resolved.target_ref is not None
             assert state is not None
@@ -3030,6 +3268,11 @@ class AssignmentBoundControlPlaneBroker:
             raise ControlPlaneBrokerDeniedError("assignment worker changed")
         if assignment.fence != self.fence:
             raise ControlPlaneBrokerDeniedError("assignment fence changed")
+        if (self.snapshot.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES
+                or assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES):
+            if (assignment.execution_profile_id, assignment.execution_profile_definition) != (
+                    self.snapshot.execution_profile_id, self.snapshot.execution_profile_definition):
+                raise ControlPlaneBrokerDeniedError("custom broker execution profile binding changed")
         if getattr(assignment,'resource_context',None)!=getattr(self.snapshot,'resource_context',None):
             raise ControlPlaneBrokerDeniedError('assignment immutable Resource context changed')
         if self.worker_service_identity_validator is not None:
@@ -3408,10 +3651,11 @@ class DeferredControlPlaneBrokerFactory:
         worker_service_identity_validator: Callable[[], str] | None = None,
     ) -> AssignmentBoundControlPlaneBroker | None:
         service = self.service
-        if (
-            service is None
-            or assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES
-        ):
+        if service is None:
+            return None
+        try:
+            service._broker_profile_operations(assignment)
+        except ControlPlaneBrokerDeniedError:
             return None
         broker = AssignmentBoundControlPlaneBroker(
             service,

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -21,6 +22,10 @@ from codex_web.action_providers import (
     ActionVerification,
 )
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.services.code_host_ci_observation import (
+    CI_OBSERVATION_ACTION_ID, CI_OBSERVATION_EVIDENCE, CI_OBSERVATION_VERSION,
+    CIObservationParameters, parameters as ci_parameters, project_observation, unavailable_prerequisites,
+)
 from codex_web.services.code_host_readiness import readiness_checkpoint, readiness_verification_checkpoint
 from codex_web.services.code_host_continuation import continuation_for
 from codex_web.services.code_host_action_contract import (
@@ -36,11 +41,11 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
+    CODE_HOST_JOB_RERUN_EVIDENCE,
     CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
-    CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_ACTION_ID,
     CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_EVIDENCE,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_VERIFY_MERGE_EVIDENCE,
@@ -75,6 +80,7 @@ class GitLabActionProvider:
         api_base: str = "https://gitlab.com/api/v4",
         web_base: str | None = None,
         branch_publisher: BranchPublisher | None = None,
+        ci_prerequisite_validator=None,
     ) -> None:
         self.client = client or GitLabClient()
         self.provider_instance = provider_instance
@@ -92,6 +98,7 @@ class GitLabActionProvider:
             raise ValueError("GitLab API and Web bases must use the same authority")
         if urlparse(self.web_base).netloc != provider_instance:
             raise ValueError("GitLab Web base must match provider_instance")
+        self.ci_prerequisite_validator = ci_prerequisite_validator
         self.branch_publisher = branch_publisher
         from codex_web.services.procedure_provider_results import CodeHostProcedureResultAdapter
         self.procedure_result_adapters = (CodeHostProcedureResultAdapter(provider_instance=self.provider_instance),)
@@ -119,11 +126,7 @@ class GitLabActionProvider:
         return str(value).rstrip("/")
 
     def actions(self):
-        return tuple(
-            action
-            for action in self.contract.actions()
-            if action.action_id != CODE_HOST_JOB_RERUN_ACTION_ID
-        )
+        return self.contract.actions()
 
     @staticmethod
     def _owned_body(body: str, marker: str) -> str:
@@ -268,6 +271,11 @@ class GitLabActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         project = self.contract.locator(request)
+        if request.action_id == CI_OBSERVATION_ACTION_ID:
+            if not binding.credential_ref or request.credential_ref != binding.credential_ref:
+                raise ValueError("CI observation requires its configured credential reference")
+            return {"operation": "pull-request-ci-observation", "repository": project,
+                    **ci_parameters(request).model_dump(mode="json")}
         if request.action_id in READINESS_OBSERVATION_ACTION_IDS:
             if not binding.credential_ref or request.credential_ref != binding.credential_ref:
                 raise ValueError('Readiness observation requires its configured provider credential reference')
@@ -326,6 +334,9 @@ class GitLabActionProvider:
                 "work_item_issue_number": attested.work_item_issue_number,
                 "work_item_merge_request_number": attested.work_item_merge_request_number,
             }
+        if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            return {"operation": "job-rerun", "repository": project,
+                    "job_id": self.contract.job_rerun(request)}
         if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             return {"operation": "pull-request-ready", "repository": project,
                     **self.contract.pull_request_ready(request)}
@@ -395,6 +406,38 @@ class GitLabActionProvider:
         return {key: item.get(key) for key in (
             "id", "iid", "project_id", "source_project_id", "target_project_id", "state",
             "sha", "source_branch", "target_branch", "draft", "title", "description")}
+
+    @staticmethod
+    def _job_snapshot(item, *, project_id: int, job_id: int | None = None):
+        """Validate the scoped Jobs API identity, without trusting a Web URL."""
+        if not isinstance(item, dict) or type(project_id) is not int or project_id < 1:
+            raise ValueError("GitLab job project identity is invalid")
+        observed_id = item.get("id")
+        pipeline = item.get("pipeline")
+        commit = item.get("commit")
+        if (type(observed_id) is not int or observed_id < 1
+                or job_id is not None and observed_id != job_id
+                or not isinstance(pipeline, dict) or not isinstance(commit, dict)
+                or type(pipeline.get("id")) is not int or pipeline["id"] < 1
+                or type(pipeline.get("project_id")) is not int
+                or pipeline["project_id"] != project_id):
+            raise ValueError("GitLab job/pipeline identity does not match its project")
+        sha = pipeline.get("sha")
+        if (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)
+                or commit.get("id") != sha
+                or not isinstance(item.get("ref"), str) or not item["ref"]
+                or pipeline.get("ref") != item["ref"]
+                or not isinstance(item.get("name"), str) or not item["name"]
+                or not isinstance(item.get("stage"), str) or not item["stage"]):
+            raise ValueError("GitLab job omitted its exact commit/ref/name/stage")
+        return {"job_id": observed_id, "pipeline_id": pipeline["id"],
+                "head_sha": sha, "ref": item["ref"],
+                "job_name": item["name"], "job_stage": item["stage"]}
+
+    @staticmethod
+    def _same_job_scope(left, right):
+        return all(left[key] == right[key] for key in
+                   ("pipeline_id", "head_sha", "ref", "job_name", "job_stage"))
 
     async def execute(
         self,
@@ -701,6 +744,14 @@ class GitLabActionProvider:
                 "provider_mutation_performed": mutated,
                 "metadata_sha256": hashlib.sha256(json.dumps(observed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
             summary = "Exact open GitLab merge request is ready for review; no approval or merge was performed."
+        elif request.action_id == CI_OBSERVATION_ACTION_ID:
+            output.update(await self._read_ci_observation(request, binding, credential))
+            project_observation(output, request=request, binding_id=binding.id,
+                                provider_instance=self.provider_instance)
+            evidence_type = CI_OBSERVATION_EVIDENCE
+            external_id = str(ci_parameters(request).pull_request_number)
+            url = None
+            summary = "Read-only exact-head CI observation; readiness receipts never authorize privileged installation."
         elif request.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from codex_web.services.code_host_readiness_observation import VERSION, VERSION_V2, observation_outputs, borrowed_credential_metadata
             from codex_web.services.code_host_readiness import current_observation_policy
@@ -773,6 +824,8 @@ class GitLabActionProvider:
                     raise ActionRequirementError(
                         "GitLab merge request head pipeline is not successful"
                     )
+                if not re.fullmatch(r"[0-9a-f]{40}", current_sha) or pipeline.get("sha") != current_sha:
+                    raise ActionRequirementError("GitLab successful pipeline does not identify the exact MR head")
                 merged = await self.client.accept_merge_request(
                     self.api_base,
                     project,
@@ -801,6 +854,33 @@ class GitLabActionProvider:
             summary = (
                 "GitLab merge request is merged after clean pipeline validation."
             )
+        elif request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            job_id = self.contract.job_rerun(request)
+            repository = await self.client.project(self.api_base, project, token=credential)
+            current = await self.client.job(self.api_base, project, job_id, token=credential)
+            try:
+                project_id = repository.get("id") if isinstance(repository, dict) else None
+                original = self._job_snapshot(current, project_id=project_id, job_id=job_id)
+                if current.get("status") not in {"failed", "canceled"} or current.get("archived") is not False:
+                    raise ValueError("GitLab job must be a nonarchived failed or canceled job")
+            except ValueError as exc:
+                raise ActionRequirementError(str(exc)) from exc
+            # The original remains untouched. The POST returns a distinct retry
+            # job; any transport/normalization failure from here is uncertain.
+            retried = await self.client.retry_job(self.api_base, project, job_id, token=credential)
+            fresh = self._job_snapshot(retried, project_id=project_id)
+            if (fresh["job_id"] == job_id or not self._same_job_scope(original, fresh)
+                    or retried.get("archived") is not False
+                    or retried.get("status") not in {
+                        "created", "pending", "preparing", "waiting_for_resource", "scheduled",
+                        "running", "success", "failed", "canceled"}):
+                raise ValueError("GitLab retry response does not identify the exact new job")
+            evidence_type = CODE_HOST_JOB_RERUN_EVIDENCE
+            external_id = str(fresh["job_id"])
+            url = str(retried.get("web_url") or "") or None
+            output.update({**original, "retried_job_id": fresh["job_id"],
+                           "original_status": current["status"], "job_project_id": project_id})
+            summary = "GitLab accepted one governed job retry; this is not CI success."
         else:
             raise ValueError("unsupported GitLab action")
         return ActionResult(
@@ -848,6 +928,44 @@ class GitLabActionProvider:
             and item.get("state") == "merged" and item.get("sha") == parameters["head_sha"]
             and item.get("merge_commit_sha") == parameters["merge_commit_sha"])
 
+    async def _read_ci_observation(self, request, binding, credential):
+        from codex_web.code_hosts import CodeHostProviderBinding, CodeHostCapability
+        from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
+        p = ci_parameters(request)
+        resource = self.contract.resource(request)
+        project = self.contract.locator(request)
+        async def current():
+            item = await self.client.read_json_bounded(self.api_base,
+                f"projects/{quote(project, safe='')}/merge_requests/{p.pull_request_number}", token=credential)
+            pipeline = item.get("head_pipeline") if isinstance(item, dict) else None
+            if (not isinstance(item, dict) or type(item.get("iid")) is not int or item.get("iid") != p.pull_request_number
+                    or type(item.get("project_id")) is not int or item["project_id"] < 1
+                    or item.get("sha") != p.expected_head_sha
+                    or not isinstance(pipeline, dict) or type(pipeline.get("id")) is not int
+                    or pipeline.get("sha") != p.expected_head_sha):
+                raise ActionRequirementError("CI observation exact current MR head/pipeline unavailable")
+            return (item.get("project_id"), pipeline["id"])
+        original = await current()
+        fact_binding = CodeHostProviderBinding(id=binding.id,
+            organization_id=binding.organization_id, workspace_id=binding.workspace_id,
+            provider_type="gitlab", provider_instance=self.provider_instance, base_url=self.api_base,
+            credential_ref=binding.credential_ref, capabilities=(CodeHostCapability.CHECKS_READ,))
+        runs = await GitLabCodeHostProvider(self.client).validation_runs(fact_binding, resource,
+            p.expected_head_sha, credential=credential, expected_project_id=original[0])
+        if str(original[1]) not in {run.external_id for run in runs}:
+            raise ActionRequirementError("CI current MR head pipeline is absent from complete inventory")
+        prerequisites = (self.ci_prerequisite_validator(request, binding)
+                         if self.ci_prerequisite_validator else unavailable_prerequisites(request))
+        if await current() != original:
+            raise ActionRequirementError("CI original MR pipeline changed during observation")
+        return {**p.model_dump(mode="json"), "head_sha": p.expected_head_sha,
+            "observation_version": CI_OBSERVATION_VERSION, "provider_instance": self.provider_instance,
+            "binding_id": binding.id, "resource_id": resource.id,
+            "requested_by": request.requested_by, "project_id": request.project_id,
+            "pull_request_number": p.pull_request_number, "current_pipeline_id": str(original[1]),
+            "runs": [run.model_dump(mode="json") for run in runs],
+            "prerequisites": prerequisites.model_dump(mode="json")}
+
     async def verify(
         self,
         result: ActionResult,
@@ -861,7 +979,19 @@ class GitLabActionProvider:
             raise ValueError("GitLab result binding does not match verification binding")
         project = self.contract.locator_for_result(result, binding)
         verified = False
-        if result.action_id in READINESS_OBSERVATION_ACTION_IDS:
+        if result.action_id == CI_OBSERVATION_ACTION_ID:
+            from types import SimpleNamespace
+            p = {key: result.output.get(key) for key in CIObservationParameters.model_fields}
+            request = SimpleNamespace(parameters=p, resource_ids=(result.output.get("resource_id"),),
+                requested_by=result.output.get("requested_by"), organization_id=binding.organization_id,
+                workspace_id=binding.workspace_id, project_id=result.output.get("project_id"))
+            if result.status != "succeeded":
+                return ActionVerification(verified=False, findings=("CI original result unavailable",))
+            project_observation(result.output, request=request, binding_id=binding.id,
+                                provider_instance=self.provider_instance)
+            fresh = await self._read_ci_observation(request, binding, credential)
+            verified = all(result.output.get(k) == v for k, v in fresh.items())
+        elif result.action_id in READINESS_OBSERVATION_ACTION_IDS:
             from types import SimpleNamespace
             from codex_web.services.code_host_readiness_observation import observation_outputs, borrowed_credential_metadata
             parameters = self.contract.pull_request_observe_readiness(SimpleNamespace(parameters={
@@ -1014,6 +1144,34 @@ class GitLabActionProvider:
                 or str(item.get("sha") or "").casefold()
                 == str(result.output["head_sha"]).casefold()
             )
+        elif result.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            try:
+                raw = result.output
+                old_id, new_id = raw.get("job_id"), raw.get("retried_job_id")
+                if (result.status != "succeeded" or type(old_id) is not int or old_id < 1
+                        or type(new_id) is not int or new_id < 1 or old_id == new_id
+                        or result.external_id != str(new_id)
+                        or raw.get("original_status") not in {"failed", "canceled"}):
+                    raise ValueError("GitLab original retry receipt is invalid")
+                repository = await self.client.project(self.api_base, project, token=credential)
+                project_id = repository.get("id") if isinstance(repository, dict) else None
+                if (type(project_id) is not int or type(raw.get("job_project_id")) is not int
+                        or type(raw.get("pipeline_id")) is not int
+                        or raw.get("job_project_id") != project_id):
+                    raise ValueError("GitLab retry receipt project changed")
+                original = await self.client.job(self.api_base, project, old_id, token=credential)
+                retried = await self.client.job(self.api_base, project, new_id, token=credential)
+                old = self._job_snapshot(original, project_id=project_id, job_id=old_id)
+                new = self._job_snapshot(retried, project_id=project_id, job_id=new_id)
+                verified = (all(raw.get(key) == value for key, value in old.items())
+                    and original.get("status") == raw["original_status"]
+                    and original.get("archived") is False and retried.get("archived") is False
+                    and self._same_job_scope(old, new)
+                    and retried.get("status") in {
+                        "created", "pending", "preparing", "waiting_for_resource", "scheduled",
+                        "running", "success", "failed", "canceled"})
+            except (KeyError, TypeError, ValueError):
+                verified = False
         else:
             raise ValueError("unsupported GitLab action result")
         evidence = (

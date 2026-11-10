@@ -137,6 +137,24 @@ Legacy `1.0` pins serialize exactly their original shape without a recipient
 field, preserving retained snapshot comparison. Actual matching native delivery
 is still required before ordinary recipient ACK; routing itself never ACKs.
 
+An initial native credential seal may add its exact recorded procedure secret
+references after the queued recipient witness was captured, before its original
+native START. Accepted-owner lineage recognizes this one canonical transition by
+reconstructing the original pending-reference authority checksum. The admitted
+seal must match the original assignment/execution, worker identity, requester and
+START fence, predate or equal the actual START, and account for the exact current
+reference set. Other authority fields must reproduce the original fingerprint.
+Current recipient comparison still checks its full custody witness, except the
+already permitted post-ACK Work ownership checksum and this verified seal
+fingerprint. Current queued witnesses retain their separate exact-fence and Work
+ownership checks. Historical terminal/rebind checks remain independent; a seal
+does not authorize a new assignment, input, nonce, ACK or unknown-outcome replay.
+Explicit operator replacement inspection recognizes the same verified initial
+seal on an accepted original only after its canonical cancelled, lease-free,
+exact-next-fence retirement. Every remaining historical recipient field stays
+exact, and this metadata inspection neither cancels an active worker nor sends
+new input.
+
 After intake is accepted, GitLab provider callbacks to the current owner use
 the same compatible-recipient selection and native custody witness. The
 original conversation binding remains reply provenance; the provider event pin
@@ -211,6 +229,17 @@ the canonical per-record lock. It never saves its detached collection snapshot
 after awaited dispatch. Concurrent replacement, acknowledgement, closure and
 unrelated progress survive; an expiry event is emitted only after the matching
 current intake is actually archived.
+
+Undelivered-handoff expiry returns responsibility to the sender for a current
+business-readiness review; it does not make repair of the archived nonce a
+precondition to all later handoffs. Recipient preparation requires a genuine
+current pending handoff. Once current Work readiness and required evidence
+justify the next stage, the normal handoff owner commits that new intent before
+normal dispatch prepares its recipient. This is guidance, not automatic renewal,
+authority, evidence of QA, or a change to delivery TTL. Unresolved original native
+outcomes and current custody/authority denials remain blocking under their existing
+owners; historical receipts, archived nonces and independent validation requirements
+remain unchanged. Existing Work next-action/history surfaces display this disposition.
 
 After normal broker identity, tenant, Project, resource, execution-profile and
 operation authorization, the scoped work-item read includes a bounded
@@ -370,7 +399,7 @@ External authoritative task-source reconciliation is deliberately distinct from 
 
 A source refresh that repeats the existing blocked stage and owner preserves the explicit next action owner, pending handoff, and recorded blocker. A repeated blocked label is neither a new routing decision nor recipient acknowledgement. Newly blocked transitions and changed source owners still reconcile and supersede obsolete pending handoffs; closure and reopening retain their existing rules.
 
-Canonical progress also preserves a pending handoff when the stage, current owner, and recipient are unchanged. Findings, artifact metadata, notes, or a repeated blocked status update the same lane without resolving intake; its derived status remains awaiting confirmation. To deliberately supersede pending intake through a nonterminal progress update, read the current handoff and supply its exact `requested_at` as `expected_handoff_requested_at`. Missing or mismatched preconditions return `409 pending_handoff_conflict` before state persistence, successful progress audit, provider writeback or dispatch. A supplied precondition also fails if that intake was replaced, accepted, expired or removed, even for an otherwise harmless update. Matching progress supersession still obeys stage/routing rules and never creates a recipient ACK. Recipient ACK and new structured handoff are the normal delivery operations; authoritative closure and verified ActionIntent advancement retain their existing semantics. This guard identifies the pending intake, not a revision lock on the entire Work Item.
+Canonical progress also preserves a pending handoff when the stage, current owner, and recipient are unchanged. Findings, artifact metadata, notes, or a repeated blocked status update the same lane without resolving intake; its derived status remains awaiting confirmation. To deliberately supersede pending intake through a nonterminal progress update, read the current handoff and supply its exact `requested_at` as `expected_handoff_requested_at`. Missing or mismatched preconditions return `409 pending_handoff_conflict` before state persistence, successful progress audit, provider writeback or dispatch. A supplied precondition also fails if that intake was replaced, accepted, expired or removed, even for an otherwise harmless update. Matching progress supersession still obeys stage/routing rules and never creates a recipient ACK. Recipient ACK and new structured handoff are the normal delivery operations; authoritative closure and verified ActionIntent advancement retain their existing semantics. This guard identifies the pending intake, not a revision lock on the entire Work Item. A matching nonce does not acknowledge intake: progress that promotes its recipient to current owner while retaining the pending lane returns `409 pending_handoff_ack_required` before persistence or success audit. Normal recipient ACK and deliberate progress supersession retain their existing semantics.
 
 Implementation attribution is distinct from the actor performing a repair and from the owner of the current lifecycle lane. Operational coordination identities such as `operator` and `orchestrator`, plus the configured validation and release owners, are never inferred as `implementation_owner` from progress or handoff state. Existing attribution survives operator coordination and handoff expiry. An explicit operator reconciliation may correct it only from fresh, exact-resource provider assignment evidence and records the correction without claiming validation, closure, or external-source ownership.
 
@@ -618,3 +647,125 @@ ordinary worker/native admission; scope incompatibility is reported without
 creating a replacement. Existing ordinary Work/operator and Executive context
 reads do not invoke this potentially expensive inspection. The actionable-owner
 projection retains its existing `work_item_handoff_pending` semantics.
+
+## Bound native Work coordination transport
+
+The code-owned developer contract for a routing-enabled bound bot Thread uses
+`CODEX_WEB_CONTROL_PLANE_URL` from the current native execution environment.
+Operation discovery and Work reads/progress use that assignment-bound HTTP broker;
+relative handoff/ACK/progress paths and exact encoded Work references retain their
+existing canonical ownership and authority checks. A descriptor is not a grant.
+The contract does not interpolate the server's internal base URL or a host port:
+host loopback may be intentionally unreachable inside native isolation.
+
+Missing broker environment, missing advertised capability, denial or unknown
+mutation outcome is reported truthfully without raw provider/host-admin fallback,
+credential discovery, mutation replay, new network access or Profile changes.
+Unbound Threads and routing-disabled projects retain their existing absence of a
+bound Work contract. Existing server/internal URL configuration remains unchanged;
+it no longer selects transport instructions for an isolated bound worker.
+
+UI impact: the existing thread settings/native developer-guidance composition
+receives this corrected text through its existing owner. No new UI control,
+endpoint, permission catalog or mutable Definition is introduced. Retained historic
+Work text is not authority to reuse an old Profile, assignment or transport; current
+canonical execution and broker guards remain authoritative.
+
+### Explicit unchanged-prerequisite wait receipts (#2011)
+
+A pending-prerequisite note is not automatically proof of new material input.
+The additive `WorkItemProgressUpdate.wait_checkpoint` contract, schema `1.0`,
+lets the current actionable owner explicitly acknowledge unchanged canonical
+inputs while retaining its note and attributed `progress_updated` audit. Read
+`wait_checkpoint_context.input_sha256` from current Work, then submit
+`{"wait_checkpoint":{"schema_version":"1.0","expected_input_sha256":"<exact hash>"}}`
+with the current owner as actor. First publish any genuine blocker/action change
+normally, then read its new hash. A wait receipt cannot change the lane, ownership,
+blocker, prerequisites or pending handoff, and is validated on the current Work
+row under the existing canonical record mutation. Stale inputs refuse before
+successful audit/save. Missing atomic Work owner also refuses.
+
+The fingerprint covers canonical Work including tenant, Project, resources,
+source revision, owners/stage, handoff and receipts, retry/execution prerequisites,
+Artifact/Evidence references, blocker/findings and next action. Notes, receipt
+clocks and provider-observation receipt metadata are excluded; no remote input
+absence, provider readiness, authorization, QA or completion is inferred. The
+optional stored receipt uses the existing Work record, with absent fields omitted
+from legacy serialization; there is no new ledger or SQL migration.
+
+Only automatic followups for the **same Work and exact acknowledged inputs**
+are suppressed: progress continuity, owned-work/SLA/release watchdog reasoning,
+and unchanged blocked-lane orchestration. Delayed callbacks recheck current Work.
+Existing manual steering, external inputs, handoff/ACK, split-brain inspection,
+controls, native custody, queues and all execution guards remain unchanged.
+Any canonical input change invalidates the witness deterministically. A genuine
+material note-only update uses ordinary progress without `wait_checkpoint`,
+clears the witness, and retains existing material timestamp/wakeup semantics.
+Repeated explicit wait notes remain visible/audited without advancing the material
+clock or causing another self-dispatch. The existing Work inspector displays the
+receipt and whether its input basis remains current; the registered broker
+progress descriptor exposes the typed request and normal dispatch guidance
+explains its use. Deployment does not rewrite old Work or published Definitions.
+
+
+### Dispatch guidance and wait eligibility (#2022)
+
+The existing unchanged-wait owner exposes state-only `state_eligible` and
+`state_ineligibility_reason` in `wait_checkpoint_context`. This projection and
+the dispatch prompt share the progress guard's pure state prerequisites: an
+open, non-pending-handoff lane with a concrete blocker and next action, excluding
+`implementation_active` (ordinary progress clears that lane's blocker). These
+facts grant no actor, hash, custody or execution authority; all existing exact
+owner and before/after input-fingerprint checks still run atomically.
+
+Only eligible prompts advertise the unchanged-wait request. An actual blocker
+not yet represented requires truthful normal structured progress first, followed
+by a fresh canonical read and a separate wait receipt if then eligible. Never
+invent a blocker, force an active lane into failure for pending CI, or substitute
+a wait for recipient acknowledgement. Normal pending exact-head CI retains its
+responsible owner/stage and waits for material provider events. A refused wait
+is not a successful acknowledgement or new prerequisite evidence; generated
+guidance must not recommend repeated refusal-only notes. Genuine material
+note-only progress retains its existing wake behavior. No scheduler, queue,
+lease, admission or pending-handoff guards are relaxed. The existing Work
+inspector remains authoritative; these additive context fields require no new
+mutation control or persisted Work facet.
+
+
+### Joined recipient refusal after worker startup
+
+A recipient reservation may fail its last current-intent guard after its isolated
+worker started but before the provider thread-create boundary. The existing owned
+guard cancels its cooperative storage budget and joins the actual operation,
+including synchronous work, before returning a deadline refusal. Cancellation of
+an asyncio waiter alone is not this proof. The thread owner supplies a separate
+internal recipient-origin witness only from that exact joined guard boundary.
+The session owner first fences and releases the original reservation, then joins
+its worker teardown and requires no running process or pending executor work.
+Only afterward may the worker owner CAS a typed `before_provider_start`
+FailureRecord onto that unchanged terminal custody. A failed cleanup, changed
+fence/authority/scope, provider call, or absent origin leaves no recovery proof.
+
+The existing recipient preparer accepts this distinct known phase alongside its
+pre-worker phase. It revalidates the exact current Work, pending nonce, binding,
+Profile, execution Definition, resources, actor and unresolved-original guards.
+The same logical invocation may reserve only its existing single distinct
+physical generation, keeping the original cancelled assignment unchanged. A
+second generation refusal or UNKNOWN remains held; no new handoff, ACK, native
+input replay, Role-binding rewrite or generic cancellation reversal is admitted.
+
+Historical cancellations without the new authoritative witness remain held;
+telemetry and a missing provider receipt cannot retroactively authorize them.
+An operator may instead make a separately authorized normal replacement of an
+existing bound Role thread when its canonical current Profile and repository
+scope already match the pending Work. Ordinary compatible-recipient selection
+may then use that new LIVE Role custody; this does not retry or amend the old
+unbound reservation. Wrong scope, unresolved originals or any current admission
+refusal still block. Existing assignment Failure/provenance inspectors expose
+the typed phase and canonical blocker; no new UI operation or public recovery
+DTO is introduced.
+
+Recipient attribution serializes its exact assignment-field projection once per
+fresh guard. Discovery/checkpoint histories are not serialized repeatedly as
+unused proof inputs; current authority checks and the existing guard deadlines
+remain unchanged.

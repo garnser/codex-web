@@ -99,8 +99,8 @@ genuine provider failures retain their separate error and redaction handling.
 Known code-host read failures retain safe adapter facts on the existing
 `CodeHostError`: an explicit numeric HTTP status or a transport-failure marker.
 GitLab and GitHub adapters preserve existing transient-error subclass behavior.
-Exception-message text alone is not a typed HTTP witness. Unknown adapter or
-implementation failures retain their original internal-error behavior.
+Exception-message text alone is not a typed HTTP witness. Unexpected non-domain
+implementation exceptions retain their original internal-error behavior.
 
 After assignment scope, authority and procedure admission, ordinary repository
 fact reads translate these classified failures to HTTP409 with
@@ -112,6 +112,30 @@ A provider404 can conceal an inaccessible repository: it establishes neither
 remote absence nor permission, and does not authorize retry, publication or
 `expected_remote_absent`. Existing audit inspection renders this safe reason;
 no new UI eligibility or domain object is introduced.
+
+Artifact archive availability has a separate typed read refusal. GitLab requires
+its existing exact repository/job/project identity checks and current archive
+metadata before a byte or member request. Missing archive metadata, including a
+report-only `artifacts:reports:dotenv` job with no `artifacts_file.filename`, means
+that the current metadata does not establish a downloadable archive. It does not
+prove that a named member is absent, that report downloads are supported, or
+that permissions should change. Positive expiration/erasure metadata retains its
+distinct expiration condition. No report-download fallback is added.
+
+The worker broker returns HTTP409 `repository_artifact_unavailable` or
+`repository_artifact_expired` for those conditions. Unsupported read capabilities
+and typed transient failures use separate safe refusal codes. Other artifact-download
+`CodeHostError` validation/invariant refusals return `repository_read_unverified`:
+no verified fact or absence is established. Invalid bounded member paths return
+HTTP400 `repository_read_request_invalid` before credential/provider use.
+Unexpected non-domain exceptions still return internal500. Other repository-read
+operations retain their existing unknown/internal classification. Every refusal uses
+bounded code-owned text and existing audit/correlation metadata rather than raw
+provider messages, bodies, paths or credentials. Scope, authority, provenance,
+byte/path limits, action mutation and UNKNOWN guards remain unchanged. No error
+response authorizes automatic retry, publication, QA acceptance or a new grant.
+Existing native broker responses and operator audit inspection expose the codes;
+no new UI action or persisted schema is introduced.
 
 The internal `GitHubClient.read_json_bounded` transport supports fixed-provider
 REST reads and engine-owned GraphQL queries with a maximum 512 KiB JSON body and

@@ -15,7 +15,7 @@ from codex_web.cli_runtime import (
     CliRuntimeResult,
     CliRuntimeTimeoutError,
 )
-from codex_web.execution_workers import ExecutionRuntimeBinding
+from codex_web.execution_workers import ExecutionAssignment, ExecutionRuntimeBinding
 from codex_web.services.agent_model_egress import (
     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
     AgentRuntimeModelEgressEndpoint,
@@ -93,31 +93,25 @@ class AssignmentBoundMammouthSessionManager(AssignmentBoundCliSessionManager):
         artifact_ids: tuple[str, ...] = (),
         evidence_ids: tuple[str, ...] = (),
     ):
-        try:
-            return await super().complete(
-                assignment_id,
-                succeeded=succeeded,
-                failure_code=failure_code,
-                failure_message=failure_message,
-                artifact_ids=artifact_ids,
-                evidence_ids=evidence_ids,
-            )
-        finally:
-            self.worker_homes.discard(assignment_id)
+        completed = await super().complete(
+            assignment_id,
+            succeeded=succeeded,
+            failure_code=failure_code,
+            failure_message=failure_message,
+            artifact_ids=artifact_ids,
+            evidence_ids=evidence_ids,
+        )
+        self.worker_homes.discard(assignment_id)
+        return completed
 
-    async def stop(self, assignment_id: str) -> None:
-        try:
-            await super().stop(assignment_id)
-        finally:
-            self.worker_homes.discard(assignment_id)
-
-    async def stop_all(self) -> None:
-        assignment_ids = list(self.sessions)
-        try:
-            await super().stop_all()
-        finally:
-            for assignment_id in assignment_ids:
-                self.worker_homes.discard(assignment_id)
+    async def stop(
+        self,
+        assignment_id: str,
+        *,
+        expected_terminal: ExecutionAssignment | None = None,
+    ) -> None:
+        await super().stop(assignment_id, expected_terminal=expected_terminal)
+        self.worker_homes.discard(assignment_id)
 
 
 class MammouthCliSandboxTurnExecutor:

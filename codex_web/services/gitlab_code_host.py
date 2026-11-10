@@ -11,6 +11,7 @@ import httpx
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import (
     CodeHostArtifactDownloadFact,
+    CodeHostArtifactUnavailableError,
     CodeHostArtifactFact,
     validate_artifact_member_path,
     CodeHostCapability,
@@ -18,7 +19,6 @@ from codex_web.code_hosts import (
     CodeHostCommitFact,
     CodeHostCompareFact,
     CodeHostError,
-    CodeHostUnsupportedCapabilityError,
     CodeHostJobLogFact,
     CodeHostProviderBinding,
     CodeHostPullRequestFact,
@@ -28,6 +28,7 @@ from codex_web.code_hosts import (
     CodeHostReviewFact,
     CodeHostTransientError,
     CodeHostWebhookFact,
+    CodeHostValidationRunFact,
 )
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.resources import Resource
@@ -377,6 +378,89 @@ class GitLabCodeHostProvider:
             if isinstance(item, dict) and item.get("id") is not None
         )
 
+    async def validation_runs(self, binding, resource, revision, *, credential, expected_project_id=None):
+        """Complete bounded native pipelines/jobs for one exact repository head.
+
+        This does not assert full test selection, QA, runtime readiness or merge
+        permission. Retried jobs remain provider facts; no jobs are rerun here.
+        """
+        if not credential or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise CodeHostError("GitLab validation read requires credential and exact revision")
+
+        async def read(path, params=None):
+            try:
+                return await self.client.read_json_bounded(binding.base_url, path,
+                    token=credential, params=params)
+            except Exception as exc:
+                raise self._classify(exc) from exc
+
+        async def pages(path, params, *, maximum):
+            rows, seen = [], set()
+            for page in range(1, maximum + 1):
+                batch = await read(path, {**params, "per_page": 100, "page": page})
+                if not isinstance(batch, list) or len(batch) > 100:
+                    raise CodeHostError("GitLab validation pagination is malformed")
+                for row in batch:
+                    if (not isinstance(row, dict) or type(row.get("id")) is not int
+                            or row["id"] < 1 or row["id"] in seen):
+                        raise CodeHostError("GitLab validation identity is ambiguous")
+                    seen.add(row["id"])
+                    rows.append(row)
+                if len(batch) < 100:
+                    return rows
+            raise CodeHostError("GitLab validation inventory is incomplete")
+
+        project = quote(_project_name(resource), safe="")
+        repository = await read(f"projects/{project}")
+        if not isinstance(repository, dict) or type(repository.get("id")) is not int:
+            raise CodeHostError("GitLab validation repository identity unavailable")
+        native = repository["id"]
+        expected = resource.provenance.external_id if resource.provenance else None
+        if (native < 1 or (expected_project_id is not None and native != expected_project_id)
+                or (expected and expected.isdigit() and int(expected) != native)):
+            raise CodeHostError("GitLab validation repository does not match Resource")
+        pipelines = await pages(f"projects/{native}/pipelines", {"sha": revision}, maximum=2)
+        if len(pipelines) > 20:
+            raise CodeHostError("GitLab exact-head pipeline inventory exceeds observation bound")
+        result = []
+        allowed = {"created", "waiting_for_resource", "preparing", "pending", "running",
+                   "success", "failed", "canceled", "skipped", "manual", "scheduled"}
+        for listed in pipelines:
+            identifier = listed["id"]
+            detail = await read(f"projects/{native}/pipelines/{identifier}")
+            if (not isinstance(detail, dict) or type(detail.get("id")) is not int or detail.get("id") != identifier
+                    or type(detail.get("project_id")) is not int or detail.get("project_id") != native or detail.get("sha") != revision
+                    or listed.get("sha") != revision or detail.get("status") not in allowed
+                    or not isinstance(detail.get("source"), str)):
+                raise CodeHostError("GitLab validation pipeline repository/head identity changed")
+            jobs = await pages(f"projects/{native}/pipelines/{identifier}/jobs",
+                               {"include_retried": "false"}, maximum=10)
+            bridges = await pages(f"projects/{native}/pipelines/{identifier}/bridges", {}, maximum=2)
+            if bridges:
+                raise CodeHostError("GitLab downstream pipeline inventory requires independent observation")
+            checks = []
+            for job in jobs:
+                pipeline, commit = job.get("pipeline"), job.get("commit")
+                if (not isinstance(pipeline, dict) or type(pipeline.get("id")) is not int or pipeline.get("id") != identifier
+                        or type(pipeline.get("project_id")) is not int or pipeline.get("project_id") != native or pipeline.get("sha") != revision
+                        or not isinstance(commit, dict) or commit.get("id") != revision
+                        or job.get("status") not in allowed
+                        or not isinstance(job.get("name"), str) or not job["name"]):
+                    raise CodeHostError("GitLab validation job original pipeline/head is unproven")
+                checks.append(CodeHostCheckFact(external_id=str(job["id"]), name=job["name"],
+                    state=job["status"], conclusion=job["status"], revision=revision))
+            final = await read(f"projects/{native}/pipelines/{identifier}")
+            if final != detail:
+                raise CodeHostError("GitLab validation pipeline changed during observation")
+            result.append(CodeHostValidationRunFact(external_id=str(identifier),
+                workflow_path=".gitlab-ci.yml", event=detail["source"], revision=revision,
+                head_branch=detail.get("ref"), state=detail["status"],
+                conclusion=detail["status"], tested_revision=revision, checks=tuple(checks)))
+        # A new pipeline can invalidate the supposedly complete inventory.
+        if await pages(f"projects/{native}/pipelines", {"sha": revision}, maximum=2) != pipelines:
+            raise CodeHostError("GitLab validation pipeline inventory changed during observation")
+        return tuple(result)
+
     async def job_logs(
         self,
         binding: CodeHostProviderBinding,
@@ -532,7 +616,9 @@ class GitLabCodeHostProvider:
             raise CodeHostError("GitLab artifact job does not belong to the selected project")
         fact = self._artifact(job)
         if fact is None or fact.expired:
-            raise CodeHostError("GitLab job artifact is missing or expired")
+            # This describes the established metadata condition only. A member
+            # may still be hidden or inaccessible; never infer its absence.
+            raise CodeHostArtifactUnavailableError(expired=fact is not None and fact.expired)
         path = f"projects/{project}/jobs/{artifact_id}/artifacts"
         if member_path is not None:
             path += "/" + quote(member_path, safe="/")

@@ -5,7 +5,7 @@ import uuid
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.identity import TenantScope
 
@@ -54,6 +54,7 @@ class RepositoryTargetSource(StrEnum):
 class RepositoryWriteMode(StrEnum):
     SINGLE = "single"
     COORDINATED = "coordinated"
+    READ_ONLY = "read_only"
 
 
 class RepositoryTargetEvidence(BaseModel):
@@ -79,6 +80,7 @@ class RepositoryExecutionTarget(BaseModel):
     workspace_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
     mutable_repository_id: str | None = None
+    read_only_primary_repository_id: str | None = None
     read_only_repository_ids: tuple[str, ...] = ()
     source: RepositoryTargetSource
     source_ref: str | None = None
@@ -93,6 +95,11 @@ class RepositoryExecutionTarget(BaseModel):
                 if value and value.strip()
             )
         )
+        if self.read_only_primary_repository_id is not None:
+            if (self.mutable_repository_id is not None
+                    or self.read_only_primary_repository_id not in read_only
+                    or self.source == RepositoryTargetSource.ORCHESTRATION_ONLY):
+                raise ValueError("read-only primary requires exact read-only repository authority")
         if self.mutable_repository_id:
             mutable = self.mutable_repository_id.strip()
             object.__setattr__(self, "mutable_repository_id", mutable)
@@ -101,9 +108,20 @@ class RepositoryExecutionTarget(BaseModel):
         if self.source == RepositoryTargetSource.ORCHESTRATION_ONLY:
             if self.mutable_repository_id is not None:
                 raise ValueError("orchestration-only target cannot be mutable")
-        elif self.mutable_repository_id is None:
+        elif self.mutable_repository_id is None and self.read_only_primary_repository_id is None:
             raise ValueError("repository execution target requires mutable repository")
         return self
+
+    @property
+    def primary_repository_id(self) -> str | None:
+        return self.mutable_repository_id or self.read_only_primary_repository_id
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_readonly_primary(self, handler):
+        result = handler(self)
+        if self.read_only_primary_repository_id is None:
+            result.pop("read_only_primary_repository_id", None)
+        return result
 
 
 class RepositoryExecutionScope(BaseModel):
@@ -140,7 +158,10 @@ class RepositoryExecutionScope(BaseModel):
         overlap = set(writable) & set(read_only)
         if overlap:
             raise ValueError("writable repositories cannot also be read-only context")
-        if self.source == RepositoryTargetSource.ORCHESTRATION_ONLY:
+        if self.write_mode == RepositoryWriteMode.READ_ONLY:
+            if writable or not read_only or self.source == RepositoryTargetSource.ORCHESTRATION_ONLY:
+                raise ValueError("read-only repository scope requires repositories and zero writable authority")
+        elif self.source == RepositoryTargetSource.ORCHESTRATION_ONLY:
             if writable:
                 raise ValueError("orchestration-only scope cannot contain writable repositories")
             if self.write_mode == RepositoryWriteMode.COORDINATED:
@@ -169,7 +190,8 @@ class RepositoryExecutionScope(BaseModel):
                 else ()
             ),
             read_only_repository_ids=target.read_only_repository_ids,
-            write_mode=RepositoryWriteMode.SINGLE,
+            write_mode=(RepositoryWriteMode.READ_ONLY if target.read_only_primary_repository_id
+                        else RepositoryWriteMode.SINGLE),
             source=target.source,
             source_ref=target.source_ref,
             selection_evidence=target.selection_evidence,

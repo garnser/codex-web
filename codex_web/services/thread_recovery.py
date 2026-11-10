@@ -6,6 +6,7 @@ import os
 import time
 import weakref
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
@@ -17,6 +18,18 @@ from codex_web.services.thread_execution_settings import ThreadExecutionSettings
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.storage.thread_index import ThreadIndexRepository
+from codex_web.execution_workers import ExecutionAssignment
+from codex_web.execution_workspaces import ExecutionWorkspace, ExecutionWorkspaceLease
+from codex_web.definitions import DefinitionReference
+
+
+@dataclass(frozen=True, slots=True)
+class ReadOnlyReplacementScope:
+    """Ephemeral canonical predecessor metadata, never request/stored authority."""
+    assignment: ExecutionAssignment
+    workspace: ExecutionWorkspace
+    lease: ExecutionWorkspaceLease
+    execution_definition: DefinitionReference
 
 
 class ThreadRecoveryService:
@@ -66,6 +79,7 @@ class ThreadRecoveryService:
         )
         self.thread_creator = thread_creator
         self.agent_profile_resolver: Callable[[BotBinding], Any] | None = None
+        self.predecessor_retirement = None
         self.stale_active_turn_reconciler = None
         self.historical_replacement_events = None
         self.historical_bootstrap_binding = None
@@ -80,6 +94,59 @@ class ThreadRecoveryService:
         """Bind the assignment-scoped thread bootstrap after service composition."""
         self.thread_creator = thread_creator
 
+    @staticmethod
+    def _replacement_settings(settings, proof, *, project, sandbox, approval_policy, profile_kwargs):
+        """Repair only the legacy primary alias proven by owned READ custody.
+
+        An additional writable id is an explicit incompatible request, never a
+        read context. The source row remains historical; ordinary creator
+        admission independently resolves the selected current Profile/policy.
+        """
+        if proof is None:
+            return settings
+        def refuse():
+            raise HTTPException(status_code=409, detail={
+                'code': 'readonly_replacement_scope_unverified',
+                'message': 'Remembered scope or selected Profile differs from canonical READ custody.'})
+        if not isinstance(proof, ReadOnlyReplacementScope):
+            refuse()
+        assignment = proof.assignment
+        target, scope = assignment.repository_target, assignment.repository_scope
+        primary = target.read_only_primary_repository_id
+        selected_actor = profile_kwargs.get('actor')
+        selected_profile = assignment.agent_profile
+        if (sandbox != assignment.sandbox or approval_policy != assignment.approval_policy
+                or settings.execution_profile_id != assignment.execution_profile_id
+                or settings.repository_resource_id != primary
+                or tuple(settings.writable_repository_resource_ids) not in ((), (primary,))
+                or set(settings.read_only_repository_resource_ids) not in (
+                    set(scope.read_only_repository_ids), set(scope.read_only_repository_ids) - {primary})
+                or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    != (project.organization_id, project.workspace_id, project.id)
+                or proof.execution_definition != assignment.execution_profile_definition
+                or (selected_profile is None and profile_kwargs.get('agent_profile_id') is not None)
+                or (selected_profile is not None and (
+                    profile_kwargs.get('agent_profile_id') != selected_profile.profile_id
+                    or profile_kwargs.get('agent_profile_revision') != selected_profile.profile_revision
+                    or selected_actor is None or selected_actor.identity_id != assignment.created_by
+                    or (selected_actor.organization_id, selected_actor.workspace_id)
+                        != (assignment.organization_id, assignment.workspace_id)))):
+            refuse()
+        return settings.model_copy(update={
+            'writable_repository_resource_ids': (),
+            'read_only_repository_resource_ids': scope.read_only_repository_ids})
+
+    def _remember_successor(self, thread_id, settings, evidence, proof, *, sandbox, approval_policy):
+        self.settings.remember(thread_id, sandbox=sandbox, approval_policy=approval_policy,
+            model=settings.model, reasoning_effort=settings.reasoning_effort,
+            developer_instructions=settings.developer_instructions,
+            repository_resource_id=evidence['repository_resource_id'],
+            writable_repository_resource_ids=tuple(evidence['writable_repository_resource_ids']),
+            read_only_repository_resource_ids=tuple(evidence['read_only_repository_resource_ids']),
+            execution_profile_id=settings.execution_profile_id, skill_refs=settings.skill_refs,
+            **({'admitted_repository_target': proof.assignment.repository_target,
+                'admitted_repository_scope': proof.assignment.repository_scope} if proof is not None else {}))
+
     async def _create_replacement_thread(
         self,
         *,
@@ -92,6 +159,8 @@ class ThreadRecoveryService:
         agent_profile_revision: int | None = None,
         actor: AuthenticationActor | None = None,
         replacement_evidence: dict[str, Any] | None = None,
+        predecessor_scope: ReadOnlyReplacementScope | None = None,
+        admission_guard=None, bootstrap_token=None, prepared_thread_id=None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -122,6 +191,8 @@ class ThreadRecoveryService:
                     "agent_profile_revision": profile.revision,
                     "actor": actor,
                 }
+        settings = self._replacement_settings(settings, predecessor_scope, project=project,
+            sandbox=sandbox, approval_policy=approval_policy, profile_kwargs=profile_kwargs)
         if replacement_evidence is not None:
             admitted_actor = profile_kwargs.get("actor") or actor
             replacement_evidence.update({
@@ -135,6 +206,8 @@ class ThreadRecoveryService:
                 "writable_repository_resource_ids": list(settings.writable_repository_resource_ids),
                 "read_only_repository_resource_ids": list(settings.read_only_repository_resource_ids),
             })
+        if prepared_thread_id is not None:
+            return prepared_thread_id
         response = await self.thread_creator(
             project_id=project.id,
             sandbox=sandbox,
@@ -148,6 +221,8 @@ class ThreadRecoveryService:
             ),
             execution_profile_id=settings.execution_profile_id,
             **profile_kwargs,
+            **({"admission_guard": admission_guard} if admission_guard is not None else {}),
+            **({"bootstrap_token": bootstrap_token} if bootstrap_token is not None else {}),
         )
         thread = response.get("thread") if isinstance(response, dict) else None
         thread_id = thread.get("id") if isinstance(thread, dict) else None
@@ -319,34 +394,37 @@ class ThreadRecoveryService:
             lock = asyncio.Lock()
             self._replacement_locks[key] = lock
         async with lock:
-            replacement_id = self.replacement_thread_id(binding.thread_id)
-            if replacement_id:
-                matches = [
-                    item
-                    for item in self.host._load_bot_bindings()
-                    if item.thread_id == replacement_id
-                    and self.same_logical_binding(item, binding)
-                ]
-                if matches:
-                    durable_lookup = getattr(self.thread_index, "replacement_thread_id", None)
-                    if callable(durable_lookup) and durable_lookup(binding.thread_id):
-                        self.host._retarget_bot_thread_state(binding.thread_id, replacement_id)
-                        await self.host._archive_replaced_bot_thread(binding.thread_id, replacement_id)
-                    return self.preferred_binding_for_replacement(binding, matches)
-                # A crash can leave the verified bootstrap/link intact but
-                # occur before binding/state transfer. Finish that transfer;
-                # never create a conflicting second successor.
-                old_thread_id = binding.thread_id
-                replacement = self.host._retarget_logical_bot_bindings(binding, replacement_id)
-                self.host._retarget_bot_thread_state(old_thread_id, replacement_id)
-                await self.host._archive_replaced_bot_thread(old_thread_id, replacement_id)
-                return replacement
-            return await self._replace_stale_bot_thread(binding, error)
+            async with self._retire_predecessor(binding.thread_id, self.projects.get(binding.project_id)) as predecessor_scope:
+                replacement_id = self.replacement_thread_id(binding.thread_id)
+                if replacement_id:
+                    matches = [
+                        item
+                        for item in self.host._load_bot_bindings()
+                        if item.thread_id == replacement_id
+                        and self.same_logical_binding(item, binding)
+                    ]
+                    if matches:
+                        durable_lookup = getattr(self.thread_index, "replacement_thread_id", None)
+                        if callable(durable_lookup) and durable_lookup(binding.thread_id):
+                            self.host._retarget_bot_thread_state(binding.thread_id, replacement_id)
+                            await self.host._archive_replaced_bot_thread(binding.thread_id, replacement_id)
+                        return self.preferred_binding_for_replacement(binding, matches)
+                    # A crash can leave the verified bootstrap/link intact but
+                    # occur before binding/state transfer. Finish that transfer;
+                    # never create a conflicting second successor.
+                    old_thread_id = binding.thread_id
+                    replacement = self.host._retarget_logical_bot_bindings(binding, replacement_id)
+                    self.host._retarget_bot_thread_state(old_thread_id, replacement_id)
+                    await self.host._archive_replaced_bot_thread(old_thread_id, replacement_id)
+                    return replacement
+                return await self._replace_stale_bot_thread(binding, error,
+                    **({'predecessor_scope': predecessor_scope} if predecessor_scope is not None else {}))
 
     async def _replace_stale_bot_thread(
         self,
         binding: BotBinding,
         error: str,
+        *, predecessor_scope: ReadOnlyReplacementScope | None = None,
     ) -> BotBinding:
         h = self.host
         old_thread_id = binding.thread_id
@@ -364,24 +442,10 @@ class ThreadRecoveryService:
             approval_policy=approval_policy,
             binding=binding,
             replacement_evidence=replacement_evidence,
+            predecessor_scope=predecessor_scope,
         )
-        self.settings.remember(
-            new_thread_id,
-            sandbox=sandbox,
-            approval_policy=approval_policy,
-            model=settings.model,
-            reasoning_effort=settings.reasoning_effort,
-            developer_instructions=settings.developer_instructions,
-            repository_resource_id=settings.repository_resource_id,
-            writable_repository_resource_ids=(
-                settings.writable_repository_resource_ids
-            ),
-            read_only_repository_resource_ids=(
-                settings.read_only_repository_resource_ids
-            ),
-            execution_profile_id=settings.execution_profile_id,
-            skill_refs=settings.skill_refs,
-        )
+        self._remember_successor(new_thread_id, settings, replacement_evidence,
+            predecessor_scope, sandbox=sandbox, approval_policy=approval_policy)
         if thread_name:
             with contextlib.suppress(Exception):
                 await self.naming.set_name(new_thread_id, thread_name)
@@ -431,16 +495,69 @@ class ThreadRecoveryService:
         )
         return replacement
 
-    async def replace_stale_web_thread(
+    @contextlib.asynccontextmanager
+    async def _retire_predecessor(self, thread_id, project):
+        if self.predecessor_retirement is None:
+            yield  # Legacy/unbound integrations do not own worker sessions.
+        else:
+            async with self.predecessor_retirement(thread_id, project=project) as proof:
+                yield proof
+
+    async def replace_accepted_recipient(self, thread_id, *, project, context, validate,
+                                         operator_identity_id, reservation):
+        """A NEW operator request, never automatic undo of cancellation.
+
+        The existing start/retirement lock joins terminal process ownership and
+        remains held through the normal scoped replacement graph publication.
+        No logical bot binding is moved and no handoff/original is rewritten.
+        """
+        key = ('accepted-recipient', project.id, thread_id)
+        lock = self._replacement_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._replacement_locks[key] = lock
+        async with lock:
+            validate()
+            existing = self.replacement_thread_id(thread_id)
+            if existing:
+                return existing
+            state, binding, witness, profile, requester, _ = context
+            async with self._retire_predecessor(thread_id, project) as predecessor_scope:
+                validate()
+                token, prepared_thread_id = reservation()
+                return await self._replace_stale_web_thread(thread_id, project,
+                    'explicit authorized accepted-recipient replacement',
+                    predecessor_scope=predecessor_scope,
+                    agent_profile_id=profile.profile_id,
+                    agent_profile_revision=profile.revision, actor=requester,
+                    admission_guard=validate, retarget_bot_state=False,
+                    bootstrap_token=token, prepared_thread_id=prepared_thread_id,
+                    replacement_provenance={
+                        'accepted_work_item_ref': state.ref,
+                        'accepted_handoff_requested_at': state.handoff.requested_at,
+                        'accepted_assignment_id': witness.assignment_id,
+                        'accepted_assignment_fence': witness.fence,
+                        'replacement_authorized_by': operator_identity_id})
+
+    async def replace_stale_web_thread(self, thread_id, project, error, **kwargs):
+        async with self._retire_predecessor(thread_id, project) as predecessor_scope:
+            return await self._replace_stale_web_thread(thread_id, project, error,
+                predecessor_scope=predecessor_scope, **kwargs)
+
+    async def _replace_stale_web_thread(
         self, thread_id: str, project: Project, error: str, *,
+        predecessor_scope: ReadOnlyReplacementScope | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         actor: AuthenticationActor | None = None,
+        admission_guard=None, retarget_bot_state=True, replacement_provenance=None,
+        bootstrap_token=None, prepared_thread_id=None,
     ) -> str:
         h = self.host
         replacement_id = self.replacement_thread_id(thread_id)
         if replacement_id:
-            h._retarget_bot_thread_state(thread_id, replacement_id)
+            if retarget_bot_state:
+                h._retarget_bot_thread_state(thread_id, replacement_id)
             await h._archive_replaced_bot_thread(thread_id, replacement_id)
             return replacement_id
         settings = self.settings.get(thread_id)
@@ -456,24 +573,41 @@ class ThreadRecoveryService:
             agent_profile_revision=agent_profile_revision,
             actor=actor,
             replacement_evidence=replacement_evidence,
+            predecessor_scope=predecessor_scope,
+            admission_guard=admission_guard, bootstrap_token=bootstrap_token,
+            prepared_thread_id=prepared_thread_id,
         )
-        self.settings.remember(
-            new_thread_id,
-            sandbox=sandbox,
-            approval_policy=approval_policy,
-            model=settings.model,
-            reasoning_effort=settings.reasoning_effort,
-            developer_instructions=settings.developer_instructions,
-            repository_resource_id=settings.repository_resource_id,
-            writable_repository_resource_ids=(
-                settings.writable_repository_resource_ids
-            ),
-            read_only_repository_resource_ids=(
-                settings.read_only_repository_resource_ids
-            ),
-            execution_profile_id=settings.execution_profile_id,
-            skill_refs=settings.skill_refs,
-        )
+        async def validate_created():
+            if admission_guard is not None:
+                try:
+                    admission_guard()
+                except BaseException as refusal:
+                    if prepared_thread_id is None:
+                        # This invocation's unused successor must stay owned when
+                        # current Work/authority changes after the create await.
+                        # Existing retirement refuses active/UNKNOWN work; never
+                        # cancel a previously recovered candidate on this branch.
+                        async def settle_unused():
+                            async with self._retire_predecessor(new_thread_id, project):
+                                pass
+                        cleanup = asyncio.create_task(settle_unused())
+                        while not cleanup.done():
+                            try:
+                                await asyncio.shield(cleanup)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        try:
+                            cleanup.result()
+                        except BaseException as cleanup_error:
+                            raise refusal from cleanup_error
+                    raise
+        await validate_created()
+        if replacement_provenance is not None:
+            replacement_evidence.update(replacement_provenance)
+        self._remember_successor(new_thread_id, settings, replacement_evidence,
+            predecessor_scope, sandbox=sandbox, approval_policy=approval_policy)
         indexed = next((item for item in self.thread_index.load() if item.id == thread_id), None)
         thread_name = indexed.name if indexed else None
         if thread_name:
@@ -489,9 +623,16 @@ class ThreadRecoveryService:
                     updatedAt=time.time(),
                 )
             )
+        await validate_created()
         self._remember_replacement(thread_id, new_thread_id,
                                    project_id=project.id, provenance=replacement_evidence)
-        h._retarget_bot_thread_state(thread_id, new_thread_id)
+        if retarget_bot_state:
+            h._retarget_bot_thread_state(thread_id, new_thread_id)
+        else:
+            self.retarget_thread_settings(thread_id, new_thread_id)
+            self.retarget_active_turn(thread_id, new_thread_id)
+            self.retarget_turn_queue(thread_id, new_thread_id)
+            self.retarget_slack_thread_icon(thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(thread_id, new_thread_id)
         self.event_sink(
             {

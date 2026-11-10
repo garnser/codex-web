@@ -685,6 +685,44 @@ class PostgresStateStore:
         return (list(self.record_items(namespace).values()) if rows is None else
                 [self._decode(row) for row in rows])
 
+    def audit_record_rows(self, namespace: str, *, partition_id: str, limit: int,
+                          record_id: str | None = None,
+                          redaction_targets: tuple[str, ...] | None = None) -> list[Any]:
+        """Bound scoped audit payload hydration; no legacy/full-history fallback."""
+        if (namespace != 'autonomy_audit' or type(partition_id) is not str
+                or type(limit) is not int or not 1 <= limit <= 1000
+                or record_id is not None and type(record_id) is not str
+                or redaction_targets is not None and (record_id is not None
+                    or not isinstance(redaction_targets, tuple)
+                    or not 1 <= len(redaction_targets) <= 1000
+                    or any(type(x) is not str for x in redaction_targets))):
+            raise ValueError('invalid bounded audit query')
+        prefix = state_record_storage_key(namespace, 'record:')
+        where = ("namespace COLLATE \"C\" >= %s AND namespace COLLATE \"C\" < %s "
+            "AND payload::json->>'partition_id' = %s")
+        parameters = [prefix, prefix + '\uffff', partition_id]
+        if record_id is not None:
+            where += " AND payload::json->>'id' = %s"
+            parameters.append(record_id)
+        if redaction_targets is not None:
+            where += (" AND payload::json->'payload'->>'kind' = 'redaction'"
+                " AND payload::json->'payload'->>'target_audit_record_id' = ANY(%s)")
+            parameters.append(list(redaction_targets))
+            query = ("SELECT payload FROM (SELECT payload, ROW_NUMBER() OVER (PARTITION BY "
+                "payload::json->'payload'->>'target_audit_record_id' ORDER BY "
+                "(payload::json->>'sequence')::bigint DESC) AS chosen FROM codex_state_documents WHERE "
+                + where + ") AS selected WHERE chosen=1 LIMIT %s")
+        else:
+            query = ("SELECT payload FROM codex_state_documents WHERE " + where
+                + " ORDER BY (payload::json->>'sequence')::bigint DESC LIMIT %s")
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                if not self._record_collection_exists_in_cursor(cursor, namespace):
+                    raise ValueError('bounded audit read requires keyed canonical records')
+                cursor.execute(query, (*parameters, limit))
+                rows = cursor.fetchall()
+        return [self._decode(row) for row in rows]
+
     def record_count(self, namespace: str) -> int:
         with self._read_connection() as connection:
             with connection.cursor() as cursor:
@@ -1159,6 +1197,57 @@ class PostgresStateStore:
                 )
                 row = cursor.fetchone()
                 return self._decode(row) if row is not None else None
+
+    def shared_artifact_candidates(self, namespace, *, organization_id, workspace_id,
+            project_id, work_item_ref, provider, source, before=None, limit=32):
+        """Exact Work/provider SQL page through existing current v2 derived rows.
+
+        Returned candidates are bounded. Planner scan cost is not asserted;
+        unavailable/stale projections refuse rather than decoding tenant history.
+        """
+        if type(limit) is not int or not 1 <= limit <= 32 or (before is not None and (type(before) is not int or not 1 <= before <= 2**61-1)):
+            raise ValueError('invalid shared-input page bound')
+        if namespace not in getattr(self,'_document_array_projection_namespaces',()):
+            raise ValueError('current Artifact array projection unavailable')
+        query="""WITH current_document AS MATERIALIZED (
+            SELECT document.namespace,COALESCE(header.schema_value,'"0.0"'::jsonb) AS schema_value,
+                header.version=2 AND header.eligible
+                    AND header.source_sha256=sha256(convert_to(document.payload,'UTF8'))
+                    AND header.top_keys <@ ARRAY['schema_version','artifacts','evidence','verifications']::text[]
+                    AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['artifacts','evidence','verifications']) AS field(name)
+                        WHERE header.field_types->>name IS NOT NULL AND header.field_types->>name!='array')
+                    AND EXISTS(SELECT 1 FROM codex_state_metadata WHERE key='document-record-projection-version' AND value='1')
+                    AND EXISTS(SELECT 1 FROM codex_state_metadata WHERE key='document-array-projection-format' AND value='2')
+                    AND EXISTS(SELECT 1 FROM codex_state_metadata WHERE key=%s AND value='2') AS valid
+            FROM codex_state_documents AS document
+            LEFT JOIN codex_document_record_headers AS header ON header.namespace=document.namespace
+            WHERE document.namespace=%s),
+            matching AS MATERIALIZED (
+                SELECT (member.ordinal-1)/4 AS position,left(member.payload::json->>'id',201) AS id,
+                    count(*) OVER (PARTITION BY member.payload::json->>'id') AS duplicates
+                FROM codex_document_record_rows AS member,current_document
+                WHERE current_document.valid AND member.namespace=current_document.namespace
+                    AND mod(member.ordinal,4)=1
+                    AND member.organization_id=%s AND member.workspace_id=%s
+                    AND member.payload::json->>'project_id'=%s AND member.payload::json->>'work_item_ref'=%s
+                    AND member.payload::json->>'provider'=%s AND member.payload::json->>'source'=%s
+                ), selected AS MATERIALIZED (SELECT * FROM matching
+                WHERE (%s::bigint IS NULL OR position < %s::bigint)
+                ORDER BY position DESC LIMIT %s)
+            SELECT schema_value,valid,COALESCE((SELECT json_agg(json_build_object('ordinal',position,'id',id,'duplicates',duplicates)
+                ORDER BY position DESC) FROM selected),'[]'::json) FROM current_document"""
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query,(postgres_document_projection.ARRAY_ENABLE_PREFIX+namespace,
+                    namespace,organization_id,workspace_id,project_id,work_item_ref,provider,source,
+                    before,before,limit+1))
+                row=cursor.fetchone()
+        if row is None:
+            return {'schema_version':None,'candidates':[],'more':False}
+        if not row[1]:
+            raise ValueError('current Artifact array projection unavailable')
+        selected=row[2] if isinstance(row[2],list) else json.loads(row[2])
+        return {'schema_version':row[0],'candidates':selected[:limit],'more':len(selected)>limit}
 
     def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
                                      organization_id: str, workspace_id: str,

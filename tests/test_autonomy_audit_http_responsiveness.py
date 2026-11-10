@@ -18,6 +18,7 @@ from codex_web.services.autonomy_audit import AutonomyAuditError, AutonomyAuditS
 class AutonomyAuditHttpResponsivenessTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.service = Mock(spec=AutonomyAuditService)
+        self.service.public_records.return_value = []
         self.actor = AuthenticationActor(
             identity_id="admin", principal_kind=PrincipalKind.HUMAN,
             organization_id="org-a", workspace_id="ws-a",
@@ -71,6 +72,7 @@ class AutonomyAuditHttpResponsivenessTests(unittest.IsolatedAsyncioTestCase):
         self.service.list_records.assert_called_once_with(
             organization_id="org-a", workspace_id="ws-a", limit=7,
         )
+        self.service.public_records.assert_called_once_with(())
 
     async def test_full_history_inspection_routes_remain_responsive(self):
         for path, operation, result in (
@@ -114,11 +116,13 @@ class AutonomyAuditHttpResponsivenessTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             self.assertEqual((await client.get("/api/autonomy/audit")).status_code, 403)
             self.service.list_records.assert_not_called()
+            self.service.public_records.assert_not_called()
             self.actor = self.actor.model_copy(update={"service_scopes": ("autonomy:read",)})
             response = await client.get("/api/autonomy/audit")
             self.assertEqual(response.json(), {"items": [], "count": 0})
             self.service.list_records.assert_called_once_with(
                 organization_id="org-b", workspace_id="ws-b", limit=200,
             )
+            self.service.public_records.assert_called_once_with(())
             self.assertEqual((await client.post("/api/autonomy/audit/verify")).status_code, 403)
             self.service.verify.assert_not_called()

@@ -268,7 +268,20 @@ class ExecutionPreflightService:
                     'threadId':current.replacement_thread_id or current.thread_id,
                     'execution_id':current.execution_id,
                     'snapshot_sha256':self.queued_snapshot_digest(current.queued_turn_snapshot)}
-            blockers = self._blockers(retained_detail) if retained_detail else ()
+            witness = None
+            if (preinput_refusal and disposition == 'blocked' and claim_id
+                    and current.queued_admission_claim_id == claim_id
+                    and current.status in {'admitting', 'reconciliation_required'}
+                    and current.attempt_number == 1 and not current.queued_resume_history
+                    and str(current.source or '').startswith('home-operator-automation:')
+                    and all(value is None for value in (
+                        current.queued_start_correlation, current.queued_start_evidence,
+                        current.queued_start_receipt, current.queued_resume_correlation,
+                        current.queued_resume_evidence, current.started_at))):
+                witness = {'version': '1.0', 'attempt_id': current.id,
+                    'claim_id': claim_id, 'attempt_number': current.attempt_number,
+                    'snapshot_sha256': self.queued_snapshot_digest(current.queued_turn_snapshot)}
+            blockers = self._blockers(retained_detail, local_preinput_refusal=witness) if retained_detail else ()
             history = current.blocker_history
             if (disposition == 'blocked' and preinput_refusal
                     and (detail or {}).get('code') in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'}
@@ -635,7 +648,7 @@ class ExecutionPreflightService:
         return self.store.update(attempt_id, update)
 
     @staticmethod
-    def _blockers(detail: Any) -> tuple[ExecutionPreflightBlocker, ...]:
+    def _blockers(detail: Any, *, local_preinput_refusal=None) -> tuple[ExecutionPreflightBlocker, ...]:
         if not isinstance(detail, dict):
             return (
                 ExecutionPreflightBlocker(
@@ -651,6 +664,19 @@ class ExecutionPreflightService:
             if not isinstance(item, dict):
                 continue
             value = dict(item)
+            from codex_web.native_empty_preparation import closed_native_preparation_diagnostics
+            # One opaque diagnostic projection; preserve the published empty key
+            # for old records, prefer the generic key when explicitly present.
+            legacy = value.pop('native_empty_preparation_diagnostics', None)
+            generic = value.pop('native_preparation_diagnostics', None)
+            key = 'native_preparation_diagnostics' if generic is not None else 'native_empty_preparation_diagnostics'
+            diagnostics = closed_native_preparation_diagnostics(generic if generic is not None else legacy)
+            if diagnostics:
+                value[key] = diagnostics
+            # Reserved controller witness cannot be supplied by provider/HTTP detail.
+            value.pop('local_preinput_refusal', None)
+            if local_preinput_refusal is not None:
+                value['local_preinput_refusal'] = local_preinput_refusal
             value.setdefault(
                 "code",
                 str(detail.get("code") or "execution_preflight_blocked"),
@@ -1095,8 +1121,23 @@ class ExecutionPreflightService:
         def update(value):
             if value.status != 'retrying' or value.retry_claim_id != claim_id:
                 return value
-            return value.model_copy(update={'status': 'blocked' if known else 'reconciliation_required',
-                'blockers': (blocker,), 'last_error': message, 'updated_at': float(self.clock())})
+            # The retry reservation retains the original typed exhaustion. A
+            # failed renewal must report its current guard without discarding
+            # the assignment prerequisite used by the ordinary retained Retry.
+            # Possible native observations still require reconciliation.
+            unstarted = known and not any((value.started_at is not None,
+                value.queued_start_receipt, value.queued_start_correlation,
+                value.queued_start_evidence, value.queued_resume_correlation,
+                value.queued_resume_evidence, value.queued_resume_history,
+                value.scheduling_retirement))
+            blockers = (blocker,)
+            if unstarted:
+                exhausted = tuple(item for item in value.blockers
+                    if item.code == 'procedure_assignment_exhausted')
+                renewal = self._blockers(detail)
+                blockers = exhausted + tuple(item for item in renewal if item not in exhausted)
+            return value.model_copy(update={'status': 'blocked' if unstarted else 'reconciliation_required',
+                'blockers': blockers, 'last_error': message, 'updated_at': float(self.clock())})
         return self.store.update(attempt_id, update)
 
     @staticmethod

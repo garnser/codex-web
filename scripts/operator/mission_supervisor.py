@@ -96,6 +96,19 @@ def eligible_runner_failure(sample):
         or admitted and (runner.get("leaseValid") is False or runner.get("processRunning") is False)))
 
 
+def observer_fresh(observer, now):
+    checked = observer.get("checked_at", 0)
+    return type(checked) in {int, float} and 0 < checked <= now + 60 and now - checked <= 300
+
+
+def thread_inspected(sample):
+    # Legacy snapshots lack the boolean: an actual typed runner sample can
+    # establish a positive observation, but cannot prove project completeness.
+    return (isinstance(sample, dict) and sample.get("inspection_ok") is not False
+            and not sample.get("read_error_type") and isinstance(sample.get("runner"), dict)
+            and bool(sample["runner"]))
+
+
 def observe(snapshot, previous, *, now, maintenance=False):
     """Pure bounded classification; never trusts raw command/message/log text."""
     signals = []
@@ -116,11 +129,17 @@ def observe(snapshot, previous, *, now, maintenance=False):
     if snapshot.get("memory_available", 2**63) < 1024**3:
         signals.append(Signal("host:memory_pressure", "host_pressure", {"available_memory_bytes": snapshot["memory_available"]}))
     observer = snapshot.get("observer") or {}
-    if service.get("ActiveState") == "active" and now - observer.get("checked_at", 0) > 300:
-        signals.append(Signal("observer:stale", "observer_stale", {}))
+    fresh = observer_fresh(observer, now)
+    if service.get("ActiveState") == "active":
+        if not fresh:
+            signals.append(Signal("observer:stale", "observer_stale", {}))
+        elif observer.get("inspection_status") != "complete":
+            # One stable identity across failures, partial reads and old formats
+            # preserves issue/launch receipts instead of spawning per error.
+            signals.append(Signal("observer:inspection", "observer_inspection_incomplete", {}))
     old_threads = ((previous or {}).get("observer") or {}).get("threads") or {}
     for tid, sample in (observer.get("threads") or {}).items():
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tid):
+        if not fresh or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tid) or not thread_inspected(sample):
             continue
         runner = sample.get("runner") or {}
         if eligible_runner_failure(sample):
@@ -142,15 +161,22 @@ def observe(snapshot, previous, *, now, maintenance=False):
     return signals
 
 
-def retain_signals(state, signals, *, now):
+def retain_signals(state, signals, *, now, observer=None):
     current = {signal.key for signal in signals}
     for item in state["signals"].values():
         item["current"] = False
+        if item.get("kind") == "current_runner_failure":
+            tid = item.get("metadata", {}).get("thread_id")
+            sample = ((observer or {}).get("threads") or {}).get(tid)
+            item["observation_status"] = ("not_observed" if observer_fresh(observer or {}, now)
+                and thread_inspected(sample) and sample["runner"].get("state") != "unknown" else "unknown")
     for signal in signals:
         item = state["signals"].setdefault(signal.key, {"first_seen": now, "samples": 0,
             "kind": signal.kind, "metadata": signal.metadata, "issue_number": signal.issue_number})
         consecutive = item.get("last_seen", now) >= now - 240
         item.update(last_seen=now, current=True, samples=item["samples"] + 1 if consecutive else 1)
+        if signal.kind == "current_runner_failure":
+            item["observation_status"] = "observed_failure"
     # Only settled, inactive observation entries can be pruned. Job receipts and
     # unknown issue writes are retained independently and never silently retried.
     if len(state["signals"]) > 500:
@@ -314,26 +340,67 @@ def command(argv, *, timeout=15, check=True):
 def reduce_observer(observer):
     """Do not copy message text, names, paths, or arbitrary diagnostics."""
     threads = {}
-    for tid, sample in list((observer.get("threads") or {}).items())[:200]:
+    raw_threads = observer.get("threads")
+    valid_threads = isinstance(raw_threads, dict)
+    incomplete = not valid_threads or len(raw_threads) > 200
+    failed_threads = 0
+    for index, (tid, sample) in enumerate((raw_threads if valid_threads else {}).items()):
+        if index >= 200:
+            break
         if not isinstance(tid, str) or not UUID_ID.fullmatch(tid) or not isinstance(sample, dict):
+            incomplete = True
             continue
-        runner = sample.get("runner") or {}
-        progress = sample.get("progress") or {}
+        raw_runner = sample.get("runner")
+        runner = raw_runner if isinstance(raw_runner, dict) else {}
+        progress = sample.get("progress") if isinstance(sample.get("progress"), dict) else {}
+        states = ("running", "idle", "lost", "failed", "expired", "error", "stopped", "unknown", "recovering", "waiting", "cancelled")
+        projection_status = sample.get("runner_projection_status")
+        marker_valid = "runner_projection_status" not in sample or projection_status in ("present", "absent")
+        flattened_fields = ("state", "assignmentId", "assignmentStatus", "fence", "leaseValid",
+            "leaseExpiresAt", "updatedAt", "processRunning", "live", "reason", "pendingExecutorWork")
+        absent = ("runner" in sample and raw_runner is None and projection_status in (None, "absent")
+            or projection_status == "absent" and set(runner) == set(flattened_fields)
+            and all(value is None for value in runner.values()))
+        present = projection_status != "absent" and runner.get("state") in states
+        inspection_ok = "read_error_type" not in sample and marker_valid and (absent or present)
+        if not inspection_ok:
+            failed_threads += 1
+        def enum(value, allowed):
+            return value if isinstance(value, str) and value in allowed else None
         def integer(value):
             return value if type(value) is int and 0 <= value <= 1000000 else None
         assignment_id = runner.get("assignmentId")
         turn_id = progress.get("turn_id")
-        threads[tid] = {"activity": sample.get("activity") if sample.get("activity") in {"active", "idle", "unknown"} else None,
+        threads[tid] = {"inspection_ok": inspection_ok,
+            "activity": enum(sample.get("activity"), ("active", "idle", "unknown")),
             "queue_depth": integer(sample.get("queue_depth")), "runner": {
-                "state": runner.get("state") if runner.get("state") in {"running", "idle", "lost", "failed", "expired", "error", "stopped", "unknown", "recovering"} else None,
-                "assignmentStatus": runner.get("assignmentStatus") if runner.get("assignmentStatus") in {"claimed", "running", "cancelled", "completed", "failed", "pending"} else None,
+                "state": enum(runner.get("state"), states),
+                "assignmentStatus": enum(runner.get("assignmentStatus"), ("claimed", "running", "lost", "cancelled", "completed", "failed", "pending")),
                 "assignmentId": assignment_id if isinstance(assignment_id, str) and ASSIGNMENT_ID.fullmatch(assignment_id) else None,
                 "fence": integer(runner.get("fence")), "pendingExecutorWork": integer(runner.get("pendingExecutorWork")),
                 **{key: runner.get(key) if type(runner.get(key)) is bool else None for key in ("leaseValid", "processRunning")}},
-            "progress": {"status": progress.get("status") if progress.get("status") in {"failed", "completed", "inProgress", "interrupted"} else None,
+            "progress": {"status": enum(progress.get("status"), ("failed", "completed", "inProgress", "interrupted")),
                 "turn_id": turn_id if isinstance(turn_id, str) and UUID_ID.fullmatch(turn_id) else None}}
+        if absent and inspection_ok:
+            # Retain successful absence as absence. An all-null dictionary
+            # would otherwise look like a successful runner observation.
+            threads[tid]["runner"] = None
+    # Conditions are inspected only for their closed kind, never copied. Count
+    # or exception text is not needed to distinguish unavailable coverage.
+    conditions = observer.get("conditions", {})
+    conditions_valid = isinstance(conditions, dict) and len(conditions) <= 200
+    inspection_failed = conditions_valid and any(isinstance(value, dict)
+        and value.get("kind") == "inspection_failed" for value in conditions.values())
+    declared = observer.get("inspection_complete")
+    if declared is False or incomplete or failed_threads or inspection_failed or not conditions_valid:
+        status = "incomplete"
+    elif declared is True:
+        status = "complete"
+    else:
+        status = "unknown"  # Old/malformed flags never prove complete coverage.
     checked = observer.get("checked_at", 0)
-    return {"checked_at": checked if type(checked) in {int, float} and 0 <= checked <= time.time() + 60 else 0, "threads": threads}
+    return {"checked_at": checked if type(checked) in {int, float} and 0 <= checked <= time.time() + 60 else 0,
+        "threads": threads, "inspection_status": status, "failed_thread_count": failed_threads}
 
 
 def collect(config, previous, *, now, run=command):
@@ -545,13 +612,13 @@ def tick(root, *, run=command, now=None):
         if now - state.get("continuations_checked_at", 0) >= 300:
             # Continuations are current CI observations, not periodic model polls.
             events = continuation_signals(state, run=run)
-            retain_signals(state, signals + events, now=now)
+            retain_signals(state, signals + events, now=now, observer=snapshot.get("observer"))
             state["continuations_checked_at"] = now
             state["continuation_events"] = [{"key": s.key, "kind": s.kind, "metadata": s.metadata,
                                               "issue_number": s.issue_number} for s in events]
         else:
             events = [Signal(**item) for item in state.get("continuation_events", [])]
-            retain_signals(state, signals + events, now=now)
+            retain_signals(state, signals + events, now=now, observer=snapshot.get("observer"))
         atomic_json(root / "latest.json", snapshot)
         if now - snapshot.get("github_checked_at", 0) <= 600:
             requalify_known_deferrals(root, state, config, now=now, run=run)
@@ -563,6 +630,8 @@ def tick(root, *, run=command, now=None):
         if selected:
             launch(root, state, selected, config, now=now, run=run)
         summary = {"checked_at": now, "mission_enabled": bool(config.get("mission_enabled")),
+            "observer_inspection_status": ((snapshot.get("observer") or {}).get("inspection_status", "unknown")
+                if observer_fresh(snapshot.get("observer") or {}, now) else "stale"),
             "root_lease_valid": config.get("root_lease_until", 0) > now, "signals": len(signals),
             "active_jobs": sum(j["status"] in {"launch_requested", "running", "unknown"} for j in state["jobs"].values()),
             "deferred_jobs": sum(j["status"] == "deferred_before_model" and not j.get("deferral_requalified") for j in state["jobs"].values()),

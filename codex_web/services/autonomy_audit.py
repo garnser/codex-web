@@ -441,17 +441,13 @@ class AutonomyAuditService:
         workspace_id: str,
         limit: int = 200,
     ) -> tuple[AutonomyAuditRecord, ...]:
-        partition = AutonomyAuditRecord.partition_for(
-            organization_id,
-            workspace_id,
-        )
-        rows = [
-            item
-            for item in self.store.load().records
-            if item.partition_id == partition
-        ]
-        rows.sort(key=lambda item: item.sequence, reverse=True)
-        return tuple(rows[: max(1, min(limit, 1000))])
+        return self.store.scoped_records(organization_id=organization_id,
+            workspace_id=workspace_id, limit=limit)
+
+    def _read_controls(self, field):
+        raw = self.store.read_control(field)
+        return AutonomyAuditState.model_validate({key:value for key,value in raw.items()
+            if key != self.store.meta_key})
 
     def list_checkpoints(
         self,
@@ -466,7 +462,7 @@ class AutonomyAuditService:
         )
         rows = [
             item
-            for item in self.store.load().checkpoints
+            for item in self._read_controls("checkpoints").checkpoints
             if item.partition_id == partition
         ]
         rows.sort(key=lambda item: (item.sequence, item.created_at), reverse=True)
@@ -481,7 +477,7 @@ class AutonomyAuditService:
     ) -> tuple[AutonomySafetySignal, ...]:
         rows = [
             item
-            for item in self.store.load().signals
+            for item in self._read_controls("signals").signals
             if item.organization_id == organization_id
             and item.workspace_id == workspace_id
             and (not active_only or item.active)
@@ -496,21 +492,11 @@ class AutonomyAuditService:
         organization_id: str,
         workspace_id: str,
     ) -> AutonomyAuditRecord:
-        partition = AutonomyAuditRecord.partition_for(
-            organization_id,
-            workspace_id,
-        )
-        item = next(
-            (
-                row
-                for row in self.store.load().records
-                if row.id == record_id and row.partition_id == partition
-            ),
-            None,
-        )
-        if item is None:
-            raise AutonomyAuditError("autonomy audit record not found")
-        return item
+        rows = self.store.scoped_records(organization_id=organization_id,
+            workspace_id=workspace_id, limit=2, record_id=record_id)
+        if len(rows) != 1:
+            raise AutonomyAuditError("autonomy audit record not found or ambiguous")
+        return rows[0]
 
     @staticmethod
     def _expected_record_hash(record: AutonomyAuditRecord) -> tuple[str, str]:
@@ -838,12 +824,24 @@ class AutonomyAuditService:
         self,
         record: AutonomyAuditRecord,
     ) -> dict[str, Any]:
-        state = self.store.load()
-        redacted = any(
-            item.payload.kind == AutonomyAuditKind.REDACTION
-            and item.payload.target_audit_record_id == record.id
-            for item in state.records
-        )
+        return self.public_records((record,))[0]
+
+    def public_records(self, records):
+        """Batch selected-ID redaction lookup; never reload the audit history."""
+        if not records:
+            return []
+        if len(records) > 1000:
+            raise AutonomyAuditError('public audit page exceeds bound')
+        org, workspace = records[0].payload.organization_id, records[0].payload.workspace_id
+        if any((r.payload.organization_id,r.payload.workspace_id) != (org,workspace) for r in records):
+            raise AutonomyAuditError('public audit page scope changed')
+        redactions = self.store.scoped_records(organization_id=org,workspace_id=workspace,
+            limit=len(records),redaction_targets=tuple(r.id for r in records))
+        redacted_ids = {r.payload.target_audit_record_id for r in redactions}
+        return [self._public_record(r, r.id in redacted_ids) for r in records]
+
+    @staticmethod
+    def _public_record(record, redacted):
         payload = record.model_dump(mode="json")
         if redacted and record.payload.kind != AutonomyAuditKind.REDACTION:
             minimized = record.payload.model_copy(

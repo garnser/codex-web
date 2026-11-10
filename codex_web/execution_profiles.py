@@ -13,6 +13,7 @@ EXECUTION_PROFILE_CATALOG_SCHEMA_VERSION = "1.0"
 ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION = "1.1"
 COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION = "1.2"
 HOME_OPERATOR_EXECUTION_PROFILE_SCHEMA_VERSION = "1.3"
+DEPENDENCY_EGRESS_EXECUTION_PROFILE_SCHEMA_VERSION = "1.4"
 HOME_HOST_COMMAND_CONTRACT = "home-host-command/1.0"
 
 
@@ -99,6 +100,22 @@ ExecutionWorkerCapabilityName = Literal[
 ]
 
 
+class DependencyEgressEnvelope(BaseModel):
+    """Public dependency downloads only; never a host-network grant."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    allowed_hosts: tuple[str, ...] = Field(min_length=1, max_length=32)
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def exact_public_hosts(cls, hosts):
+        from codex_web.public_https_destination import validate_public_https_host
+        normalized = tuple(validate_public_https_host(host) for host in hosts)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("dependency egress hosts must be distinct")
+        return normalized
+
+
 class ExecutionProfileContract(BaseModel):
     """Definition-owned execution environment and worker-capability contract."""
 
@@ -114,6 +131,7 @@ class ExecutionProfileContract(BaseModel):
     administrative_repository_ids: tuple[str, ...] = Field(default=(), max_length=32)
     project_coordination: ProjectCoordinationEnvelope | None = None
     home_operator: HomeOperatorEnvelope | None = None
+    dependency_egress: DependencyEgressEnvelope | None = None
     network_enabled: Literal[False] = False
     host_mutation: Literal[False] = False
 
@@ -163,10 +181,15 @@ class ExecutionProfileContract(BaseModel):
                 raise ValueError("scratch workspace cannot grant repository access")
             if "git" in capabilities:
                 raise ValueError("scratch workspace cannot require git capability")
-        if "network" in capabilities:
-            raise ValueError(
-                "execution profile network access requires a separately governed network profile"
-            )
+        if self.dependency_egress is not None:
+            if (self.workspace_mode != "repository" or self.repository_access != "mutable"
+                    or self.id in {"orchestration-only", "orchestration-admin", "project-governor"}
+                    or self.home_operator or self.project_coordination or administrative):
+                raise ValueError("dependency egress requires an ordinary repository profile")
+            if "network" not in capabilities:
+                raise ValueError("dependency egress requires network worker capability")
+        elif "network" in capabilities:
+            raise ValueError("network capability requires a dependency egress envelope")
         return self
 
     @model_serializer(mode="wrap")
@@ -178,6 +201,8 @@ class ExecutionProfileContract(BaseModel):
             result.pop("project_coordination", None)
         if self.home_operator is None:
             result.pop("home_operator", None)
+        if self.dependency_egress is None:
+            result.pop("dependency_egress", None)
         return result
 
     def public(self) -> dict[str, Any]:
@@ -191,6 +216,8 @@ class ExecutionProfileContract(BaseModel):
             "controlPlaneOperations": list(self.control_plane_operations),
             "administrativeRepositoryIds": list(self.administrative_repository_ids),
             "networkEnabled": self.network_enabled,
+            **({"dependencyEgress": self.dependency_egress.model_dump(mode="json")}
+               if self.dependency_egress else {}),
             "hostMutation": self.host_mutation,
             **({"projectCoordination": self.project_coordination.model_dump(mode="json")}
                if self.project_coordination else {}),
@@ -228,6 +255,7 @@ class ExecutionProfileCatalogDefinition(BaseModel):
 
 def validate_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     catalog = ExecutionProfileCatalogDefinition.model_validate(payload)
+    _reject_dependency_egress(catalog, payload)
     if any(profile.home_operator for profile in catalog.profiles):
         raise ValueError("Home operator requires execution-profile-catalog schema 1.3")
     if any(profile.administrative_repository_ids for profile in catalog.profiles):
@@ -239,6 +267,7 @@ def validate_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any
 
 def validate_administrative_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     catalog = ExecutionProfileCatalogDefinition.model_validate(payload)
+    _reject_dependency_egress(catalog, payload)
     if any(profile.home_operator for profile in catalog.profiles):
         raise ValueError("Home operator requires execution-profile-catalog schema 1.3")
     if any(profile.project_coordination for profile in catalog.profiles):
@@ -248,10 +277,23 @@ def validate_administrative_execution_profile_catalog(payload: dict[str, Any]) -
 
 def validate_coordination_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     catalog = ExecutionProfileCatalogDefinition.model_validate(payload)
+    _reject_dependency_egress(catalog, payload)
     if any(profile.home_operator for profile in catalog.profiles):
         raise ValueError("Home operator requires execution-profile-catalog schema 1.3")
     return catalog.model_dump(mode="json")
 
 
+def _reject_dependency_egress(catalog, payload):
+    if (any(profile.dependency_egress for profile in catalog.profiles)
+            or any("dependency_egress" in row for row in payload.get("profiles", ()))):
+        raise ValueError("dependency egress requires execution-profile-catalog schema 1.4")
+
+
 def validate_home_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
+    catalog = ExecutionProfileCatalogDefinition.model_validate(payload)
+    _reject_dependency_egress(catalog, payload)
+    return catalog.model_dump(mode="json")
+
+
+def validate_dependency_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     return ExecutionProfileCatalogDefinition.model_validate(payload).model_dump(mode="json")

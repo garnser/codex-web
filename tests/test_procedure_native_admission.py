@@ -1,8 +1,11 @@
 """Common native turn admission is exercised for every source lane."""
 import dataclasses
+import time
 import unittest
 from types import SimpleNamespace
 
+from codex_web.execution_subjects import ExecutionSubject
+from codex_web.execution_workers import AssignmentLease, ExecutionAssignment, NetworkPolicy, WorkerResourceLimits
 from codex_web.models import Project
 from codex_web.runtime.execution import ExecutionPrestartRefusal
 from codex_web.services.procedure_discovery import NativeProcedureAdmissionService
@@ -27,10 +30,21 @@ class NativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 # not task text. This fixture has no required procedures, but
                 # mutable native tools still cannot enforce a future mutation
                 # check; the required typed unsupported result is explicit.
-                assignment = SimpleNamespace(id='assignment-1', resource_ids=(), fence=1, runtime_binding=None,
-                    network=SimpleNamespace(enabled=False), sandbox='read-only')
+                now = time.time()
+                assignment = ExecutionAssignment(id='assignment-1', organization_id=self.admin.organization_id,
+                    workspace_id=self.admin.workspace_id, execution_id='native-source-execution', project_id='project-a',
+                    subject=ExecutionSubject(kind='thread', ref='t1'),
+                    resource_ids=(), execution_contract_version='1.0', required_capabilities=(), sandbox='read-only',
+                    approval_policy='on-request', network=NetworkPolicy(enabled=False), limits=WorkerResourceLimits(),
+                    status='running', fence=1, assigned_worker_id='worker-1',
+                    lease=AssignmentLease(worker_id='worker-1', fence=1, lease_token='fixture-native-admission-token',
+                        acquired_at=now, expires_at=now + 3600), created_by=self.admin.identity_id)
                 recorded = []
-                workers = SimpleNamespace(assignment_for_execution=lambda *a, **k: assignment,
+                def current_assignment(execution_id, *, actor):
+                    self.assertEqual(execution_id, assignment.execution_id)
+                    self.assertEqual(actor, self.admin)
+                    return assignment
+                workers = SimpleNamespace(assignment_for_execution=current_assignment,
                     record_procedure_discovery=lambda *a, **k: recorded.append((a,k)))
                 admission = NativeProcedureAdmissionService(self.discovery, workers, self.history, self.admin)
                 async def gate(**kwargs):
@@ -40,9 +54,13 @@ class NativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 runtime.procedure_admission = gate
                 with self.assertRaises(ExecutionPrestartRefusal) as caught:
                     await runtime.start_thread_turn_now('t1', project=Project(id='p1', name='Project', path='/workspace/project'),
-                        message='Investigate operational logs', sandbox='workspace-write', approval_policy='on-request', source=source)
+                        message='Investigate operational logs', sandbox='workspace-write', approval_policy='on-request',
+                        source=source, execution_id=assignment.execution_id)
                 self.assertEqual(caught.exception.detail['code'], 'procedure_unsupported_enforcement')
                 self.assertFalse(any(method == 'turn/start' for method, _ in sessions.session.requests))
+                self.assertEqual(len(recorded), 1)
+                self.assertEqual(recorded[0][0][0], assignment.id)
+                self.assertEqual(recorded[0][1], {'expected_fence': assignment.fence, 'actor': self.admin})
                 self.assertEqual(recorded[0][0][1].outcome, 'unsupported_enforcement')
         self.assertEqual(len(self.history.get('t1')['procedureDiscoveries']), 5)
 

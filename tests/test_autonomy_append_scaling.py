@@ -29,7 +29,10 @@ def audit_payload(i, workspace='ws'):
                                cycle_id=f'cycle-{i}', occurred_at=float(i))
 
 
-class AutonomyAppendContract:
+from tests.test_bounded_autonomy_audit_read import BoundedAuditReadContract
+
+
+class AutonomyAppendContract(BoundedAuditReadContract):
     @staticmethod
     def dead_letter(i):
         return AutonomyDeadLetter(id=f"dead-{i}", cycle_id=f"cycle-{i}", cycle_key=f"cycle-{i}",

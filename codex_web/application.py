@@ -403,6 +403,7 @@ from codex_web.services.provider_capacity import (
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.github_action_provider import GitHubActionProvider
 from codex_web.services.gitlab_action_provider import GitLabActionProvider
+from codex_web.services.artifact_sharing import ArtifactSharingPolicyService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.recovery import LocalBackupDestination, RecoveryService
 from codex_web.services.releases import ReleaseService
@@ -1090,6 +1091,9 @@ app.include_router(build_crypto_keys_router(crypto_key_service, project_service,
 app.include_router(build_resources_router(resource_catalog_service, project_service))
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
+artifact_sharing_policy_service = ArtifactSharingPolicyService(
+    definition_registry_service, resource_catalog_service)
+app.state.artifact_sharing_policy_service = artifact_sharing_policy_service
 
 code_host_registry = CodeHostRegistry()
 code_host_registry.register_provider(GitLabCodeHostProvider())
@@ -1224,10 +1228,14 @@ from codex_web.services.procedure_scope_actor import ProcedureDefinitionScopeAct
 _procedure_definition_scope_actor = ProcedureDefinitionScopeActor(
     identity_service, project_service,
 )
+from codex_web.procedure_control_plane import CanonicalOperationRegistry
+
+procedure_canonical_operations = CanonicalOperationRegistry()
 
 skill_service.bind_procedure_contracts(
     actions=action_provider_registry, resources=resource_catalog_service,
     scope_actor=_procedure_definition_scope_actor,
+    control_plane=procedure_canonical_operations,
 )
 
 control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
@@ -1301,6 +1309,17 @@ execution_worker_service = ExecutionWorkerService(
     workspaces=execution_workspace_service,
     assignment_notifier=_execution_assignment_notifier,
 )
+from codex_web.services.code_host_ci_observation import CanonicalCIPrerequisiteValidator
+
+
+def _mr_ci_execution_target_requirement(request, binding):
+    return execution_role_definition_service.resolve_mr_ci_readiness_policy(
+        organization_id=request.organization_id,
+        workspace_id=request.workspace_id,
+        project_id=request.project_id,
+    )
+
+
 # Reconcile persisted worker/lease state before ensuring the process-owned
 # worker. On a slow application import, doing this after ensure_local_worker()
 # can age its fresh heartbeat past the stale threshold and offline the worker
@@ -1618,6 +1637,11 @@ app.state.local_artifact_content_store = local_artifact_content_store
 app.state.artifact_content_service = artifact_content_service
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
+gitlab_action_provider.ci_prerequisite_validator = CanonicalCIPrerequisiteValidator(
+    artifact_evidence_service, identity_service, resource_catalog_service,
+    workers=execution_worker_service,
+    execution_target_requirement=_mr_ci_execution_target_requirement,
+)
 
 evaluation_store = EvaluationStore(state_store)
 install_evaluation_rubric_schema(definition_registry_service)
@@ -1680,6 +1704,15 @@ automation_outcome_reconciliation_service.runtime_usage = agent_runtime_usage_st
 def _notify_automation_runtime_usage(record):
     if not record.execution_id:
         return
+    # Terminal usage is already persisted. Home uses logical execution IDs;
+    # generic reconciliation/identity failure must not consume its own wake.
+    if record.completed_at is not None and record.terminal_outcome != "unknown":
+        recovery = getattr(app.state, "native_recovery_service", None)
+        if recovery is not None:
+            try:
+                recovery.notify_runtime_usage()
+            except Exception:
+                pass  # Observational wake cannot roll back telemetry.
     try:
         actor = identity_service.bootstrap_service_actor(
             identity_id="service-automation-budget-reconciler",
@@ -1701,9 +1734,6 @@ def _notify_automation_runtime_usage(record):
         except RuntimeError:
             loop = None
         if loop is not None:
-            recovery = getattr(app.state, "native_recovery_service", None)
-            if recovery is not None:
-                recovery.schedule(reason="home-runtime-usage-observed")
             for automation_run in outcome_runs:
                 if automation_run.status.value in {"succeeded", "failed"}:
                     loop.create_task(
@@ -1921,6 +1951,7 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
     execution_workspace_service,
     local_execution_backend,
+    execution_profiles=execution_profile_definition_service,
     worker=local_execution_worker,
     trusted_host_backend=(TrustedHostActionBackend(worker_id=local_execution_worker.id,
         **_home_host_options) if _home_host_options is not None else None),
@@ -2130,7 +2161,8 @@ procedure_execution_service = ProcedureExecutionService(
     authority=authority_role_service, approvals=approval_request_service, attention=attention_service,
     control_actor=identity_service.local_trusted_actor(), worker_runtime=local_execution_worker_runtime,
     models=model_gateway_service, worker_actor=local_worker_actor,
-    mr_observation_configuration=configuration_service)
+    mr_observation_configuration=configuration_service,
+    control_plane=procedure_canonical_operations)
 action_intent_service.procedure_execution = procedure_execution_service
 action_execution_service.observation_policy_resolver = procedure_execution_service.observation_policy_for_action
 action_execution_service.observation_deadline_resolver = procedure_execution_service.observation_deadline_for_action
@@ -2538,6 +2570,7 @@ app.state.gitlab_sync_job_service = gitlab_sync_job_service
 
 control_plane_broker_audit_store = ControlPlaneBrokerAuditStore(state_store)
 control_plane_broker_service = ControlPlaneBrokerService(
+    artifact_sharing_policies=artifact_sharing_policy_service,
     identity=identity_service,
     authority=authority_role_service,
     work_items=work_item_service,
@@ -2550,6 +2583,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     service_instance_id=instance_id,
     execution_profiles=execution_profile_definition_service,
     execution_workers=execution_worker_service,
+    execution_roles=execution_role_definition_service,
     mr_observation_configuration=configuration_service,
 )
 from codex_web.services.procedure_discovery import BrokerProcedureAdmissionService
@@ -3424,7 +3458,7 @@ turn_execution_service.session_custody = AgentSessionCustodyService(
 )
 
 from codex_web.services.procedure_discovery import install_native_procedure_admission
-install_native_procedure_admission(turn_execution_service, agent_session_service,
+native_procedure_admission_service = install_native_procedure_admission(turn_execution_service, agent_session_service,
     procedure_discovery_service, execution_worker_service, thread_history_repository,
     identity_service.local_trusted_actor(), execution_profile_definition_service,
     procedure_execution=procedure_execution_service)
@@ -3647,12 +3681,14 @@ thread_service = ThreadService(
     authentication_preparation=_refresh_local_codex_session,
 )
 thread_recovery_service.bind_thread_creator(thread_service.create)
+thread_recovery_service.predecessor_retirement = turn_execution_service.retire_replacement_predecessor
 execution_preflight_service = ExecutionPreflightService(
     execution_preflight_store,
     replacement_resolver=thread_index_repository.replacement_thread_id,
     event_sink=bot_runtime_telemetry.append,
 )
 app.state.execution_preflight_service = execution_preflight_service
+control_plane_broker_service.execution_preflights = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
 from codex_web.services.notification_outcomes import NotificationOutcomeInspection
 from codex_web.services.notification_results import NotificationResultCapture
@@ -3857,6 +3893,9 @@ def _notify_automation_action_intent(intent):
 action_intent_service.status_notifier = _notify_automation_action_intent
 
 async def _launch_admitted_automation(run):
+    if run.target_kind == 'home_operator':
+        home_operator_followup.schedule_launch(run)
+        return
     await automation_execution_service.launch(
         run.id,
         organization_id=run.organization_id,
@@ -4033,6 +4072,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
 )
 from codex_web.services.owner_routing import OwnerRoutingService
 execution_preflight_store.prepare_work_item_index()
+execution_preflight_store.prepare_home_followup_index()
 owner_routing_service = OwnerRoutingService(
     inspection_actor=identity_service.existing_local_trusted_actor,
     inspection_ready=lambda: (
@@ -4051,6 +4091,7 @@ owner_routing_service = OwnerRoutingService(
     control_actor=identity_service.local_trusted_actor,
     actor_resolver=turn_execution_service.actor_resolver,
     replacement_resolver=thread_index_repository.replacement_thread_id,
+    authenticated_origin_revalidator=identity_service.revalidate_authenticated_origin,
     update_state=_update_work_item_state_record,
     append_event=work_item_state_machine._append_work_item_event,
     preflight=execution_preflight_store,
@@ -4069,8 +4110,97 @@ bot_event_dispatch_service.owner_routing_context = owner_routing_service.context
 bot_event_dispatch_service.owner_routing_repository_scope = owner_routing_service.repository_scope_for_pin
 turn_execution_service.owner_routing_validator = owner_routing_service.validate_native
 app.state.owner_routing_service = owner_routing_service
+turn_service.owner_routing = owner_routing_service
 work_item_continuity_service.bind(
     canonical_work_item_continuity_service
+)
+from codex_web.services.procedure_custody_recovery import register_custody_operations
+
+register_custody_operations(
+    procedure_canonical_operations,
+    workers=execution_worker_service,
+    routing=owner_routing_service,
+    threads=thread_service,
+    continuity=canonical_work_item_continuity_service,
+    get_work=work_item_state_machine._work_item_state,
+    preflight=execution_preflight_service,
+)
+from codex_web.services.procedure_publication_recovery import (
+    PublicationRecoveryOperations, register_publication_operations,
+)
+
+register_publication_operations(
+    procedure_canonical_operations,
+    PublicationRecoveryOperations(
+        workers=execution_worker_service,
+        workspaces=execution_workspace_service,
+        intents=action_intent_service,
+        work_items=work_item_service,
+    ),
+)
+from codex_web.services.worker_verifications import WorkerVerificationAdapter
+from codex_web.services.worker_mr_assignment_reviews import WorkerMRAssignmentReviewAdapter
+from codex_web.services.mr_policy_acceptance import CurrentPolicyMRAcceptanceOwner
+from codex_web.services.procedure_mr_closure import (
+    CONTRACT as MR_CLOSURE_PREREQUISITES_CONTRACT, MRClosurePrerequisiteOwner,
+)
+
+mr_policy_acceptance_owner = CurrentPolicyMRAcceptanceOwner(
+    execution_roles=execution_role_definition_service,
+    evidence=artifact_evidence_service,
+    work_items=work_item_service,
+    assignment_reviews=WorkerMRAssignmentReviewAdapter(
+        WorkerVerificationAdapter(control_plane_broker_service),
+        execution_roles=execution_role_definition_service,
+        preflights=execution_preflight_service,
+    ),
+)
+app.state.mr_policy_acceptance_owner = mr_policy_acceptance_owner
+
+
+async def _mr_closure_read_requirements(context, scope):
+    from urllib.parse import urlencode
+    from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
+    from codex_web.procedure_control_plane import CanonicalOperationError
+    from codex_web.services.broker_merge_requirements import read_merge_requirements
+
+    context.validate_current()
+    resolved = control_plane_broker_service._resolve_operation(
+        'GET', '/api/repository-facts/pull-requests/' + str(scope.pull_request_number)
+        + '/merge-requirements?' + urlencode({'repository_resource_id': scope.repository_resource_id}),
+    )
+
+    def current_assignment():
+        context.validate_current()
+        current = execution_worker_service.store.assignment(context.assignment.id)
+        if current is None:
+            raise CanonicalOperationError('mr_closure_current_assignment_unavailable')
+        return current
+
+    observed = await read_merge_requirements(
+        control_plane_broker_service, context.assignment, context.worker_actor,
+        resolved, current_assignment,
+    )
+    context.validate_current()
+    attribution = observed['scope']
+    if (attribution['requester_identity_id'] != context.requester_actor.identity_id
+            or attribution['assignment_id'] != context.assignment.id
+            or attribution['execution_id'] != context.assignment.execution_id
+            or attribution['fence'] != context.assignment.fence
+            or attribution['project_id'] != scope.project_id
+            or attribution['repository_id'] != scope.repository_resource_id):
+        raise CanonicalOperationError('mr_closure_current_read_attribution_changed')
+    return CodeHostMergeRequirementsFact.model_validate(observed['item'])
+
+
+procedure_canonical_operations.register(
+    MR_CLOSURE_PREREQUISITES_CONTRACT,
+    MRClosurePrerequisiteOwner(
+        action_intent_service, work_item_service,
+        acceptance=mr_policy_acceptance_owner.acceptance,
+        ci_requirement=mr_policy_acceptance_owner.ci_requirement,
+        read_requirements=_mr_closure_read_requirements,
+    ),
 )
 turn_execution_service.handoff_delivery_recorder = work_item_continuity_service.record_handoff_delivery
 app.state.canonical_work_item_continuity_service = (
@@ -4313,6 +4443,7 @@ async def _recover_home_event_runs():
 
 native_recovery_service = NativeRecoveryService(
     policy=runtime_policy,
+    usage_cycle=_recover_home_event_runs,
     cycles=(
         _recover_home_event_runs,
         _reconcile_native_goal_runners,
@@ -4324,6 +4455,30 @@ native_recovery_service = NativeRecoveryService(
     append_event=bot_runtime_telemetry.append,
 )
 app.state.native_recovery_service = native_recovery_service
+from codex_web.services.procedure_automation import ProcedureAutomationService
+
+procedure_automation_service = ProcedureAutomationService(
+    runs=automation_run_service,
+    engine=procedure_execution_service,
+    identity=identity_service,
+    routing=owner_routing_service,
+    threads=thread_service,
+    continuity=canonical_work_item_continuity_service,
+    get_work=work_item_state_machine._work_item_state,
+    events=canonical_event_store,
+    event_triggers=automation_event_trigger_service,
+    controller=autonomy_controller,
+    coordinator=native_recovery_service.coordinator,
+    automation_execution=automation_execution_service,
+    native_preparation=native_procedure_admission_service.prepare_automation,
+)
+automation_trigger_admission_bridge.procedure_handler = procedure_automation_service.handle_match
+autonomy_service.procedure_event_handler = procedure_automation_service.handle_event
+automation_execution_service.procedure_automation = procedure_automation_service
+automation_outcome_reconciliation_service.procedure_reconciler = procedure_automation_service.reconcile
+app.state.procedure_automation_service = procedure_automation_service
+work_item_service.publish_event = procedure_automation_service.wrap_work_publisher(
+    work_item_service.publish_event)
 work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
@@ -4779,6 +4934,7 @@ runtime_supervisor = install_runtime_supervisor(
     local_worker_heartbeat=_heartbeat_local_execution_worker,
     recover_expired_assignments=_recover_expired_execution_assignments,
     recover_deferred_repository_actions=deferred_repository_action_recovery.run_once,
+    recover_procedure_automations=procedure_automation_service.recover_pending,
     flush_compatibility_state=_flush_compatibility_state,
 )
 
@@ -4992,6 +5148,8 @@ home_operator_coordination_service = HomeOperatorCoordinationService(
     broker=control_plane_broker_service, origin_guard=_home_coordination_origin,
     thread_scope=thread_scope_service, bootstrap_bindings=thread_bootstrap_binding_service,
     project_coordination=project_coordination_service, turns=turn_service,
+    preflight=execution_preflight_service, events=canonical_event_store, usage=agent_runtime_usage_store,
+    sessions=agent_session_store,
 )
 control_plane_broker_service.home_operator_coordination = home_operator_coordination_service
 turn_execution_service.home_operator_coordination_admission = home_operator_coordination_service.validate_queued_delegation
@@ -5006,12 +5164,15 @@ home_operator_followup = HomeOperatorFollowup(
     scheduler=scheduler_service, sessions=agent_session_store,
     runtime_usage=agent_runtime_usage_store,
     outcomes=automation_outcome_reconciliation_service,
+    launch_coordinator=native_recovery_service.coordinator,
 )
 async def _launch_home_event_run(run):
     return await automation_execution_service.launch(run.id,
         organization_id=run.organization_id, workspace_id=run.workspace_id)
 
 home_operator_followup.launch_handler = _launch_home_event_run
+home_operator_followup.attach_preinput_observer(execution_preflight_service)
+automation_outcome_reconciliation_service.home_operator_reconciler = home_operator_followup.reconcile_preinput
 app.state.home_operator_followup = home_operator_followup
 app.state.home_operator_schedule_unsubscribe = canonical_event_bus.subscribe(
     home_operator_followup.on_schedule, event_types=("schedule.due",))

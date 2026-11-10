@@ -882,3 +882,40 @@ START or unknown/mismatched usage refuses this repair before any native
 interrupt. A successful `pause` response retains the settled original delivery
 and measured usage and then records the normal operator pause. The existing
 `resume` contract remains separate and explicitly authorized.
+
+### Exact delegation evidence read
+
+An explicitly declared `operator.project.delegation.read` operation provides
+`GET /api/operator/projects/delegation?intent_id=<original ActionIntent>` with an
+optional exact `event_id`. The response contract is `schema_version=1.0` and
+contains only bounded canonical metadata: original intent/last receipt IDs and
+statuses, retained admission versus positive native START, matching terminal
+event, and exactly attributed canonical usage. A completed admission receipt
+is not independent verification or child completion. Missing START, event or
+usage stays unknown; the operation never retries, sends, interrupts, or grants
+permission to act. No task text, native transcript, provider body, credentials,
+or arbitrary history is returned.
+
+Current Home selection, authenticated administrator, execution Definition,
+explicit operation declaration, and declared child Project/Profile envelope
+remain mandatory. The target Project read authority is checked again. Original
+parent/child assignment and typed input lineage identify historical evidence;
+a retired parent's lease and the child's *current* bootstrap are not required.
+A changed current Home selection or revoked authority suppresses the result.
+An optional event must match the original parent, retained input, native START
+and deterministic terminal event identity. Its usage reference must match a
+canonical completed usage record; event text alone never establishes success.
+The last parent receipt uses the existing bounded exact-parent canonical reader;
+incomplete receipt inventory refuses instead of selecting another receipt.
+
+This is an additive engine capability, not a default grant. Enabling it requires
+a normal new revision of the Home-scoped execution-profile catalog, derived
+from the actual current record, adding this one operation to the selected
+`orchestration-only` profile and preserving the rest of the payload. Publish
+through normal validation/security/approval and active-revision CAS; then use
+normal fresh custody under the resulting exact Definition pin. Existing
+assignments and historical runs are not silently repinned. The operator catalog
+and structured read response are the existing conversation UI surface. The
+follow-up input includes the original parent/admission identifier references so
+the operator can request this read without history reconstruction. No extra
+model call, polling loop, scheduler, or parallel execution state is introduced.

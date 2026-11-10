@@ -41,7 +41,7 @@ def work_item_progress_evidence(state: WorkItemState) -> dict[str, Any]:
     return state.model_dump(
         exclude={
             "updated_at", "last_meaningful_update_at", "last_owner_activity_at",
-            "last_gitlab_event_at", "source_projection",
+            "last_gitlab_event_at", "source_projection", "wait_checkpoint",
         }
     )
 

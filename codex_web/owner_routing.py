@@ -31,7 +31,7 @@ class OwnerRoutingBinding(BaseModel):
     def valid_reference(self):
         if (self.definition.kind != 'execution-role-catalog'
                 or self.definition.definition_id != 'execution-roles.default'
-                or self.definition.definition_schema_version != '1.0'
+                or self.definition.definition_schema_version not in {'1.0', '1.1'}
                 or normalized_owner(self.configured_owner) != self.configured_owner
                 or (self.schema_version == '1.0' and self.configured_owner == self.canonical_owner)):
             raise ValueError('invalid coordination owner binding')

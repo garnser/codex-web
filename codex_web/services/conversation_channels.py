@@ -39,7 +39,10 @@ def capture_repository_selection(settings, project, execution_profile, resources
         return settings.model_copy(update={"repository_resource_id": None,
             "writable_repository_resource_ids": (), "read_only_repository_resource_ids": ()})
     writes = settings.writable_repository_resource_ids
-    if not writes and project.repository_selection_policy == "coordinated":
+    readonly = settings.sandbox == "read-only" or execution_profile.repository_access == "read-only"
+    if readonly and writes:
+        raise ValueError("READ execution cannot capture writable repositories")
+    if not readonly and not writes and project.repository_selection_policy == "coordinated":
         writes = tuple(row.id for row in resources.project_resources(project, actor=actor)
             if row.resource_type == ResourceType.REPOSITORY and row.lifecycle == ResourceLifecycle.ACTIVE)
     if writes:
@@ -54,7 +57,12 @@ def capture_repository_selection(settings, project, execution_profile, resources
             explicit_repository_id=settings.repository_resource_id,
             read_only_repository_ids=settings.read_only_repository_resource_ids)
         selected = target.mutable_repository_id
-        writes = (selected,) if selected else ()
+        writes = (selected,) if selected and not readonly else ()
+        if readonly:
+            return settings.model_copy(update={"repository_resource_id": selected,
+                "writable_repository_resource_ids": (),
+                "read_only_repository_resource_ids": tuple(dict.fromkeys((
+                    *((selected,) if selected else ()), *target.read_only_repository_ids)))})
     return settings.model_copy(update={"repository_resource_id": selected,
         "writable_repository_resource_ids": tuple(writes)})
 

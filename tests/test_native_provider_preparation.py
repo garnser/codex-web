@@ -195,6 +195,7 @@ class NativeProviderPreparationTests(unittest.IsolatedAsyncioTestCase):
             session.local_worker=NS(backend=backend,worker=f.procedure_worker)
             session._native_preparation_backend=backend
             session.control_plane_broker=broker
+            session.dependency_egress_broker=None
             service.assignment_reasoning=NS(procedures=self.owner)
             session.validate_current=Mock(return_value=f.native_assignment)
             session.status=Mock(return_value=NS(running=True,ready=True))
@@ -379,6 +380,17 @@ class NativeProviderPreparationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evidence.execution_id,f.native_assignment.execution_id)
         self.assertEqual(f.ops.calls,["gitlab.logs.read"])
         self.assertEqual(intent.status,ActionIntentStatus.SUCCEEDED)
+        self.assertFalse(intent.verification_required)
+        history=f.service.store.load(intent_id=intent.id)
+        verification=next(v for v in history.verifications if v.id==intent.last_verification_id)
+        self.assertTrue(verification.verified)
+        self.assertIsNone(verification.provider_verification)
+        self.assertNotIn("provider_result_interruption",step_state.evidence)
+        # A legitimate unverified read can project ordinary canonical proof,
+        # but cannot supply the stronger provider proof required for settlement.
+        receipt=next(r for r in history.receipts if r.id==intent.last_receipt_id)
+        with self.assertRaisesRegex(ActionRequirementError,"procedure_provider_result_original_not_settled"):
+            self.owner._positive_result_original(progressed,self.owner._procedure(progressed,f.actor).steps[0],intent,receipt,history,f.actor)
 
     async def test_direct_provider_and_nonstep_intent_cannot_mutate(self):
         f=self.fixture

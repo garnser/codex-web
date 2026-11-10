@@ -6,6 +6,7 @@ from codex_web.automation_runs import (
     AUTOMATION_RUN_STATE_CONTRACT,
     AutomationRun,
     AutomationRunState,
+    AutomationRunStatus,
 )
 from codex_web.compatibility import MigrationRegistry
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -78,6 +79,10 @@ AUTOMATION_RUN_MIGRATIONS.register(
     "1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"})
 
 
+AUTOMATION_RUN_MIGRATIONS.register(
+    '1.4', '1.5', lambda payload: {**payload, 'schema_version':'1.5'})
+
+
 class AutomationRunNotFoundError(KeyError):
     pass
 
@@ -94,11 +99,14 @@ class AutomationRunStore:
         if not isinstance(payload, dict):
             raise ValueError("automation run state must be an object")
         version = str(payload.get("schema_version") or "0.0")
-        if version != AUTOMATION_RUN_STATE_CONTRACT.current:
+        # Legacy-only reads/writes retain released 1.4 bytes. A populated
+        # procedure facet explicitly upgrades the existing state at its writer.
+        target = '1.4' if version in {'0.0','1.0','1.1','1.2','1.3','1.4'} else AUTOMATION_RUN_STATE_CONTRACT.current
+        if version != target:
             payload = AUTOMATION_RUN_MIGRATIONS.migrate(
                 payload,
                 from_version=version,
-                to_version=AUTOMATION_RUN_STATE_CONTRACT.current,
+                to_version=target,
             )
         return AutomationRunState.model_validate(payload)
 
@@ -111,7 +119,7 @@ class AutomationRunStore:
     ) -> AutomationRunState:
         payload = self.store.update(
             self.namespace,
-            lambda raw: updater(self._decode(raw)).model_dump(mode="json"),
+            lambda raw: AutomationRunState.model_validate(updater(self._decode(raw)).model_dump(mode="json")).model_dump(mode="json"),
             default=AutomationRunState().model_dump(mode="json"),
         )
         return self._decode(payload)
@@ -171,7 +179,13 @@ class AutomationRunStore:
             None,
         )
 
-    def append(self, run: AutomationRun) -> AutomationRun:
+    def append(self, run: AutomationRun, *, canonical_invocation_prefix: str | None = None) -> AutomationRun:
+        if canonical_invocation_prefix is not None:
+            import re
+            if (run.target_kind != 'canonical_procedure' or not run.work_item_ref
+                    or not re.fullmatch(r'procedure-handoff:[0-9a-f]{64}:', canonical_invocation_prefix)
+                    or not run.dedupe_key.startswith(canonical_invocation_prefix)):
+                raise ValueError('invalid canonical procedure invocation prefix')
         result: dict[str, AutomationRun] = {}
 
         def apply(state: AutomationRunState) -> AutomationRunState:
@@ -181,7 +195,11 @@ class AutomationRunStore:
                     for item in state.runs
                     if item.organization_id == run.organization_id
                     and item.workspace_id == run.workspace_id
-                    and item.dedupe_key == run.dedupe_key
+                    and (item.dedupe_key == run.dedupe_key
+                         or (canonical_invocation_prefix is not None
+                             and (item.project_id,item.automation_id,item.target_kind,item.target_id,item.work_item_ref)
+                                 == (run.project_id,run.automation_id,run.target_kind,run.target_id,run.work_item_ref)
+                             and item.dedupe_key.startswith(canonical_invocation_prefix)))
                 ),
                 None,
             )
@@ -215,3 +233,26 @@ class AutomationRunStore:
 
         self.update(apply)
         return run
+
+    def cancel_retired_procedure(self, run, assignment, *, workers, validate, now, operator_identity_id):
+        """CAS scheduling only, under the canonical assignment/Run writer fence."""
+        if self.store is not workers.store:
+            raise ValueError('procedure_retirement_canonical_store_required')
+        result = []
+        def apply(rows):
+            state = self._decode(rows[self.namespace][None])
+            current = next((row for row in state.runs if row.id == run.id), None)
+            if (current != run or current.status != 'running'
+                    or rows[workers.assignment_namespace][assignment.id] != assignment.model_dump(mode='json')):
+                raise ValueError('procedure_retirement_original_changed')
+            validate()
+            cancelled = run.model_copy(update={'status': AutomationRunStatus.CANCELLED, 'completed_at': now, 'updated_at': now,
+                'result_code': 'procedure_retired_custody_cancelled',
+                'result_reason': f'Operator {operator_identity_id} cancelled scheduling after exact original bootstrap retirement; '
+                    'the retained checkpoint and historical effects are not completed, rolled back or replayed.'})
+            state.runs = [cancelled if row.id == run.id else row for row in state.runs]
+            result.append(cancelled)
+            return {self.namespace: {None: state.model_dump(mode='json')}}
+        self.store.record_mutate_many({self.namespace: (None,),
+            workers.assignment_namespace: (assignment.id,)}, apply)
+        return result[0]

@@ -1208,7 +1208,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                                                read_only_repository_ids=('unrelated-context',))
         recovered = sessions.start.return_value
         new = recovered.validate_current()
-        new.repository_target = SimpleNamespace(mutable_repository_id='repo-old')
+        new.repository_target = SimpleNamespace(primary_repository_id=('repo-old'), mutable_repository_id='repo-old')
         new.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
                                                read_only_repository_ids=())
         host._thread_run_settings = lambda _id: ThreadRunSettings(
@@ -1240,7 +1240,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 recovered = sessions.start.return_value
                 new = recovered.validate_current()
                 new.agent_profile = requested
-                new.repository_target = SimpleNamespace(mutable_repository_id='repo-old')
+                new.repository_target = SimpleNamespace(primary_repository_id=('repo-old'), mutable_repository_id='repo-old')
                 new.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
                                                        read_only_repository_ids=())
                 service._select_runtime_binding = AsyncMock(return_value=(runtime, requested))
@@ -1270,7 +1270,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 assignment.organization_id = "org"
                 assignment.workspace_id = "workspace"
                 assignment.execution_profile_id = "repository-write"
-                assignment.repository_target = SimpleNamespace(mutable_repository_id="repo-docs")
+                assignment.repository_target = SimpleNamespace(primary_repository_id=("repo-docs"), mutable_repository_id="repo-docs")
                 assignment.repository_scope = SimpleNamespace(writable_repository_ids=("repo-docs",),
                     read_only_repository_ids=())
                 sessions.session.validate_current = MagicMock(return_value=assignment)
@@ -1557,10 +1557,12 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in calls], ["thread/resume", "turn/start"])
         self.assertEqual(calls[0].args[1]["cwd"], "/workspace/project")
         self.assertEqual(calls[1].args[1]["cwd"], "/workspace/project")
-        self.assertNotIn(
-            "ASSIGNMENT CONTROL-PLANE ACCESS",
-            calls[1].args[1].get("developerInstructions") or "",
-        )
+        # This fixture supplies no base instructions and has no assignment.
+        # Assert absence on the actual supported wire, rather than a fallback
+        # lookup of the obsolete field that could hide injected authority.
+        self.assertNotIn("additionalContext", calls[1].args[1])
+        self.assertNotIn("developerInstructions", calls[1].args[1])
+        self.assertNotIn("developerInstructions", calls[0].args[1])
         self.assertEqual(
             calls[1].args[1]["sandboxPolicy"],
             {"type": "danger-full-access"},
@@ -1858,8 +1860,15 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     source=source, execution_id="exec-no-work-item",
                 )
                 self.assertEqual(resolved_refs, [])
-                for _method, request in sessions.session.requests:
-                    instructions = request["developerInstructions"]
+                for method, request in sessions.session.requests:
+                    if method == "turn/start":
+                        self.assertNotIn("developerInstructions", request)
+                        context = request["additionalContext"]["codex-web:developer-instructions"]
+                        self.assertEqual(context["kind"], "application")
+                        instructions = context["value"]
+                    else:
+                        self.assertEqual(method, "thread/resume")
+                        instructions = request["developerInstructions"]
                     self.assertEqual(instructions.count("ASSIGNMENT CONTROL-PLANE ACCESS"), 1)
                     self.assertIn("GET /api/control-plane-broker/operations", instructions)
                     self.assertIn("existing ActionIntent before retrying", instructions)
@@ -1880,7 +1889,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             sandbox="workspace-write", approval_policy="never",
             work_item_ref="group/app#531",
         )
-        instructions = sessions.session.requests[1][1]["developerInstructions"]
+        instructions = sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"]
         self.assertIn("Canonical work context", instructions)
         self.assertEqual(instructions.count(guidance), 1)
 
@@ -1934,7 +1943,8 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
 
         turn = sessions.session.requests[1][1]
-        instructions = turn["developerInstructions"]
+        self.assertNotIn("developerInstructions", turn)
+        instructions = turn["additionalContext"]["codex-web:developer-instructions"]["value"]
         self.assertIn("Canonical Work Item continuation context", instructions)
         self.assertIn('"mode":"delta"', instructions)
         self.assertIn('"title":"Updated"', instructions)
@@ -1984,7 +1994,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             work_item_ref="group/app#531",
         )
 
-        instructions = sessions.session.requests[1][1]["developerInstructions"]
+        instructions = sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"]
         self.assertIn('"mode":"full"', instructions)
         self.assertIn('"work_item_context"', instructions)
         self.assertIn("Canonical full context", instructions)
@@ -2027,7 +2037,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved_refs, ["group/app#531"])
         self.assertIn(
             "Bootstrap Work Item",
-            sessions.session.requests[1][1]["developerInstructions"],
+            sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"],
         )
 
     async def test_work_item_context_resolution_failure_blocks_before_runtime_turn(self) -> None:
@@ -2265,7 +2275,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         old = sessions.session.validate_current()
         old.runtime_binding = runtime
         old.agent_profile = bound_profile
-        old.repository_target = SimpleNamespace(mutable_repository_id="repo-old")
+        old.repository_target = SimpleNamespace(primary_repository_id=("repo-old"), mutable_repository_id="repo-old")
         old.repository_scope = SimpleNamespace(writable_repository_ids=("repo-old",))
         sessions.session.validate_current = MagicMock(return_value=old)
         service._assignment_record = MagicMock(return_value=old)
@@ -2273,7 +2283,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         new = recovered.validate_current()
         new.runtime_binding = runtime
         new.agent_profile = profile if bound_profile is None else bound_profile
-        new.repository_target = SimpleNamespace(mutable_repository_id="repo-new" if scope_switch else "repo-old")
+        new.repository_target = SimpleNamespace(primary_repository_id=("repo-new" if scope_switch else "repo-old"), mutable_repository_id="repo-new" if scope_switch else "repo-old")
         new.repository_scope = SimpleNamespace(writable_repository_ids=("repo-new" if scope_switch else "repo-old",))
         recovered.validate_current = MagicMock(return_value=new)
         if not scope_switch:
@@ -2367,7 +2377,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         fresh.runtime_binding = selected
         fresh.agent_profile = profile
         fresh.repository_scope = SimpleNamespace(writable_repository_ids=("repo-old",))
-        fresh.repository_target = SimpleNamespace(mutable_repository_id="repo-old")
+        fresh.repository_target = SimpleNamespace(primary_repository_id=("repo-old"), mutable_repository_id="repo-old")
         recovered.validate_current = MagicMock(return_value=fresh)
         sessions.start = AsyncMock(return_value=recovered)
         kwargs["model"] = "codex/gpt-6.1-sol"
@@ -2454,7 +2464,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             assignment = original_validate()
             assignment.runtime_binding = runtime_binding
             assignment.repository_target = SimpleNamespace(
-                mutable_repository_id=(
+                primary_repository_id=("repo-old" if validation_calls == 1 else "repo-new"), mutable_repository_id=(
                     "repo-old" if validation_calls == 1 else "repo-new"
                 )
             )

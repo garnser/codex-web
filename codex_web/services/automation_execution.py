@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -71,6 +72,7 @@ class AutomationExecutionService:
         self.action_providers = action_providers
         self.approvals = approvals
         self.home_operator_followup = None
+        self.procedure_automation = None
 
     def _run(self, run_id: str, *, organization_id: str, workspace_id: str) -> AutomationRun:
         return self.runs.store.get(
@@ -562,6 +564,11 @@ class AutomationExecutionService:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
+        if run.target_kind == 'canonical_procedure':
+            if self.procedure_automation is None:
+                raise AutomationExecutionError('Canonical procedure Automation owner is unavailable')
+            self.procedure_automation.schedule_launch(run)
+            return run
         if run.status != AutomationRunStatus.ADMITTED:
             return run
 
@@ -734,6 +741,9 @@ class AutomationExecutionService:
                     and current.status == AutomationRunStatus.RUNNING):
                 # The durable Home delivery claim precedes external queue effects.
                 # A lost response is not proof that nothing was delivered.
+                record = getattr(self.home_operator_followup, 'record_launch_unconfirmed', None)
+                if record is not None:
+                    return await asyncio.to_thread(record, current, type(exc).__name__)
                 return current
             if isinstance(exc, AutomationExecutionError):
                 reason = str(exc)

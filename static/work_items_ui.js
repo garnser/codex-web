@@ -1,3 +1,4 @@
+import { installAcceptedRecipientReplacement } from './work_item_recipient_replacement_ui.js';
 import { workItemActionBarHtml, installWorkItemActionBar } from './work_item_action_bar_ui.js';
 import { createWorkItemSourceActions } from './work_item_source_actions.js';
 import { requestedReference, rememberReference, projectPath } from './reference_navigation.js';
@@ -524,6 +525,7 @@ function renderDetail(payload) {
         </div>`).join('') : '<small>No work-item events recorded.</small>'}</div>
     </section>`;
   installWorkItemActionBar(detail, item, { runItemAction, captureScope, scopedPath, pathRef });
+  installAcceptedRecipientReplacement(detail, item, { request, scopedPath, captureScope, reload: loadDetail, projectId: state.projectId });
   detail.querySelector('.work-projection-retry')?.addEventListener('click', async event => {
     const isCurrent = captureScope();
     event.target.disabled = true;

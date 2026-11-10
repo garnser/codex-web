@@ -202,6 +202,8 @@ class CodexAgentRuntimeAdapter:
             params["approvalsReviewer"] = request.approval_reviewer
         if request.model:
             params["model"] = request.model
+        if request.developer_instructions:
+            params["developerInstructions"] = request.developer_instructions
         runtime = getattr(self.transport, "runtime", self.transport)
         generation = getattr(runtime, "generation", None)
         response = await self.transport.request("thread/start", params)
@@ -412,7 +414,15 @@ class CodexAgentRuntimeAdapter:
         if request.reasoning_effort:
             params["effort"] = request.reasoning_effort
         if request.developer_instructions:
-            params["developerInstructions"] = request.developer_instructions
+            # Codex turn/start has no developerInstructions field. Deliver the
+            # already composed context even when the first turn skips resume.
+            # Preserve its explicit untrusted Skill wrapper without parsing it.
+            params["additionalContext"] = {
+                "codex-web:developer-instructions": {
+                    "kind": "application",
+                    "value": request.developer_instructions,
+                },
+            }
         if request.approval_policy:
             params["approvalPolicy"] = request.approval_policy
         if request.approval_reviewer:

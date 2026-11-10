@@ -144,7 +144,7 @@ class QueuedBootstrapRecoveryService:
                 or assignment.sandbox != queued.sandbox or assignment.approval_policy != queued.approval_policy
                 or scope is None or set(scope.writable_repository_ids) != set(queued.writable_repository_resource_ids)
                 or set(scope.read_only_repository_ids) != set(queued.read_only_repository_resource_ids)
-                or target is None or target.mutable_repository_id != queued.repository_resource_id
+                or target is None or target.primary_repository_id != queued.repository_resource_id
                 or set(assignment.resource_ids) != expected_resources
                 or getattr(assignment, 'resource_context', None) != queued.resource_context
                 or self.thread_is_active(proof['threadId'])):
@@ -263,7 +263,7 @@ class QueuedBootstrapRecoveryService:
                 or profile.profile_revision != queued.agent_profile_revision
                 or scope is None or set(scope.writable_repository_ids) != set(queued.writable_repository_resource_ids)
                 or set(scope.read_only_repository_ids) != set(queued.read_only_repository_resource_ids)
-                or getattr(assignment.repository_target, 'mutable_repository_id', None) != queued.repository_resource_id):
+                or getattr(assignment.repository_target, 'primary_repository_id', None) != queued.repository_resource_id):
             self.refused('bootstrap_recovery_binding_mismatch', 'Correlated bootstrap does not match the exact original scope.')
         return binding
 

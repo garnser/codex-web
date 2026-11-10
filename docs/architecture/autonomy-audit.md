@@ -152,3 +152,23 @@ logic in the browser.
 Release, Incident, recovery, capacity, upgrade, and replicated-ownership domains should publish canonical Evidence
 and/or safety signals into this boundary rather than introducing local
 production-autonomy readiness flags.
+
+## Bounded record inspection (#2037)
+
+Record-list and exact-record reads query the existing keyed audit collection with
+partition filtering, descending sequence ordering and a result limit in SQLite
+or PostgreSQL before Python payload hydration. Selected-ID redaction lookup is
+batched, so rendering a bounded page does not reconstruct history once per row.
+Read authorization and public record shape are unchanged. Checkpoint/signal
+inspection reads only its canonical control keys, without the record collection.
+
+These are bounded returned-payload/memory contracts, not a guarantee that SQL
+never scans retained rows. No new table, ledger, index or audit format is added.
+Uninitialized empty state remains empty; a legacy envelope is refused by bounded
+inspection rather than implicitly hydrated/migrated. Normal canonical mutation
+owners retain their existing validated conversion contract. Explicit integrity
+verification, reliability metrics, exports and write/update contracts retain their
+existing history semantics; a list response does not assert whole-chain integrity.
+Malformed selected records, scope drift or incompatible keyed schema fail closed.
+No history is pruned, hashes rewritten, memory ceilings raised or authority added.
+The existing audit inspector consumes the same APIs; no new UI action is needed.

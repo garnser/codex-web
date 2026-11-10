@@ -190,6 +190,11 @@ EXECUTION_WORKER_MIGRATIONS.register(
 )
 
 
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.14", "1.15", lambda payload: {**payload, "schema_version": "1.15"},
+)
+
+
 class ExecutionWorkerStore:
     namespace = "execution_workers"
     worker_namespace = "execution_workers.workers"
@@ -209,11 +214,12 @@ class ExecutionWorkerStore:
         if not isinstance(payload, dict):
             raise ValueError("execution worker state must be an object")
         version = str(payload.get("schema_version") or "0.0")
-        if version != EXECUTION_WORKER_CONTRACT.current:
+        target = "1.15" if version == "1.15" else "1.14"
+        if version != target:
             payload = EXECUTION_WORKER_MIGRATIONS.migrate(
                 payload,
                 from_version=version,
-                to_version=EXECUTION_WORKER_CONTRACT.current,
+                to_version=target,
             )
         EXECUTION_WORKER_CONTRACT.require(payload.get("schema_version", ""))
         return ExecutionWorkerState.model_validate(payload)
@@ -263,7 +269,7 @@ class ExecutionWorkerStore:
         self._ensure_records()
         return self._decode(
             {
-                "schema_version": EXECUTION_WORKER_CONTRACT.current,
+                "schema_version": "1.14",
                 "workers": sorted(
                     self.store.record_items(self.worker_namespace).values(),
                     key=lambda item: (item.get("registered_at", 0), item.get("id", "")),

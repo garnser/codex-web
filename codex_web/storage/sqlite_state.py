@@ -383,6 +383,46 @@ class SQLiteStateStore:
         return (list(self.record_items(namespace).values()) if rows is None else
                 [self._decode(row) for row in rows])
 
+    def audit_record_rows(self, namespace: str, *, partition_id: str, limit: int,
+                          record_id: str | None = None,
+                          redaction_targets: tuple[str, ...] | None = None) -> list[Any]:
+        """Scope/order/limit canonical audit rows before Python hydration (#2037).
+
+        SQL may scan retained rows; this bounds returned payloads, not SQL work.
+        No full-namespace or legacy-envelope fallback is permitted.
+        """
+        if (namespace != 'autonomy_audit' or type(partition_id) is not str
+                or type(limit) is not int or not 1 <= limit <= 1000
+                or record_id is not None and type(record_id) is not str
+                or redaction_targets is not None and (record_id is not None
+                    or not isinstance(redaction_targets, tuple)
+                    or not 1 <= len(redaction_targets) <= 1000
+                    or any(type(x) is not str for x in redaction_targets))):
+            raise ValueError('invalid bounded audit query')
+        prefix = state_record_storage_key(namespace, 'record:')
+        where = "namespace >= ? AND namespace < ? AND json_extract(payload,'$.partition_id') = ?"
+        parameters = [prefix, prefix + '\uffff', partition_id]
+        if record_id is not None:
+            where += " AND json_extract(payload,'$.id') = ?"
+            parameters.append(record_id)
+        if redaction_targets is not None:
+            slots = ','.join('?' for _ in redaction_targets)
+            where += (" AND json_extract(payload,'$.payload.kind') = 'redaction'"
+                + " AND json_extract(payload,'$.payload.target_audit_record_id') IN (" + slots + ")")
+            parameters.extend(redaction_targets)
+            query = ("SELECT payload FROM (SELECT payload, ROW_NUMBER() OVER (PARTITION BY "
+                "json_extract(payload,'$.payload.target_audit_record_id') ORDER BY "
+                "json_extract(payload,'$.sequence') DESC) AS chosen FROM state_documents WHERE "
+                + where + ") WHERE chosen=1 LIMIT ?")
+        else:
+            query = ("SELECT payload FROM state_documents WHERE " + where
+                + " ORDER BY json_extract(payload,'$.sequence') DESC LIMIT ?")
+        with self._connection() as connection:
+            if not self._record_collection_exists_in_connection(connection, namespace):
+                raise ValueError('bounded audit read requires keyed canonical records')
+            rows = connection.execute(query, (*parameters, limit)).fetchall()
+        return [self._decode(row) for row in rows]
+
     def record_count(self, namespace: str) -> int:
         with self._connection() as connection:
             if not self._record_collection_exists_in_connection(
@@ -829,6 +869,50 @@ class SQLiteStateStore:
                     namespace,
                 )
             return None
+
+    def shared_artifact_candidates(self, namespace, *, organization_id, workspace_id,
+            project_id, work_item_ref, provider, source, before=None, limit=32):
+        """Bound returned exact-Work candidates in SQL, not a tenant Python scan.
+
+        SQLite JSON evaluation may scan the canonical document internally; this
+        is a result bound, not a claimed scanned-row/CPU bound. No full fallback.
+        """
+        if type(limit) is not int or not 1 <= limit <= 32 or (before is not None and (type(before) is not int or not 1 <= before <= 2**61-1)):
+            raise ValueError('invalid shared-input page bound')
+        query = """WITH document AS MATERIALIZED (
+            SELECT payload FROM state_documents WHERE namespace=?),
+            matching AS MATERIALIZED (
+                SELECT CAST(item.key AS INTEGER)+1 AS ordinal,
+                    substr(json_extract(item.value,'$.id'),1,201) AS id,
+                    count(*) OVER (PARTITION BY json_extract(item.value,'$.id')) AS duplicates
+                FROM document,json_each(payload,'$.artifacts') AS item
+                WHERE item.type='object'
+                    AND json_extract(item.value,'$.organization_id')=?
+                    AND json_extract(item.value,'$.workspace_id')=?
+                    AND json_extract(item.value,'$.project_id')=?
+                    AND json_extract(item.value,'$.work_item_ref')=?
+                    AND json_extract(item.value,'$.provider')=?
+                    AND json_extract(item.value,'$.source')=?
+                ), candidates AS MATERIALIZED (SELECT * FROM matching
+                WHERE (? IS NULL OR ordinal < ?) ORDER BY ordinal DESC LIMIT ?)
+            SELECT COALESCE(json_extract(payload,'$.schema_version'),'0.0'),
+                json_type(payload)='object'
+                    AND COALESCE(json_type(payload,'$.schema_version'),'text') IN ('text','null')
+                    AND NOT EXISTS(SELECT 1 FROM json_each(payload) WHERE key NOT IN ('schema_version','artifacts','evidence','verifications'))
+                    AND COALESCE(json_type(payload,'$.artifacts'),'array')='array'
+                    AND COALESCE(json_type(payload,'$.evidence'),'array')='array'
+                    AND COALESCE(json_type(payload,'$.verifications'),'array')='array',
+                (SELECT json_group_array(json_object('ordinal',ordinal,'id',id,'duplicates',duplicates)) FROM candidates)
+            FROM document"""
+        with self._connection() as connection:
+            row=connection.execute(query,(namespace,organization_id,workspace_id,project_id,
+                work_item_ref,provider,source,before,before,limit+1)).fetchone()
+        if row is None:
+            return {'schema_version':None,'candidates':[],'more':False}
+        if not row[1]:
+            raise ValueError('unsupported canonical Artifact envelope')
+        selected=json.loads(row[2])
+        return {'schema_version':row[0],'candidates':selected[:limit],'more':len(selected)>limit}
 
     def document_array_item_envelope(self, namespace: str, array_name: str, item_id: str, *,
                                      organization_id: str, workspace_id: str,

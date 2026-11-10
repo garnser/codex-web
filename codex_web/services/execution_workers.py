@@ -1086,7 +1086,8 @@ class ExecutionWorkerService:
                 workspace_writable = set(
                     getattr(workspace, "writable_repository_ids", ())
                 )
-                if not workspace_writable and workspace.repository_resource_id is not None:
+                if (not workspace_writable and workspace.repository_resource_id is not None
+                        and workspace.read_only_primary_repository_id is None):
                     workspace_writable = {workspace.repository_resource_id}
                 if workspace_writable != set(scope.writable_repository_ids):
                     raise WorkerConflictError(
@@ -1096,6 +1097,25 @@ class ExecutionWorkerService:
                     member.resource_id: member
                     for member in getattr(workspace, "repository_members", ())
                 }
+                if scope.write_mode.value == "read_only":
+                    primary = (payload.repository_target.read_only_primary_repository_id
+                               if payload.repository_target is not None else None)
+                    lease = self.workspaces.store.lease(workspace.lease_id)
+                    if (payload.sandbox != "read-only"
+                            or primary is None or workspace.repository_resource_id != primary
+                            or workspace.read_only_primary_repository_id != primary
+                            or lease is None or lease.released_at is not None
+                            or lease.expires_at <= time.time()
+                            or lease.execution_id != payload.execution_id
+                            or lease.execution_workspace_id != workspace.id
+                            or lease.subject != workspace.subject
+                            or (lease.organization_id, lease.workspace_id, lease.owner_identity_id)
+                                != (workspace.organization_id, workspace.workspace_id, workspace.owner_identity_id)
+                            or lease.mode.value != "read"
+                            or any(lease.resource_modes.get(r) is None
+                                   or lease.resource_modes[r].value != "read"
+                                   for r in scope.read_only_repository_ids)):
+                        raise WorkerConflictError("read-only repository primary requires exact live READ lease")
                 for resource_id in scope.writable_repository_ids:
                     member = members.get(resource_id)
                     if member is None or member.access_mode.value != "write":
@@ -1867,6 +1887,81 @@ class ExecutionWorkerService:
             )
         return result
 
+    def record_bootstrap_preprovider_refusal(self, original, refusal, *, actor):
+        """Record only this controller's newly settled post-worker refusal.
+
+        No public endpoint accepts this internal proof. Historical cancellations
+        and missing provider replies never acquire recovery authority here.
+        """
+        from codex_web.thread_bootstrap import BootstrapPreproviderRefusal, RecipientBootstrapOrigin
+        self._require_admin(actor)
+        if (not isinstance(refusal, BootstrapPreproviderRefusal)
+                or not isinstance(refusal.origin, RecipientBootstrapOrigin)
+                or original.subject.kind != 'thread_bootstrap'
+                or str(original.status) != 'running' or original.fence != 1
+                or original.lease is None or original.started_at is None
+                or original.assigned_worker_id is None or original.failure is not None
+                or refusal.bootstrap_id != original.subject.ref
+                or refusal.execution_id != original.execution_id):
+            raise WorkerConflictError('post-worker pre-provider refusal has no original running custody')
+        origin = refusal.origin
+        if (type(origin.generation) is not int or origin.generation not in (0, 1)
+                or len(origin.logical_id) != 32 or len(origin.attribution_sha256) != 64
+                or not origin.work_item_ref or origin.handoff_requested_at is None
+                or not origin.binding_id or not origin.actor_id):
+            raise WorkerConflictError('invalid internal recipient origin')
+        workspace = self.workspaces.get(original.execution_workspace_id, actor) if self.workspaces else None
+        if (workspace is None or str(workspace.status) != 'released'
+                or workspace.execution_id != original.execution_id
+                or workspace.subject != original.subject
+                or (workspace.organization_id, workspace.workspace_id, workspace.project_id)
+                    != (original.organization_id, original.workspace_id, original.project_id)):
+            raise WorkerConflictError('post-worker pre-provider workspace teardown unsettled')
+        updated = []
+        # Cancellation already fenced provider admission and checked original
+        # readiness outcomes. Its exact terminal row must remain unchanged.
+        ignored = {'status', 'fence', 'lease', 'completed_at', 'updated_at',
+                   'failure_code', 'failure_message', 'failure'}
+        expected = original.model_dump(mode='json', exclude=ignored)
+        def apply(state):
+            current = self._assignment(state, original.id, actor)
+            if (str(current.status) != 'cancelled' or current.fence != original.fence + 1
+                    or current.lease is not None or current.failure is not None
+                    or current.failure_code != 'thread_bootstrap_cancelled'
+                    or current.model_dump(mode='json', exclude=ignored) != expected):
+                raise WorkerConflictError('post-worker pre-provider terminal custody changed')
+            details = {'phase': 'before_provider_start', 'provider_start_called': False,
+                'worker_start_called': True, 'admission_guard_joined': True,
+                'worker_teardown_settled': True, 'error_type': refusal.error_type[:80],
+                'guard_deadline_exceeded': refusal.guard_deadline_exceeded,
+                'error_http_status': refusal.error_http_status,
+                'reservation_fence': original.fence, 'created_by': original.created_by,
+                'logical_id': origin.logical_id, 'generation': origin.generation,
+                'attribution_sha256': origin.attribution_sha256,
+                'predecessor_assignment_id': origin.predecessor_assignment_id,
+                'work_item_ref': origin.work_item_ref,
+                'handoff_requested_at': origin.handoff_requested_at,
+                'binding_id': origin.binding_id, 'origin_actor_id': origin.actor_id}
+            reason = (FailureReason.EXECUTION_TIMEOUT if refusal.guard_deadline_exceeded else
+                FailureReason.AUTHORITY_DENIED if refusal.error_http_status in (401, 403) else
+                FailureReason.STALE_REVISION if refusal.error_type == 'OwnerRoutingError' else
+                FailureReason.UNCLASSIFIED)
+            failure = create_failure(reason, source_subsystem='thread-bootstrap-admission',
+                correlation_id=current.subject.ref, assignment_id=current.id,
+                execution_id=current.execution_id, worker_id=current.assigned_worker_id,
+                source_native_code='before_provider_start', details=details)
+            replacement = current.model_copy(update={'failure': failure, 'updated_at': time.time()})
+            state.assignments = [replacement if item.id == current.id else item for item in state.assignments]
+            self._event(state, actor=actor, event_type='bootstrap_preprovider_refusal_settled',
+                worker_id=current.assigned_worker_id, assignment_id=current.id,
+                details={'fence': current.fence, 'phase': 'before_provider_start',
+                         'provider_start_called': False, 'generation': origin.generation,
+                         'logical_id': origin.logical_id})
+            updated.append(replacement)
+            return state
+        self.store.transition_assignment(original.assigned_worker_id, original.id, apply)
+        return updated[0]
+
     def mark_stale_workers_offline(
         self,
         *,
@@ -1908,17 +2003,29 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
         now: float | None = None,
+        assignment_id: str | None = None,
+        expected_fence: int | None = None,
     ) -> list[str]:
         self._require_admin(actor)
+        if expected_fence is not None and (assignment_id is None or expected_fence < 0):
+            raise ValueError("expected fence requires an exact assignment identity")
         current = time.time() if now is None else now
         # Find candidates without holding the shared mutation lock. Each point
         # transition below rechecks its current lease/status under the writer.
         candidates: list[ExecutionAssignment] = []
+        if assignment_id is not None:
+            if not assignment_id:
+                raise ValueError("exact assignment identity is required")
+            selected = self.store.assignment(assignment_id)
+            pages = (([selected] if selected is not None else [], None),)
+        else:
+            pages = None
         cursor = None
         while True:
-            assignments, cursor = self.store.assignment_page(after=cursor)
+            assignments, cursor = pages[0] if pages is not None else self.store.assignment_page(after=cursor)
             candidates.extend(item for item in assignments if
-                self._same_scope(item, actor) and (
+                self._same_scope(item, actor)
+                and (expected_fence is None or item.fence == expected_fence) and (
                     (item.status == AssignmentStatus.PENDING
                      and item.deadline_at is not None and item.deadline_at <= current)
                     or (item.status in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
@@ -1933,7 +2040,9 @@ class ExecutionWorkerService:
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
             for index, assignment in enumerate(state.assignments):
-                if not self._same_scope(assignment, actor):
+                if (not self._same_scope(assignment, actor)
+                        or (assignment_id is not None and assignment.id != assignment_id)
+                        or (expected_fence is not None and assignment.fence != expected_fence)):
                     continue
                 if (
                     assignment.status == AssignmentStatus.PENDING

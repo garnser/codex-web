@@ -155,8 +155,9 @@ Conflict detection is resource-specific. Read/read overlap is permitted.
 Write/write overlap is permitted only when both canonical workspace records
 identify the resource as a writable member of distinct Git worktrees; their
 workspace paths, branches, leases, fences and integration outcomes remain
-independent. Read/write overlap and every shared or non-Git write overlap fail
-closed. Existing single-repository workspaces retain the legacy top-level
+independent. Mixed read/write overlap requires the additional canonical physical
+path and exact detached-read member checks described below. Every shared checkout
+or non-Git write overlap still fails closed. Existing single-repository workspaces retain the legacy top-level
 path/branch/base/head projection and gain one equivalent member record.
 
 Repository filesystem sources come from canonical Resource filesystem/path
@@ -172,7 +173,10 @@ Leases are reserved transactionally in SQLite before provisioning.
 - read/read leases may coexist;
 - write/write leases may coexist only for the same canonical repository when
   both executions own independently provisioned writable Git worktree members;
-- read/write and shared or non-Git write overlaps conflict;
+- mixed READ/WRITE repository leases may coexist only for positively identified,
+  distinct canonical Git-worktree paths and exact per-resource member modes;
+  unknown/legacy paths, shared checkouts and non-Git write overlaps still conflict;
+  the existing isolated WRITE/WRITE rule is unchanged;
 - resource-scoped conflicts fail before a worktree is created;
 - tenant and identity quotas are evaluated against active leases;
 - workspace resource count and requested disk usage are bounded;
@@ -414,3 +418,76 @@ a source mutation; it does not promise rollback after disk/host loss. Older
 readers retain their scalar/raw detail view. The inspector normalization requires
 the supported version and scalar shape before displaying complete/ready; absent,
 malformed and future representations do not establish readiness.
+
+### Isolated read snapshots and writable recipients
+
+A detached read-only Git worktree must not block a separately isolated writable
+recipient (#1987). The same canonical backend plans both member destinations;
+lease admission verifies the existing active member's source/path/mode and its
+recorded detached base/head equality before permitting mixed READ/WRITE overlap.
+This is canonical member evidence from provisioning, not a claim that each lease
+admission runs Git or independently rereads every checkout file. Missing
+path planning or member evidence fails closed; provisioning reservations without
+completed member evidence do not qualify for this additional permission.
+
+The read checkout and per-worktree HEAD/index are separate, but Git's common
+metadata/object store is shared, as with existing isolated writable worktrees.
+The read-only native backend continues mounting its checkout and Git metadata
+read-only; a concurrent writer can advance its own branch without changing the
+reader's pinned checkout. This is not a private clone or a grant to mutate the
+reader, source checkout, shared nonrepository Resource, or another worktree.
+No lease is yielded or released implicitly, and no persistent format changes.
+
+### Explicit replacement of an accepted unbound recipient
+
+An accepted Work handoff can retain a correlated START and genuine ACK on a
+repository-scoped recipient while its logical Role/reply binding remains on a
+different repository. Generation-zero accepted routing validates the actual
+admitted recipient, current Role/Profile and exact original attribution; the
+reply anchor is not required to be a cancelled lease owner of that repository.
+Generation-one preparation still requires its positive typed predecessor proof.
+The complete retained-original barrier, current authority, exact scope, native
+custody and LIVE lease/fence guards remain mandatory for owner input.
+
+Explicit cancellation remains a resource release. Accepted START/ACK alone does
+not authorize automatic revival. An administrator with current MFA may make a
+NEW bodyless `POST /api/threads/{recipient}/replace?work_item_ref={ref}` request
+within the canonical thread Project. The Work selector grants no permission.
+For an unbound recipient the existing replacement owner verifies the exact
+current accepted Work/nonce, retained START/ACK, original binding, current
+Profile/actor and cancelled next fence/no lease before any effect. An optional
+read-only `GET /api/threads/{recipient}/replacement-eligibility?work_item_ref={ref}`
+uses the same proof. The Work inspector uses that canonical result and an
+explicit confirmation; HTTP refusal/unknown is visible and never auto-retried.
+Ordinary bound replacement retains its existing API and behavior.
+
+The existing start/retirement owner joins terminal process ownership and holds
+admission through the scoped replacement graph commit. The normal bootstrap
+owner admits a new recipient with the same exact repository scope/current
+Profile; no logical bot binding, Work owner, nonce, ACK or historical START is
+rewritten. A deterministic bootstrap execution under the existing coordination
+owner reserves one provider attempt for that cancelled assignment/fence and
+accepted nonce. Existing unresolved reservations refuse another create; only a
+positively bound, current exact successor can finish an interrupted graph
+publication. There is no generation retry or absence-as-no-effect inference.
+The same graph lets ordinary owner dispatch resolve that authorized successor;
+input still requires fresh LIVE custody and its normal preflight/START.
+
+Current authority and Work are rechecked before reservation, provider I/O,
+after native creation and immediately before graph publication. Refusal after
+creation settles that invocation's unused successor through the existing
+canonical manager/retirement owners, preserving files and records; an existing
+candidate is not cancelled on this branch. Active or unknown custody remains a
+refusal. Retained preflight/native outcomes remain unchanged, and existing
+queue retargeting preserves known unstarted requests. No model calls, schema
+changes, new identity ledger, grants, historical backfill or automatic rollback
+are introduced by this replacement path.
+
+Explicit accepted-recipient replacement revalidates the original authenticated
+operator through the canonical Identity owner, including current membership,
+session or local-trusted provenance and current MFA assurance. Credential-free
+delegated identity resolution cannot establish this authentication. Missing
+authenticated-origin wiring refuses replacement; it does not fall back to a
+delegated actor or copy assurance onto one. Initial and post-await checks use
+the same revalidator. Authentication and authorization refusals reach the
+existing API/UI as HTTP 401/403, while canonical lineage conflicts remain 409.

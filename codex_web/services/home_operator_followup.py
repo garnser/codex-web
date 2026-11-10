@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import re
@@ -12,8 +13,9 @@ from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRunStatus, HomeEventTerminal, HomeEventCustody
 from codex_web.definitions import DefinitionScope
 from codex_web.identity import PrincipalKind, TenantScope
-from codex_web.models import TurnCreate
-from codex_web.services.identity import IdentityService
+from codex_web.models import TurnCreate, QueuedTurn
+from codex_web.services.identity import IdentityService, AuthorizationError, AuthenticationError
+from codex_web.services.definitions import DefinitionNotFoundError, DefinitionCompatibilityError
 from codex_web.scheduler import ScheduleCreate
 from codex_web.storage.scheduler import ScheduleConflictError, ScheduleNotFoundError
 
@@ -23,7 +25,7 @@ SOURCE = 'home-operator-automation:'
 
 class HomeOperatorFollowup:
     def __init__(self, *, runs, operator, identity, events, turns, controller, authority, event_triggers, workers=None, bootstrap_bindings=None, scheduler=None,
-                 sessions=None, runtime_usage=None, outcomes=None):
+                 sessions=None, runtime_usage=None, outcomes=None, launch_coordinator=None):
         self.runs, self.operator, self.identity = runs, operator, identity
         self.events, self.turns, self.controller = events, turns, controller
         self.authority, self.event_triggers = authority, event_triggers
@@ -31,6 +33,7 @@ class HomeOperatorFollowup:
         self.scheduler, self.sessions, self.runtime_usage = scheduler, sessions, runtime_usage
         self.outcomes = outcomes
         self.launch_handler = None
+        self.launch_coordinator = launch_coordinator
         self.restart_recovery = None
 
     def context(self, run, actor=None, *, check_controls=True):
@@ -92,7 +95,8 @@ class HomeOperatorFollowup:
         # Event payloads are untrusted data. Carry only bounded identifier
         # references; never provider logs, body text, credentials or transcripts.
         references = {}
-        for key in ('project_id', 'work_item_ref', 'execution_id', 'artifact_id', 'revision', 'pipeline_id'):
+        for key in ('project_id', 'work_item_ref', 'execution_id', 'artifact_id', 'revision', 'pipeline_id',
+                    'parent_intent_id', 'admission_attempt_id'):
             value = event.payload.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool):
                 text = str(value)
@@ -279,6 +283,74 @@ class HomeOperatorFollowup:
         self.runs.store.update(claim)
         return claimed, self.runs.store.get(run.id, organization_id=run.organization_id, workspace_id=run.workspace_id)
 
+    def schedule_launch(self, run):
+        """Handoff only an already durable admission to the existing owned lane."""
+        if run.target_kind != 'home_operator':
+            raise ValueError('Canonical Home Automation run required')
+        if run.status != AutomationRunStatus.ADMITTED:
+            return False
+        if self.launch_coordinator is None or self.launch_handler is None:
+            raise ValueError('Canonical Home launch owner is unavailable')
+        from codex_web.storage.state_store import storage_operation_budget
+        context = contextvars.copy_context()
+        context.run(storage_operation_budget.set, None)
+        return context.run(self.launch_coordinator.schedule,
+            'home-event-launch:' + run.id, lambda: self._launch_owned(run),
+            revision=run.definition_ref.checksum,
+            scope='home-event-launch:' + run.organization_id + ':' + run.workspace_id)
+
+    async def _launch_owned(self, run):
+        # The child recorder keeps its own short checkpoint deadline. This
+        # separately tracked owner has the Automation's finite grant, with
+        # current authority/custody checked by the ordinary launch/send path.
+        from codex_web.services.post_turn_readiness import PostTurnReadinessService
+        async def operation():
+            current = await asyncio.to_thread(self.runs.store.get, run.id,
+                organization_id=run.organization_id, workspace_id=run.workspace_id)
+            if current.status != AutomationRunStatus.ADMITTED:
+                return  # RUNNING is uncertain; never replay a claimed delivery.
+            if (current.definition_ref != run.definition_ref or current.trigger != run.trigger
+                    or current.project_id != run.project_id):
+                raise ValueError('Original Home admission provenance changed')
+            return await self.launch_handler(current)
+        try:
+            automation, _ = await asyncio.to_thread(self.runs.definitions.resolve_reference,
+                run.definition_ref, organization_id=run.organization_id,
+                workspace_id=run.workspace_id, project_id=run.project_id)
+            return await PostTurnReadinessService._run_owned(operation,
+                seconds=automation.budget.max_duration_seconds,
+                name='home-event-launch-' + run.id)
+        except BaseException as error:
+            error_type = type(error).__name__
+            # _run_owned joins the actual operation before exposing failure or
+            # cancellation. Only annotate the same durable original; no reset,
+            # success inference or replacement input is permitted.
+            task = asyncio.create_task(asyncio.to_thread(self.record_launch_unconfirmed, run, error_type))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+            raise
+
+    def record_launch_unconfirmed(self, run, error_type):
+        """Annotate a joined/returned launch failure without changing its outcome."""
+        def note(state):
+            for index, current in enumerate(state.runs):
+                if (current.id == run.id and current.definition_ref == run.definition_ref
+                        and current.project_id == run.project_id and current.trigger == run.trigger
+                        and (current.organization_id, current.workspace_id) ==
+                            (run.organization_id, run.workspace_id)
+                        and current.status in {AutomationRunStatus.ADMITTED, AutomationRunStatus.RUNNING}
+                        and current.home_terminal is None):
+                    state.runs[index] = current.model_copy(update={
+                        'result_code': 'home_followup_launch_unconfirmed',
+                        'result_reason': 'Launch owner settled with ' + error_type + '; inspect retained input/native evidence; native outcome is not overridden',
+                        'updated_at': float(self.runs.clock())})
+            return state
+        self.runs.store.update(note)
+        return self.runs.store.get(run.id, organization_id=run.organization_id, workspace_id=run.workspace_id)
+
     async def launch(self, run, _unused_message=None):
         automation, actor, selected = await asyncio.to_thread(self.context, run, check_controls=False)
         try:
@@ -397,18 +469,27 @@ class HomeOperatorFollowup:
         for assignment_id,execution_id,session_id,turn_id in dict.fromkeys(turns):
             assignment = self.workers.store.assignment(assignment_id)
             runtime = getattr(assignment, 'runtime_binding', None)
-            if runtime is None:
+            if (runtime is None or (assignment.organization_id, assignment.workspace_id,
+                    assignment.project_id, assignment.execution_id) !=
+                    (scope.organization_id, scope.workspace_id, 'home', execution_id)):
                 return
-            session = self.sessions.find_by_native_id(session_id, organization_id=scope.organization_id,
-                workspace_id=scope.workspace_id, provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
-            if session is None or session.assignment_id != assignment_id or session.execution_id != execution_id:
+            # Canonical resume preserves Session identity while moving its live
+            # custody. Historical accounting joins the old turn's usage instead.
+            session = self.sessions.find_unique_by_native_id(session_id,
+                provider_id=runtime.provider_id, runtime_id=runtime.runtime_id)
+            if (session is None or (session.organization_id, session.workspace_id,
+                    session.project_id, session.provider_id, session.runtime_id,
+                    session.provider_native_session_id) != (scope.organization_id,
+                    scope.workspace_id, 'home', runtime.provider_id, runtime.runtime_id, session_id)):
                 return
             usage_id = 'runtime-usage-' + hashlib.sha256(f'{session.id}\n{turn_id}'.encode()).hexdigest()[:32]
             usage = self.runtime_usage.get(usage_id)
             if (usage is None or usage.terminal_outcome == 'unknown' or usage.completed_at is None
-                    or (usage.organization_id,usage.workspace_id,usage.assignment_id,usage.execution_id,
-                        usage.provider_native_session_id,usage.provider_native_turn_id) !=
-                        (scope.organization_id,scope.workspace_id,assignment_id,execution_id,session_id,turn_id)):
+                    or (usage.organization_id,usage.workspace_id,usage.project_id,usage.agent_session_id,
+                        usage.assignment_id,usage.execution_id,usage.execution_workspace_id,
+                        usage.provider_id,usage.runtime_id,usage.provider_native_session_id,usage.provider_native_turn_id) !=
+                        (scope.organization_id,scope.workspace_id,'home',session.id,assignment_id,execution_id,
+                        assignment.execution_workspace_id,runtime.provider_id,runtime.runtime_id,session_id,turn_id)):
                 return  # Unknown/missing original usage is retained, never synthetic zero.
             records.append(usage)
         automation, _ = self.runs.definitions.resolve_reference(run.definition_ref,
@@ -437,14 +518,257 @@ class HomeOperatorFollowup:
         if scope is not None:
             await self.recover_pending(scope=scope)
 
+    def attach_preinput_observer(self, preflight):
+        """Compose after earlier Executive registration; neither owner replaces the other."""
+        previous = preflight.queued_disposition_observer
+        def observe(attempt):
+            try:
+                if previous is not None:
+                    previous(attempt)
+            finally:
+                self.observe_preinput_refusal(attempt)
+        preflight.queued_disposition_observer = observe
+
+    def observe_preinput_refusal(self, attempt):
+        """Project only a committed typed local refusal, never a blocker code."""
+        source = str(attempt.source or '')
+        if source.startswith(SOURCE):
+            self.reconcile_preinput(source[len(SOURCE):],
+                scope=TenantScope(organization_id=attempt.organization_id, workspace_id=attempt.workspace_id))
+
+    def reconcile_preinput(self, run_id, *, actor=None, scope=None, cancel_unknown=False):
+        """Release a Home slot only from an exact durable controller witness.
+
+        Run and original are read under the same namespace writer fence as
+        Retry/begin/START. No native operation, interruption, or replacement
+        input occurs here. An expired grant can be accounted, never reused.
+        """
+        if cancel_unknown and actor is None:
+            raise ValueError('Explicit operator authority is required for unknown scheduling cancellation')
+        tenant = scope or actor
+        run = self.runs.store.get(run_id, organization_id=tenant.organization_id,
+            workspace_id=tenant.workspace_id)
+        if (run.status != AutomationRunStatus.RUNNING or run.target_kind != 'home_operator'
+                or run.home_terminal is not None or run.home_custody is None
+                or run.execution_ids != (f'home-followup-{run.id}',)):
+            return run
+        membership_actor = actor
+        if actor is not None:
+            # The operator HTTP boundary authenticates/steps up the request.
+            # Revalidate that original origin, then compare current membership
+            # with the credential-free Automation owner observation. PRIMARY
+            # from actor_for_identity is not a new authentication assertion.
+            try:
+                self.identity.revalidate_authenticated_origin(actor)
+            except AuthenticationError as error:
+                raise AuthorizationError('Original authenticated operator authority is unavailable') from error
+            membership_actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+        automation, current_actor, selected = self.context(run, membership_actor, check_controls=False)
+        preflight = getattr(self.turns, 'preflight', None)
+        if preflight is None or preflight.store.store is not self.runs.store.store:
+            return run
+        expected_message = self.message(run, automation)
+        empty_guard = self._empty_launch_guard(current_actor, selected) if cancel_unknown else None
+        result = run
+        def update(payloads):
+            nonlocal result
+            state = self.runs.store._decode(payloads[self.runs.store.namespace][None])
+            current = next((row for row in state.runs if row.id == run.id
+                and (row.organization_id, row.workspace_id) == (run.organization_id, run.workspace_id)), None)
+            if current != run:
+                result = current or run
+                return {}
+            try:
+                rows = preflight.store.for_home_followup(organization_id=run.organization_id,
+                    workspace_id=run.workspace_id, execution_id=run.execution_ids[0])
+            except ValueError:
+                return {}  # Partial/malformed inventory never permits settlement.
+            matches = [row for row in rows if row.execution_id == run.execution_ids[0]
+                or row.source == SOURCE + run.id]
+            if not matches and not rows and cancel_unknown:
+                if (run.started_at is None or self.runs.clock() <
+                        run.started_at + automation.budget.max_duration_seconds):
+                    raise ValueError('Only an expired Home grant can cancel unknown scheduling')
+                if empty_guard is None:
+                    raise ValueError('Complete current Home custody and queue inventory required')
+                empty_guard(run)
+                result = current.model_copy(update={'status': AutomationRunStatus.CANCELLED,
+                    'completed_at': float(self.runs.clock()), 'updated_at': float(self.runs.clock()),
+                    'result_code': 'home_followup_scheduling_cancelled_unknown',
+                    'result_reason': 'Operator cancelled expired unconfirmed launch scheduling; native outcome remains UNKNOWN; no input sent or interrupted by reconciliation'})
+                state.runs[state.runs.index(current)] = result
+                return {self.runs.store.namespace: {None: state.model_dump(mode='json')}}
+            if len(matches) != 1:
+                return {}
+            attempt = matches[0]
+            queued = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+            if (attempt.status != 'blocked' or not attempt.queued_admission_claim_id
+                    or attempt.scheduling_retirement is not None
+                    or any(value is not None for value in (attempt.queued_start_correlation,
+                        attempt.queued_start_receipt, attempt.queued_start_evidence,
+                        attempt.queued_resume_correlation, attempt.queued_resume_evidence, attempt.started_at))
+                    or (attempt.organization_id, attempt.workspace_id) != (run.organization_id, run.workspace_id)
+                    or attempt.replacement_thread_id is not None
+                    or attempt.thread_id != automation.target.home_thread_id
+                    or attempt.project_id != 'home' or queued.project_id != 'home'
+                    or attempt.source != SOURCE + run.id or queued.source != attempt.source
+                    or attempt.execution_id != run.execution_ids[0] or queued.execution_id != attempt.execution_id
+                    or queued.thread_id != attempt.thread_id or queued.message != expected_message
+                    or attempt.message != queued.message
+                    or queued.execution_profile_id != 'orchestration-only'
+                    or attempt.execution_profile_id != queued.execution_profile_id
+                    or queued.repository_resource_id or queued.writable_repository_resource_ids
+                    or queued.read_only_repository_resource_ids or queued.resource_context is not None
+                    or attempt.repository_resource_id or attempt.writable_repository_resource_ids
+                    or attempt.read_only_repository_resource_ids or attempt.resource_context is not None
+                    or queued.agent_profile_id != automation.target.id
+                    or queued.agent_profile_revision != automation.target.agent_profile_revision
+                    or queued.agent_profile_actor_id != current_actor.identity_id
+                    or (attempt.agent_profile_id, attempt.agent_profile_revision, attempt.agent_profile_actor_id) !=
+                        (queued.agent_profile_id, queued.agent_profile_revision, queued.agent_profile_actor_id)):
+                return {}
+            expected = {'version': '1.0', 'attempt_id': attempt.id,
+                'claim_id': attempt.queued_admission_claim_id, 'attempt_number': attempt.attempt_number,
+                'snapshot_sha256': preflight.queued_snapshot_digest(attempt.queued_turn_snapshot)}
+            witnesses = [getattr(blocker, 'local_preinput_refusal', None) for blocker in attempt.blockers]
+            proven = (attempt.attempt_number == 1 and not attempt.queued_resume_history
+                and bool(witnesses) and all(witness == expected for witness in witnesses))
+            if not proven:
+                if not cancel_unknown:
+                    return {}
+                if (run.started_at is None
+                        or self.runs.clock() < run.started_at + automation.budget.max_duration_seconds):
+                    raise ValueError('Only an expired Home grant can cancel unknown scheduling')
+                execution = getattr(self.turns, 'execution', None)
+                if (execution is None or execution.thread_is_active(automation.target.home_thread_id)
+                        or not self.runs.store.store.record_collection_exists('active_turns')
+                        or self.runs.store.store.record_get('active_turns', automation.target.home_thread_id) is not None):
+                    raise ValueError('Current Home native activity is unresolved; scheduling remains unchanged')
+            result = current.model_copy(update={'status': AutomationRunStatus.FAILED if proven else AutomationRunStatus.CANCELLED,
+                'completed_at': float(self.runs.clock()), 'updated_at': float(self.runs.clock()),
+                'result_code': 'home_followup_preinput_refused' if proven else 'home_followup_scheduling_cancelled_unknown',
+                'result_reason': ('Typed local preinput refusal' if proven else
+                    'Operator cancelled expired scheduling; native outcome remains UNKNOWN; reconciliation sends no input and interrupts nothing')
+                    + f'; original={queued.id}; '
+                    f'preflight={attempt.id}; claim={attempt.queued_admission_claim_id}'})
+            state.runs[state.runs.index(current)] = result
+            return {self.runs.store.namespace: {None: state.model_dump(mode='json')}}
+        self.runs.store.store.record_mutate_many({self.runs.store.namespace: (None,)}, update,
+            guard_namespaces=(preflight.store.NAMESPACE, 'active_turns', 'turn_queues',
+                'thread_bootstrap_bindings', 'execution_workers.assignments', 'execution_workers.workers', 'projects'))
+        return result
+
+    def _empty_launch_guard(self, actor, selected):
+        """Prepare read-only custody checks; never initialize state inside CAS."""
+        from codex_web.execution_workers import ExecutionAssignment, ExecutionWorker
+        from codex_web.models import Project
+        worker_store = getattr(self.workers, 'store', None)
+        binding_store = getattr(self.bootstrap_bindings, 'store', None)
+        root = self.runs.store.store
+        profiles = getattr(self.operator, 'agent_profiles', None)
+        catalog = getattr(profiles, 'execution_profiles', None)
+        if (catalog is None or getattr(worker_store, 'store', None) is not root
+                or getattr(binding_store, 'store', None) is not root
+                or not hasattr(binding_store, '_decode')):
+            return None  # Unsupported/partial metadata can never permit cancellation.
+        thread_id = selected['thread']['id']
+        try:
+            binding = self.bootstrap_bindings.get_by_thread(thread_id, actor)
+            initial = worker_store.assignment(binding.assignment_id)
+            if initial is None:
+                return None
+            worker_store.worker(initial.assigned_worker_id)  # prepare existing projections
+            contract, contract_ref = catalog.resolve('orchestration-only',
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id='home')
+            if contract.workspace_mode != 'scratch' or contract.repository_access != 'none':
+                return None
+        except ValueError:
+            return None
+        def check(run):
+            for namespace in ('turn_queues', 'active_turns', worker_store.assignment_namespace,
+                              worker_store.worker_namespace):
+                if not root.record_collection_exists(namespace):
+                    raise ValueError('Current Home canonical inventory is incomplete')
+            bindings = binding_store._decode(root.get(binding_store.namespace)).bindings
+            same = [row for row in bindings if row.thread_id == thread_id
+                and (row.organization_id, row.workspace_id) == (actor.organization_id, actor.workspace_id)]
+            if len(same) != 1 or same[0] != binding:
+                raise ValueError('Current Home bootstrap custody changed')
+            raw = root.record_get(worker_store.assignment_namespace, binding.assignment_id)
+            if not isinstance(raw, dict):
+                raise ValueError('Current Home assignment is unavailable')
+            current = ExecutionAssignment.model_validate(raw)
+            worker_raw = root.record_get(worker_store.worker_namespace, current.assigned_worker_id)
+            if not isinstance(worker_raw, dict):
+                raise ValueError('Current Home worker is unavailable')
+            worker = ExecutionWorker.model_validate(worker_raw)
+            if (current.id != initial.id or current.fence != initial.fence
+                    or (current.execution_id, current.execution_workspace_id, current.subject) !=
+                        (binding.execution_id, binding.execution_workspace_id, binding.subject)
+                    or (current.organization_id, current.workspace_id, current.project_id, current.created_by) !=
+                        (actor.organization_id, actor.workspace_id, 'home', actor.identity_id)
+                    or current.agent_profile is None or current.agent_profile != initial.agent_profile
+                    or (current.agent_profile.profile_id, current.agent_profile.profile_revision) !=
+                        (selected['binding'].get('agent_profile_id'), selected['binding'].get('agent_profile_revision'))
+                    or current.execution_profile_definition != initial.execution_profile_definition
+                    or current.execution_profile_definition != contract_ref
+                    or current.execution_profile_id != 'orchestration-only' or current.resource_ids
+                    or current.resource_context is not None
+                    or current.repository_scope is not None and (
+                        current.repository_scope.writable_repository_ids or current.repository_scope.read_only_repository_ids)
+                    or (worker.organization_id, worker.workspace_id) != (actor.organization_id, actor.workspace_id)):
+                raise ValueError('Current orchestration-only Home custody changed')
+            live = (current.status in {'claimed', 'running'} and current.lease is not None
+                and current.lease.fence == current.fence and current.lease.worker_id == current.assigned_worker_id
+                and current.lease.expires_at > self.runs.clock()
+                and (current.deadline_at is None or current.deadline_at > self.runs.clock())
+                and worker.lifecycle == 'active')
+            retired = current.status in {'cancelled', 'lost'} and current.lease is None and current.fence >= 1
+            if not (live or retired):
+                raise ValueError('Current live or positively retired Home custody required')
+            projects = root.get('projects')
+            if not isinstance(projects, list):
+                raise ValueError('Current Home selection inventory is unavailable')
+            homes = [Project.model_validate(row) for row in projects if isinstance(row, dict)
+                and row.get('id') == 'home']
+            if len(homes) != 1 or homes[0].home_operator is None or (
+                    homes[0].organization_id, homes[0].workspace_id) != (actor.organization_id, actor.workspace_id) or (
+                    homes[0].home_operator.model_dump() != selected['binding']):
+                raise ValueError('Current Home selection changed')
+            raw_queue = root.record_get('turn_queues', thread_id)
+            # Missing keyed rows are the normal canonical empty-queue tombstone;
+            # a missing namespace or malformed present row is never emptiness.
+            if raw_queue is not None and not isinstance(raw_queue, list):
+                raise ValueError('Current Home queue inventory is malformed')
+            for row in raw_queue or []:
+                if (not isinstance(row, dict) or not {'id', 'thread_id', 'project_id', 'message', 'source', 'execution_id'} <= row.keys()):
+                    raise ValueError('Current Home queue inventory is malformed')
+                queued = QueuedTurn.model_validate(row)
+                if (queued.execution_id == run.execution_ids[0] or queued.source == SOURCE + run.id):
+                    raise ValueError('The original Home launch still has a durable queued input')
+            execution = getattr(self.turns, 'execution', None)
+            if (execution is None or execution.thread_is_active(thread_id)
+                    or root.record_get('active_turns', thread_id) is not None):
+                raise ValueError('Current Home native activity is unresolved')
+        return check
+
     async def recover_pending(self, *, scope=None):
         # Shared bounded native-recovery coordinator calls this at startup/idle;
         # completion and usage events also wake it. No event means no model call.
         rows = await asyncio.to_thread(lambda: self.runs.store.load().runs)
         candidates = [row for row in rows if row.target_kind == 'home_operator'
-            and row.status == AutomationRunStatus.RUNNING and row.home_terminal is not None
+            and row.status == AutomationRunStatus.RUNNING
             and (scope is None or (row.organization_id, row.workspace_id) == (scope.organization_id, scope.workspace_id))]
         for row in candidates[:128]:
+            if row.home_terminal is None:
+                try:
+                    await asyncio.to_thread(self.reconcile_preinput, row.id,
+                        scope=TenantScope(organization_id=row.organization_id, workspace_id=row.workspace_id))
+                except (ValueError, AuthorizationError, AuthenticationError,
+                        DefinitionNotFoundError, DefinitionCompatibilityError):
+                    # Keep this original unresolved without borrowing authority
+                    # or preventing independently eligible rows from settling.
+                    continue
             if row.status == AutomationRunStatus.RUNNING and row.home_terminal is not None:
                 await asyncio.to_thread(self._finish_budget, row.id,
                     TenantScope(organization_id=row.organization_id, workspace_id=row.workspace_id))
@@ -469,7 +793,10 @@ class HomeOperatorFollowup:
             await asyncio.to_thread(self.runs.store.update, promote)
             current = await asyncio.to_thread(self.runs.store.get, row.id, organization_id=row.organization_id, workspace_id=row.workspace_id)
             if current.status == AutomationRunStatus.ADMITTED and self.launch_handler is not None:
-                await self.launch_handler(current)
+                if self.launch_coordinator is not None:
+                    self.schedule_launch(current)
+                else:
+                    await self.launch_handler(current)
 
     async def on_schedule(self, event):
         if event.event_type != 'schedule.due' or self.scheduler is None:

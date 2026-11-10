@@ -776,7 +776,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 "draft": False,
                 "merge_status": "can_be_merged",
                 "detailed_merge_status": "mergeable",
-                "head_pipeline": {"id": 3323, "status": "success"},
+                "head_pipeline": {"id": 3323, "status": "success", "sha": head_sha},
                 "web_url": "https://gitlab.example/group/platform/codex-web/-/merge_requests/33",
             }
         )
@@ -815,7 +815,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 "draft": False,
                 "merge_status": "can_be_merged",
                 "detailed_merge_status": "mergeable",
-                "head_pipeline": {"id": 3323, "status": "success"},
+                "head_pipeline": {"id": 3323, "status": "success", "sha": "a" * 40},
             }
         )
         request = self._request(
