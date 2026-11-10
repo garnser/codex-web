@@ -697,12 +697,17 @@ class OwnerRoutingService:
                     or set(admitted.repository_scope.writable_repository_ids) != set(requested)
                     or admitted.repository_scope.read_only_repository_ids
                     or set(admitted.resource_ids) != set(requested)
-                    or self._authority_checksum(admitted) != historical.authority_checksum
                     or correlation.assignment_id != historical.assignment_id
                     or correlation.execution_id != historical.execution_id
                     or correlation.worker_id != historical.worker_id
                     or correlation.fence != historical.fence):
                 raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            initial_seal_compatible = False
+            if self._authority_checksum(admitted) != historical.authority_checksum:
+                initial_seal_compatible = self._initial_seal_authority_compatible(
+                    admitted, historical, started_at=delivery.started_at)
+                if not initial_seal_compatible:
+                    raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
             from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
             try:
                 anchor = self.bootstraps.get_by_bootstrap('bootstrap-' + physical, actor)
@@ -768,13 +773,21 @@ class OwnerRoutingService:
                 # This is metadata, never a LIVE/native-send authorization.
                 if (str(assignment.status) != 'cancelled' or assignment.lease is not None
                         or assignment.fence != historical.fence + 1
-                        or witness.model_dump(exclude={'work_item_owner_checksum', 'fence'})
-                            != historical.model_dump(exclude={'work_item_owner_checksum', 'fence'})):
+                        or (witness.model_dump(exclude={'work_item_owner_checksum', 'fence'})
+                            != historical.model_dump(exclude={'work_item_owner_checksum', 'fence'}) and not (
+                                initial_seal_compatible
+                                and witness.authority_checksum == self._authority_checksum(admitted)
+                                and witness.model_dump(exclude={'work_item_owner_checksum', 'fence', 'authority_checksum'})
+                                    == historical.model_dump(exclude={'work_item_owner_checksum', 'fence', 'authority_checksum'})))):
                     raise OwnerRoutingError('owner_recipient_custody_changed')
                 self._accepted_recovery_native_custody(state, delivery.thread_id,
                     target, admitted, assignment)
-            elif witness.model_dump(exclude={'work_item_owner_checksum'}) != historical.model_dump(
-                    exclude={'work_item_owner_checksum'}):
+            elif (witness.model_dump(exclude={'work_item_owner_checksum'}) != historical.model_dump(
+                    exclude={'work_item_owner_checksum'}) and not (
+                        initial_seal_compatible
+                        and witness.authority_checksum == self._authority_checksum(admitted)
+                        and witness.model_dump(exclude={'work_item_owner_checksum', 'authority_checksum'})
+                            == historical.model_dump(exclude={'work_item_owner_checksum', 'authority_checksum'}))):
                 raise OwnerRoutingError('owner_recipient_custody_changed')
             if (not changed and self.sessions is not None
                     and self.sessions.native_custody(target) is not None):
@@ -1188,22 +1201,35 @@ class OwnerRoutingService:
         current = self.assignments(fresh.assignment_id)
         if current is None or self._authority_checksum(current) != fresh.authority_checksum:
             return False
-        seal = current.native_credential_custody
-        worker = self.workers(fresh.worker_id) if self.workers is not None else None
+        if current.fence != fresh.fence:
+            return False
+        return self._initial_seal_authority_compatible(current, pinned)
+
+    def _initial_seal_authority_compatible(self, assignment, witness, *, started_at=None):
+        """Reconstruct only the canonical pending -> admitted reference change.
+
+        The caller owns Work/nonce and current-recipient checks. Historical
+        START uses its original fence even after canonical terminal retirement;
+        a current queued witness separately requires the current exact fence.
+        """
+        seal = assignment.native_credential_custody
+        worker = self.workers(witness.worker_id) if self.workers is not None else None
         if (seal is None or seal.admitted_at is None or worker is None
-                or current.id != fresh.assignment_id or current.fence != fresh.fence
-                or current.assigned_worker_id != fresh.worker_id
-                or seal.fence != fresh.fence
-                or seal.requester_identity_id != current.created_by
-                or seal.worker_identity_id != worker.service_identity_id):
+                or assignment.id != witness.assignment_id
+                or assignment.execution_id != witness.execution_id
+                or assignment.assigned_worker_id != witness.worker_id
+                or seal.fence != witness.fence
+                or seal.requester_identity_id != assignment.created_by
+                or seal.worker_identity_id != worker.service_identity_id
+                or (started_at is not None and not seal.admitted_at <= started_at)):
             return False
         allowed = set(seal.procedure_secret_refs)
         pending_refs = (seal.runtime_secret_ref,) if seal.runtime_secret_ref else ()
         allowed.update(pending_refs)
-        if set(current.secret_refs) != allowed:
+        if set(assignment.secret_refs) != allowed:
             return False
-        pending = current.model_copy(update={'secret_refs': pending_refs})
-        return self._authority_checksum(pending) == pinned.authority_checksum
+        pending = assignment.model_copy(update={'secret_refs': pending_refs})
+        return self._authority_checksum(pending) == witness.authority_checksum
 
     def recipient_context(self, pin, state, binding, *, lookup_actor=None):
         if binding.is_master or binding.id != pin.bot_binding_id or binding.thread_id != pin.original_thread_id:
