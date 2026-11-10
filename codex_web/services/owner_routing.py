@@ -1183,7 +1183,11 @@ class OwnerRoutingService:
         if (handoff is not None and handoff.status == 'pending'
                 and intent.schema_version == '1.0' and handoff.owner_routing != intent):
             raise OwnerRoutingError('owner_alias_intent_unbound_or_changed')
-        return OwnerRoutingPin(schema_version='1.1', binding=intent, recipient=matches[0],
+        current_work = (self.recipient_preparer.current_work_attribution(state, binding,
+            configured_owner, tuple(requested), matches[0], lookup_actor=lookup_actor,
+            originals_checked=True) if self.recipient_preparer is not None and handoff is None else None)
+        return OwnerRoutingPin(schema_version='1.2' if current_work is not None else '1.1',
+            current_work_intent_sha256=current_work, binding=intent, recipient=matches[0],
             work_item_ref=state.ref, stage=state.current_stage, retry_attempt=state.execution.retry.attempt,
             handoff_requested_at=handoff.requested_at if handoff and handoff.status == 'pending' else None,
             bot_binding_id=binding.id, original_thread_id=binding.thread_id)
@@ -1236,6 +1240,13 @@ class OwnerRoutingService:
             raise OwnerRoutingError('owner_executor_binding_changed')
         if self._work_item_owner_checksum(state) != pin.recipient.work_item_owner_checksum:
             raise OwnerRoutingError('owner_routing_work_item_changed')
+        if pin.current_work_intent_sha256 is not None:
+            _, writable = work_item_repository_scope(state)
+            current_work = (self.recipient_preparer.current_work_attribution(state, binding,
+                pin.binding.configured_owner, writable, pin.recipient, lookup_actor=lookup_actor,
+                originals_checked=True) if self.recipient_preparer is not None else None)
+            if current_work != pin.current_work_intent_sha256:
+                raise OwnerRoutingError('owner_recipient_preparation_changed')
         if pin.handoff_requested_at is None:
             _, writable = work_item_repository_scope(state)
             accepted = self._accepted_owner_recipient(state, binding,
@@ -1300,7 +1311,8 @@ class OwnerRoutingService:
             raise
         except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
             raise OwnerRoutingError('owner_recipient_custody_unavailable') from exc
-        if (witness != pin.recipient and not (pin.handoff_requested_at is not None
+        if (witness != pin.recipient and not ((pin.handoff_requested_at is not None
+                or pin.current_work_intent_sha256 is not None)
                 and self._accepted_initial_seal_compatible(pin.recipient, witness))):
             raise OwnerRoutingError('owner_recipient_custody_changed')
         assignment = self.assignments(witness.assignment_id)
