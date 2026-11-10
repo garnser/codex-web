@@ -5,7 +5,6 @@ import uuid
 from typing import Any
 
 from codex_web.action_providers import (
-    ACTION_PROVIDER_CONTRACT,
     ActionCapability,
     ActionDefinition,
     ActionEvidence,
@@ -21,7 +20,7 @@ from codex_web.resources import ResourceType
 class ReferenceActionProvider:
     """In-memory conformance provider with no external side effects."""
 
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type = "reference"
     provider_instance = "local-reference"
 

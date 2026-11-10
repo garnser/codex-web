@@ -90,7 +90,7 @@
     focusReference(list);
   }
 
-  async function refresh({ loadingMessage = "Loading canonical ActionProvider state..." } = {}) {
+  async function refresh({ loadingMessage = "Loading providers..." } = {}) {
     setStatus(loadingMessage);
     let resources = [];
     let projects = [];
@@ -118,12 +118,12 @@
         resourceError ? `resource labels unavailable: ${resourceError}` : null,
         projectError ? `project labels unavailable: ${projectError}` : null,
       ].filter(Boolean);
-      setStatus(`${items.length} provider binding(s) · ${unavailable} unavailable/disabled.${warnings.length ? ` ${warnings.join(" · ")}` : ""} This view does not prepare or execute actions.`);
+      setStatus(`${items.length} provider bindings · ${unavailable} unavailable/disabled.${warnings.length ? ` ${warnings.join(" · ")}` : ""}`);
       window.dispatchEvent(new CustomEvent("codex:action-provider-rendered", {
         detail: { items, resources, projects },
       }));
     } catch (error) {
-      setStatus(`ActionProvider catalog unavailable: ${error.message}`);
+      setStatus(`Providers unavailable: ${error.message}`);
       const list = document.getElementById("action-provider-list");
       if (list) list.innerHTML = "";
       throw error;

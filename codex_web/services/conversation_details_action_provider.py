@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from codex_web.action_providers import (
-    ACTION_PROVIDER_CONTRACT, ActionCapability, ActionDefinition, ActionEvidence,
+    ActionCapability, ActionDefinition, ActionEvidence,
     ActionResult, ActionVerification, UnsupportedActionCapabilityError,
 )
 
@@ -16,7 +16,7 @@ class ConversationDetailsActionProvider:
     Registration declares capability; an operator binding/policy grants use.
     """
 
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type = "conversation-channel"
     provider_instance = "slack"
 

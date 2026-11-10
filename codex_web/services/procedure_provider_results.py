@@ -6,7 +6,6 @@ canonical Evidence from the original receipt and, separately, its verification.
 from __future__ import annotations
 
 import re
-from codex_web.action_providers import ACTION_PROVIDER_CONTRACT
 
 from codex_web.services.code_host_ci_observation import (
     CI_OBSERVATION_ACTION_ID, CI_OBSERVATION_EVIDENCE, project_observation, parameters as ci_parameters,
@@ -28,7 +27,8 @@ from codex_web.services.code_host_action_contract import (
 
 class CodeHostProcedureResultAdapter:
     provider_type = "gitlab"
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    # Match the existing producer and immutable positive-only procedure references.
+    contract_version = "1.2"
     action_ids = (CODE_HOST_BRANCH_PUBLISH_ACTION_ID, CI_OBSERVATION_ACTION_ID, CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
                   CODE_HOST_PULL_REQUEST_VERIFY_MERGE_ACTION_ID, *READINESS_OBSERVATION_ACTION_IDS)
 

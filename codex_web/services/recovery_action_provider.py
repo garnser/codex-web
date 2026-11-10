@@ -1,6 +1,6 @@
 """Opt-in canonical provider. Registration/activation is not an authority grant."""
 import asyncio
-from codex_web.action_providers import (ACTION_PROVIDER_CONTRACT, ActionCapability,
+from codex_web.action_providers import (ActionCapability,
     ActionDefinition, ActionEvidence, ActionResult, ActionVerification, ActionRiskClass)
 from codex_web.recovery import RecoveryReconcileRequest
 from codex_web.services.recovery_reconciliation import RecoveryReconciliationService, validate_proof, fingerprint
@@ -8,7 +8,7 @@ from codex_web.services.recovery import RecoveryConflictError
 
 
 class RecoveryActionProvider:
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type = "recovery"
     provider_instance = "canonical-recovery"
 

@@ -127,6 +127,7 @@ class ActionTimeoutValuesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_provider_cannot_advertise_disabled_definition(self):
         provider = self.f.reference
+        self.assertEqual(provider.contract_version, "1.2")
         definition = provider.actions()[0]
         with patch.object(provider, "contract_version", "1.2"), patch.object(
                 provider, "actions", return_value=(definition.model_copy(update={"timeout_seconds": 0}),)):
@@ -135,6 +136,15 @@ class ActionTimeoutValuesTests(unittest.IsolatedAsyncioTestCase):
         # Canonical model validation still rejects unsupported negatives.
         with self.assertRaises(ValueError):
             ActionDefinition(action_id="bad", title="bad", timeout_seconds=-2)
+
+    async def test_explicit_sentinel_capable_provider_can_register_both_disabled_values(self):
+        provider = self.f.reference
+        definition = provider.actions()[0]
+        for value in (0, -1):
+            with self.subTest(value=value), patch.object(provider, "contract_version", "1.3"), patch.object(
+                    provider, "actions", return_value=(definition.model_copy(update={"timeout_seconds": value}),)):
+                self.f.registry.register(provider)
+                self.assertIs(self.f.registry.provider(provider.provider_type, provider.provider_instance), provider)
 
     async def test_guarded_remaining_and_commit_preserve_real_deadline_when_elapsed_cap_off(self):
         f = self.f

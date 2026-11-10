@@ -14,7 +14,6 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from codex_web.action_providers import (
-    ACTION_PROVIDER_CONTRACT,
     ActionEvidence,
     ActionProviderBinding,
     ActionRequest,
@@ -67,7 +66,8 @@ BranchPublisher = Callable[[Path, str, str, str, str, str | None], Awaitable[Non
 class GitLabActionProvider:
     """Governed GitLab actions and read observations under the shared contract."""
 
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    # Positive-only producer contract; registry reader upgrades do not change pins.
+    contract_version = "1.2"
     provider_type = GITLAB_ACTION_PROVIDER_TYPE
 
     def __init__(

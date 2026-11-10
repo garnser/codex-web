@@ -5,7 +5,6 @@ from collections.abc import Iterable
 from typing import Any
 
 from codex_web.action_providers import (
-    ACTION_PROVIDER_CONTRACT,
     ActionCapability,
     ActionDefinition,
     ActionEvidence,
@@ -32,7 +31,7 @@ class TaskSourceActionProvider:
     and schemas remain behind WorkItemService/TaskSource resolution.
     """
 
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type = TASK_SOURCE_ACTION_PROVIDER_TYPE
     provider_instance = TASK_SOURCE_ACTION_PROVIDER_INSTANCE
 

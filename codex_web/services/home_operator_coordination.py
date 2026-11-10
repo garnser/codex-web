@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.action_intents import ActionDecisionSnapshot, ActionIntentCreate, ActionIntentRetryPolicy
 from codex_web.action_providers import (
-    ACTION_PROVIDER_CONTRACT, ActionCapability, ActionDefinition, ActionEvidence,
+    ActionCapability, ActionDefinition, ActionEvidence,
     ActionRequest, ActionResult, ActionRiskClass, UnsupportedActionCapabilityError,
 )
 from codex_web.authority import AuthorityEvaluationRequest, AuthorityLevel
@@ -271,7 +271,7 @@ class HomeOperatorCoordinationService:
 
 class HomeOperatorCoordinationActionProvider:
     """One canonical outbox effect admits one retained input, not an agent loop."""
-    contract_version = ACTION_PROVIDER_CONTRACT.current
+    contract_version = "1.2"
     provider_type, provider_instance = PROVIDER, "canonical"
 
     def __init__(self, service):

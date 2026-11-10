@@ -55,6 +55,12 @@ older supported positive-only shapes remain readable. Work lifecycle timeout
 metadata has no separate nested version marker; old positive-only validators
 cannot read newly stored sentinel metadata.
 
+Existing built-in providers and their result adapters retain their exact `1.2`
+producer identity while advertising positive-only ActionDefinitions. Supporting
+contract `1.3` in the registry does not upgrade those implementations or rewrite
+published procedure references. Sentinel-capable providers must explicitly
+advertise `1.3`; exact procedure/provider and result-adapter matching still applies.
+
 Treat deployment as a protocol extension: drain old local workers/readers before
 new-format writes. Old-reader rollback after such writes is unsupported. Preserve
 existing UNKNOWN outcomes, action keys, ownership receipts and historical pins;
