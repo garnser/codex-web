@@ -5,7 +5,6 @@ origin is deliberately limited to one activation per assignment/fence.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
 from urllib.parse import unquote
@@ -389,7 +388,12 @@ class AssignmentReasoningBroker:
                 self.context(self.request_for(prepared), current, actor, operation)
                 self.prepared_context(prepared, current, actor, operation)
                 return prepared, False
-            prepared, reused = await asyncio.wait_for(asyncio.to_thread(prepare), timeout=5.0)
+            # Context preparation owns a blocking worker, including executor
+            # queue wait. A cancelled observer cannot stop that worker: join
+            # it before propagating cancellation, and never persist its late
+            # result for a cancelled caller. The fresh custody check below
+            # still owns admission to persistence after normal completion.
+            prepared, reused = await run_settled(prepare)
             current, actor = await run_settled(lambda: self.current(assignment, worker_actor, operation, target, validator))
             if not reused:
                 prepared = await run_settled(lambda: self.executives.persist_prepared(prepared, actor=actor))

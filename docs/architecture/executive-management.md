@@ -149,7 +149,7 @@ The legacy Executive advisor drawer remains available during migration for conve
 
 ### Context preparation timing and timeout outcomes
 
-Activation preparation retains its existing bounded request window. Existing
+The operator HTTP activation endpoint retains its existing bounded request window. Existing
 correlated internal telemetry records executor queue wait and closed preparation
 stages (catalog, business scope, canonical context, WorkGraph, and Memory), plus
 persistence duration. It contains no request/context content, exception text or
@@ -163,6 +163,16 @@ outcome and requires canonical inventory reconciliation rather than resending th
 request. Neither the dependency nor persistence response recommends retrying.
 These error distinctions use the existing API error surface; no new operator
 control or independent lifecycle state is introduced.
+
+Assignment-bound broker creation instead settles its existing context worker,
+including executor queue wait, before releasing request ownership. Cancelling
+that caller joins the worker and propagates cancellation without persisting its
+late result. Normal completion still revalidates the current assignment, fence,
+Profile and authority before persistence; settlement grants no stale custody or
+new activation origin. Preparation dependency errors retain their existing
+failure behavior, and an uncertain earlier request still requires inspection of
+its original origin rather than a replacement creation. The canonical activation
+and revision views remain the operator inspection surfaces.
 
 
 ### Explicit per-activation ceiling opt-out
