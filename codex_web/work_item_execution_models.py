@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from codex_web.definitions import DefinitionReference
 
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.execution_workspaces import ExecutionWorkspaceReference
 from codex_web.failures import FailureRecord
+from codex_web.timeout_values import validate_timeout
 
 
 class WorkItemRetryPolicy(BaseModel):
@@ -117,7 +118,8 @@ class WorkItemExecutionLifecycle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     retry: WorkItemRetryState = Field(default_factory=WorkItemRetryState)
-    timeout_seconds: float | None = Field(default=None, gt=0.0)
+    timeout_seconds: float | None = Field(default=None, ge=-1.0)
+    _timeout_value = field_validator("timeout_seconds")(validate_timeout)
     deadline_at: float | None = None
     failure_reason: WorkItemFailureReason | None = None
     latest_checkpoint: WorkItemExecutionCheckpoint | None = None
@@ -140,7 +142,8 @@ class WorkItemExecutionUpdate(BaseModel):
     retry_attempt: int | None = Field(default=None, ge=0)
     retry_max_attempts: int | None = Field(default=None, ge=1, le=100)
     retry_backoff_seconds: float | None = Field(default=None, ge=0.0)
-    timeout_seconds: float | None = Field(default=None, gt=0.0)
+    timeout_seconds: float | None = Field(default=None, ge=-1.0)
+    _timeout_value = field_validator("timeout_seconds")(validate_timeout)
     deadline_at: float | None = None
     writable_repository_resource_ids: tuple[str, ...] = ()
     failure_category: str | None = None

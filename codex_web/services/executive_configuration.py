@@ -8,12 +8,12 @@ EXECUTIVE_INVOCATION_TIMEOUT = ConfigurationSpec(
     key="executive.invocation_timeout_seconds",
     value_kind=ConfigurationValueKind.INTEGER,
     default=120,
-    minimum=1,
+    minimum=-1,
     maximum=600,
     allowed_scopes=[ConfigurationScope.DEPLOYMENT],
     category="Model & Provider",
     description=(
-        "Finite seconds per Executive role or synthesis invocation, including native "
+        "Seconds per Executive role or synthesis invocation; 0 or -1 disables the elapsed limit. Includes native "
         "preparation and completion. Resolved once per consultation; it does "
         "not extend leases, authorize retries or change call/token/cost limits."
     ),

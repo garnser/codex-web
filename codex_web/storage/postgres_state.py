@@ -89,6 +89,7 @@ class PostgresStateStore:
             raise ValueError("PostgreSQL DSN must not be empty")
         if int(pool_max_size) < 1 or float(pool_timeout_seconds) <= 0:
             raise ValueError("PostgreSQL pool limits must be positive")
+        self._pool_timeout_seconds = float(pool_timeout_seconds)
         self._pool = connection_pool
         self._shared_pool = False
         self._closed = False
@@ -157,7 +158,9 @@ class PostgresStateStore:
             # The official pool commits/rolls back before returning this
             # connection. Never share an in-flight transaction across callers.
             budget = storage_operation_budget.get()
-            checkout = self._pool.connection(timeout=budget.remaining()) if budget else self._pool.connection()
+            checkout = (self._pool.connection(timeout=min(
+                self._pool_timeout_seconds, budget.remaining()))
+                if budget else self._pool.connection())
             with checkout as connection:
                 if read_only_snapshot:
                     connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -204,11 +207,16 @@ class PostgresStateStore:
             self._callback_reads.connection = previous
 
     @staticmethod
+    def _statement_timeout_ms(budget):
+        remaining = budget.remaining()  # Cancellation still refuses the operation.
+        return str(max(1, int(remaining * 1000))) if math.isfinite(remaining) else '0'
+
+    @staticmethod
     def _operation_deadline(connection):
         budget = storage_operation_budget.get()
         if budget is not None:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT set_config('statement_timeout', %s, true)", (str(max(1, int(budget.remaining() * 1000))),))
+                cursor.execute("SELECT set_config('statement_timeout', %s, true)", (PostgresStateStore._statement_timeout_ms(budget),))
 
     @staticmethod
     def _serialized(payload: Any) -> str:
@@ -232,7 +240,7 @@ class PostgresStateStore:
             # or an earlier lock. Keep configuration errors outside the known
             # unstarted acquisition classification below.
             cursor.execute("SELECT set_config('statement_timeout', %s, true)",
-                (str(max(1, int(budget.remaining() * 1000))),))
+                (PostgresStateStore._statement_timeout_ms(budget),))
         try:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",

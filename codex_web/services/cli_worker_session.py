@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.timeout_values import normalize_timeout
+
 import asyncio
 import contextlib
 import threading
@@ -269,9 +271,11 @@ class AssignmentBoundCliSession:
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment has no execution workspace"
             )
+        wall_seconds = normalize_timeout(assignment.limits.wall_seconds)
         if (
+            wall_seconds is not None and
             self._monotonic() - self.started_monotonic
-            >= assignment.limits.wall_seconds
+            >= wall_seconds
         ):
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment exceeded wall_seconds"

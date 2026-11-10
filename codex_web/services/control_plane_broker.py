@@ -601,7 +601,7 @@ class ControlPlaneBrokerService:
         if reasoning_model is not None:
             result["request_body"] = reasoning_model.model_json_schema()
             if item.id == 'procedure.start':
-                result['procedure_schema_versions'] = ['1.0', '1.1', '1.2', '1.3']
+                result['procedure_schema_versions'] = ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5']
         if item.id == "procedure.advance":
             result["current_input_snapshot_id"] = "Optional explicit fresh canonical equal-content witness; preserves original run pin/history and refuses changed facts"
         if item.id.startswith(("procedure.", "executive.")):

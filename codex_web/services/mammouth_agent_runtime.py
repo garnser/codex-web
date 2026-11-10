@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Awaitable, Protocol
 
 from codex_web.agent_providers import AgentProviderCapability
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout
 from codex_web.agent_runtime import (
     AgentRuntimeEvent,
     AgentRuntimeHealth,
@@ -52,7 +54,7 @@ class MammouthCliCommandExecutor(Protocol):
         *,
         binding: MammouthCliSessionBinding,
         on_output: Callable[[CliRuntimeOutput], Awaitable[None]],
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> CliRuntimeResult: ...
 
 
@@ -128,8 +130,8 @@ class MammouthCliAgentRuntimeAdapter:
         self.cli = cli or MammouthCliAdapter()
         self.probe = probe
         self.run_command = run_command
-        self.timeout_seconds = max(1.0, float(timeout_seconds))
-        self.start_timeout_seconds = max(0.1, float(start_timeout_seconds))
+        self.timeout_seconds = normalize_timeout(RuntimePolicy.native_rpc_timeout(timeout_seconds))
+        self.start_timeout_seconds = normalize_timeout(RuntimePolicy.native_rpc_timeout(start_timeout_seconds))
         self._listeners: set[Callable[[AgentRuntimeEvent], None]] = set()
         self._session_aliases: dict[str, str] = {}
         self._canonical_sessions: dict[str, str] = {}
@@ -432,7 +434,7 @@ class MammouthCliAgentRuntimeAdapter:
                 await task
             raise MammouthCliRuntimeError(
                 "Mammouth Code start timed out after "
-                f"{self.start_timeout_seconds:g} seconds"
+                f"{self.start_timeout_seconds} seconds"
             ) from exc
         except BaseException:
             if not task.done():

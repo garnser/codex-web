@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
+from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
 
 from fastapi import HTTPException
@@ -1150,7 +1151,7 @@ class ThreadService:
             return
         if requirement is not None and requirement.local_session and requirement.permitted:
             await PostTurnReadinessService._run_owned(self.authentication_preparation,
-                seconds=5., name='bootstrap-authentication-metadata')
+                seconds=RuntimePolicy.local_preparation_timeout(5), name='bootstrap-authentication-metadata')
 
     async def _create(
         self,
@@ -1312,7 +1313,7 @@ class ThreadService:
         if admission_guard is not None:
             stage('admission_before_reservation')
             await PostTurnReadinessService._run_owned(
-                lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                lambda: asyncio.to_thread(admission_guard), seconds=RuntimePolicy.local_preparation_timeout(5),
                 name='thread-admission-current-guard')
         try:
             stage('bootstrap_reservation')
@@ -1347,7 +1348,7 @@ class ThreadService:
             try:
                 stage('admission_before_worker_start')
                 await PostTurnReadinessService._run_owned(
-                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    lambda: asyncio.to_thread(admission_guard), seconds=RuntimePolicy.local_preparation_timeout(5),
                     name='thread-admission-current-guard')
             except Exception as exc:
                 from codex_web.execution_workers import AssignmentCancelRequest
@@ -1452,7 +1453,7 @@ class ThreadService:
                 stage('admission_before_provider_start')
                 preprovider_guard_pending = True
                 await PostTurnReadinessService._run_owned(
-                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    lambda: asyncio.to_thread(admission_guard), seconds=RuntimePolicy.local_preparation_timeout(5),
                     name='thread-admission-current-guard')
                 preprovider_guard_pending = False
             if before_provider_start is not None:
@@ -1462,7 +1463,7 @@ class ThreadService:
             if admission_guard is not None:
                 stage('admission_after_provider_start')
                 await PostTurnReadinessService._run_owned(
-                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    lambda: asyncio.to_thread(admission_guard), seconds=RuntimePolicy.local_preparation_timeout(5),
                     name='thread-admission-current-guard')
             response = runtime_result.payload
         except asyncio.CancelledError as exc:

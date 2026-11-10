@@ -24,8 +24,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.15",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15"),
+    "1.16",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -92,7 +92,9 @@ class WorkerResourceLimits(BaseModel):
     memory_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     disk_bytes: int = Field(default=20 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     process_count: int = Field(default=256, ge=1, le=65536)
-    wall_seconds: int = Field(default=1800, ge=1, le=86400)
+    # Stored duration sentinels are explicit; CPU and authority lifetimes remain
+    # independently bounded. Older readers reject these newly supported values.
+    wall_seconds: int = Field(default=1800, ge=-1, le=86400)
 
 
 class ExecutionWorker(BaseModel):
@@ -559,9 +561,19 @@ class ExecutionWorkerState(BaseModel):
     events: list[WorkerEvent] = Field(default_factory=list)
     enrollments: list[ExecutionWorkerEnrollmentGrant] = Field(default_factory=list)
 
+    def _has_disabled_duration_format(self) -> bool:
+        return any(
+            assignment.limits.wall_seconds in (0, -1)
+            or any(checkpoint is not None and checkpoint.schema_version == "1.2"
+                   for checkpoint in (*assignment.procedure_history, assignment.procedure_checkpoint))
+            for assignment in self.assignments
+        )
+
     def model_post_init(self, __context):
         EXECUTION_WORKER_CONTRACT.require(self.schema_version)
-        if any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
+        if self._has_disabled_duration_format():
+            self.schema_version = "1.16"
+        elif self.schema_version != "1.16" and any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
                or a.repository_scope is not None and a.repository_scope.write_mode.value == "read_only"
                for a in self.assignments):
             self.schema_version = "1.15"
@@ -569,7 +581,9 @@ class ExecutionWorkerState(BaseModel):
     @model_serializer(mode="wrap")
     def version_readonly_scope(self, handler):
         result = handler(self)
-        if any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
+        if self._has_disabled_duration_format() or self.schema_version == "1.16":
+            result["schema_version"] = "1.16"
+        elif any(a.repository_target is not None and a.repository_target.read_only_primary_repository_id is not None
                or a.repository_scope is not None and a.repository_scope.write_mode.value == "read_only"
                for a in self.assignments):
             result["schema_version"] = "1.15"

@@ -249,7 +249,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.7")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.8")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.2", MODEL_GATEWAY_CONTRACT.supported)
@@ -556,7 +556,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(migrated.schema_version, "1.7")
+        self.assertEqual(migrated.schema_version, "1.8")
         self.assertEqual(migrated.models[0].workload_classes, ())
 
     @staticmethod
@@ -1560,7 +1560,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         adapter = OpenAIModelProviderAdapter()
 
         class _Models:
-            async def list(self):
+            async def list(self, **kwargs):
                 return types.SimpleNamespace(data=(
                     types.SimpleNamespace(id="gpt-z", owned_by="openai"),
                     types.SimpleNamespace(id="gpt-a", owned_by="partner"),

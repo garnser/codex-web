@@ -497,6 +497,20 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
         completed = service.reconcile(run.id, actor=self.actor)
         self.assertEqual(completed.status, AutomationRunStatus.SUCCEEDED)
 
+    def test_disabled_duration_does_not_waive_terminal_timestamp_validation(self):
+        for duration in (0, -1):
+            for completed_at, expected in [(1000000., 'ok'), (None, 'failed')]:
+                with self.subTest(duration=duration, completed_at=completed_at):
+                    run = self._run('exec-a')
+                    budget = SimpleNamespace(max_input_tokens=None, max_output_tokens=None,
+                        max_cost_usd=None, max_duration_seconds=duration)
+                    service = AutomationOutcomeReconciliationService(_Runs(run, budget=budget), _Workers({}))
+                    assignment = self._assignment(AssignmentStatus.SUCCEEDED, completed_at=completed_at)
+                    result = service._budget_evaluation(run, [assignment], SimpleNamespace(budget=budget))
+                    self.assertEqual(result[0], expected)
+                    if completed_at is None:
+                        self.assertEqual(result[1], 'automation_budget_unverifiable')
+
     def test_duration_budget_uses_canonical_run_and_assignment_times(self) -> None:
         run = self._run("exec-a")
         budget = SimpleNamespace(

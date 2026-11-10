@@ -7,6 +7,7 @@
   const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
   const { workerDetailsHtml, timeText } = await import(`${BASE}/static/execution_worker_presenters.js`);
   const { nativeCredentialCustodyHtml } = await import(`${BASE}/static/native_credential_custody_ui.js`);
+  const { timeoutText } = await import(`${BASE}/static/timeout_values.js`);
   let refreshGeneration = 0;
   const { workerEventsHtml } = await import(`${BASE}/static/execution_worker_presenters.js`);
   let workers = [];
@@ -151,7 +152,7 @@
         <small>Project: ${escapeHtml(item.project_id || "none")} · resources: ${(item.resource_ids || []).map(id => referenceLink("resource", id)).join(", ") || "none"} · base revision: ${escapeHtml(item.base_revision || "none")} · contract: ${escapeHtml(item.execution_contract_version)}</small>
         <small>Required capabilities: ${listText(item.required_capabilities)} · sandbox: ${escapeHtml(item.sandbox)} · approval policy: ${escapeHtml(item.approval_policy)}</small>
         <small>Network: ${network.enabled ? "enabled" : "disabled"} · allowlist: ${listText(network.allowed_hosts)} · deadline: ${timeText(item.deadline_at)}</small>
-        <small>Limits: CPU ${escapeHtml(limits.cpu_seconds)}s · wall ${escapeHtml(limits.wall_seconds)}s · memory ${bytes(limits.memory_bytes)} · disk ${bytes(limits.disk_bytes)} · processes ${escapeHtml(limits.process_count)}</small>
+        <small>Limits: CPU ${escapeHtml(limits.cpu_seconds)}s · wall ${escapeHtml(timeoutText(limits.wall_seconds))} · memory ${bytes(limits.memory_bytes)} · disk ${bytes(limits.disk_bytes)} · processes ${escapeHtml(limits.process_count)}</small>
         <small>Secret references: ${(item.secret_refs || []).map(id => referenceLink("secret", id)).join(", ") || "none"}. Raw secret material is never present in an assignment.</small>
         ${nativeCredentialCustodyHtml(item)}
         ${leaseHtml(item)}

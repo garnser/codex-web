@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from codex_web.timeout_values import normalize_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
+
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
@@ -274,7 +277,8 @@ class OpenAIModelProviderAdapter:
             if request.text_verbosity:
                 kwargs["text"] = {"verbosity": request.text_verbosity}
             try:
-                response = await client.responses.create(**kwargs)
+                response = await client.responses.create(**kwargs,
+                    timeout=httpx.Timeout(normalize_timeout(request.timeout_seconds), connect=30.0))
             except Exception as exc:
                 raise self._classify(exc) from exc
             usage = getattr(response, "usage", None)
@@ -304,7 +308,8 @@ class OpenAIModelProviderAdapter:
         if request.reasoning_effort in {"low", "medium", "high"}:
             kwargs["reasoning_effort"] = request.reasoning_effort
         try:
-            response = await client.chat.completions.create(**kwargs)
+            response = await client.chat.completions.create(**kwargs,
+                timeout=httpx.Timeout(normalize_timeout(request.timeout_seconds), connect=30.0))
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             message = str(exc).lower()
@@ -359,7 +364,8 @@ class OpenAIModelProviderAdapter:
         client = self._client(provider, credential)
         entries: dict[str, ModelCatalogEntry] = {}
         try:
-            response = await client.models.list()
+            response = await client.models.list(timeout=httpx.Timeout(
+                normalize_timeout(RuntimePolicy.local_preparation_timeout(30.0)), connect=30.0))
             items = response if hasattr(response, "__aiter__") else (
                 getattr(response, "data", ()) or ()
             )
@@ -495,7 +501,7 @@ class AnthropicModelProviderAdapter:
             async with httpx.AsyncClient(
                 base_url=(provider.base_url or self.default_base_url).rstrip("/") + "/",
                 headers=headers,
-                timeout=30.0,
+                timeout=httpx.Timeout(normalize_timeout(RuntimePolicy.local_preparation_timeout(30.0)), connect=30.0),
                 transport=self._transport,
             ) as client:
                 for _page in range(100):
@@ -601,7 +607,7 @@ class AnthropicModelProviderAdapter:
             async with httpx.AsyncClient(
                 base_url=base_url,
                 headers=headers,
-                timeout=request.timeout_seconds,
+                timeout=httpx.Timeout(normalize_timeout(request.timeout_seconds), connect=30.0),
                 transport=self._transport,
             ) as client:
                 response = await client.post("v1/messages", json=payload)

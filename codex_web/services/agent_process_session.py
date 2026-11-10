@@ -20,6 +20,8 @@ from codex_web.storage.state_store import StorageLockUnavailable, StorageOperati
 from codex_web.services.managed_validation_custody import ManagedValidationCustody
 from codex_web.local_execution_backend import TrustedLocalRuntimeHome
 from codex_web.observability import log_event
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout, minimum_timeout
 from codex_web.runtime import managed_validation_runner
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
@@ -932,9 +934,10 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no execution workspace"
             )
-        if (
+        wall_seconds = normalize_timeout(assignment.limits.wall_seconds)
+        if (wall_seconds is not None and
             self._monotonic() - self.started_monotonic
-            >= assignment.limits.wall_seconds
+            >= wall_seconds
         ):
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded wall_seconds"
@@ -1259,7 +1262,9 @@ class AssignmentBoundAgentProcessSession:
         expires = min(lease.expires_at, assignment.deadline_at or lease.expires_at) if lease else now
         if expires <= now:
             raise TimeoutError("last validated lease or assignment deadline expired")
-        return min(10.0, expires - now)
+        # The configurable operation cap may be disabled; the actual lease and
+        # absolute assignment deadline always remain authoritative.
+        return minimum_timeout(RuntimePolicy.local_preparation_timeout(10.0), expires - now)
 
     def _lease_budget(self):
         return self._assignment_lease_budget(self._bound_assignment)
@@ -1779,7 +1784,8 @@ class AssignmentBoundAgentProcessSessionManager:
         from codex_web.services.async_operations import run_settled
         from codex_web.storage.action_intents import ReadinessOriginIndexProgressing
         parent = storage_operation_budget.get()
-        seconds = min(30., parent.remaining() if parent is not None else 30.)
+        seconds = minimum_timeout(RuntimePolicy.local_preparation_timeout(30.),
+            parent.remaining() if parent is not None and parent.deadline != float('inf') else None)
 
         class PreparationBudget(StorageOperationBudget):
             def remaining(self):
@@ -1789,7 +1795,7 @@ class AssignmentBoundAgentProcessSessionManager:
                     parent.remaining()
                 return super().remaining()
 
-        budget = PreparationBudget(seconds)
+        budget = PreparationBudget(seconds, parent=parent)
 
         def prepare():
             token = storage_operation_budget.set(budget)

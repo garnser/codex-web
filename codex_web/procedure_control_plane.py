@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.authority import AUTHORITY_LEVEL_RANK, AuthorityLevel
 from codex_web.skill_procedures import ProcedureValueContract
+from codex_web.timeout_values import normalize_timeout
 
 
 class CanonicalOperationError(ValueError):
@@ -115,7 +116,7 @@ class CanonicalOperationRegistry:
         if (key in self._operations or not callable(getattr(adapter, 'execute', None))
                 or contract.input_model.model_config.get('extra') != 'forbid'
                 or contract.effect not in {'read', 'mutation'}
-                or not 1 <= contract.timeout_seconds <= 3600
+                or contract.timeout_seconds not in (0, -1) and not 1 <= contract.timeout_seconds <= 3600
                 or contract.max_attempts != 1
                 or (contract.effect == 'mutation' and contract.authority_level in AUTHORITY_LEVEL_RANK
                     and AUTHORITY_LEVEL_RANK[AuthorityLevel(contract.authority_level)] < AUTHORITY_LEVEL_RANK[AuthorityLevel.EXECUTE])
@@ -142,13 +143,16 @@ class CanonicalOperationRegistry:
 
     def validate_step(self, procedure, step):
         ref = step.control_plane
-        if procedure.schema_version != '1.4' or ref is None:
+        if procedure.schema_version not in {'1.4', '1.5'} or ref is None:
             raise CanonicalOperationError('procedure_canonical_schema_required')
         registration = self.resolve(ref.operation_id, ref.contract_version)
         contract = registration.contract
         selector = next((s for s in procedure.resource_selectors if s.id == ref.resource_selector), None)
         if (selector is None or set(contract.resource_types) != set(selector.resource_types)
-                or step.timeout_seconds > contract.timeout_seconds or step.max_attempts != 1
+                or (procedure.schema_version != '1.5' and normalize_timeout(contract.timeout_seconds) is not None
+                    and (normalize_timeout(step.timeout_seconds) is None
+                         or normalize_timeout(step.timeout_seconds) > normalize_timeout(contract.timeout_seconds)))
+                or step.max_attempts != 1
                 or step.retry_backoff_seconds != 0
                 or (contract.effect == 'read' and step.kind not in {'diagnostic', 'verification'})
                 or (contract.effect == 'mutation' and step.kind not in {'mutation', 'recovery'})

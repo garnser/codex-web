@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Callable
 
 from codex_web.agent_providers import AgentProviderCapability
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout
 from codex_web.agent_runtime import (
     AgentRuntimeEvent,
     AgentRuntimeHealth,
@@ -69,8 +71,8 @@ class CodexCliAgentRuntimeAdapter:
         self.runner = runner or CliRuntimeRunner(
             environment_allowlist=("HOME", "CODEX_HOME", "PATH"),
         )
-        self.timeout_seconds = max(1.0, float(timeout_seconds))
-        self.start_timeout_seconds = max(0.1, float(start_timeout_seconds))
+        self.timeout_seconds = normalize_timeout(RuntimePolicy.native_rpc_timeout(timeout_seconds))
+        self.start_timeout_seconds = normalize_timeout(RuntimePolicy.native_rpc_timeout(start_timeout_seconds))
         self._listeners: set[Callable[[AgentRuntimeEvent], None]] = set()
         self._session_aliases: dict[str, str] = {}
         self._session_settings: dict[str, tuple[str | None, str | None]] = {}

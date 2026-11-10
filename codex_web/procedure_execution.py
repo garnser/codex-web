@@ -47,7 +47,7 @@ class ProcedureDeviation(BaseModel):
 
 class ProcedureCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal["1.0", "1.1"] = "1.0"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.0"
     id: str | None = Field(default=None, pattern=r"^procedure-run-[a-f0-9]{32}$")
     canonical_input_checksum: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     revision: int = Field(default=1, ge=1)
@@ -57,7 +57,7 @@ class ProcedureCheckpoint(BaseModel):
     input_snapshot_checksum: str = Field(pattern=r"^[a-f0-9]{64}$")
     resource_context_checksum: str
     started_at: float
-    deadline_at: float
+    deadline_at: float | None = None
     status: Literal["ready", "running", "waiting", "awaiting_approval", "reconciliation_required", "recovery_required", "recovered", "completed"] = "ready"
     current_step_id: str | None = None
     steps: dict[str, ProcedureStepCheckpoint]
@@ -68,10 +68,12 @@ class ProcedureCheckpoint(BaseModel):
 
     @model_validator(mode="after")
     def run_identity(self):
-        if (self.schema_version == "1.1") != (self.id is not None and self.canonical_input_checksum is not None):
+        if (self.schema_version in {"1.1", "1.2"}) != (self.id is not None and self.canonical_input_checksum is not None):
             raise ValueError("procedure run identity requires schema 1.1")
         if self.schema_version == "1.0" and (self.id is not None or self.canonical_input_checksum is not None):
             raise ValueError("legacy checkpoints cannot acquire a new origin identity")
+        if self.deadline_at is None and self.schema_version != '1.2':
+            raise ValueError('disabled procedure deadline requires checkpoint schema 1.2')
         return self
 
     @model_serializer(mode="wrap")

@@ -6,6 +6,8 @@ service does not execute steps or make policy/approval decisions.
 """
 from __future__ import annotations
 
+from codex_web.services.runtime_policy import RuntimePolicy
+
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -839,7 +841,7 @@ class NativeProcedureAdmissionService:
                 context = await PostTurnReadinessService._run_owned(
                     lambda: asyncio.to_thread(self._reasoning_context, assignment, actor, project,
                                               sandbox, request_checksum),
-                    seconds=5., name='native-reasoning-procedure-context')
+                    seconds=RuntimePolicy.local_preparation_timeout(5.), name='native-reasoning-procedure-context')
             except Exception as exc:
                 # The original local preparation owner alone supplies these
                 # closed diagnostics. Exception prose and provider payloads do

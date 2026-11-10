@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import weakref
 from dataclasses import replace
 from types import SimpleNamespace
 import time
 
 from codex_web.action_intents import ActionIntentReconcileRequest, ActionIntentStatus
+from codex_web.timeout_values import minimum_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.procedure_reconciliation import (
     MAX_RECOVERY_ATTEMPTS, read_only_reconciliation,
 )
@@ -136,7 +139,7 @@ class PostTurnReadinessService:
                         raise
                     seen.add(progress)
             raise ActionRequirementError('Post-turn readiness index preparation budget exhausted')
-        return await self._run_owned(prepare, seconds=30,
+        return await self._run_owned(prepare, seconds=RuntimePolicy.local_preparation_timeout(30),
             name='ready-origin-preparation-' + assignment_id)
 
     async def _reconcile_owned(self, intent, payload, actor, scope):
@@ -150,9 +153,12 @@ class PostTurnReadinessService:
     async def _run_owned(operation, *, seconds, name):
         """A cancelled waiter cannot retire a still-running canonical writer."""
         parent_budget = storage_operation_budget.get()
-        seconds = min(seconds, parent_budget.remaining()
-            if parent_budget is not None else seconds)
-        budget = StorageOperationBudget(seconds)
+        remaining = parent_budget.remaining() if parent_budget is not None else None
+        seconds = minimum_timeout(seconds,
+            remaining if remaining is not None and math.isfinite(remaining) else None)
+        # Parent cancellation reaches every child write guard, while a local
+        # child refusal leaves the valid parent available for canonical cleanup.
+        budget = StorageOperationBudget(seconds, parent=parent_budget)
 
         async def owned_operation():
             token = storage_operation_budget.set(budget)

@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 
+from codex_web.timeout_values import normalize_timeout
 from codex_web.autonomy import AutonomyObservation, AutonomyReasoningResult
 from codex_web.authority import AuthorityEvaluationRequest, AuthorityLevel
 from codex_web.automation_definitions import AutomationTargetKind
@@ -86,7 +87,9 @@ class HomeOperatorFollowup:
                 or self.controller._scoped_pause_reason(control, actor=current, project_id=run.project_id)
                 or self.controller._exclusive_goal_scope_reason(control, event)):
             raise ValueError('Canonical autonomy controls block Home event follow-up')
-        if check_controls and run.started_at is not None and self.runs.clock() >= run.started_at + automation.budget.max_duration_seconds:
+        duration = normalize_timeout(automation.budget.max_duration_seconds)
+        if (check_controls and duration is not None and run.started_at is not None
+                and self.runs.clock() >= run.started_at + duration):
             raise ValueError('Home event follow-up duration budget expired')
         return automation, current, selected
 
@@ -370,8 +373,10 @@ class HomeOperatorFollowup:
             return current
         # Finite original-run duration is a canonical one-shot containment event,
         # not a new reasoning/polling loop. It cannot interrupt a successor turn.
-        await asyncio.to_thread(self._schedule, current, 'deadline',
-            current.started_at + automation.budget.max_duration_seconds, generation=current.started_at)
+        duration = normalize_timeout(automation.budget.max_duration_seconds)
+        if duration is not None:
+            await asyncio.to_thread(self._schedule, current, 'deadline',
+                current.started_at + duration, generation=current.started_at)
         invoked = False
         async def queue_once(*_args):
             nonlocal invoked
@@ -564,6 +569,7 @@ class HomeOperatorFollowup:
                 raise AuthorizationError('Original authenticated operator authority is unavailable') from error
             membership_actor = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
         automation, current_actor, selected = self.context(run, membership_actor, check_controls=False)
+        duration = normalize_timeout(automation.budget.max_duration_seconds)
         preflight = getattr(self.turns, 'preflight', None)
         if preflight is None or preflight.store.store is not self.runs.store.store:
             return run
@@ -586,8 +592,8 @@ class HomeOperatorFollowup:
             matches = [row for row in rows if row.execution_id == run.execution_ids[0]
                 or row.source == SOURCE + run.id]
             if not matches and not rows and cancel_unknown:
-                if (run.started_at is None or self.runs.clock() <
-                        run.started_at + automation.budget.max_duration_seconds):
+                if (duration is None or run.started_at is None or self.runs.clock() <
+                        run.started_at + duration):
                     raise ValueError('Only an expired Home grant can cancel unknown scheduling')
                 if empty_guard is None:
                     raise ValueError('Complete current Home custody and queue inventory required')
@@ -636,8 +642,8 @@ class HomeOperatorFollowup:
             if not proven:
                 if not cancel_unknown:
                     return {}
-                if (run.started_at is None
-                        or self.runs.clock() < run.started_at + automation.budget.max_duration_seconds):
+                if (duration is None or run.started_at is None
+                        or self.runs.clock() < run.started_at + duration):
                     raise ValueError('Only an expired Home grant can cancel unknown scheduling')
                 execution = getattr(self.turns, 'execution', None)
                 if (execution is None or execution.thread_is_active(automation.target.home_thread_id)
@@ -822,7 +828,8 @@ class HomeOperatorFollowup:
             return
         automation, _ = await asyncio.to_thread(self.runs.definitions.resolve_reference, run.definition_ref,
             organization_id=run.organization_id, workspace_id=run.workspace_id, project_id=run.project_id)
-        if self.runs.clock() < run.started_at + automation.budget.max_duration_seconds:
+        duration = normalize_timeout(automation.budget.max_duration_seconds)
+        if duration is None or self.runs.clock() < run.started_at + duration:
             return
         active = await asyncio.to_thread(self.turns.execution._active_turn, automation.target.home_thread_id)
         recovered = None

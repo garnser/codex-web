@@ -11,6 +11,7 @@ from urllib.parse import quote, unquote
 
 from pydantic import BaseModel, ConfigDict, Field
 from codex_web.canonical_json import canonical_json_bytes, canonical_json_chunks
+from codex_web.timeout_values import normalize_timeout
 
 
 _RECORD_STORAGE_ROOT = "__codex_records__/"
@@ -46,15 +47,35 @@ class StorageLockUnavailable(TimeoutError):
     """
 
 
+class _BudgetCancellation:
+    """Child retirement is local; parent retirement is always visible downstream."""
+    def __init__(self, parent=None):
+        self._local = threading.Event()
+        self._parent = parent
+
+    def set(self):
+        self._local.set()
+
+    def is_set(self):
+        return self._local.is_set() or (self._parent is not None and self._parent.is_set())
+
+
 class StorageOperationBudget:
     """Cooperative deadline for existing store/validation work, not a lease.
 
     Cancelling an asyncio waiter cannot stop a running Python thread. The same
     budget follows that thread and refuses later writes after retirement.
     """
-    def __init__(self, seconds: float):
-        self.deadline = time.monotonic() + seconds
-        self.cancelled = threading.Event()
+    def __init__(self, seconds: float | None, *, parent: StorageOperationBudget | None = None):
+        duration = normalize_timeout(seconds)
+        # Infinity is ephemeral only; keep numeric deadline consumers compatible.
+        self.deadline = (time.monotonic() + duration
+                         if duration is not None else float("inf"))
+        self._parent = parent
+        if parent is not None:
+            parent.remaining()
+            self.deadline = min(self.deadline, parent.deadline)
+        self.cancelled = _BudgetCancellation(parent.cancelled if parent is not None else None)
         self._capture_stage = None
         self._capture_stage_started = None
         self._capture_seconds = {}
@@ -78,6 +99,8 @@ class StorageOperationBudget:
         return {'stage': self._capture_stage, 'stage_seconds': seconds}
 
     def remaining(self):
+        if self._parent is not None:
+            self._parent.remaining()
         remaining = self.deadline - time.monotonic()
         if self.cancelled.is_set() or remaining <= 0:
             raise TimeoutError("storage operation deadline exceeded")

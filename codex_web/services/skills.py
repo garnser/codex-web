@@ -317,7 +317,7 @@ class SkillService:
                 raise SkillConflict("procedure references an unsupported ActionProvider operation")
             from codex_web.services.code_host_action_contract import CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
             if (ref.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
-                    and (procedure.schema_version != '1.3' or procedure.input_protocol != 'code-host-mr-procedure-input.v2')):
+                    and (procedure.schema_version not in {'1.3', '1.5'} or procedure.input_protocol != 'code-host-mr-procedure-input.v2')):
                 raise SkillConflict('Guarded readiness requires procedure 1.3 and versioned v2 input')
             if step.timeout_seconds > operation.timeout_seconds or step.max_attempts > operation.retry_max_attempts:
                 raise SkillConflict("procedure step exceeds registered operation timeout/retry bounds")

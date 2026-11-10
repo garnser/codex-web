@@ -86,6 +86,22 @@ class WorkItemTimingPolicyTests(unittest.TestCase):
             self.assertEqual(self.policy.release_validation_sla_seconds(), 1800.0)
             self.assertEqual(self.policy.accepted_handoff_owner_idle_seconds(), 300.0)
 
+    def test_disabled_handoff_timeout_has_no_projected_deadline(self):
+        state = self.state()
+        state.handoff = WorkItemHandoff(from_agent='nora', to_agent='quinn', requested_at=100,
+            delivery=WorkItemHandoffDelivery())
+        for duration in ('0', '-1'):
+            with self.subTest(duration=duration), patch.dict(os.environ, {
+                'CODEX_WEB_WORK_ITEM_HANDOFF_TIMEOUT_SECONDS': duration,
+                'CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS': duration,
+            }):
+                self.assertEqual(self.policy.handoff_timeout_seconds(), 0)
+                self.assertEqual(self.policy.handoff_delivery_timeout_seconds(), 0)
+                self.assertIsNone(self.policy.handoff_deadline_projection(state)['deadline_at'])
+                state.handoff.delivery = WorkItemHandoffDelivery(status='delivered', started_at=200,
+                    thread_id='quinn-thread', turn_id='actual-turn', execution_id='actual-execution')
+                self.assertIsNone(self.policy.handoff_deadline_projection(state)['deadline_at'])
+
     def test_configured_values_are_clamped_to_existing_minimums(self) -> None:
         with patch.dict(
             os.environ,

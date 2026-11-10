@@ -476,7 +476,7 @@ class AutomationScheduleMaterializer:
 def install_automation_definitions(
     registry: DefinitionRegistryService,
 ) -> AutomationDefinitionService:
-    for version in ("1.0", "1.1", AUTOMATION_SCHEMA_VERSION):
+    for version in ("1.0", "1.1", "1.2", AUTOMATION_SCHEMA_VERSION):
         if not any(item["kind"] == AUTOMATION_KIND and item["schema_version"] == version
                    for item in registry.schemas.metadata()):
             def validate(payload, version=version):

@@ -3,6 +3,8 @@ from __future__ import annotations
 from codex_web.resource_context import ReadOnlyResourceContext
 
 import time
+import math
+from codex_web.services.runtime_policy import RuntimePolicy
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
@@ -1343,7 +1345,7 @@ class TurnExecutionBindingService:
             )
         secret_ref = authentication.secret_reference_id
         effective_limits = limits or WorkerResourceLimits(
-            wall_seconds=session_seconds
+            wall_seconds=math.ceil(RuntimePolicy.worker_wall_timeout(session_seconds))
         )
         deadline_at = self._clock() + session_seconds
         context_ids=resource_context.read_only_resource_ids if resource_context else ()
@@ -1697,7 +1699,7 @@ class TurnExecutionBindingService:
             )
         effective_limits = limits or WorkerResourceLimits(
             cpu_seconds=session_seconds,
-            wall_seconds=session_seconds,
+            wall_seconds=math.ceil(RuntimePolicy.worker_wall_timeout(session_seconds)),
         )
         return self._prepare_subject(
             subject=subject,

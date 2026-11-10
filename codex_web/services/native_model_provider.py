@@ -5,6 +5,9 @@ ModelInvocationRequest is insufficient to select this execution path.
 """
 from __future__ import annotations
 
+from codex_web.timeout_values import normalize_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
+
 import contextvars
 import asyncio
 import hashlib
@@ -43,7 +46,7 @@ class NativeProcessOwnership:
     stop: Callable | None = field(default=None, repr=False)
 
     def validate_current(self):
-        if self.cancelled.is_set() or self.deadline_at is None or time.monotonic() >= self.deadline_at:
+        if self.cancelled.is_set() or (self.deadline_at is not None and time.monotonic() >= self.deadline_at):
             raise NativeReasoningPolicyError('Native invocation cancelled or deadline expired')
 
     def bind_workspace(self, path):
@@ -94,7 +97,9 @@ class NativeModelInvocationContext:
                 and request.purpose == ('executive-synthesis' if self.role_id == 'synthesis'
                                         else 'executive-role:' + self.role_id)
                 and request.allow_fallback is False
-                and 0 < request.timeout_seconds <= self.max_duration_seconds
+                and (normalize_timeout(self.max_duration_seconds) is None
+                     or (normalize_timeout(request.timeout_seconds) is not None
+                         and normalize_timeout(request.timeout_seconds) <= normalize_timeout(self.max_duration_seconds)))
                 and self._matches_ceiling(request.max_input_tokens, self.max_input_tokens)
                 and self._matches_ceiling(request.max_output_tokens, self.max_output_tokens))
 
@@ -171,7 +176,8 @@ class NativeCodexModelProviderAdapter:
         context = replace(context, model_context_window_tokens=model.context_window_tokens,
                           model_output_capacity_tokens=model.max_output_tokens)
         from codex_web.services.post_turn_readiness import PostTurnReadinessService
-        owner = NativeProcessOwnership(deadline_at=time.monotonic() + request.timeout_seconds)
+        duration = normalize_timeout(request.timeout_seconds)
+        owner = NativeProcessOwnership(deadline_at=time.monotonic() + duration if duration is not None else None)
         original_guard = context.validate_current
         def invocation_current():
             owner.validate_current()
@@ -181,7 +187,7 @@ class NativeCodexModelProviderAdapter:
         try:
             await PostTurnReadinessService._run_owned(
                 lambda: asyncio.to_thread(context.validate_current),
-                seconds=5., name='native-model-reservation')
+                seconds=RuntimePolicy.local_preparation_timeout(5.), name='native-model-reservation')
         except Exception as exc:
             raise ModelProviderAdapterError('Native consultation reservation unavailable') from exc
         # Caller-context binding is pure. Blocking canonical validation belongs

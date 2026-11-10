@@ -64,7 +64,8 @@ class TrustedHostActionBackend(BubblewrapExecutionBackend):
             raise LocalExecutionPolicyError("Host command requires bounded argv and absolute executable")
         return tuple(argv)
 
-    def run_action(self, assignment, *, argv, workspace_path, admission_guard, max_output_bytes=16384):
+    def run_action(self, assignment, *, argv, workspace_path, admission_guard,
+                   max_output_bytes=16384, operation_timeout_seconds=None):
         if not callable(admission_guard):
             raise LocalExecutionPolicyError("Current host action guard is required")
         if type(max_output_bytes) is not int or not 1024 <= max_output_bytes <= 65536:
@@ -76,7 +77,8 @@ class TrustedHostActionBackend(BubblewrapExecutionBackend):
             # group termination and positive wait as normal local worker commands.
             self._current(assignment)
             return super().run(assignment, argv=argv, workspace_path=workspace_path,
-                environment={}, poll_hook=lambda: self._current(assignment))
+                environment={}, poll_hook=lambda: self._current(assignment),
+                operation_timeout_seconds=operation_timeout_seconds)
         finally:
             self._output_limit.reset(output_token)
             self._admission.reset(token)

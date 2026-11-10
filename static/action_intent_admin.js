@@ -3,6 +3,7 @@
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
+  const { timeoutText } = await import(`${BASE}/static/timeout_values.js`);
   const { referenceAttributes, focusReference, workspaceIsVisible } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   const { procedureHistoryHtml } = await import(`${BASE}/static/procedure_discovery_view.js`);
@@ -122,7 +123,7 @@
 
       <small>Security: ${escapeHtml(security.outcome || "unknown")} · source ${escapeHtml(security.source || "unknown")} · sandbox ${escapeHtml(security.sandbox || "unknown")} · network ${security.network_enabled ? "enabled" : "disabled"} · reasons ${listText(security.reasons)}</small>
       <small>Idempotency key: ${escapeHtml(intent.idempotency_key)} · provider idempotency: ${intent.provider_idempotency_supported ? "yes" : "no"} · attempt ${escapeHtml(intent.attempt)} / ${escapeHtml(retry.max_attempts || "unknown")} · backoff ${escapeHtml(retry.backoff_seconds ?? "unknown")}s</small>
-      <small>Verification required: ${intent.verification_required ? "yes" : "no"} · rollback required: ${intent.rollback_required ? "yes" : "no"} · expected evidence rules: ${escapeHtml(intent.expected_evidence?.length || 0)} · timeout ${escapeHtml(intent.timeout_seconds)}s</small>
+      <small>Verification required: ${intent.verification_required ? "yes" : "no"} · rollback required: ${intent.rollback_required ? "yes" : "no"} · expected evidence rules: ${escapeHtml(intent.expected_evidence?.length || 0)} · timeout ${escapeHtml(timeoutText(intent.timeout_seconds))}</small>
       ${leaseHtml(intent.lease)}
       <small>Execution started: ${timeText(intent.execution_started_at)} · completed: ${timeText(intent.completed_at)} · not before: ${timeText(intent.not_before)}</small>
       <small>Correlation: ${escapeHtml(intent.correlation_id)} · causation: ${escapeHtml(intent.causation_id || "none")} · last receipt: ${escapeHtml(intent.last_receipt_id || "none")} · last verification: ${escapeHtml(intent.last_verification_id || "none")}</small>

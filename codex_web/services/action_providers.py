@@ -102,6 +102,9 @@ class ActionProviderRegistry:
         tenant_scope: TenantScope | None = None,
     ) -> None:
         self.conformance.validate_contract(provider)
+        if provider.contract_version != "1.3" and any(
+                action.timeout_seconds in (0, -1) for action in provider.actions()):
+            raise ValueError("disabled action duration requires action-provider contract 1.3")
         provider_type, provider_instance = self._provider_key(
             provider.provider_type,
             provider.provider_instance,

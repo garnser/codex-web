@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from codex_web.timeout_values import normalize_timeout
+
 
 class RuntimePolicy:
     """Typed runtime/autonomy timing policy backed by environment configuration."""
@@ -105,19 +107,48 @@ class RuntimePolicy:
             minimum=1.0,
         )
 
+    @staticmethod
+    def _elapsed_timeout(name: str, default: float | None, *, minimum: float = 0.0) -> float:
+        # Numeric zero travels through existing callers; timer owners normalize it.
+        raw = os.environ.get(name)
+        try:
+            seconds = normalize_timeout(float(raw) if raw and raw.strip() else default)
+        except (TypeError, ValueError):
+            seconds = normalize_timeout(default)
+        return 0.0 if seconds is None else max(minimum, seconds)
+
     def native_recovery_cycle_timeout(self) -> float:
-        return self._seconds(
-            "CODEX_WEB_NATIVE_RECOVERY_CYCLE_TIMEOUT_SECONDS",
-            300.0,
-            minimum=5.0,
-        )
+        return self._elapsed_timeout(
+            "CODEX_WEB_NATIVE_RECOVERY_CYCLE_TIMEOUT_SECONDS", 300.0, minimum=5.0)
 
     def continuity_dispatch_timeout(self) -> float:
-        return self._seconds(
-            "CODEX_WEB_CONTINUITY_DISPATCH_TIMEOUT_SECONDS",
-            120.0,
-            minimum=5.0,
-        )
+        return self._elapsed_timeout(
+            "CODEX_WEB_CONTINUITY_DISPATCH_TIMEOUT_SECONDS", 120.0, minimum=5.0)
+
+    @staticmethod
+    def local_preparation_timeout(default: float | None) -> float:
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_LOCAL_PREPARATION_TIMEOUT_SECONDS", default)
+
+    @staticmethod
+    def native_rpc_timeout(default: float | None) -> float:
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_NATIVE_RPC_TIMEOUT_SECONDS", default)
+
+    @staticmethod
+    def worker_wall_timeout(default: float | None) -> float:
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_WORKER_WALL_TIMEOUT_SECONDS", default)
+
+    @staticmethod
+    def procedure_operation_timeout(default: float | None) -> float:
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_PROCEDURE_OPERATION_TIMEOUT_SECONDS", default)
+
+    @staticmethod
+    def action_timeout(default: float | None) -> float:
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_ACTION_TIMEOUT_SECONDS", default)
 
     def local_worker_max_concurrency(self) -> int:
         try:

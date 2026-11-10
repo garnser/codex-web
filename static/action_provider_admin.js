@@ -2,6 +2,7 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { createActionProviderBindingControls } = await import(`${BASE}/static/action_provider_binding_controls.js`);
+  const { timeoutText } = await import(`${BASE}/static/timeout_values.js`);
   const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const state = { items: [], resources: [], projects: [], generation: 0 };
   let bindingControls;
@@ -59,7 +60,7 @@
       <small>Required authority: ${listText(action.required_authority)} · Resource types: ${listText(action.required_resource_types)}</small>
       <small>Credential: ${action.credential_required ? `required for ${escapeHtml(action.credential_purpose || "unspecified purpose")}` : "not required"}</small>
       <small>Expected evidence: ${listText(action.expected_evidence)} · Verification: ${action.capabilities?.verification ? "supported" : "not supported"} · Rollback: ${action.capabilities?.rollback ? "supported" : "not supported"} · Reversible: ${action.reversible ? "yes" : "no"}</small>
-      <small>Timeout: ${escapeHtml(action.timeout_seconds)}s · Retry max attempts: ${escapeHtml(action.retry_max_attempts)} · Network access: ${action.network_access ? "yes" : "no"} · Filesystem: ${escapeHtml(action.filesystem_access)} · Process access: ${action.process_access ? "yes" : "no"}</small>
+      <small>Timeout: ${escapeHtml(timeoutText(action.timeout_seconds))} · Retry max attempts: ${escapeHtml(action.retry_max_attempts)} · Network access: ${action.network_access ? "yes" : "no"} · Filesystem: ${escapeHtml(action.filesystem_access)} · Process access: ${action.process_access ? "yes" : "no"}</small>
     </details>`;
   }
 

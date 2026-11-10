@@ -20,6 +20,8 @@ from fastapi import HTTPException
 
 from codex_web.observability import RuntimeMetrics, log_event
 from codex_web.services.async_operations import run_settled
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout
 
 
 logger = logging.getLogger(__name__)
@@ -173,14 +175,15 @@ def trusted_local_codex_command(
 
 def request_timeout(method: str) -> float | None:
     if method == "initialize":
-        return 60
-    if method in {"thread/list", "thread/read", "account/rateLimits/read"}:
-        return 60
-    if method in {"thread/resume", "thread/start", "thread/name/set", "turn/start"}:
-        return 60
-    if method == "turn/interrupt":
-        return 10
-    return 20
+        default = 60
+    elif method in {"thread/list", "thread/read", "account/rateLimits/read",
+                    "thread/resume", "thread/start", "thread/name/set", "turn/start"}:
+        default = 60
+    elif method == "turn/interrupt":
+        default = 10
+    else:
+        default = 20
+    return normalize_timeout(RuntimePolicy.native_rpc_timeout(default))
 
 
 class CodexRuntime:
@@ -346,7 +349,7 @@ class CodexRuntime:
                             "capabilities": {"experimentalApi": True},
                         },
                     ),
-                    timeout=15,
+                    timeout=normalize_timeout(RuntimePolicy.native_rpc_timeout(15)),
                 )
                 # Version comes only from this process generation's initialize response.
                 import re
@@ -988,7 +991,7 @@ class CodexRuntime:
             await self.start()
         elif not self.ready.is_set():
             try:
-                await asyncio.wait_for(self.ready.wait(), timeout=60)
+                await asyncio.wait_for(self.ready.wait(), timeout=normalize_timeout(RuntimePolicy.native_rpc_timeout(60)))
             except asyncio.TimeoutError:
                 if self.metrics:
                     self.metrics.increment("codex.readiness_timeouts")

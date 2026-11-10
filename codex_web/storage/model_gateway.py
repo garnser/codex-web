@@ -255,6 +255,9 @@ MODEL_GATEWAY_MIGRATIONS.register(
 )
 
 
+MODEL_GATEWAY_MIGRATIONS.register('1.7', '1.8', lambda payload: {**payload, 'schema_version': '1.8'})
+
+
 class ModelGatewayStore:
     namespace = "model_gateway"
 

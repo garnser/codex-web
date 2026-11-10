@@ -213,7 +213,8 @@ function editorMarkup(item) {
           <input name="max_cost_usd" type="number" min="0" step="0.01" value="${esc(numberValue(budget.max_cost_usd))}" />
         </label>
         <label>Max duration seconds
-          <input name="max_duration_seconds" type="number" min="1" value="${esc(numberValue(budget.max_duration_seconds))}" />
+          <input name="max_duration_seconds" type="number" min="-1" value="${esc(numberValue(budget.max_duration_seconds))}" />
+          <small>0 or -1 disables the timeout. Positive values enforce a limit.</small>
         </label>
         <label>Max concurrency
           <input name="max_concurrency" type="number" min="1" max="100" value="${esc(numberValue(budget.max_concurrency ?? 1))}" required />

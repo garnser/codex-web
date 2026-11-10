@@ -5,6 +5,9 @@ A failed/unknown original is retained by normal bootstrap/preflight owners.
 """
 from __future__ import annotations
 
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout
+
 import asyncio
 import hashlib
 import json
@@ -167,7 +170,7 @@ class CanonicalNativeReasoningBridge:
     @staticmethod
     async def _owned(function, *args):
         return await PostTurnReadinessService._run_owned(
-            lambda: asyncio.to_thread(function, *args), seconds=5., name='native-model-canonical-read')
+            lambda: asyncio.to_thread(function, *args), seconds=RuntimePolicy.local_preparation_timeout(5.), name='native-model-canonical-read')
 
     @staticmethod
     async def _wait_or_cancel(future, cancelled):
@@ -277,7 +280,8 @@ class CanonicalNativeReasoningBridge:
                  'openai', self.runtime_id, thread_id, turn_id)
                 or usage.terminal_outcome != 'succeeded'
                 or usage.runtime_duration_seconds is None
-                or usage.runtime_duration_seconds > context.max_duration_seconds
+                or (normalize_timeout(context.max_duration_seconds) is not None
+                    and usage.runtime_duration_seconds > normalize_timeout(context.max_duration_seconds))
                 or any(m != self.binding.concrete_model for m in usage.observed_model_ids)
                 or usage.model_call_count != 1
                 or usage.input_tokens is None or usage.output_tokens is None
@@ -408,7 +412,7 @@ class CanonicalNativeReasoningBridge:
                 preparation_stage = 'authentication_metadata'
                 self._lifecycle_phase(lifecycle, preparation_stage)
                 await PostTurnReadinessService._run_owned(
-                    self.authentication_preparation, seconds=5.,
+                    self.authentication_preparation, seconds=RuntimePolicy.local_preparation_timeout(5.),
                     name='native-authentication-metadata')
                 preparation_stage = 'post_authentication_current_guard'
                 self._lifecycle_phase(lifecycle, preparation_stage)

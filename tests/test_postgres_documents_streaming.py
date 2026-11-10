@@ -263,7 +263,9 @@ class PostgresDocumentsStreamingTests(unittest.TestCase):
         self.assertEqual(self.backend.get('anchor'), {'value': 1})
 
     def test_expired_budget_refuses_before_pool_checkout(self):
-        token = storage_operation_budget.set(StorageOperationBudget(0))
+        expired = StorageOperationBudget(1)
+        expired.deadline = 0
+        token = storage_operation_budget.set(expired)
         try:
             with patch.object(self.pool, 'connection', wraps=self.pool.connection) as checkout:
                 with self.assertRaises(TimeoutError):

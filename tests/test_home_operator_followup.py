@@ -346,6 +346,38 @@ class HomeFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.result_code, 'automation_output_tokens_budget_exhausted')
         self.assertEqual(len(self.calls), 1)
 
+    async def test_disabled_duration_skips_deadline_and_stale_callback_without_interrupt(self):
+        self.payload['budget']['max_duration_seconds'] = 0
+        self.publish()
+        row = self.admit().run
+        scheduled = []
+        self.followup._schedule = lambda *args, **kwargs: scheduled.append((args, kwargs))
+        await self.launch(row)
+        self.assertFalse(any(args[1] == 'deadline' for args, _ in scheduled))
+        self.runs.clock = lambda: 1000000.
+        self.followup.context(row.model_copy(update={'started_at': 100.}))
+        calls = []
+        async def request(*args):
+            calls.append(args)
+        self.turns.execution = NS(_request_for_thread=request)
+        await self.followup._deadline(row.model_copy(update={'status': 'running', 'started_at': 100.}), 100.)
+        self.assertEqual(calls, [])
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_disabled_duration_unknown_launch_keeps_same_original(self):
+        self.payload['budget']['max_duration_seconds'] = -1
+        self.publish()
+        self.throw_after_effect = True
+        row = self.admit().run
+        await self.launch(row)
+        self.runs.clock = lambda: 1000000.
+        await self.launch(row)
+        current = self.runs.store.get(row.id, organization_id='local', workspace_id='default')
+        self.assertEqual(current.status, 'running')
+        self.assertEqual(current.execution_ids, (f'home-followup-{row.id}',))
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(self.admit().launch_allowed)
+
     async def test_duration_interrupt_is_exact_original_fence_and_never_replayed(self):
         first = self.admit().run
         await self.launch(first)

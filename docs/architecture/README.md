@@ -166,3 +166,5 @@ The target architecture is:
 ### [Home operator conversation reference](project-home.md)
 
 Revisioned administrator selection of an existing Home conversation; canonical scope and execution authority remain separate from the navigation binding.
+
+- [Execution duration limits](runtime-timeouts.md) — disabled sentinel values, independent caps, configuration and reader compatibility.

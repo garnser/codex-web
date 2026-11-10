@@ -8,6 +8,8 @@ import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout
 
 
 logger = logging.getLogger(__name__)
@@ -122,7 +124,7 @@ class ClaudeCodeRuntime:
         if self.proc is None or self.proc.poll() is not None:
             await self.start()
         elif not self.ready.is_set():
-            await asyncio.wait_for(self.ready.wait(), timeout=15)
+            await asyncio.wait_for(self.ready.wait(), timeout=normalize_timeout(RuntimePolicy.native_rpc_timeout(15)))
 
     def _fail_pending(self, exc: Exception) -> None:
         if self.turn_future is not None and not self.turn_future.done():
@@ -363,7 +365,7 @@ class ClaudeCodeRuntime:
                 }
             )
             try:
-                return await asyncio.wait_for(future, timeout=10)
+                return await asyncio.wait_for(future, timeout=normalize_timeout(RuntimePolicy.native_rpc_timeout(10)))
             finally:
                 self.pending_controls.pop(request_id, None)
         raise RuntimeError(f"unsupported Claude runtime request: {method}")

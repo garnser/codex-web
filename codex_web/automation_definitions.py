@@ -3,13 +3,15 @@ from __future__ import annotations
 from enum import StrEnum
 from string import Formatter
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
+
+from codex_web.timeout_values import validate_timeout
 
 from codex_web.definitions import DefinitionReference
 
 
 AUTOMATION_KIND = "automation"
-AUTOMATION_SCHEMA_VERSION = "1.2"
+AUTOMATION_SCHEMA_VERSION = "1.3"
 
 
 class AutomationTriggerType(StrEnum):
@@ -109,7 +111,12 @@ class AutomationBudget(BaseModel):
     max_input_tokens: int | None = Field(default=None, ge=0)
     max_output_tokens: int | None = Field(default=None, ge=0)
     max_cost_usd: float | None = Field(default=None, ge=0)
-    max_duration_seconds: int | None = Field(default=None, ge=1)
+    max_duration_seconds: int | None = Field(default=None, ge=-1)
+
+    @field_validator('max_duration_seconds')
+    @classmethod
+    def duration_value(cls, value):
+        return validate_timeout(value) if value is not None else None
     max_concurrency: int = Field(default=1, ge=1, le=100)
 
 
@@ -151,7 +158,7 @@ class AutomationDefinition(BaseModel):
                     or self.budget.max_input_tokens is None or self.budget.max_output_tokens is None
                     or self.budget.max_duration_seconds is None
                     or self.budget.max_input_tokens <= 0 or self.budget.max_output_tokens <= 0):
-                raise ValueError("Home event follow-up requires an owner, event trigger, finite budgets, reuse_only and one attempt/concurrency")
+                raise ValueError("Home event follow-up requires an owner, event trigger, declared time budget (0 or -1 disables), finite token budgets, reuse_only and one attempt/concurrency")
         if self.target.kind == AutomationTargetKind.CANONICAL_PROCEDURE:
             if (self.trigger.type != AutomationTriggerType.CANONICAL_EVENT
                     or self.trigger.event_type != 'work.transition'
@@ -159,7 +166,7 @@ class AutomationDefinition(BaseModel):
                     or self.work_item_policy != 'reuse_only' or not self.owner_identity_id
                     or self.budget.max_duration_seconds is None
                     or (self.budget.max_input_tokens, self.budget.max_output_tokens, self.budget.max_cost_usd) != (0, 0, 0)):
-                raise ValueError('canonical procedure requires Work events, owner, reuse_only, zero models and finite single-run bounds')
+                raise ValueError('canonical procedure requires Work events, owner, reuse_only, zero models and declared single-run bounds (0 or -1 disables elapsed time)')
         refs = [
             *self.skill_refs,
             *(

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import math
 from collections.abc import Callable
 from typing import Any
 
 from codex_web.models import WorkItemState
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.timeout_values import normalize_timeout
 
 
 class WorkItemTimingPolicy:
@@ -21,25 +22,14 @@ class WorkItemTimingPolicy:
 
     @staticmethod
     def handoff_timeout_seconds() -> float:
-        try:
-            seconds = float(
-                os.environ.get(
-                    "CODEX_WEB_WORK_ITEM_HANDOFF_TIMEOUT_SECONDS"
-                )
-                or "900"
-            )
-        except ValueError:
-            return 900.0
-        return max(60.0, seconds)
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_WORK_ITEM_HANDOFF_TIMEOUT_SECONDS", 900.0, minimum=60.0)
 
     @staticmethod
     def handoff_delivery_timeout_seconds() -> float:
-        """Bound undelivered work separately from the recipient ACK window."""
-        try:
-            seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS") or "3600")
-        except ValueError:
-            return 3600.0
-        return max(60.0, seconds) if math.isfinite(seconds) else 3600.0
+        """Undelivered work has its own optional relative expiry window."""
+        return RuntimePolicy._elapsed_timeout(
+            "CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS", 3600.0, minimum=60.0)
 
     @classmethod
     def handoff_deadline_projection(cls, state: WorkItemState) -> dict[str, Any] | None:
@@ -56,7 +46,8 @@ class WorkItemTimingPolicy:
             "legacy_untracked": delivery is None,
             "started_at": start,
             "timeout_seconds": seconds,
-            "deadline_at": start + seconds if start is not None else None,
+            "deadline_at": (start + seconds if start is not None
+                            and normalize_timeout(seconds) is not None else None),
         }
 
     @staticmethod

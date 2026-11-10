@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from codex_web.agent_runtime_usage import UsageResourceSource
 from codex_web.compatibility import ContractSpec
 from codex_web.failures import FailureRecord
+from codex_web.timeout_values import validate_timeout
 from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 from codex_web.model_qualification import (
     CriticIndependenceLevel,
@@ -22,8 +23,8 @@ from codex_web.model_qualification import (
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.7",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"),
+    "1.8",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"),
     deprecated=("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"),
 )
 
@@ -299,7 +300,9 @@ class ModelInvocationRequest(BaseModel):
     allowed_provider_ids: tuple[str, ...] = ()
     max_input_tokens: int | None = Field(default=None, ge=1)
     max_output_tokens: int | None = Field(default=2048, ge=1)
-    timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
+    timeout_seconds: float = Field(default=120.0, ge=-1.0, le=600.0)
+
+    _timeout_value = field_validator('timeout_seconds')(validate_timeout)
     max_cost_usd: float | None = Field(default=None, gt=0.0)
     allow_fallback: bool = True
     reasoning_effort: str | None = None

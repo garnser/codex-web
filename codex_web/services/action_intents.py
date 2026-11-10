@@ -4,7 +4,11 @@ import asyncio
 import math
 import time
 import uuid
+from functools import partial
 from typing import Any
+from codex_web.timeout_values import normalize_timeout, minimum_timeout
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.services.async_operations import run_settled, settle_future
 
 from codex_web.action_intents import (
     ActionDecisionOutcome,
@@ -1162,9 +1166,13 @@ class ActionIntentService:
             raise ActionRequirementError(
                 "verification-required intent needs a verification-capable action"
             )
-        timeout_seconds = payload.timeout_seconds or definition.timeout_seconds
+        default_timeout = RuntimePolicy.action_timeout(definition.timeout_seconds)
+        timeout_seconds = default_timeout if payload.timeout_seconds is None else payload.timeout_seconds
+        registered_timeout = normalize_timeout(default_timeout)
+        requested_timeout = normalize_timeout(timeout_seconds)
         if (request.action_id == CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID
-                and timeout_seconds > definition.timeout_seconds):
+                and registered_timeout is not None
+                and (requested_timeout is None or requested_timeout > registered_timeout)):
             raise ActionRequirementError('Guarded observation exceeds its registered execution limit')
         retry_policy = payload.retry_policy.model_copy(
             update={
@@ -1551,6 +1559,7 @@ class ActionIntentService:
         lease_seconds: int,
         *,
         actor: AuthenticationActor,
+        expected_acquired_at: float | None = None,
     ) -> ActionIntent:
         self._require_worker(actor)
         intent = self._intent(intent_id, actor)
@@ -1558,6 +1567,7 @@ class ActionIntentService:
         if (
             intent.lease is None
             or intent.lease.owner != worker_id
+            or (expected_acquired_at is not None and intent.lease.acquired_at != expected_acquired_at)
             or intent.lease.expires_at <= now
             or intent.status not in {
                 ActionIntentStatus.CLAIMED,
@@ -1576,6 +1586,7 @@ class ActionIntentService:
             for index, item in enumerate(state.intents):
                 if item.id == intent.id:
                     if (item.lease is None or item.lease.owner != worker_id
+                            or (expected_acquired_at is not None and item.lease.acquired_at != expected_acquired_at)
                             or item.lease.expires_at <= time.time()
                             or item.status not in {ActionIntentStatus.CLAIMED, ActionIntentStatus.EXECUTING}):
                         raise ActionIntentLeaseError("action intent lease is not active for worker")
@@ -2058,19 +2069,64 @@ class ActionIntentService:
 
     def _guarded_readonly_remaining(self, intent, actor, *, observation=None):
         if intent.action_id != CODE_HOST_PULL_REQUEST_OBSERVE_READINESS_GUARDED_ACTION_ID:
-            return intent.timeout_seconds
+            return normalize_timeout(intent.timeout_seconds)
         if self.procedure_execution is None:
             raise ActionRequirementError('Guarded observation requires its canonical procedure owner')
         requester = self._requester_actor(intent)
         deadline = self.procedure_execution.readonly_operation_deadline(intent, requester)
-        remaining = min(intent.timeout_seconds, deadline - self.procedure_execution.clock())
+        shared_remaining = deadline - self.procedure_execution.clock() if deadline is not None else None
+        if shared_remaining is not None and shared_remaining <= 0:
+            raise TimeoutError('Guarded observation deadline exhausted')
+        remaining = minimum_timeout(intent.timeout_seconds, shared_remaining)
         if observation is not None:
             # Ephemeral diagnostics only: retain already resolved data, never
             # perform another canonical lookup while handling the exception.
             observation.update(deadline=deadline, clock=self.procedure_execution.clock)
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             raise TimeoutError('Guarded observation deadline exhausted')
         return remaining
+
+    async def _await_owned_action(self, operation, intent, actor, capacity_lease=None):
+        """Keep finite canonical claims while joining the same awaited operation.
+
+        An elapsed-off action still owns renewable leases, never infinite
+        capacity or a second recovery record. Lost renewal cancels and joins the
+        original operation; it cannot start a replacement provider attempt.
+        """
+        lease = intent.lease
+        if lease is None:
+            raise ActionIntentLeaseError("action intent has no owned lease")
+        renewed_at = lease.acquired_at if lease.renewed_at is None else lease.renewed_at
+        claim_seconds = max(1, math.ceil(lease.expires_at - renewed_at))
+        capacity_seconds = 120.0
+        interval = min(claim_seconds, capacity_seconds) / 3.0
+
+        async def renew():
+            await run_settled(partial(self.renew_claim, intent.id, lease.owner, claim_seconds,
+                actor=actor, expected_acquired_at=lease.acquired_at))
+            if capacity_lease is not None:
+                await run_settled(partial(self.capacity.renew, capacity_lease.id,
+                                         lease_seconds=capacity_seconds))
+
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(interval)
+                await renew()
+
+        await renew()
+        owned = asyncio.create_task(operation(), name=f"action-operation-{intent.id}")
+        renewal = asyncio.create_task(heartbeat(), name=f"action-renewal-{intent.id}")
+        try:
+            done, _ = await asyncio.wait((owned, renewal), return_when=asyncio.FIRST_COMPLETED)
+            if renewal in done:
+                await renewal  # A refusal must retire the same provider task.
+                raise ActionIntentLeaseError("action intent renewal ended unexpectedly")
+            return await owned
+        finally:
+            for task in (owned, renewal):
+                if not task.done():
+                    task.cancel()
+            await settle_future(asyncio.gather(owned, renewal, return_exceptions=True))
 
     @staticmethod
     def _readonly_timeout_details(phase, started, observation):
@@ -2098,7 +2154,7 @@ class ActionIntentService:
         requester = self._requester_actor(intent)
         deadline = self.procedure_execution.readonly_operation_deadline(intent, requester)
         def guard(_documents):
-            if self.procedure_execution.clock() >= deadline:
+            if deadline is not None and self.procedure_execution.clock() >= deadline:
                 raise ActionRequirementError('Guarded observation deadline exhausted before settlement')
         return {'guard_rows': {}, 'guard': guard}
 
@@ -2381,7 +2437,7 @@ class ActionIntentService:
                     priority=self._capacity_priority(pending),
                     owner_ref=pending.id,
                     component_key=component_key,
-                    lease_seconds=pending.timeout_seconds + 30.0,
+                    lease_seconds=(normalize_timeout(pending.timeout_seconds) or 90.0) + 30.0,
                 )
             except CapacityDeferredError as exc:
                 return await asyncio.to_thread(self._defer_for_capacity,
@@ -2423,14 +2479,14 @@ class ActionIntentService:
                 except Exception:
                     pass
 
-            try:
+            async def provider_and_admission():
                 if guarded_observation:
                     enter_phase("execute_admission")
                     remaining = self._guarded_readonly_remaining(intent, actor, observation=timeout_observation)
                     enter_phase("provider_execution")
                 else:
                     remaining = self._guarded_readonly_remaining(intent, actor)
-                result = await asyncio.wait_for(
+                provider_result = await asyncio.wait_for(
                     self._execute_provider(intent, actor=actor),
                     timeout=remaining,
                 )
@@ -2439,10 +2495,14 @@ class ActionIntentService:
                         enter_phase("result_admission_check")
                         remaining = self._guarded_readonly_remaining(intent, actor, observation=timeout_observation)
                         enter_phase("result_admission")
-                        await asyncio.wait_for(asyncio.to_thread(self.procedure_execution.result_admission, intent, result),
+                        await asyncio.wait_for(run_settled(partial(self.procedure_execution.result_admission, intent, provider_result)),
                             timeout=remaining)
                     else:
-                        await asyncio.to_thread(self.procedure_execution.result_admission, intent, result)
+                        await run_settled(partial(self.procedure_execution.result_admission, intent, provider_result))
+                return provider_result
+
+            try:
+                result = await self._await_owned_action(provider_and_admission, intent, actor, capacity_lease)
             except asyncio.TimeoutError:
                 timeout_details = (self._readonly_timeout_details(timeout_phase, phase_started, timeout_observation)
                     if guarded_observation else {})
@@ -2578,7 +2638,8 @@ class ActionIntentService:
         if result.status == "rolled_back":
             return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)
 
-        verified = await self._verify_completion(current, result, actor=actor)
+        verified = await self._await_owned_action(
+            lambda: self._verify_completion(current, result, actor=actor), current, actor)
         if not verified:
             if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
                 return await asyncio.to_thread(self._ready_reconciliation, intent.id,
@@ -3186,7 +3247,7 @@ class ActionIntentService:
             from codex_web.procedure_discovery import procedure_action_intent
             with procedure_action_intent(intent.id):
                 rolled_back = await asyncio.wait_for(self.execution.rollback(intent.binding_id, receipt.result, actor=actor, credential_ref=intent.credential_ref),
-                    timeout=intent.timeout_seconds)
+                    timeout=normalize_timeout(intent.timeout_seconds))
                 if self.procedure_execution is not None:
                     await asyncio.to_thread(self.procedure_execution.result_admission, intent, rolled_back)
         except Exception as exc:

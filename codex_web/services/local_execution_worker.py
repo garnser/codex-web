@@ -1068,7 +1068,7 @@ class LocalExecutionWorkerRuntime:
                 or assignment.assigned_worker_id != self.worker.id
                 or not callable(admission_guard)):
             raise LocalExecutionWorkerRuntimeError("Explicit trusted host worker is unavailable")
-        if (type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 600
+        if (type(timeout_seconds) is not int or not -1 <= timeout_seconds <= 600
                 or type(max_output_bytes) is not int or not 1024 <= max_output_bytes <= 65536):
             raise LocalExecutionWorkerRuntimeError("Host operation bounds are incompatible")
 
@@ -1108,13 +1108,11 @@ class LocalExecutionWorkerRuntime:
         # its disabled network/Bubblewrap contract are NEVER changed.
         operation = live.model_copy(update={
             'execution_contract_version': HOME_HOST_COMMAND_CONTRACT,
-            'network': NetworkPolicy(enabled=True), 'secret_refs': (),
-            'limits': live.limits.model_copy(update={'wall_seconds': min(
-                timeout_seconds, live.limits.wall_seconds)})})
+            'network': NetworkPolicy(enabled=True), 'secret_refs': ()})
         try:
             result = backend.run_action(operation, argv=argv,
                 workspace_path=self._workspace_path(live), admission_guard=current,
-                max_output_bytes=max_output_bytes)
+                max_output_bytes=max_output_bytes, operation_timeout_seconds=timeout_seconds)
             current()
             return result
         except Exception as error:
@@ -1147,9 +1145,7 @@ class LocalExecutionWorkerRuntime:
         diagnostic = assignment.model_copy(update={
             "sandbox": "read-only", "network": NetworkPolicy(), "secret_refs": (),
             "runtime_binding": None, "agent_profile": None,
-            "required_capabilities": (WorkerCapability.COMMAND_EXECUTION,),
-            "limits": assignment.limits.model_copy(update={
-                "wall_seconds": min(assignment.limits.wall_seconds, step.timeout_seconds)})})
+            "required_capabilities": (WorkerCapability.COMMAND_EXECUTION,)})
         self.backend.validate_assignment(diagnostic)
         workspace_path = self._workspace_path(assignment)
         readonly_mounts, _ = self.repository_mounts(assignment)
@@ -1198,7 +1194,8 @@ class LocalExecutionWorkerRuntime:
             result = self.backend.run(diagnostic, argv=("/usr/bin/python3", "/opt/procedure/diagnostic.py"),
                 workspace_path=workspace_path, trusted_readonly_mounts=(*readonly_mounts, (Path(directory), Path("/opt/procedure"))),
                 poll_hook=poll, environment={"PROCEDURE_INPUT_JSON": json.dumps(bounded_data(inputs))},
-                additional_disk_bytes=self.readonly_disk_bytes(assignment))
+                additional_disk_bytes=self.readonly_disk_bytes(assignment),
+                operation_timeout_seconds=step.timeout_seconds)
         poll()
         if not result.succeeded:
             raise ProcedureExecutionError("procedure_diagnostic_failed")
