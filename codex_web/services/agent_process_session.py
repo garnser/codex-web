@@ -1111,6 +1111,96 @@ class AssignmentBoundAgentProcessSession:
         backend.validate_assignment(assignment)
         return assignment
 
+    def prepare_native_provider_preparation(self, expected: ExecutionAssignment, procedures):
+        """Do physical validation before the seal writer; retain current owner checks.
+
+        The observation is process-local and valid only for this exact session,
+        native process generation, broker and immutable assignment. It cannot
+        admit input; ordinary final native guards still perform full validation.
+        """
+        from codex_web.services.native_procedure_preparation import NativeSessionPreparationObservation
+        def same_callable(current, observed):
+            function = getattr(observed, '__func__', None)
+            if function is None:
+                return current is observed
+            return (getattr(current, '__func__', None) is function
+                and getattr(current, '__self__', None) is getattr(observed, '__self__', None))
+
+        session_attestor = self.attest_native_provider_preparation
+        original_broker = self.control_plane_broker
+        broker_guard = original_broker._validate_current if original_broker is not None else None
+        session_attestor(expected, procedures)
+        snapshot = self._validate_current_authority()
+        runtime = self.runtime
+        process = runtime.proc if runtime is not None else None
+        broker = self.control_plane_broker
+        if (broker is not original_broker or not same_callable(self.attest_native_provider_preparation, session_attestor)
+                or broker is None or not same_callable(broker._validate_current, broker_guard)):
+            raise AssignmentBoundAgentProcessSessionStaleError('Native preparation attestation owner changed')
+        canonical_session_attestor = (getattr(session_attestor, '__self__', None) is self
+            and getattr(session_attestor, '__func__', None) is
+                AssignmentBoundAgentProcessSession.attest_native_provider_preparation)
+        canonical_broker_guard = (getattr(broker_guard, '__self__', None) is broker
+            and getattr(broker_guard, '__func__', None) is AssignmentBoundControlPlaneBroker._validate_current)
+        broker_validator = broker.validator if broker is not None else None
+        canonical_broker_validator = (getattr(broker_validator, '__self__', None) is self
+            and getattr(broker_validator, '__func__', None) in {
+                AssignmentBoundAgentProcessSession._validate_egress_state,
+                AssignmentBoundAgentProcessSession.validate_current})
+        broker_service = broker.service if broker is not None else None
+        worker_identity_validator = broker.worker_service_identity_validator if broker is not None else None
+        backend = self.local_worker.backend
+        local_worker, credential_provider = self.local_worker, self.credential_provider
+        generation = getattr(runtime, 'generation', None)
+        server = broker.server if broker is not None else None
+        delegation = self.delegation
+        if (process is None or process.poll() is not None or not isinstance(generation, str)
+                or not generation or server is None):
+            raise AssignmentBoundAgentProcessSessionStaleError('Native preparation process generation unavailable')
+        pid = process.pid
+        excluded = {'updated_at': True, 'lease': {'expires_at', 'renewed_at'}}
+        immutable = snapshot.model_dump(mode='json', exclude=excluded)
+        if expected.model_dump(mode='json', exclude=excluded) != immutable:
+            raise AssignmentBoundAgentProcessSessionStaleError('Native preparation immutable custody changed')
+
+        def validate(current, actual_procedures):
+            if (actual_procedures is not procedures or self._stopping or self._retired
+                    or not same_callable(self.attest_native_provider_preparation, session_attestor)
+                    or self.runtime is not runtime or runtime.proc is not process
+                    or runtime.generation != generation or process.pid != pid
+                    or process.poll() is not None or not runtime.ready.is_set()
+                    or self.delegation is not delegation
+                    or self.local_worker is not local_worker or self.credential_provider is not credential_provider
+                    or self.local_worker.backend is not backend
+                    or getattr(self, '_native_preparation_backend', None) is not backend
+                    or self.dependency_egress_broker is not None
+                    or self.control_plane_broker is not broker or broker._stopping
+                    or not same_callable(broker._validate_current, broker_guard)
+                    or broker.validator is not broker_validator or broker.service is not broker_service
+                    or broker.worker_service_identity_validator is not worker_identity_validator
+                    or broker.server is not server or not server.is_serving()
+                    or getattr(getattr(broker.service, 'assignment_reasoning', None), 'procedures', None) is not procedures):
+                raise AssignmentBoundAgentProcessSessionStaleError('Native preparation owning process changed')
+            # Read through the canonical transaction, never rescan workspace,
+            # run a backend probe or invoke the broker's disk validator here.
+            fresh = self._validate_current_authority()
+            if (current.model_dump(mode='json', exclude=excluded) != immutable
+                    or fresh.model_dump(mode='json', exclude=excluded) != immutable
+                    or current.lease is None or current.lease.expires_at <= self._clock()
+                    or current.deadline_at is not None and current.deadline_at <= self._clock()):
+                raise AssignmentBoundAgentProcessSessionStaleError('Native preparation current authority changed')
+            if not (canonical_session_attestor and canonical_broker_guard and canonical_broker_validator):
+                # Supported custom session/full-broker/validator hooks can add
+                # current policy. Keep their full original callbacks under CAS;
+                # exact owner/function identity above prevents substitution.
+                return session_attestor(current, procedures)
+            broker._validate_observed_assignment(fresh)
+            return fresh
+
+        proof = NativeSessionPreparationObservation(snapshot.id, validate)
+        proof.validate(snapshot, procedures)
+        return proof
+
     def _heartbeat_and_renew(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
         # A completed validation may only be *observed* after a delayed event
         # loop resumes. Never renew from its old snapshot: this existing next

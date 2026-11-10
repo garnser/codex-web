@@ -1228,6 +1228,20 @@ class TurnExecutionService:
             raise ValueError("native preparation requires the actual isolated process session")
         return session.attest_native_provider_preparation(assignment, procedures)
 
+    def prepare_native_provider_preparation(self, assignment, procedures):
+        from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSession
+        from codex_web.services.native_procedure_preparation import NativeSessionPreparationObservation
+        manager, session = self._session_for_assignment(assignment.id)
+        if not isinstance(session, AssignmentBoundAgentProcessSession):
+            raise ValueError('Native preparation requires the actual isolated process session')
+        observed = session.prepare_native_provider_preparation(assignment, procedures)
+        def validate(current, actual_procedures):
+            fresh_manager, fresh_session = self._session_for_assignment(current.id)
+            if fresh_manager is not manager or fresh_session is not session:
+                raise ValueError('Native preparation registered session changed')
+            return observed.validate(current, actual_procedures)
+        return NativeSessionPreparationObservation(assignment.id, validate)
+
     def _assignment_session_for_thread(self, thread_id: str):
         active = self._active_turn(thread_id)
         assignment_id = active.assignment_id if active is not None else None

@@ -876,7 +876,7 @@ class ProcedureExecutionService:
         if set(assignment.secret_refs) != allowed:
             raise ProcedureExecutionError("procedure_credential_custody_changed")
 
-    def admit_initial_native_credentials(self, assignment, selected, actor, validate):
+    def admit_initial_native_credentials(self, assignment, selected, actor, validate, *, prepare_session=None):
         """Seal one NEW bootstrap's pending reference custody under canonical locks.
 
         Called only by initial native admission, never by the shared read guard
@@ -934,8 +934,14 @@ class ProcedureExecutionService:
             current.secret_refs = tuple(dict.fromkeys((*current.secret_refs, *fresh.procedure_secret_refs)))
             current.native_credential_custody = fresh.model_copy(update={"admitted_at": self.clock()})
             return state
-        return self.workers.store.transition_assignment(assignment.assigned_worker_id,
-            assignment.id, apply, guard_rows=guards).assignments[0]
+        # Only the expensive session/physical observation is prepared outside.
+        # All current authority, candidate/context and credential checks in
+        # apply/validate remain under the existing guarded canonical CAS.
+        from contextlib import nullcontext
+        prepared = prepare_session() if prepare_session is not None else nullcontext()
+        with prepared:
+            return self.workers.store.transition_assignment(assignment.assigned_worker_id,
+                assignment.id, apply, guard_rows=guards).assignments[0]
 
     def validate_native_preparation_owner(self, assignment, *, _identity=None):
         self._live(assignment, **({"_identity": _identity} if _identity is not None else {}))

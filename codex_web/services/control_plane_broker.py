@@ -3272,6 +3272,14 @@ class AssignmentBoundControlPlaneBroker:
             raise ControlPlaneBrokerDeniedError(
                 "assignment or worker authority is stale"
             ) from exc
+        return self._validate_observed_assignment(assignment)
+
+    def _validate_observed_assignment(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
+        """Check an owning session's fresh authority read, without disk rescans.
+
+        Internal prepared-attestation use only. Request paths still resolve
+        current authority through _validate_current and its original validator.
+        """
         if assignment.id != self.snapshot.id:
             raise ControlPlaneBrokerDeniedError("assignment identity changed")
         if assignment.execution_id != self.snapshot.execution_id:
