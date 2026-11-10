@@ -350,10 +350,19 @@ def reduce_observer(observer):
         if not isinstance(tid, str) or not UUID_ID.fullmatch(tid) or not isinstance(sample, dict):
             incomplete = True
             continue
-        runner = sample.get("runner") if isinstance(sample.get("runner"), dict) else {}
+        raw_runner = sample.get("runner")
+        runner = raw_runner if isinstance(raw_runner, dict) else {}
         progress = sample.get("progress") if isinstance(sample.get("progress"), dict) else {}
-        states = ("running", "idle", "lost", "failed", "expired", "error", "stopped", "unknown", "recovering")
-        inspection_ok = not sample.get("read_error_type") and runner.get("state") in states
+        states = ("running", "idle", "lost", "failed", "expired", "error", "stopped", "unknown", "recovering", "waiting", "cancelled")
+        projection_status = sample.get("runner_projection_status")
+        marker_valid = "runner_projection_status" not in sample or projection_status in ("present", "absent")
+        flattened_fields = ("state", "assignmentId", "assignmentStatus", "fence", "leaseValid",
+            "leaseExpiresAt", "updatedAt", "processRunning", "live", "reason", "pendingExecutorWork")
+        absent = ("runner" in sample and raw_runner is None and projection_status in (None, "absent")
+            or projection_status == "absent" and set(runner) == set(flattened_fields)
+            and all(value is None for value in runner.values()))
+        present = projection_status != "absent" and runner.get("state") in states
+        inspection_ok = "read_error_type" not in sample and marker_valid and (absent or present)
         if not inspection_ok:
             failed_threads += 1
         def enum(value, allowed):
@@ -372,6 +381,10 @@ def reduce_observer(observer):
                 **{key: runner.get(key) if type(runner.get(key)) is bool else None for key in ("leaseValid", "processRunning")}},
             "progress": {"status": enum(progress.get("status"), ("failed", "completed", "inProgress", "interrupted")),
                 "turn_id": turn_id if isinstance(turn_id, str) and UUID_ID.fullmatch(turn_id) else None}}
+        if absent and inspection_ok:
+            # Retain successful absence as absence. An all-null dictionary
+            # would otherwise look like a successful runner observation.
+            threads[tid]["runner"] = None
     # Conditions are inspected only for their closed kind, never copied. Count
     # or exception text is not needed to distinguish unavailable coverage.
     conditions = observer.get("conditions", {})

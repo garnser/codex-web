@@ -86,6 +86,26 @@ remain intact. None of these observation states closes an issue or authorizes
 recovery, replacement, execution or replay. `summary.json` exposes current
 inspection coverage separately from service liveness and readiness.
 
+The standalone producer in `scripts/operator/veridataops_observer.py` preserves
+the canonical HTTP runner projection's presence before flattening its existing
+metadata. Its closed `runner_projection_status` marker is `present` for a
+recognized canonical runner state, `absent` only for an explicit successful
+`runner: null` response, and `invalid` for missing/malformed projections. The
+canonical `waiting` and `cancelled` states are valid observations. An explicit
+null or a producer-marked absence is successful inspection, while its runner
+outcome remains unknown. The reducer requires the producer's exact eleven-field
+all-null shape when accepting flattened absence; a legacy all-null projection
+without the marker does not establish successful absence. Contradictory markers,
+missing runners, malformed projections and failed reads remain incomplete.
+An absent projection never settles a previously observed runner failure.
+
+Install the reviewed producer source as well as the supervisor when updating
+this boundary. The producer retains its existing optional report behavior and
+command-line deployment configuration; disk observation uses the configured
+state-directory filesystem instead of a host-specific home path. The default
+observer invocation does not publish incidents. Its installed path/unit remain
+operator-owned deployment values, not a new project dispatcher or authority.
+
 Private JSON checkpoints hold observation metadata and launch/session/result
 receipts. Message text, thread names, arbitrary runner diagnostics and secrets
 are excluded from the reduced observer snapshot. Checkpoints are atomically

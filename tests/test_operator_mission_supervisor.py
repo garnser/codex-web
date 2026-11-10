@@ -304,6 +304,73 @@ class MissionSupervisorTests(unittest.TestCase):
         self.assertEqual(saved["jobs"], {})
         self.assertEqual(monitor.read_json(self.root / "summary.json")["observer_inspection_status"], "incomplete")
 
+    def test_canonical_cancelled_and_waiting_projections_are_successful_inspections(self):
+        for state, assignment in (("cancelled", "cancelled"), ("waiting", "pending"), ("waiting", "claimed")):
+            with self.subTest(state=state, assignment=assignment):
+                raw = self.observer_sample(state=state)
+                sample = next(iter(raw["threads"].values()))
+                sample.update(activity="idle", queue_depth=0, runner_projection_status="present")
+                sample["runner"].update(assignmentStatus=assignment, leaseValid=True, processRunning=True)
+                snapshot, signals = self.observe_raw(raw)
+                self.assertEqual(snapshot["observer"]["inspection_status"], "complete")
+                self.assertEqual(snapshot["observer"]["failed_thread_count"], 0)
+                self.assertEqual(signals, [])
+
+    def test_explicit_null_projection_is_complete_coverage_without_runner_evidence(self):
+        for marker in (None, "absent"):
+            raw = self.observer_sample()
+            sample = next(iter(raw["threads"].values()))
+            sample["runner"] = None
+            if marker:
+                sample["runner_projection_status"] = marker
+            snapshot, signals = self.observe_raw(raw)
+            reduced = next(iter(snapshot["observer"]["threads"].values()))
+            self.assertTrue(reduced["inspection_ok"])
+            self.assertIsNone(reduced["runner"])
+            self.assertEqual(snapshot["observer"]["inspection_status"], "complete")
+            self.assertEqual(signals, [])
+
+    def test_legacy_all_null_projection_and_contradictory_markers_stay_incomplete(self):
+        fields = ("state", "assignmentId", "assignmentStatus", "fence", "leaseValid",
+            "leaseExpiresAt", "updatedAt", "processRunning", "live", "reason", "pendingExecutorWork")
+        cases = [
+            {"runner": dict.fromkeys(fields)}, {}, {"runner": {}}, {"runner": []},
+            {"runner": None, "runner_projection_status": "present"},
+            {"runner": {"state": "cancelled"}, "runner_projection_status": "absent"},
+            {"runner": None, "runner_projection_status": "invalid"},
+            {"runner": None, "runner_projection_status": "private"},
+            {"runner": {"state": "waiting"}, "read_error_type": "HTTPError"},
+            {"runner": None, "runner_projection_status": "absent", "read_error_type": None},
+            {"runner": {"state": None}, "runner_projection_status": "absent"},
+        ]
+        for sample in cases:
+            with self.subTest(sample=sample):
+                raw = self.observer_sample()
+                tid = next(iter(raw["threads"]))
+                raw["threads"][tid] = sample
+                snapshot, signals = self.observe_raw(raw)
+                self.assertEqual(snapshot["observer"]["inspection_status"], "incomplete")
+                self.assertEqual([s.kind for s in signals], ["observer_inspection_incomplete"])
+
+    def test_successful_flattened_absence_marker_keeps_prior_runner_failure_unknown(self):
+        previous, signals = self.observe_raw(self.observer_sample(state="lost"))
+        monitor.retain_signals(self.state, signals, now=self.now, observer=previous["observer"])
+        original = dict(self.state["signals"][signals[0].key]["metadata"])
+        raw = self.observer_sample()
+        raw["checked_at"] = self.now + 60
+        sample = next(iter(raw["threads"].values()))
+        sample["runner_projection_status"] = "absent"
+        sample["runner"] = dict.fromkeys(("state", "assignmentId", "assignmentStatus", "fence", "leaseValid",
+            "leaseExpiresAt", "updatedAt", "processRunning", "live", "reason", "pendingExecutorWork"))
+        snapshot, observed = self.observe_raw(raw, previous, now=self.now + 60)
+        self.assertEqual(observed, [])
+        self.assertEqual(snapshot["observer"]["inspection_status"], "complete")
+        monitor.retain_signals(self.state, observed, now=self.now + 60, observer=snapshot["observer"])
+        item = self.state["signals"][signals[0].key]
+        self.assertEqual(item["observation_status"], "unknown")
+        self.assertEqual(item["metadata"], original)
+        self.assertEqual(item["last_seen"], self.now)
+
     def test_receipt_is_not_inferred_issue_closure(self):
         job = {"id": "a", "status": "running", "unit": "same.service"}
         self.state["jobs"]["a"] = job
