@@ -196,6 +196,36 @@ class IdentityReadObservationTests(unittest.TestCase):
         with self.assertRaises(IdentityError):
             calls[0].actor_for_identity(self.identity_id, scope=self.scope)
 
+    def test_guard_comparison_uses_exact_loaded_raw_without_another_read(self):
+        raw = self.backend.get(self.store.namespace)
+        escaped = []
+        def inspect(view):
+            escaped.append(view)
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                view.require_current(self.service, raw)
+            view.actor_for_identity(self.identity_id, scope=self.scope)
+            with patch.object(self.backend, 'get', side_effect=AssertionError('guard refetched Identity')):
+                view.require_current(self.service, raw)
+                changed = dict(raw, humans=[])
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    view.require_current(self.service, changed)
+                with self.assertRaises(IdentityError):
+                    view.require_current(IdentityService(self.store), raw)
+        self.service.observe_reads(inspect)
+        with self.assertRaises(IdentityError):
+            escaped[0].require_current(self.service, raw)
+
+    def test_guard_missing_raw_is_distinct_from_an_empty_envelope(self):
+        backend = SQLiteStateStore(Path(self.temp.name)/'empty.sqlite3')
+        service = IdentityService(IdentityStateStore(backend))
+        def inspect(view):
+            self.assertEqual(view.state().humans, [])
+            with patch.object(backend, 'get', side_effect=AssertionError('guard refetched missing Identity')):
+                view.require_current(service, None)
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    view.require_current(service, {})
+        service.observe_reads(inspect)
+
     def test_coroutine_generator_and_async_generator_cannot_escape(self):
         async def coroutine():
             return 1

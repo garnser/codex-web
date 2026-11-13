@@ -1265,10 +1265,11 @@ class SkillService:
         objective: str,
         max_chars: int = SKILL_MAX_CONTEXT_CHARS,
         _definitions=None,
+        _identity=None,
     ) -> SkillContextSelection:
         validated = tuple(
             self.validate_reference(reference, actor=actor, project_id=project_id,
-                **({'_definitions': _definitions} if _definitions is not None else {}))
+                **self._read_options(_definitions, _identity=_identity))
             for reference in references
         )
         return self._context_for_valid_refs(

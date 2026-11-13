@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import threading
+from copy import deepcopy
 
 from typing import Any, Callable
 
@@ -163,6 +164,8 @@ class _IdentityStateReadObservation:
         self._thread = threading.get_ident()
         self._active = True
         self._state = None
+        self._raw = None
+        self._loaded = False
 
     def require_owner(self, owner):
         if (not self._active or owner is not self._owner
@@ -176,12 +179,22 @@ class _IdentityStateReadObservation:
         if self._state is None:
             # Keep full canonical migration/validation, including unrelated rows.
             # Loading is delayed until the original first identity lookup.
-            self._state = owner.load()
+            self._raw = deepcopy(owner.store.get(owner.namespace))
+            self._state = owner._decode(deepcopy(self._raw))
+            self._loaded = True
         return self._state.model_copy(deep=True)
+
+    def require_current(self, owner, raw):
+        """Compare the already-held guard row, never refetch under a writer."""
+        self.require_owner(owner)
+        if not self._loaded or raw != self._raw:
+            raise ValueError('Identity read observation changed before guarded use')
 
     def close(self):
         self._active = False
         self._state = None
+        self._raw = None
+        self._loaded = False
 
 
 _CANONICAL_IDENTITY_STORE_READS = {name: getattr(IdentityStateStore, name)

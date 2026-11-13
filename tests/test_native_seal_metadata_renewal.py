@@ -4,6 +4,7 @@ import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from pathlib import Path
 
 from codex_web.execution_workers import AssignmentRenewRequest, WorkerHeartbeatRequest
 from codex_web.services import execution_workers as worker_module
@@ -21,14 +22,20 @@ class NativeSealMetadataRenewalTests(NativeSealRenewalCouplingTests):
         lock = f.workers.store._lock
         origin = self.now[0]
         entered, release, probed = threading.Event(), threading.Event(), threading.Event()
-        observations = {'writer_definition_reads': 0}
+        observations = {'writer_metadata_reads': 0}
+        metadata_namespace = getattr(self, 'canonical_metadata_namespace', f.definition_registry.store.namespace)
 
         def metadata_read(namespace):
             result = raw_get(namespace)
-            # Instrument only the canonical storage boundary. Definition,
+            # Instrument only the canonical storage boundary. Identity/Definition,
             # Skill, admission and security methods retain their exact owners.
-            if namespace == f.definition_registry.store.namespace:
-                observations['writer_definition_reads'] += int(lock._is_owned())
+            if namespace == metadata_namespace:
+                # The competing heartbeat/renewal legitimately validates its
+                # current Identity under its own worker writer. Exclude ONLY
+                # that actual Thread object, not arbitrary names/executors.
+                # All admission-side and unexpected-thread reads still count.
+                observations['writer_metadata_reads'] += int(
+                    lock._is_owned() and threading.current_thread() is not renewal)
                 # Hold an actual canonical outside read too: green must prove
                 # real competing renewal, never merely skip the old branch.
                 if not entered.is_set():
@@ -89,8 +96,8 @@ class NativeSealMetadataRenewalTests(NativeSealRenewalCouplingTests):
                     release.set()
                     result, _ = await asyncio.wait_for(asyncio.shield(admission), 30)
                     self.assertTrue(result.admitted)
-                    self.assertEqual(observations['writer_definition_reads'], 0,
-                        'Canonical Definition reads still occur under the seal writer')
+                    self.assertEqual(observations['writer_metadata_reads'], 0,
+                        'Canonical metadata reads still occur under the seal writer')
                     self.assertIn('renewed', observations)
                     self.assertEqual(f.ops.calls, [])
                     # Settle the observer even if no writer-owned metadata I/O
@@ -182,7 +189,111 @@ class SelectedNativeSealMetadataRenewalTests(SelectedNativeSealRenewalCouplingTe
         NativeSealMetadataRenewalTests.test_canonical_definition_reader_does_not_trap_finite_renewal_in_seal_writer)
 
 
+class SelectedNativeSealIdentityRenewalTests(SelectedNativeSealRenewalCouplingTests):
+    # The real canonical Identity owner remains installed. Only its underlying
+    # storage read is observed; a prepared Definition view cannot substitute it.
+    canonical_metadata_namespace = 'identity_state'
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        from codex_web.services.procedure_scope_actor import ProcedureDefinitionScopeActor
+        from codex_web.services.projects import ProjectService
+        from codex_web.storage.projects import ProjectRepository
+        from codex_web.workspaces import WorkspaceMapper
+        f = self.fixture.f
+        root = Path(f.temp.name)
+        projects = ProjectService(ProjectRepository(root/'metadata-projects.json',
+            store=f.sqlite, workspace_mapper=WorkspaceMapper(root=root)))
+        projects.repository.save([f.project])
+        # The inherited publishing fixture uses a custom lambda. Real metadata
+        # observations deliberately opt out for that owner; compose production's
+        # actual scope resolver before asserting any Identity-I/O optimization.
+        f.skills.procedure_scope_actor = ProcedureDefinitionScopeActor(f.identity, projects)
+        self.assertTrue(f.skills.can_observe_metadata_reads(f.identity, f.resources))
+    test_selected_identity_reader_does_not_trap_finite_renewal_in_seal_writer = (
+        NativeSealMetadataRenewalTests.test_canonical_definition_reader_does_not_trap_finite_renewal_in_seal_writer)
+
+    async def disable_after_observation(self, *, worker):
+        prepare = self.session.prepare_native_provider_preparation
+        f = self.fixture.f
+        observed = []
+        updater_calls = []
+        transition = f.workers.store.transition_assignment
+        def traced_transition(worker_id, assignment_id, updater, **options):
+            def apply(state):
+                updater_calls.append(True)
+                return updater(state)
+            return transition(worker_id, assignment_id, apply, **options)
+        def changed(*args):
+            proof = prepare(*args)
+            identity_id = f.procedure_worker.service_identity_id if worker else self.fixture.current().created_by
+            def disable(state):
+                members = state.services if worker else state.humans
+                selected = next(item for item in members if item.id == identity_id)
+                selected.disabled_at = self.now[0]
+                return state
+            f.identity.store.update(disable)
+            observed.append(identity_id)
+            return proof
+        with patch.object(self.session, 'prepare_native_provider_preparation', side_effect=changed), \
+                patch.object(f.workers.store, 'transition_assignment', traced_transition):
+            with self.assertRaises(ExecutionPrestartRefusal):
+                await self.fixture.env.admit()
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(updater_calls, [], 'Changed raw Identity reached credential updater')
+        self.assertIsNone(self.fixture.current().native_credential_custody.admitted_at)
+        self.assertEqual(self.fixture.current().secret_refs, ())
+        self.assertEqual(f.ops.calls, [])
+
+    async def test_requester_disabled_after_observation_refuses_initial_seal(self):
+        await self.disable_after_observation(worker=False)
+
+    async def test_worker_disabled_after_observation_refuses_initial_seal(self):
+        await self.disable_after_observation(worker=True)
+
+    async def test_custom_identity_reader_keeps_current_guarded_fallback(self):
+        f = self.fixture.f
+        original = f.identity.actor_for_identity
+        inside = []
+        def custom(identity_id, *, scope):
+            guarded = f.workers.store._lock._is_owned()
+            inside.append(guarded)
+            if guarded:
+                raise ValueError('Private custom Identity refusal')
+            return original(identity_id, scope=scope)
+        with patch.object(f.identity, 'actor_for_identity', custom):
+            with self.assertRaises(ExecutionPrestartRefusal):
+                await self.fixture.env.admit()
+        self.assertIn(False, inside)
+        self.assertIn(True, inside)
+        self.assertIsNone(self.fixture.current().native_credential_custody.admitted_at)
+        self.assertEqual(f.ops.calls, [])
+
+    async def test_identity_hook_changed_after_preparation_refuses_cached_use(self):
+        f = self.fixture.f
+        prepare = self.session.prepare_native_provider_preparation
+        original = f.identity.actor_for_identity
+        substituted = []
+        def custom(identity_id, *, scope):
+            substituted.append(identity_id)
+            return original(identity_id, scope=scope)
+        def changed(*args):
+            proof = prepare(*args)
+            f.identity.actor_for_identity = custom
+            return proof
+        try:
+            with patch.object(self.session, 'prepare_native_provider_preparation', side_effect=changed):
+                with self.assertRaises(ExecutionPrestartRefusal) as caught:
+                    await self.fixture.env.admit()
+            self.assertEqual(caught.exception.detail['code'], 'procedure_credential_metadata_owner_changed')
+            self.assertEqual(substituted, [])
+            self.assertIsNone(self.fixture.current().native_credential_custody.admitted_at)
+            self.assertEqual(f.ops.calls, [])
+        finally:
+            f.identity.actor_for_identity = original
+
+
 def load_tests(loader, standard_tests, pattern):
     return unittest.TestSuite(case(name) for case in (
-        NativeSealMetadataRenewalTests, SelectedNativeSealMetadataRenewalTests)
+        NativeSealMetadataRenewalTests, SelectedNativeSealMetadataRenewalTests, SelectedNativeSealIdentityRenewalTests)
         for name in case.__dict__ if name.startswith('test_'))

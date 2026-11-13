@@ -883,8 +883,17 @@ class ProcedureExecutionService:
             and _original_bound(self.skills, 'observe_definition_reads', _CANONICAL_SKILL_OBSERVER)
             and self.skills.can_observe_definition_reads())
 
+    def can_observe_initial_seal_identity(self):
+        from codex_web.services.identity import _CANONICAL_IDENTITY_READS
+        from codex_web.services.skills import _CANONICAL_SKILL_READS
+        return (_CANONICAL_INITIAL_SEAL_CHECK(self)
+            and _CANONICAL_IDENTITY_READS['can_observe_reads'](self.identity)
+            and (self.skills.procedure_scope_actor is None
+                or _CANONICAL_SKILL_READS['can_observe_metadata_reads'](
+                    self.skills, self.identity, self.discovery.resources)))
+
     def admit_initial_native_credentials(self, assignment, selected, actor, validate, *, prepare_session=None,
-                                         _definitions=None):
+                                         _definitions=None, _identity=None):
         """Seal one NEW bootstrap's pending reference custody under canonical locks.
 
         Called only by initial native admission, never by the shared read guard
@@ -903,7 +912,7 @@ class ProcedureExecutionService:
         if assignment.secret_refs != ((custody.runtime_secret_ref,) if custody.runtime_secret_ref else ()):
             raise ProcedureExecutionError("procedure_credential_pending_custody_changed")
         expected = self._native_credential_projection(assignment, selected, actor,
-            **({'_definitions': _definitions} if _definitions is not None else {}))
+            **self._metadata_read_options(_definitions, None, _identity))
         store = self.workers.store.store
         repositories = [self.identity.store, self.authority.registry.store,
             self.skills.definitions.store, self.discovery.resources.store,
@@ -938,13 +947,13 @@ class ProcedureExecutionService:
                 raise ProcedureExecutionError("procedure_credential_assignment_changed")
             validate(current)
             fresh = self._native_credential_projection(current, selected, actor,
-                **({'_definitions': _definitions} if _definitions is not None else {}))
+                **self._metadata_read_options(_definitions, None, _identity))
             if fresh != expected:
                 raise ProcedureExecutionError("procedure_credential_custody_changed")
             current.secret_refs = tuple(dict.fromkeys((*current.secret_refs, *fresh.procedure_secret_refs)))
             current.native_credential_custody = fresh.model_copy(update={"admitted_at": self.clock()})
             return state
-        # Physical observations and explicit Definition data are prepared
+        # Physical observations and explicit Definition/Identity data are prepared
         # outside. Current authority, time-sensitive candidate/context and
         # credential judgments still run under the guarded canonical CAS.
         from contextlib import nullcontext
@@ -955,10 +964,14 @@ class ProcedureExecutionService:
                     raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
                 _definitions.require_current(self.skills.definitions,
                     rows[self.skills.definitions.store.namespace][None])
+            if _identity is not None:
+                if not _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK(self):
+                    raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
+                _identity.require_current(self.identity, rows[self.identity.store.namespace][None])
         with prepared:
             return self.workers.store.transition_assignment(assignment.assigned_worker_id,
                 assignment.id, apply, guard_rows=guards,
-                **({'validate_guards': validate_guards} if _definitions is not None else {})).assignments[0]
+                **({'validate_guards': validate_guards} if _definitions is not None or _identity is not None else {})).assignments[0]
 
     def validate_native_preparation_owner(self, assignment, *, _identity=None):
         self._live(assignment, **({"_identity": _identity} if _identity is not None else {}))
@@ -2493,6 +2506,7 @@ _CANONICAL_INITIAL_SEAL_READS = {name: getattr(ProcedureExecutionService, name)
         'validate_native_preparation', '_validate_native_preparation', 'validate_native_preparation_owner',
         'validate_native_credential_custody', '_live', '_binding', '_credential_worker_actor')}
 _CANONICAL_INITIAL_SEAL_CHECK = ProcedureExecutionService.can_observe_initial_seal_definitions
+_CANONICAL_INITIAL_IDENTITY_SEAL_CHECK = ProcedureExecutionService.can_observe_initial_seal_identity
 _CANONICAL_SKILL_OBSERVER = SkillService.observe_definition_reads
 
 _CANONICAL_PROVIDER_MEDIATION = {
