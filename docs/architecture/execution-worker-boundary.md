@@ -1032,13 +1032,30 @@ as native reasoning and contextual Project readiness. It runs after current
 Project/Profile/runtime selection and before credential preflight; the existing
 current admission guard and binding/worker checks still run afterward. Only a
 selected, permitted trusted-local OpenAI Codex authentication mode may request
-this preparation. Explicit API-key/delegated-token modes and other runtimes do
+this preparation, including the fixed trusted-local `codex-reasoning` runtime.
+Its restricted scratch/read-only/no-repository execution and credential owners
+remain authoritative. Explicit API-key/delegated-token modes and other runtimes do
 not touch the operator account. A fresh proof needs no additional account read;
 negative account/RPC results remain refused. The 120-second proof policy is
 unchanged. Bootstrap-only recovery does not submit a native turn or replay an
 original whose input outcome is unknown. Existing authentication and recovery
 inspectors retain the authoritative typed refusal; no new UI field or grant is
 introduced.
+
+Canonical fresh bootstrap metadata preparation pauses before authentication or
+workspace/assignment reservation. If initially available trusted-local account
+evidence expires during Skill or worker readiness reads, the async Thread owner
+reuses the coalesced account metadata owner before consuming that one-use
+preparation. No offload worker waits for an async refresh that itself requires
+the offload pool. The final credential preflight still checks actual evidence,
+authentication context, epoch and the unchanged 120-second freshness bound;
+negative account responses and policy changes remain refused. Cancellation
+during refresh discards the preparation without starting a worker or native
+thread. The actual reservation callback rechecks canonical ownership after
+executor queue wait. Cancellation after reservation starts joins that owner
+and retains its canonical result; it does not imply an absent reservation or
+authorize another create. Custom binding implementations retain their existing synchronous path.
+This refresh is not a retry of native creation or an uncertain input.
 
 Authentication evidence remains separate from RPC transport health and execution
 preflight. A runtime with cleared readiness is unavailable even when its recent
