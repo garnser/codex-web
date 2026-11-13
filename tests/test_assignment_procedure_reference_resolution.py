@@ -202,7 +202,8 @@ class AssignmentProcedureReferenceResolutionTests(unittest.IsolatedAsyncioTestCa
         a.status = "running"; a.required_capabilities = ("command_execution",)
         a.execution_contract_version = "test/1.0"; a.sandbox = "read-only"; a.deadline_at = 500
         a.execution_workspace_id = "workspace-one"
-        a.lease = NS(expires_at=200, fence=a.fence, worker_id=a.assigned_worker_id)
+        a.lease = NS(expires_at=200, fence=a.fence, worker_id=a.assigned_worker_id,
+            lease_token='private-reference-fixture-lease-token', acquired_at=1, renewed_at=None)
         self.f.live = copy.copy(a)
         worker = ExecutionWorker(id=a.assigned_worker_id, organization_id=a.organization_id,
             workspace_id=a.workspace_id, service_identity_id="worker-service", version="test",

@@ -185,6 +185,16 @@ failure behavior, and an uncertain earlier request still requires inspection of
 its original origin rather than a replacement creation. The canonical activation
 and revision views remain the operator inspection surfaces.
 
+Assignment context authorization reads current custody again after blocking
+preparation and before each administrative Resource guard, including the later
+broker authorization. A same-owner lease renewal may advance expiry and renewal
+observations without invalidating already prepared context data. Assignment,
+worker, fence, lease token/acquisition, tenant, scope, Profile, Definition and
+other execution authority remain exact; current lease/deadline and effective
+authority checks still apply. Cancellation, generation or scope changes refuse
+without persisting the prepared activation. No new lease, retry or activation
+origin is granted by these reads.
+
 
 ### Explicit per-activation ceiling opt-out
 
