@@ -118,9 +118,12 @@ class AssignmentReasoningBroker:
             # operation guards remain unchanged, including unknown outcomes.
             return unavailable
 
-    def current(self, assignment, worker_actor, operation, target, validator=None):
-        if validator is not None:
-            validator()
+    def _current_assignment(self, assignment):
+        """Read current custody without transferring an old generation's rights.
+
+        A lease renewal may advance its observations, never its owner, token or
+        acquisition. Context reads carry data, not a frozen lease authorization.
+        """
         workers = self.broker.execution_workers
         current = workers.store.assignment(assignment.id) if workers else None
         if (current is None or current.fence != assignment.fence
@@ -133,9 +136,28 @@ class AssignmentReasoningBroker:
                 or current.execution_profile_id != assignment.execution_profile_id
                 or current.agent_profile != assignment.agent_profile
                 or current.created_by != assignment.created_by
+                or any(getattr(current, key, None) != getattr(assignment, key, None)
+                       for key in ('execution_workspace_id', 'subject', 'sandbox', 'approval_policy',
+                                   'network', 'deadline_at', 'runtime_binding', 'repository_scope',
+                                   'repository_target', 'required_capabilities'))
                 or (current.organization_id, current.workspace_id) != (assignment.organization_id, assignment.workspace_id)):
             deny("current assignment changed")
+        original_lease, lease = getattr(assignment, 'lease', None), getattr(current, 'lease', None)
+        if original_lease is not None or lease is not None:
+            if (original_lease is None or lease is None
+                    or any(getattr(original_lease, key) != getattr(lease, key)
+                           for key in ('worker_id', 'fence', 'lease_token', 'acquired_at'))
+                    or lease.expires_at < original_lease.expires_at
+                    or (original_lease.renewed_at is not None
+                        and (lease.renewed_at is None or lease.renewed_at < original_lease.renewed_at))):
+                deny("current assignment lease generation changed")
         self.procedures._live(current)
+        return current
+
+    def current(self, assignment, worker_actor, operation, target, validator=None):
+        if validator is not None:
+            validator()
+        current = self._current_assignment(assignment)
         self.broker._actor(current, worker_actor)
         actor = self.broker._requester_actor(current)
         profiles = self.broker.execution_profiles
@@ -152,6 +174,9 @@ class AssignmentReasoningBroker:
         if actor.principal_kind == PrincipalKind.SERVICE and operation.id.startswith("executive."):
             if not set(actor.service_scopes) & {"executive:consult", "executive:admin"}:
                 deny("Executive service scope is required")
+        current = self._current_assignment(current)
+        # Preserve the operation's original Resource argument, including empty
+        # scratch scope; the canonical broker owns its declaration semantics.
         self.broker._authorize(current, operation, actor=actor, resource_ids=tuple(current.resource_ids))
         return current, actor
 
@@ -164,10 +189,12 @@ class AssignmentReasoningBroker:
             # An empty scratch assignment is not universal access. Reuse the
             # explicitly published administrative target owner for EACH resource.
             for resource in resources:
+                current = self._current_assignment(assignment)
                 self.broker.execution_profiles.authorize_administrative_target(
-                    assignment, operation_id=operation.id, repository_id=resource,
+                    current, operation_id=operation.id, repository_id=resource,
                     actor=actor, authority=self.broker.authority)
-                self.broker._authorize(assignment, operation, actor=actor, resource_ids=(resource,))
+                current = self._current_assignment(current)
+                self.broker._authorize(current, operation, actor=actor, resource_ids=(resource,))
         elif set(resources) - set(assignment.resource_ids):
             deny("canonical context exceeds assigned resources")
 
@@ -320,10 +347,12 @@ class AssignmentReasoningBroker:
                 deny("current execution Definition changed")
             resources = tuple(profile.administrative_repository_ids)
             for resource in resources:
-                self.broker.execution_profiles.authorize_administrative_target(assignment,
+                current = self._current_assignment(assignment)
+                self.broker.execution_profiles.authorize_administrative_target(current,
                     operation_id=operation.id, repository_id=resource, actor=actor,
                     authority=self.broker.authority)
-                self.broker._authorize(assignment, operation, actor=actor, resource_ids=(resource,))
+                current = self._current_assignment(current)
+                self.broker._authorize(current, operation, actor=actor, resource_ids=(resource,))
         return resources
 
     def existing(self, assignment, actor):
@@ -427,8 +456,9 @@ class AssignmentReasoningBroker:
                 # create protection; no second idempotency record or store.
                 origin = f"{current.organization_id}/{current.workspace_id}/{self.origin(current)}"
                 prepared.id = "executive-activation-" + hashlib.sha256(origin.encode()).hexdigest()[:32]
-                self.context(self.request_for(prepared), current, actor, operation)
-                self.prepared_context(prepared, current, actor, operation)
+                validated, requester = self.current(assignment, worker_actor, operation, target, validator)
+                self.context(self.request_for(prepared), validated, requester, operation)
+                self.prepared_context(prepared, validated, requester, operation)
                 return prepared, False
             # Context preparation owns a blocking worker, including executor
             # queue wait. A cancelled observer cannot stop that worker: join
@@ -436,9 +466,12 @@ class AssignmentReasoningBroker:
             # result for a cancelled caller. The fresh custody check below
             # still owns admission to persistence after normal completion.
             prepared, reused = await run_settled(prepare)
-            current, actor = await run_settled(lambda: self.current(assignment, worker_actor, operation, target, validator))
-            if not reused:
-                prepared = await run_settled(lambda: self.executives.persist_prepared(prepared, actor=actor))
+            def persist():
+                # Executor queue wait is not permission to persist a previously
+                # validated owner. Revalidate inside this same owned callback.
+                _, requester = self.current(assignment, worker_actor, operation, target, validator)
+                return prepared if reused else self.executives.persist_prepared(prepared, actor=requester)
+            prepared = await run_settled(persist)
             return {"item": prepared.model_dump(mode="json"), "reused": reused}
         item = await run_settled(lambda: self.activation(target, current, actor, operation))
         current, actor = await run_settled(lambda: self.current(assignment, worker_actor, operation, target, validator))
