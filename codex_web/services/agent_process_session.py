@@ -2022,17 +2022,20 @@ class AssignmentBoundAgentProcessSessionManager:
         from codex_web.services.bootstrap_native_create import creation_attribution_matches, joined_cleanup_matches
         def refuse():
             raise AssignmentBoundAgentProcessSessionStaleError('terminal process cleanup ownership is unverified')
-        if (assignment.status not in {AssignmentStatus.LOST, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}
+        worker = self.local_worker.worker_service.store.worker(assignment.assigned_worker_id)
+        cancelled = assignment.status == AssignmentStatus.CANCELLED
+        if ((assignment.status not in {AssignmentStatus.LOST, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}
+                and not (cancelled and joined_cleanup_matches(assignment, worker=worker)))
                 or assignment.lease is not None
                 or self.local_worker._pending_assignment(assignment.id) != assignment):
             refuse()
         session = self.sessions.get(assignment.id)
-        worker = self.local_worker.worker_service.store.worker(assignment.assigned_worker_id)
         if session is None:
             if joined_cleanup_matches(assignment, worker=worker):
                 return None
             refuse()
         observed = assignment.bootstrap_create_observation
+        original_fence = observed.fence if cancelled else assignment.fence
         runtime = getattr(session, 'runtime', None)
         transport = getattr(session, '_owned_transport', None)
         if not isinstance(transport, tuple) or len(transport) != 4:
@@ -2043,10 +2046,10 @@ class AssignmentBoundAgentProcessSessionManager:
                 or (observed.assignment_id, observed.execution_id, observed.execution_workspace_id,
                     observed.worker_id, observed.fence) !=
                    (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
-                    assignment.assigned_worker_id, assignment.fence)
+                    assignment.assigned_worker_id, original_fence)
                 or not creation_attribution_matches(assignment, worker=worker)
                 or (status.assignment_id, status.worker_id, status.fence) !=
-                   (assignment.id, assignment.assigned_worker_id, assignment.fence)
+                   (assignment.id, assignment.assigned_worker_id, original_fence)
                 or runtime is None or runtime is not owned_runtime or process is None
                 or getattr(session, '_owned_process', None) is not process
                 or observed.runtime_generation != generation
@@ -2095,13 +2098,18 @@ class AssignmentBoundAgentProcessSessionManager:
                 or type(process.poll()) is not int):
             raise AssignmentBoundAgentProcessSessionStaleError('terminal process cleanup custody changed')
         status = session.status()
+        original_fence = (assignment.bootstrap_create_observation.fence
+            if assignment.status == AssignmentStatus.CANCELLED else assignment.fence)
         if (status.running or status.pending_executor_work != 0
                 or (status.assignment_id, status.worker_id, status.fence) !=
-                   (assignment.id, assignment.assigned_worker_id, assignment.fence)):
+                   (assignment.id, assignment.assigned_worker_id, original_fence)):
             raise AssignmentBoundAgentProcessSessionStaleError('terminal process or executor cleanup is unsettled')
-        await run_settled(partial(record_joined_cleanup,
-            self.local_worker.worker_service, assignment, self.local_worker.control_actor,
-            runtime_generation=generation, process=process, status=status, terminal_original=True))
+        # Cancellation already recorded its original-fence join. Never backfill
+        # a missing cancellation proof or rewrite that immutable observation.
+        if assignment.status != AssignmentStatus.CANCELLED:
+            await run_settled(partial(record_joined_cleanup,
+                self.local_worker.worker_service, assignment, self.local_worker.control_actor,
+                runtime_generation=generation, process=process, status=status, terminal_original=True))
         current = await run_settled(partial(self.local_worker._pending_assignment, assignment.id))
         if (current is None or current.model_dump(exclude={'bootstrap_create_observation'}) !=
                 assignment.model_dump(exclude={'bootstrap_create_observation'})

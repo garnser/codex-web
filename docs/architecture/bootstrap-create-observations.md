@@ -41,6 +41,22 @@ claim. An absent process is not proof of cleanup; stopping a process does not
 prove a persisted native session or other effects never existed. No historical
 assignment lacking correlation is backfilled.
 
+An explicit MFA current-Work recipient replacement may also use a canonical
+idle cancellation's already-recorded cleanup. The cancelled assignment must be
+unleased, carry `thread_bootstrap_cancelled`, and be exactly one fence after its
+original created observation. Its original process/executor join must already
+exist; this path never backfills cancellation cleanup. A prior initial credential
+seal still binds the original creation/START fence and exact worker identity,
+requester and reference set, rather than the later cancellation fence.
+
+This concerns still-actionable, unchanged current Work with a completed original
+START and all other recipient outcomes resolved. It does not reopen cancelled or
+closed Work, resume the cancelled assignment, settle UNKNOWNs or replay input.
+The existing replacement reservation and graph retain the original START fence,
+so cancellation cannot create a second key after an uncertain replacement.
+Original assignment status, failure, observation, claims and outcomes remain
+unchanged. Lost, failed and succeeded predecessor checks retain their meaning.
+
 The existing worker inspector shows creation outcome, native identity, separate
 cleanup outcome and original correlation/generation/fence. Missing evidence is
 explicitly Unknown. These are historical observations, not operator actions or

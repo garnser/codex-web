@@ -151,6 +151,15 @@ class BootstrapNativeCreateCapture:
         return True
 
 
+def cancelled_creation_matches(assignment):
+    """Only canonical idle cancellation advances the original creation fence."""
+    observation = assignment.bootstrap_create_observation
+    return (str(assignment.status) == 'cancelled' and assignment.lease is None
+        and assignment.failure_code == 'thread_bootstrap_cancelled'
+        and observation is not None and observation.outcome == 'created'
+        and assignment.fence == observation.fence + 1)
+
+
 def creation_attribution_matches(assignment, *, worker=None):
     """Reconstruct only the canonical pending-to-initially-sealed change.
 
@@ -172,7 +181,8 @@ def creation_attribution_matches(assignment, *, worker=None):
                 assignment.organization_id, assignment.workspace_id)
             or seal.worker_identity_id != worker.service_identity_id
             or seal.requester_identity_id != assignment.created_by
-            or seal.fence != assignment.fence):
+            or seal.fence != (observation.fence if cancelled_creation_matches(assignment)
+                              else assignment.fence)):
         return False
     pending_refs = (seal.runtime_secret_ref,) if seal.runtime_secret_ref else ()
     if set(assignment.secret_refs) != set(pending_refs) | set(seal.procedure_secret_refs):
@@ -189,7 +199,7 @@ def _created_observation_matches(assignment, *, worker=None):
         and observation.execution_id == assignment.execution_id
         and observation.execution_workspace_id == assignment.execution_workspace_id
         and observation.worker_id == assignment.assigned_worker_id
-        and observation.fence == assignment.fence
+        and (observation.fence == assignment.fence or cancelled_creation_matches(assignment))
         and creation_attribution_matches(assignment, worker=worker)
         and observation.process_pid is not None
         and observation.provider_native_session_id is not None)
@@ -197,7 +207,8 @@ def _created_observation_matches(assignment, *, worker=None):
 
 def joined_cleanup_matches(assignment, *, worker=None):
     """Positive historical cleanup, not evidence about any input's outcome."""
-    return (str(assignment.status) in {'lost', 'failed', 'succeeded'}
+    return ((str(assignment.status) in {'lost', 'failed', 'succeeded'}
+             or cancelled_creation_matches(assignment))
         and assignment.lease is None and _created_observation_matches(assignment, worker=worker)
         and assignment.bootstrap_create_observation.cleanup_joined_at is not None
         and type(assignment.bootstrap_create_observation.process_exit_code) is int)

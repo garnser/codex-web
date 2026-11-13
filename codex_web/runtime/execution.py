@@ -5504,7 +5504,8 @@ class TurnExecutionService:
             refuse(unavailable, 'Exact current-work bootstrap custody is unavailable.')
         assignment = self._assignment_record(expected_assignment_id)
         if (assignment is None or assignment.status not in {
-                AssignmentStatus.LOST, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}
+                AssignmentStatus.LOST, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED,
+                AssignmentStatus.CANCELLED}
                 or assignment.lease is not None
                 or (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
                     assignment.organization_id, assignment.workspace_id, assignment.created_by) !=
