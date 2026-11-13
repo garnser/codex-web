@@ -108,7 +108,7 @@ from codex_web.services.assignment_reasoning_broker import (
     CONTEXT_READ_IDS,
 )
 from codex_web.executive_roles import ExecutiveActivationCreate
-from codex_web.services.executive_management import ExecutiveContextError
+from codex_web.services.executive_management import ExecutiveContextError, ExecutiveConsultationError
 
 from codex_web.services.home_operator_host import HOST_INSPECTION
 from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
@@ -2345,6 +2345,19 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerRequestError(
                     "Required Executive context is unavailable within the current governed scope.",
                     status_code=409, code="executive_context_unavailable") from exc
+            except ExecutiveConsultationError as exc:
+                from codex_web.services.model_gateway import ModelProviderUnavailableError
+                from codex_web.services.native_reasoning_bridge import NativeBootstrapPreparationRefused
+                gateway = exc.__cause__
+                preparation = gateway.__cause__ if type(gateway) is ModelProviderUnavailableError else None
+                # Only the canonical typed bridge -> gateway -> role chain is
+                # adapted. Unclassified failures and post-input UNKNOWN stay
+                # unchanged; never expose arbitrary exception-chain text.
+                if (operation.id != 'executive.activation.consult'
+                        or type(preparation) is not NativeBootstrapPreparationRefused):
+                    raise
+                raise ControlPlaneBrokerRequestError(str(preparation), status_code=503,
+                    code='executive_native_preparation_unavailable') from exc
             if isinstance(result.get("item"), dict) and "id" in result["item"]:
                 resolved = _ResolvedOperation(operation, result["item"]["id"], resolved.query)
         elif operation.id == OUTPUT_READ:
