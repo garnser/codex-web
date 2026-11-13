@@ -56,3 +56,19 @@ test('pending handoff does not offer accepted-recipient replacement', async ({pa
   await page.evaluate(() => window.install('pending'));
   await expect(page.getByRole('button', {name: 'Replace accepted recipient context'})).toHaveCount(0);
 });
+
+test('current Work reserved custody uses the same canonical eligibility and one replacement request', async ({page}) => {
+  await page.goto(base + fixture);
+  await page.evaluate(() => window.install('current'));
+  const button = page.getByRole('button', {name: 'Replace current Work recipient context', exact: true});
+  await button.click();
+  const confirmation = await resolveAction(page);
+  expect(confirmation).toContain('current-work-thread');
+  expect(confirmation).toContain('unknown outcomes remain recorded');
+  await expect.poll(() => page.evaluate(() => window.reloads)).toEqual(['team/connector!33']);
+  expect(await page.evaluate(() => window.requests)).toEqual([
+    {path: '/api/threads/current-work-thread/replacement-eligibility?work_item_ref=team%2Fconnector%2133&project_id=project-a', method: 'GET', body: null},
+    {path: '/api/threads/current-work-thread/replace?work_item_ref=team%2Fconnector%2133&project_id=project-a', method: 'POST', body: null},
+  ]);
+  await expect(button).toBeDisabled();
+});

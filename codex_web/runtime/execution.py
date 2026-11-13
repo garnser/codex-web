@@ -5491,8 +5491,102 @@ class TurnExecutionService:
         return ReadOnlyReplacementScope(assignment.model_copy(deep=True),workspace.model_copy(deep=True),
             lease.model_copy(deep=True),reference)
 
+    def current_work_replacement_status(self, thread_id, *, expected_assignment_id):
+        """Observe strict current-work retirement eligibility without stopping."""
+        import math
+        def refuse(code, message):
+            raise ExecutionPrestartRefusal(status_code=409, detail={
+                'code': code, 'message': message, 'threadId': thread_id,
+                'assignment_id': expected_assignment_id, 'retryable': False})
+        unavailable = 'owner_current_work_cleanup_unavailable'
+        binding = self._bootstrap_binding_for_thread(thread_id)
+        if binding is None or binding.assignment_id != expected_assignment_id:
+            refuse(unavailable, 'Exact current-work bootstrap custody is unavailable.')
+        assignment = self._assignment_record(expected_assignment_id)
+        if (assignment is None or assignment.status not in {
+                AssignmentStatus.LOST, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}
+                or assignment.lease is not None
+                or (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
+                    assignment.organization_id, assignment.workspace_id, assignment.created_by) !=
+                   (binding.assignment_id, binding.execution_id, binding.execution_workspace_id,
+                    binding.organization_id, binding.workspace_id, binding.created_by)):
+            refuse(unavailable, 'Current-work predecessor is not the exact terminal fenced assignment.')
+        observed = assignment.bootstrap_create_observation
+        if (observed is None or observed.outcome != 'created'
+                or observed.provider_native_session_id != thread_id):
+            refuse(unavailable, 'Original native creation has no matching canonical observation.')
+        history = self.thread_history.get(thread_id) if self.thread_history is not None else None
+        turns = history.get('turns') if isinstance(history, dict) else None
+        if isinstance(turns, list) and len(turns) >= ThreadHistoryRepository.MAX_TURNS:
+            refuse('owner_current_work_outcome_unresolved',
+                'Retained Thread history is at its canonical limit; complete native outcomes are unverified.')
+        if (not isinstance(turns, list) or not turns
+                or history.get('threadId') != thread_id
+                or history.get('providerId') != observed.provider_id
+                or history.get('runtimeId') != observed.runtime_id
+                or self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id)
+                or any(not isinstance(turn, dict)
+                    or turn.get('status') not in {'completed', 'failed'}
+                    or type(turn.get('completedAt')) not in {int, float}
+                    or not math.isfinite(turn['completedAt'])
+                    or type(turn.get('startedAt')) not in {int, float}
+                    or not math.isfinite(turn['startedAt'])
+                    or turn['completedAt'] < turn['startedAt']
+                    or not turn.get('providerTurnId')
+                    for turn in turns)):
+            refuse('owner_current_work_outcome_unresolved',
+                'Preserve every unfinished or unavailable native turn outcome before replacement.')
+        complete_reader = getattr(self.queued_preflight, 'for_thread_complete', None)
+        if not callable(complete_reader) or self.control_actor is None:
+            refuse('owner_current_work_outcome_unresolved',
+                'Complete canonical preflight outcomes are unavailable.')
+        try:
+            attempts = complete_reader(thread_id, actor=self.control_actor)
+        except Exception:
+            refuse('owner_current_work_outcome_unresolved',
+                'Complete canonical preflight outcomes could not be verified.')
+        for attempt in attempts:
+            if ((attempt.organization_id, attempt.workspace_id, attempt.project_id) !=
+                    (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    or thread_id not in {attempt.thread_id, attempt.replacement_thread_id}):
+                refuse('owner_current_work_outcome_unresolved', 'Preflight custody does not match the predecessor.')
+            receipt = attempt.queued_start_receipt
+            if attempt.status == 'started':
+                if (receipt is None or attempt.retry_claim_id is not None
+                        or receipt.admission_claim_id != attempt.queued_admission_claim_id
+                        or receipt.requested_execution_id != attempt.execution_id
+                        or receipt.thread_id != thread_id or receipt.provider_native_session_id != thread_id
+                        or (receipt.provider_id, receipt.runtime_id) != (observed.provider_id, observed.runtime_id)
+                        or not any(turn.get('id') == receipt.requested_execution_id
+                            and turn.get('providerTurnId') == receipt.provider_native_turn_id for turn in turns)):
+                    refuse('owner_current_work_outcome_unresolved',
+                        'An original START lacks its exact completed canonical native outcome.')
+            elif (attempt.status != 'blocked' or any(value is not None for value in (
+                    attempt.retry_claim_id, attempt.queued_admission_claim_id, attempt.started_at,
+                    receipt, attempt.queued_start_correlation, attempt.queued_start_evidence,
+                    attempt.queued_resume_correlation, attempt.queued_resume_evidence))
+                    or attempt.queued_resume_history):
+                refuse('owner_current_work_outcome_unresolved',
+                    'An original input retains an unresolved claim or native outcome; preserve it without replacement.')
+        manager = self._manager_for_binding(assignment.runtime_binding)
+        owners = [candidate for candidate in self._assignment_session_managers()
+                  if candidate.get(assignment.id) is not None]
+        if len(owners) > 1 or owners and owners[0] is not manager:
+            refuse(unavailable, 'Current-work process has ambiguous registered ownership.')
+        if not callable(getattr(manager, 'joined_cleanup_status', None)):
+            refuse(unavailable, 'Current-work process cleanup inspection is unavailable.')
+        try:
+            manager.joined_cleanup_status(assignment)
+        except (AssignmentBoundAgentSessionStaleError, ValueError, RuntimeError) as exc:
+            refuse(unavailable, 'Current-work process/executor cleanup ownership is unverified.')
+        if (self._bootstrap_binding_for_thread(thread_id) != binding
+                or self._assignment_record(assignment.id) != assignment):
+            refuse(unavailable, 'Current-work predecessor changed during cleanup inspection.')
+        return {'assignment_id': assignment.id, 'fence': assignment.fence,
+                'cleanup_joined': observed.cleanup_joined_at is not None}
+
     @contextlib.asynccontextmanager
-    async def retire_replacement_predecessor(self, thread_id, *, project):
+    async def retire_replacement_predecessor(self, thread_id, *, project, require_owned_cleanup=False):
         """Settle owned idle custody before a replacement can erase its marker.
 
         Hold ordinary admission until replacement provenance/routing commits.
@@ -5503,6 +5597,10 @@ class TurnExecutionService:
         async with lock:
             binding = self._bootstrap_binding_for_thread(thread_id)
             if binding is None:
+                if require_owned_cleanup:
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                        'code': 'owner_current_work_cleanup_unavailable',
+                        'message': 'Current-work replacement requires exact bootstrap custody.'})
                 yield  # Legacy native conversations have no worker custody.
                 return
 
@@ -5524,6 +5622,24 @@ class TurnExecutionService:
                 raise blocked('Predecessor scope or bootstrap attribution changed.')
             if assignment.status in {AssignmentStatus.CANCELLED, AssignmentStatus.LOST,
                     AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED} and assignment.lease is None:
+                if require_owned_cleanup:
+                    await self._settle_custody_call(lambda: self.current_work_replacement_status(
+                        thread_id, expected_assignment_id=assignment.id))
+                    manager = self._manager_for_binding(assignment.runtime_binding)
+                    await manager.stop(assignment.id, expected_terminal=assignment, require_joined=True)
+                    current = await self._settle_custody_call(lambda: self._assignment_record(assignment.id))
+                    worker = await self._settle_custody_call(lambda:
+                        manager.local_worker.worker_service.store.worker(assignment.assigned_worker_id))
+                    from codex_web.services.bootstrap_native_create import joined_cleanup_matches
+                    if (current is None or self._bootstrap_binding_for_thread(thread_id) != binding
+                            or current.model_dump(exclude={'bootstrap_create_observation'}) !=
+                               assignment.model_dump(exclude={'bootstrap_create_observation'})
+                            or not joined_cleanup_matches(current, worker=worker)):
+                        raise blocked('Current-work predecessor cleanup changed its original custody.')
+                    await self._settle_custody_call(lambda: self.current_work_replacement_status(
+                        thread_id, expected_assignment_id=current.id))
+                    yield await self._settle_custody_call(lambda: self._replacement_read_scope(current, project))
+                    return
                 # The public worker API can fence a claim before its local
                 # watchdog joins. Stop through every existing manager owner;
                 # this also waits for a concurrent stop holding that id's lock.
@@ -5538,6 +5654,8 @@ class TurnExecutionService:
                     raise blocked('Terminal predecessor changed before replacement publication.')
                 yield await asyncio.to_thread(self._replacement_read_scope, assignment, project)
                 return
+            if require_owned_cleanup:
+                raise blocked('Current-work replacement requires terminal custody; preserve its current owner.')
             manager, session = self._session_for_assignment(assignment.id)
             current = await self._settle_custody_call(session.validate_current, work_owner=session)
             if current != assignment:

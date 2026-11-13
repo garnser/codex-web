@@ -550,6 +550,14 @@ class WorkItemContinuityService:
                     readonly_ids = self.owner_routing.repository_scope_for_pin(pin, binding).read_only_repository_ids
             except OwnerRoutingError as exc:
                 blocked_reason = str(exc)
+                if blocked_reason.startswith('owner_current_work_'):
+                    try:
+                        metadata['recipient_replacement'] = self.owner_routing.current_work_replacement_projection(
+                            state, binding, actionable_owner_value(state), writable_ids)
+                        metadata['next_action'] = ('Inspect current recipient replacement eligibility. '
+                            'Preserve unfinished native outcomes; replacement requires positive owned cleanup.')
+                    except (OwnerRoutingError, LookupError, ValueError, RuntimeError):
+                        pass  # A failed metadata read never grants eligibility.
         if blocked_reason is None and binding is not None and self.thread_queue_depth(target_thread_id):
             outcome = self._owner_queue_outcome(state, target_thread_id,
                 read_only_repository_resource_ids=readonly_ids)

@@ -336,7 +336,7 @@ class AcceptedUnboundRecipientReplacementTests(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(self.joined, ['fresh-recipient-assignment'])
 
     async def test_unknown_reserved_replacement_cannot_mint_a_second_attempt(self):
-        from codex_web.owner_routing import OwnerRoutingError
+        from fastapi import HTTPException
         state, original = await self.terminal()
         service, project, _ = self.replacement_service(state)
         context, _ = service.replacement_eligibility(state.handoff.delivery.thread_id,
@@ -347,9 +347,11 @@ class AcceptedUnboundRecipientReplacementTests(unittest.IsolatedAsyncioTestCase)
             'id': 'unresolved-replacement', 'execution_id': 'thread-bootstrap-' + token,
             'status': AssignmentStatus.RUNNING})
         self.f.assignments[pending.id] = pending
-        with self.assertRaisesRegex(OwnerRoutingError, 'owner_replacement_original_unresolved'):
+        with self.assertRaises(HTTPException) as refused:
             await service.replace(state.handoff.delivery.thread_id, work_item_ref=state.ref,
                 actor=self.f.f.actor, project=project)
+        self.assertEqual(refused.exception.status_code, 409)
+        self.assertEqual(refused.exception.detail['code'], 'owner_replacement_original_unresolved')
         self.assertEqual(self.f.assignments[pending.id], pending)
         self.assertEqual(self.new_calls, [])
 

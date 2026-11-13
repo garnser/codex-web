@@ -5,21 +5,23 @@ const pending = new Set();
 // The Work selector comes from the current inspector. Only the canonical
 // eligibility and replacement owners authorize changing recipient custody.
 export function installAcceptedRecipientReplacement(detail, item, {
-  request, scopedPath, captureScope, reload, projectId,
+  request, scopedPath, captureScope, reload, projectId, ownerDispatch,
 }) {
   const handoff = item.handoff;
-  const threadId = handoff?.delivery?.thread_id;
-  if (handoff?.status !== 'accepted' || !item.ref || !threadId) return;
+  const currentWork = !handoff && ownerDispatch?.recipient_replacement;
+  const threadId = currentWork?.thread_id || handoff?.delivery?.thread_id;
+  if ((!currentWork && handoff?.status !== 'accepted') || !item.ref || !threadId) return;
   const anchor = detail.querySelector('.work-handoff-inspection');
   if (!anchor) return;
   const host = document.createElement('div');
   host.className = 'work-accepted-recipient-replacement';
   anchor.after(host);
-  const key = JSON.stringify([projectId, item.ref, handoff.requested_at, threadId]);
+  const key = JSON.stringify([projectId, item.ref, handoff?.requested_at, threadId]);
+  const action = currentWork ? 'Replace current Work recipient context' : 'Replace accepted recipient context';
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'ghost-button';
-  button.textContent = 'Replace accepted recipient context';
+  button.textContent = action;
   button.disabled = pending.has(key);
   const output = document.createElement('span');
   output.setAttribute('role', 'status');
@@ -47,9 +49,11 @@ export function installAcceptedRecipientReplacement(detail, item, {
         throw new Error(proof.code || 'Recipient replacement is not available');
       }
       const confirmed = await confirmAction({
-        action: 'Replace accepted recipient context',
-        target: `${item.ref} · ${handoff.to_agent} · ${proof.currentThreadId}`,
-        consequence: 'Create a replacement native context through canonical custody guards. The accepted handoff and retained history remain recorded.',
+        action,
+        target: `${item.ref} · ${handoff?.to_agent || item.current_owner || ''} · ${proof.currentThreadId}`,
+        consequence: currentWork
+          ? 'Join the exact owned predecessor and create one replacement context. Retained inputs and unknown outcomes remain recorded; this does not replay them.'
+          : 'Create a replacement native context through canonical custody guards. The accepted handoff and retained history remain recorded.',
         current, trigger: button,
       });
       if (!confirmed || !current()) return;

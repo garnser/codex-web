@@ -205,13 +205,18 @@ class OwnerRecipientPreparationService:
         except ThreadBootstrapBindingNotFoundError:
             return None
         if bound.thread_id != recipient.thread_id:
-            return None
+            exact = self.routing._current_work_chain_binding(state, binding,
+                bound, recipient.thread_id, actor=actor)
+            if (exact.assignment_id, exact.execution_id) != (
+                    recipient.assignment_id, recipient.execution_id):
+                raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
         proof, _, _ = self.context(state, binding, owner, writable, discover=False,
             lookup_actor=lookup_actor, originals_checked=originals_checked)
         checked = self.prepared_binding(state, binding, owner, writable,
             lookup_actor=lookup_actor, originals_checked=True)
-        if (checked is None or checked.assignment_id != recipient.assignment_id
-                or checked.execution_id != recipient.execution_id):
+        if (checked is None or (checked.thread_id == recipient.thread_id
+                and (checked.assignment_id != recipient.assignment_id
+                    or checked.execution_id != recipient.execution_id))):
             raise OwnerRoutingError('owner_recipient_bootstrap_unverified')
         return self.attribution(proof)
 

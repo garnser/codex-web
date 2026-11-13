@@ -33,7 +33,7 @@ class _CancelledRecipientContextRequired(OwnerRoutingError):
 class OwnerRoutingService:
     def __init__(self, *, routing, get_state, projects, load_bindings, binding_prefix,
                  bootstraps, assignments, profiles, control_actor, actor_resolver,
-                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None, inspection_actor=None, authenticated_origin_revalidator=None):
+                 replacement_resolver, update_state=None, append_event=None, preflight=None, workers=None, execution_profiles=None, sessions=None, inspection_ready=None, inspection_actor=None, authenticated_origin_revalidator=None, thread_history=None, current_work_cleanup_status=None, replacement_lineage=None):
         self.routing = routing
         self.get_state = get_state
         self.projects = projects
@@ -48,7 +48,10 @@ class OwnerRoutingService:
         # its session/MFA provenance. Explicit operator replacement needs the
         # existing identity owner's authenticated-origin revalidation instead.
         self.authenticated_origin_revalidator = authenticated_origin_revalidator
+        self.thread_history = thread_history
+        self.current_work_cleanup_status = current_work_cleanup_status
         self.replacement_resolver = replacement_resolver
+        self.replacement_lineage = replacement_lineage
         self.update_state, self.append_event = update_state, append_event
         self.preflight = preflight
         self.delivery_recorder = None
@@ -820,6 +823,8 @@ class OwnerRoutingService:
         if not fresh.has_same_authority(actor):
             raise OwnerRoutingError('owner_replacement_actor_changed')
         state = self.get_state(work_item_ref)
+        if state.handoff is None:
+            return self._current_work_replacement_context(thread_id, state, actor=fresh, project=project)
         if ((state.organization_id, state.workspace_id, state.project_id)
                 != (fresh.organization_id, fresh.workspace_id, project.id)
                 or (project.organization_id, project.workspace_id)
@@ -871,6 +876,157 @@ class OwnerRoutingService:
         return (state.model_copy(deep=True), binding.model_copy(deep=True),
             witness, profile, requester, historical)
 
+    def _current_work_replacement_context(self, thread_id, state, *, actor, project, originals_checked=False):
+        """Observe one retained no-handoff original, never manufacture delivery.
+
+        The caller has authenticated the operator. A Work selector or a similarly
+        scoped live assignment is not provenance for this distinct lifecycle.
+        """
+        from codex_web.models import QueuedTurn, QueuedNativeStartReceipt
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_start import validate_attribution
+        if ((state.organization_id, state.workspace_id, state.project_id)
+                != (actor.organization_id, actor.workspace_id, project.id)
+                or (project.organization_id, project.workspace_id)
+                    != (actor.organization_id, actor.workspace_id)
+                or state.closed_at or state.current_stage == 'closed'
+                or state.handoff is not None or self.recipient_preparer is None):
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        from codex_web.services.work_item_continuity import WorkItemContinuityService
+        if not WorkItemContinuityService.actionable_owner_stage(state.current_stage):
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        routing = self.snapshot(state)
+        owner = routing.owner(normalized_owner(actionable_owner_value(state))) if routing else None
+        if owner is None:
+            raise OwnerRoutingError('owner_routing_owner_unavailable')
+        if not originals_checked:
+            self.require_resolved_originals(state)
+        attempts = self.preflight.for_work_item(organization_id=state.organization_id,
+            workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref)
+        matches = []
+        for attempt in attempts:
+            if attempt.status != 'started' or attempt.queued_turn_snapshot is None:
+                continue
+            original = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+            pin = original.owner_routing_pin
+            receipt, correlation, evidence = (attempt.queued_start_receipt,
+                attempt.queued_start_correlation, attempt.queued_start_evidence)
+            if (pin is None or pin.schema_version != '1.2' or pin.recipient is None
+                    or pin.current_work_intent_sha256 is None or pin.handoff_requested_at is not None
+                    or original.handoff_requested_at is not None or original.work_item_ref != state.ref
+                    or pin.work_item_ref != state.ref or pin.binding.canonical_owner != owner
+                    or pin.binding.definition != routing.definition
+                    or (pin.binding.organization_id, pin.binding.workspace_id, pin.binding.project_id)
+                        != (state.organization_id, state.workspace_id, state.project_id)
+                    or receipt is None or correlation is None or evidence is None
+                    or receipt.thread_id != pin.recipient.thread_id):
+                continue
+            if thread_id != receipt.thread_id:
+                continue
+            validate_attribution(ExecutionPreflightService, attempt, correlation)
+            expected = QueuedNativeStartReceipt(admission_claim_id=correlation.admission_claim_id,
+                requested_execution_id=correlation.requested_execution_id,
+                execution_id=correlation.execution_id, thread_id=correlation.thread_id,
+                provider_native_session_id=evidence.provider_native_session_id,
+                provider_native_turn_id=evidence.provider_native_turn_id,
+                provider_id=correlation.provider_id, runtime_id=correlation.runtime_id,
+                observed_at=evidence.observed_at)
+            if (receipt != expected or evidence.runtime_generation != correlation.runtime_generation
+                    or evidence.rpc_request_id != correlation.rpc_request_id
+                    or evidence.provider_native_session_id != correlation.provider_native_session_id
+                    or (correlation.assignment_id, correlation.execution_id, correlation.worker_id, correlation.fence)
+                        != (pin.recipient.assignment_id, pin.recipient.execution_id,
+                            pin.recipient.worker_id, pin.recipient.fence)
+                    or (attempt.organization_id, attempt.workspace_id, attempt.project_id)
+                        != (state.organization_id, state.workspace_id, state.project_id)):
+                raise OwnerRoutingError('owner_current_work_lineage_unverified')
+            matches.append((pin, original, receipt))
+        if not matches:
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        # Several completed inputs may share the SAME immutable reservation.
+        # Different retained recipients/intents cannot be silently collapsed.
+        pin, original, receipt = matches[0]
+        if any((row[0].recipient.model_dump(exclude={'authority_checksum', 'work_item_owner_checksum'}),
+                row[0].current_work_intent_sha256, row[0].bot_binding_id,
+                row[0].original_thread_id) != (pin.recipient.model_dump(
+                    exclude={'authority_checksum', 'work_item_owner_checksum'}), pin.current_work_intent_sha256,
+                    pin.bot_binding_id, pin.original_thread_id) for row in matches):
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        bindings = [row for row in self.load_bindings() if row.id == pin.bot_binding_id
+            and row.thread_id == pin.original_thread_id and row.project_id == state.project_id
+            and not row.is_master]
+        if len(bindings) != 1:
+            raise OwnerRoutingError('owner_executor_binding_changed')
+        binding = bindings[0]
+        requested = tuple(work_item_repository_scope(state)[1])
+        if (not requested or set(original.writable_repository_resource_ids) != set(requested)
+                or original.read_only_repository_resource_ids):
+            raise OwnerRoutingError('owner_recipient_work_item_scope_changed')
+        bound = self.recipient_preparer.prepared_binding(state, binding, owner, requested,
+            lookup_actor=lambda: actor, originals_checked=True)
+        if bound is not None and bound.thread_id != thread_id:
+            bound = self._current_work_chain_binding(state, binding, bound,
+                thread_id, actor=actor)
+        if (bound is None or (bound.thread_id, bound.assignment_id, bound.execution_id,
+                bound.id) != (pin.recipient.thread_id, pin.recipient.assignment_id,
+                    pin.recipient.execution_id, pin.recipient.bootstrap_id)):
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        assignment = self.assignments(bound.assignment_id)
+        session = self.sessions.native_custody(bound.thread_id) if self.sessions is not None else None
+        if (assignment is None or assignment.execution_workspace_id != bound.execution_workspace_id
+                or session is None or (session.assignment_id, session.execution_id,
+                session.execution_workspace_id, session.worker_id, session.organization_id,
+                session.workspace_id, session.project_id) != (assignment.id, assignment.execution_id,
+                    assignment.execution_workspace_id, assignment.assigned_worker_id,
+                    state.organization_id, state.workspace_id, state.project_id)):
+            raise OwnerRoutingError('owner_recipient_native_custody_unverified')
+        witness, profile, requester = self._recipient_metadata(state, binding, bound, owner,
+            lookup_actor=lambda: actor, assignment=assignment)
+        if (assignment.lease is not None or str(assignment.status) not in {'lost', 'failed', 'succeeded', 'cancelled'}
+                or assignment.created_by != original.agent_profile_actor_id
+                or assignment.agent_profile.profile_id != original.agent_profile_id
+                or assignment.agent_profile.profile_revision != original.agent_profile_revision
+                or assignment.execution_profile_id != original.execution_profile_id
+                or assignment.repository_scope is None
+                or set(assignment.repository_scope.writable_repository_ids) != set(requested)
+                or assignment.repository_scope.read_only_repository_ids):
+            raise OwnerRoutingError('owner_current_work_requires_terminal_recipient')
+        historical = pin.recipient
+        cancelled_next = str(assignment.status) == 'cancelled' and assignment.fence == historical.fence + 1
+        if (assignment.fence != historical.fence and not cancelled_next
+                or witness.model_dump(exclude={'authority_checksum', 'work_item_owner_checksum', 'fence'})
+                    != historical.model_dump(exclude={'authority_checksum', 'work_item_owner_checksum', 'fence'})):
+            raise OwnerRoutingError('owner_recipient_custody_changed')
+        if any(self._authority_checksum(assignment) != item.recipient.authority_checksum
+                and not self._initial_seal_authority_compatible(assignment, item.recipient,
+                    started_at=start.observed_at) for item, _, start in matches):
+            raise OwnerRoutingError('owner_recipient_custody_changed')
+        attribution = self.recipient_preparer.current_work_attribution(state, binding, owner,
+            requested, historical, lookup_actor=lambda: actor, originals_checked=True)
+        if attribution != pin.current_work_intent_sha256:
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        history = self.thread_history.get(bound.thread_id) if self.thread_history is not None else None
+        turns = history.get('turns') if isinstance(history, dict) else None
+        if not isinstance(turns, list):
+            raise OwnerRoutingError('owner_current_work_history_unavailable')
+        completed = [row for row in turns if row.get('id') == original.execution_id
+            and row.get('providerTurnId') == receipt.provider_native_turn_id
+            and row.get('status') == 'completed' and row.get('completedAt') is not None]
+        if len(completed) != 1:
+            raise OwnerRoutingError('owner_current_work_completion_unverified')
+        if any(row.get('status') not in {'completed', 'failed', 'interrupted', 'cancelled'}
+                or row.get('completedAt') is None for row in turns):
+            raise OwnerRoutingError('owner_current_work_outcome_unresolved')
+        if self.current_work_cleanup_status is None:
+            raise OwnerRoutingError('owner_current_work_cleanup_unavailable')
+        try:
+            self.current_work_cleanup_status(bound.thread_id, expected_assignment_id=assignment.id)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            raise OwnerRoutingError(detail.get('code', 'owner_current_work_cleanup_unavailable')) from exc
+        return (state.model_copy(deep=True), binding.model_copy(deep=True),
+            witness, profile, requester, historical)
+
     def accepted_replacement_signature(self, context):
         """Freeze replacement intent/authority, not provider observation clocks.
 
@@ -904,6 +1060,8 @@ class OwnerRoutingService:
         """
         from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
         state, binding, witness, profile, actor, historical = context
+        if state.handoff is None:
+            return self._current_work_replacement_reservation(context)
         source = self.assignments(witness.assignment_id)
         token = self.recipient_preparer.digest({
             'purpose': 'accepted-recipient-operator-replacement-v1',
@@ -943,6 +1101,202 @@ class OwnerRoutingService:
         self._accepted_recovery_native_custody(state, state.handoff.delivery.thread_id,
             bound.thread_id, source, current)
         return token, bound.thread_id
+
+    def _current_work_replacement_token(self, context):
+        state, binding, _, _, _, historical = context
+        return self.recipient_preparer.digest({
+            'purpose': 'current-work-recipient-operator-replacement-v1',
+            'organization_id': state.organization_id, 'workspace_id': state.workspace_id,
+            'project_id': state.project_id, 'work_item_ref': state.ref,
+            'source_assignment_id': historical.assignment_id, 'source_fence': historical.fence,
+            'binding_id': binding.id})[:32]
+
+    def _current_work_chain_binding(self, state, binding, original, target, *, actor):
+        """Verify generations using the existing immutable replacement graph.
+
+        A graph destination alone is not a bootstrap grant. Every edge must
+        join its exact terminal predecessor and deterministic successor ledger.
+        """
+        if self.replacement_lineage is None:
+            raise OwnerRoutingError('owner_replacement_original_unresolved')
+        edges = self.replacement_lineage(original.thread_id, project_id=state.project_id,
+            organization_id=state.organization_id, workspace_id=state.workspace_id)
+        bound = original
+        for edge in edges:
+            source = self.assignments(bound.assignment_id)
+            provenance = edge.get('provenance') or {}
+            if (source is None or edge.get('old_thread_id') != bound.thread_id
+                    or provenance.get('current_work_item_ref') != state.ref
+                    or provenance.get('current_work_assignment_id') != source.id
+                    or provenance.get('current_work_assignment_fence') != source.fence):
+                raise OwnerRoutingError('owner_replacement_original_unresolved')
+            token = self.recipient_preparer.digest({
+                'purpose': 'current-work-recipient-operator-replacement-v1',
+                'organization_id': state.organization_id, 'workspace_id': state.workspace_id,
+                'project_id': state.project_id, 'work_item_ref': state.ref,
+                'source_assignment_id': source.id, 'source_fence': source.fence,
+                'binding_id': binding.id})[:32]
+            successor = self.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
+            current = self.assignments(successor.assignment_id)
+            if (successor.thread_id != edge.get('new_thread_id') or current is None
+                    or successor.execution_id != current.execution_id
+                    or successor.execution_workspace_id != current.execution_workspace_id
+                    or current.subject is None or current.subject.kind != 'thread_bootstrap'
+                    or current.subject.ref != 'bootstrap-' + token
+                    or current.execution_id != 'thread-bootstrap-' + token
+                    or not self._same_current_work_generation(source, current)):
+                raise OwnerRoutingError('owner_replacement_original_unresolved')
+            if self.current_work_cleanup_status is None:
+                raise OwnerRoutingError('owner_current_work_cleanup_unavailable')
+            try:
+                self.current_work_cleanup_status(bound.thread_id, expected_assignment_id=source.id)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                raise OwnerRoutingError(detail.get('code', 'owner_current_work_cleanup_unavailable')) from exc
+            starts = [attempt.queued_start_receipt.observed_at for attempt in self.preflight.for_work_item(
+                organization_id=state.organization_id, workspace_id=state.workspace_id,
+                project_id=state.project_id, ref=state.ref)
+                if attempt.status == 'started' and attempt.queued_start_receipt is not None
+                and attempt.queued_start_correlation is not None
+                and attempt.queued_start_correlation.assignment_id == source.id
+                and attempt.queued_start_receipt.thread_id == bound.thread_id]
+            if not starts:
+                raise OwnerRoutingError('owner_current_work_lineage_unverified')
+            historical = self._recipient_metadata(state, binding, bound,
+                normalized_owner(actionable_owner_value(state)), lookup_actor=lambda: actor,
+                assignment=source)[0]
+            self._accepted_recovery_credentials(source, current, historical, min(starts))
+            self._accepted_recovery_native_custody(state, bound.thread_id,
+                successor.thread_id, source, current)
+            bound = successor
+            if bound.thread_id == target:
+                return bound
+        raise OwnerRoutingError('owner_replacement_original_unresolved')
+
+    @staticmethod
+    def _same_current_work_generation(source, current):
+        fields = ('organization_id', 'workspace_id', 'project_id', 'created_by',
+            'repository_scope', 'repository_target', 'resource_context',
+            'execution_profile_id', 'execution_profile_definition', 'runtime_binding',
+            'skill_refs', 'sandbox', 'approval_policy', 'network')
+        return (source.agent_profile is not None and current.agent_profile is not None
+            and all(getattr(source, field) == getattr(current, field) for field in fields)
+            and set(source.resource_ids) == set(current.resource_ids)
+            and source.agent_profile.model_dump(exclude={'selected_worker_id'})
+                == current.agent_profile.model_dump(exclude={'selected_worker_id'})
+            and source.agent_profile.selected_worker_id == source.assigned_worker_id
+            and current.agent_profile.selected_worker_id == current.assigned_worker_id)
+
+    def _current_work_replacement_reservation(self, context):
+        """Existing bootstrap ledger owns exactly one new explicit request.
+
+        Its key derives from the retained original, never a retry counter or a
+        fresh caller nonce. Missing response/custody cannot mint another key.
+        """
+        from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
+        state, binding, _, profile, actor, historical = context
+        token = self._current_work_replacement_token(context)
+        existing = self.recipient_preparer.existing_assignment(execution_id='thread-bootstrap-' + token)
+        try:
+            bound = self.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
+        except ThreadBootstrapBindingNotFoundError:
+            if existing is not None:
+                raise OwnerRoutingError('owner_replacement_original_unresolved')
+            return token, None
+        source = self.assignments(historical.assignment_id)
+        current = self.assignments(bound.assignment_id)
+        if (existing is None or current is None or current != existing
+                or source is None or current.subject is None
+                or current.subject.kind != 'thread_bootstrap'
+                or current.subject.ref != 'bootstrap-' + token
+                or current.execution_id != 'thread-bootstrap-' + token
+                or bound.bootstrap_id != 'bootstrap-' + token
+                or bound.execution_id != current.execution_id
+                or bound.execution_workspace_id != current.execution_workspace_id
+                or (current.organization_id, current.workspace_id, current.project_id,
+                    current.created_by, current.agent_profile.model_dump(exclude={'selected_worker_id'}), current.repository_scope,
+                    current.repository_target, current.resource_context,
+                    current.execution_profile_id, current.execution_profile_definition,
+                    current.runtime_binding, current.skill_refs, set(current.resource_ids),
+                    current.sandbox, current.approval_policy, current.network)
+                    != (source.organization_id, source.workspace_id, source.project_id,
+                        source.created_by, source.agent_profile.model_dump(exclude={'selected_worker_id'}), source.repository_scope,
+                        source.repository_target, source.resource_context,
+                        source.execution_profile_id, source.execution_profile_definition,
+                        source.runtime_binding, source.skill_refs, set(source.resource_ids),
+                        source.sandbox, source.approval_policy, source.network)
+                or source.agent_profile.selected_worker_id != source.assigned_worker_id
+                or current.agent_profile.selected_worker_id != current.assigned_worker_id):
+            raise OwnerRoutingError('owner_replacement_original_unresolved')
+        self._live_recipient(state, binding, bound, profile.role_id, lookup_actor=lambda: actor)
+        starts = [attempt.queued_start_receipt.observed_at for attempt in self.preflight.for_work_item(
+            organization_id=state.organization_id, workspace_id=state.workspace_id,
+            project_id=state.project_id, ref=state.ref)
+            if attempt.status == 'started' and attempt.queued_start_receipt is not None
+            and attempt.queued_start_receipt.thread_id == historical.thread_id
+            and attempt.queued_start_receipt.execution_id == historical.execution_id]
+        if not starts:
+            raise OwnerRoutingError('owner_current_work_lineage_unverified')
+        self._accepted_recovery_credentials(source, current, historical, min(starts))
+        self._accepted_recovery_native_custody(state, historical.thread_id,
+            bound.thread_id, source, current)
+        return token, bound.thread_id
+
+    def _current_work_successor(self, state, binding, owner, requested, *, lookup_actor=None, originals_checked=False):
+        if state.handoff is not None or self.recipient_preparer is None:
+            return None
+        actor = (lookup_actor or self.control_actor)()
+        from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
+        token = self.recipient_preparer.logical_id(state, binding, owner, tuple(requested))
+        try:
+            self.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
+        except ThreadBootstrapBindingNotFoundError:
+            # The ordinary first/compatible-recipient path has no current-work
+            # reservation to recover; do not impose a native-source context.
+            return None
+        original = self.recipient_preparer.prepared_binding(state, binding, owner,
+            tuple(requested), lookup_actor=lambda: actor, originals_checked=originals_checked)
+        if original is None:
+            return None
+        assignment = self.assignments(original.assignment_id)
+        if assignment is None:
+            raise OwnerRoutingError('owner_recipient_custody_unavailable')
+        if str(assignment.status) not in {'lost', 'failed', 'cancelled', 'succeeded'}:
+            return None
+        target = self.replacement_resolver(original.thread_id, project_id=state.project_id,
+            organization_id=state.organization_id, workspace_id=state.workspace_id)
+        if not target or target == original.thread_id:
+            raise OwnerRoutingError('owner_current_work_recipient_custody_unavailable')
+        bound = self._current_work_chain_binding(state, binding, original, target, actor=actor)
+        current = self.assignments(bound.assignment_id)
+        if current is not None and str(current.status) in {'lost', 'failed', 'cancelled', 'succeeded'}:
+            raise OwnerRoutingError('owner_current_work_recipient_custody_unavailable')
+        return self._live_recipient(state, binding, bound, owner, lookup_actor=lambda: actor)
+
+    def current_work_replacement_projection(self, state, binding, owner, requested):
+        """Inspect exact reserved custody; the authenticated GET owns eligibility."""
+        if state.handoff is not None or self.recipient_preparer is None:
+            return None
+        actor = self.control_actor()
+        bound = self.recipient_preparer.prepared_binding(state, binding, owner,
+            tuple(requested), lookup_actor=lambda: actor)
+        if bound is None:
+            return None
+        target = self.replacement_resolver(bound.thread_id, project_id=state.project_id,
+            organization_id=state.organization_id, workspace_id=state.workspace_id)
+        if target:
+            bound = self.bootstraps.get_by_thread(target, actor)
+        assignment = self.assignments(bound.assignment_id)
+        if (assignment is None or assignment.lease is not None
+                or str(assignment.status) not in {'lost', 'failed', 'succeeded'}
+                or assignment.execution_id != bound.execution_id
+                or assignment.execution_workspace_id != bound.execution_workspace_id
+                or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    != (state.organization_id, state.workspace_id, state.project_id)):
+            return None
+        return {'thread_id': bound.thread_id, 'assignment_id': assignment.id,
+            'fence': assignment.fence, 'status': str(assignment.status),
+            'eligibility_requires_authenticated_inspection': True}
 
     def _accepted_recovery_credentials(self, admitted, current, historical, started_at):
         """Distinguish canonical initial sealing from an arbitrary reference change.
@@ -1069,12 +1423,21 @@ class OwnerRoutingService:
             raise OwnerRoutingError('owner_executor_bootstrap_unverified')
         accepted = self._accepted_owner_recipient(state, binding, owner, requested,
             lookup_actor=lookup_actor)
+        current_work_replacement = False
+        if accepted is None:
+            accepted = self._current_work_successor(state, binding, owner, requested,
+                lookup_actor=lookup_actor)
+            current_work_replacement = accepted is not None
         if accepted is not None:
             intent = routing.binding(configured_owner) or OwnerRoutingBinding(schema_version='1.1',
                 organization_id=state.organization_id, workspace_id=state.workspace_id,
                 project_id=state.project_id, configured_owner=normalized_owner(configured_owner),
                 canonical_owner=owner, definition=routing.definition)
-            return OwnerRoutingPin(schema_version='1.1', binding=intent, recipient=accepted[0],
+            current_work = (self.recipient_preparer.current_work_attribution(state, binding,
+                configured_owner, tuple(requested), accepted[0], lookup_actor=lookup_actor,
+                originals_checked=True) if current_work_replacement else None)
+            return OwnerRoutingPin(schema_version='1.2' if current_work is not None else '1.1',
+                current_work_intent_sha256=current_work, binding=intent, recipient=accepted[0],
                 work_item_ref=state.ref, stage=state.current_stage,
                 retry_attempt=state.execution.retry.attempt, handoff_requested_at=None,
                 bot_binding_id=binding.id, original_thread_id=binding.thread_id)
@@ -1252,6 +1615,10 @@ class OwnerRoutingService:
             accepted = self._accepted_owner_recipient(state, binding,
                 pin.binding.canonical_owner, set(writable), lookup_actor=lookup_actor,
                 originals_checked=True)
+            if accepted is None and pin.current_work_intent_sha256 is not None:
+                accepted = self._current_work_successor(state, binding,
+                    pin.binding.canonical_owner, set(writable), lookup_actor=lookup_actor,
+                    originals_checked=True)
             if accepted is not None:
                 if (accepted[0] != pin.recipient
                         and not self._accepted_initial_seal_compatible(pin.recipient, accepted[0])):

@@ -741,6 +741,35 @@ class ExecutionPreflightStore:
                 result.append(attempt)
         return result
 
+    def for_thread_complete(self, thread_id: str) -> list[ExecutionPreflightAttempt]:
+        """Complete exact-thread index traversal for custody reconciliation.
+
+        Unlike an operator's bounded page, a missing or dangling member cannot
+        establish that every original is resolved. This performs no repair.
+        """
+        prefix, cursor, seen_cursors, seen_ids = f't/{thread_id}/', None, set(), set()
+        result = []
+        while True:
+            rows, following = self.store.record_page(self.NAMESPACE,
+                key_prefix=prefix, after=cursor, limit=200)
+            for key, payload in rows.items():
+                attempt_id = payload.get('attemptId') if isinstance(payload, dict) else None
+                if (not isinstance(attempt_id, str) or not attempt_id
+                        or not key.startswith(prefix) or attempt_id in seen_ids):
+                    raise ValueError('complete thread preflight index is malformed')
+                attempt = self.get(attempt_id)
+                if (attempt is None or attempt.id != attempt_id
+                        or thread_id not in {attempt.thread_id, attempt.replacement_thread_id}):
+                    raise ValueError('complete thread preflight index is unresolved')
+                seen_ids.add(attempt_id)
+                result.append(attempt)
+            if following is None:
+                return result
+            if following == cursor or following in seen_cursors:
+                raise ValueError('complete thread preflight cursor did not advance')
+            seen_cursors.add(following)
+            cursor = following
+
     def claim_retry(
         self,
         attempt_id: str,

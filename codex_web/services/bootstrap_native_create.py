@@ -21,7 +21,7 @@ def attribution(assignment):
         sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-def update_observation(service, original, actor, updater, *, preparing=False):
+def update_observation(service, original, actor, updater, *, preparing=False, terminal_cleanup=False):
     """Narrow historical append: cannot renew, rebind, reclassify or execute."""
     service._require_admin(actor)
     result = []
@@ -31,10 +31,20 @@ def update_observation(service, original, actor, updater, *, preparing=False):
         cancelled = (str(current.status) == 'cancelled'
             and current.fence == original.fence + 1 and current.lease is None
             and current.failure_code == 'thread_bootstrap_cancelled')
+        # This exception permits only appending joined cleanup to an already
+        # observed creation. It must never authorize a late creation response.
+        terminal = (terminal_cleanup and not preparing
+            and str(original.status) in {'lost', 'failed', 'succeeded'}
+            and current.lease is None and original.lease is None
+            and current.model_dump(exclude={'bootstrap_create_observation'})
+                == original.model_dump(exclude={'bootstrap_create_observation'})
+            and _created_observation_matches(original,
+                worker=next((worker for worker in state.workers
+                    if worker.id == original.assigned_worker_id), None)))
         if (current.subject is None or current.subject.kind != 'thread_bootstrap'
                 or current.assigned_worker_id != original.assigned_worker_id
                 or attribution(current) != attribution(original)
-                or not (live or (cancelled and not preparing))):
+                or not (live or (cancelled and not preparing) or terminal)):
             raise ValueError('bootstrap observation original custody changed')
         if preparing and (current.lease is None or current.lease.expires_at <= time.time()
                 or current.lease.worker_id != original.assigned_worker_id
@@ -44,6 +54,16 @@ def update_observation(service, original, actor, updater, *, preparing=False):
         observed = updater(previous)
         if observed is not None:
             observed = BootstrapCreateObservation.model_validate(observed.model_dump(mode='json'))
+        if terminal_cleanup:
+            if (not terminal or previous is None or observed is None
+                    or previous.model_dump(exclude={'cleanup_joined_at', 'process_exit_code'})
+                        != original.bootstrap_create_observation.model_dump(
+                            exclude={'cleanup_joined_at', 'process_exit_code'})
+                    or observed.model_dump(exclude={'cleanup_joined_at', 'process_exit_code'})
+                        != previous.model_dump(exclude={'cleanup_joined_at', 'process_exit_code'})
+                    or (previous.cleanup_joined_at is not None and observed != previous)
+                    or observed.cleanup_joined_at is None):
+                raise ValueError('terminal bootstrap cleanup is not an append')
         current = current.model_copy(update={'bootstrap_create_observation': observed})
         state.assignments = [current]
         result.append(observed)
@@ -131,7 +151,60 @@ class BootstrapNativeCreateCapture:
         return True
 
 
-def record_joined_cleanup(service, original, actor, *, runtime_generation, process, status):
+def creation_attribution_matches(assignment, *, worker=None):
+    """Reconstruct only the canonical pending-to-initially-sealed change.
+
+    Creation precedes first queued-input credential sealing. Every other byte
+    of its immutable admission must still hash to the original correlation.
+    """
+    from codex_web.execution_workers import NativeCredentialCustody
+    observation = assignment.bootstrap_create_observation
+    if observation is None:
+        return False
+    if observation.attribution_sha256 == attribution(assignment):
+        return True
+    seal = assignment.native_credential_custody
+    if (seal is None or seal.admitted_at is None or observation.observed_at is None
+            or seal.admitted_at < observation.observed_at
+            or worker is None or worker.id != assignment.assigned_worker_id
+            or not worker.service_identity_id
+            or (worker.organization_id, worker.workspace_id) != (
+                assignment.organization_id, assignment.workspace_id)
+            or seal.worker_identity_id != worker.service_identity_id
+            or seal.requester_identity_id != assignment.created_by
+            or seal.fence != assignment.fence):
+        return False
+    pending_refs = (seal.runtime_secret_ref,) if seal.runtime_secret_ref else ()
+    if set(assignment.secret_refs) != set(pending_refs) | set(seal.procedure_secret_refs):
+        return False
+    pending = assignment.model_copy(update={'secret_refs': pending_refs,
+        'native_credential_custody': NativeCredentialCustody(runtime_secret_ref=seal.runtime_secret_ref)})
+    return observation.attribution_sha256 == attribution(pending)
+
+
+def _created_observation_matches(assignment, *, worker=None):
+    observation = assignment.bootstrap_create_observation
+    return (observation is not None and observation.outcome == 'created'
+        and observation.assignment_id == assignment.id
+        and observation.execution_id == assignment.execution_id
+        and observation.execution_workspace_id == assignment.execution_workspace_id
+        and observation.worker_id == assignment.assigned_worker_id
+        and observation.fence == assignment.fence
+        and creation_attribution_matches(assignment, worker=worker)
+        and observation.process_pid is not None
+        and observation.provider_native_session_id is not None)
+
+
+def joined_cleanup_matches(assignment, *, worker=None):
+    """Positive historical cleanup, not evidence about any input's outcome."""
+    return (str(assignment.status) in {'lost', 'failed', 'succeeded'}
+        and assignment.lease is None and _created_observation_matches(assignment, worker=worker)
+        and assignment.bootstrap_create_observation.cleanup_joined_at is not None
+        and type(assignment.bootstrap_create_observation.process_exit_code) is int)
+
+
+def record_joined_cleanup(service, original, actor, *, runtime_generation, process, status,
+        terminal_original=False):
     """Called after actual session.stop joins; absence is never a stop witness."""
     if (process is None or status.running or status.pending_executor_work != 0
             or status.worker_id != original.assigned_worker_id or status.fence != original.fence):
@@ -150,4 +223,4 @@ def record_joined_cleanup(service, original, actor, *, runtime_generation, proce
                 raise ValueError('bootstrap cleanup exit changed')
             return previous
         return previous.model_copy(update={'cleanup_joined_at': time.time(), 'process_exit_code': exit_code})
-    update_observation(service, original, actor, joined)
+    return update_observation(service, original, actor, joined, terminal_cleanup=terminal_original)

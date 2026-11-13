@@ -1052,6 +1052,31 @@ the existing runner, queued-start, refusal and reconciliation projections.
 
 ## Bounded current-owner continuation after runner loss
 
+Explicit Work-selected recipient replacement also covers a no-handoff recipient
+whose schema 1.2 current-work START is joined to its exact completed native turn.
+The existing authenticated replacement API rechecks the current Work, actor,
+Profile/Definition pins and repository scope. It refuses every unfinished native
+turn on that recipient, including turns for other Work. A terminal assignment,
+missing process handle or historical START alone is not cleanup evidence.
+
+The registered process-session owner captures its actual transport generation
+at adoption, joins the original process and all captured executors, then appends
+only cleanup fields to the existing correlated creation observation. It cannot
+backfill a missing creation observation or reclassify an uncertain input. The
+same immutable replacement graph and deterministic bootstrap ledger reserve one
+successor per original generation. Later generations follow the scoped graph;
+each new terminal predecessor needs its own attributable completed START and
+positive cleanup. Response loss reuses that original reservation and durable
+cleanup, never a new key. Ordinary continuity can then admit genuinely new input
+through the normal current authority and native START guards.
+
+Work inspection exposes the exact terminal reservation and precise blocker;
+the existing replacement action performs authenticated eligibility inspection
+before confirmation. Neither inspection nor replacement replays retained input,
+changes a handoff, resumes automation, or claims that old UNKNOWN outcomes have
+been resolved. Sandbox provisioning remains the ordinary bootstrap owner's
+responsibility.
+
 An actionable canonical Work Item with a terminal, unleased native assignment
 can receive one **new** current-work request through the existing autonomy
 controller and retained-turn admission domain. This is distinct from retrying an

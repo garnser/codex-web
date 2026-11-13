@@ -10,11 +10,16 @@ const item = {ref: state.selectedRef, handoff: {status: 'accepted', requested_at
   to_agent: 'quinn', delivery: {thread_id: 'accepted-thread'}}};
 window.requests = []; window.reloads = []; window.mode = 'success';
 window.install = (status = 'accepted') => {
-  item.handoff.status = status;
+  item.handoff = status === 'current' ? null : {status, requested_at: 123,
+    to_agent: 'quinn', delivery: {thread_id: 'accepted-thread'}};
+  const threadId = status === 'current' ? 'current-work-thread' : 'accepted-thread';
   const detail = document.querySelector('.work-item-detail');
   detail.innerHTML = '<div class="work-handoff-inspection"></div>';
   installAcceptedRecipientReplacement(detail, item, {
     projectId: state.projectId, ...scope,
+    ownerDispatch: status === 'current' ? {recipient_replacement: {
+      thread_id: threadId, assignment_id: 'assignment-current', fence: 1, status: 'lost',
+      eligibility_requires_authenticated_inspection: true}} : null,
     reload: async ref => window.reloads.push(ref),
     request: async (path, options = {}) => {
       window.requests.push({path, method: options.method || 'GET', body: options.body ?? null});
@@ -25,11 +30,11 @@ window.install = (status = 'accepted') => {
           error.detail = {code: 'owner_recipient_custody_changed'}; error.status = 409; throw error;
         }
         return {eligible: true, code: 'accepted_recipient_replacement_available',
-          work_item_ref: item.ref, threadId: 'accepted-thread', currentThreadId: 'accepted-thread',
+          work_item_ref: item.ref, threadId, currentThreadId: threadId,
           assignment_id: 'assignment-current', fence: 2};
       }
       if (window.mode === 'unknown') throw new Error('Connection closed; outcome unknown');
-      return {ok: true, oldThreadId: 'accepted-thread', newThreadId: 'replacement-thread',
+      return {ok: true, oldThreadId: threadId, newThreadId: 'replacement-thread',
         work_item_ref: item.ref, binding: null, queueDepth: 0};
     },
   });

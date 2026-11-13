@@ -148,9 +148,17 @@ class ThreadIndexRepository:
         self, thread_id: str, *, project_id: str | None = None,
         organization_id: str | None = None, workspace_id: str | None = None,
     ) -> str | None:
+        lineage = self.replacement_lineage(thread_id, project_id=project_id,
+            organization_id=organization_id, workspace_id=workspace_id)
+        return lineage[-1]['new_thread_id'] if lineage else None
+
+    def replacement_lineage(self, thread_id: str, *, project_id: str | None = None,
+            organization_id: str | None = None, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Read the existing immutable, scoped edges in traversal order."""
+        from copy import deepcopy
         payload = self.store.get(self.REPLACEMENTS_NAMESPACE)
         if payload is None:
-            return None
+            return []
         if not isinstance(payload, dict) or payload.get("version") != 1:
             raise ValueError("unsupported thread replacement state")
         edges = payload.get("edges", {})
@@ -161,6 +169,7 @@ class ThreadIndexRepository:
         if scoped and not all((project_id, organization_id, workspace_id)):
             raise ValueError("thread replacement requires complete tenant scope")
         observed_project = None
+        lineage = []
         while current in edges:
             if current in seen:
                 raise ValueError("cyclic thread replacement")
@@ -177,8 +186,9 @@ class ThreadIndexRepository:
                         or provenance.get("workspace_id") != workspace_id):
                     raise ValueError("thread replacement crosses request scope")
             observed_project = edge["project_id"]
+            lineage.append(deepcopy(edge))
             current = edge["new_thread_id"]
-        return current if current != thread_id else None
+        return lineage
 
     @classmethod
     def _scope(cls, project_id: str) -> str:

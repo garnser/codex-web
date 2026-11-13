@@ -496,11 +496,15 @@ class ThreadRecoveryService:
         return replacement
 
     @contextlib.asynccontextmanager
-    async def _retire_predecessor(self, thread_id, project):
+    async def _retire_predecessor(self, thread_id, project, *, require_owned_cleanup=False):
         if self.predecessor_retirement is None:
+            if require_owned_cleanup:
+                raise HTTPException(status_code=409,
+                    detail={'code': 'owner_current_work_cleanup_unavailable'})
             yield  # Legacy/unbound integrations do not own worker sessions.
         else:
-            async with self.predecessor_retirement(thread_id, project=project) as proof:
+            async with self.predecessor_retirement(thread_id, project=project,
+                    **({'require_owned_cleanup': True} if require_owned_cleanup else {})) as proof:
                 yield proof
 
     async def replace_accepted_recipient(self, thread_id, *, project, context, validate,
@@ -521,23 +525,30 @@ class ThreadRecoveryService:
             existing = self.replacement_thread_id(thread_id)
             if existing:
                 return existing
-            state, binding, witness, profile, requester, _ = context
-            async with self._retire_predecessor(thread_id, project) as predecessor_scope:
+            state, binding, witness, profile, requester, historical = context
+            current_work = state.handoff is None
+            async with self._retire_predecessor(thread_id, project,
+                    require_owned_cleanup=current_work) as predecessor_scope:
                 validate()
                 token, prepared_thread_id = reservation()
                 return await self._replace_stale_web_thread(thread_id, project,
-                    'explicit authorized accepted-recipient replacement',
+                    ('explicit authorized current-work recipient replacement' if current_work
+                        else 'explicit authorized accepted-recipient replacement'),
                     predecessor_scope=predecessor_scope,
                     agent_profile_id=profile.profile_id,
                     agent_profile_revision=profile.revision, actor=requester,
                     admission_guard=validate, retarget_bot_state=False,
                     bootstrap_token=token, prepared_thread_id=prepared_thread_id,
-                    replacement_provenance={
+                    replacement_provenance=({
+                        'current_work_item_ref': state.ref,
+                        'current_work_assignment_id': historical.assignment_id,
+                        'current_work_assignment_fence': historical.fence,
+                        'replacement_authorized_by': operator_identity_id} if current_work else {
                         'accepted_work_item_ref': state.ref,
                         'accepted_handoff_requested_at': state.handoff.requested_at,
                         'accepted_assignment_id': witness.assignment_id,
                         'accepted_assignment_fence': witness.fence,
-                        'replacement_authorized_by': operator_identity_id})
+                        'replacement_authorized_by': operator_identity_id}))
 
     async def replace_stale_web_thread(self, thread_id, project, error, **kwargs):
         async with self._retire_predecessor(thread_id, project) as predecessor_scope:
