@@ -214,6 +214,7 @@ class GoalExecutionBindingService:
         scope: TenantScope,
         actor_id: str,
         application_only: bool = False,
+        expected_binding: GoalExecutionBinding | None = None,
     ) -> GoalExecutionBinding:
         audit = self._audit_context()
         result: GoalExecutionBinding | None = None
@@ -221,6 +222,8 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if expected_binding is not None and current != expected_binding:
+                raise GoalExecutionBindingConflictError('execution binding changed before guarded update')
             if application_only and current.execution_mode != GoalExecutionMode.APPLICATION:
                 result = current
                 return state
@@ -569,6 +572,7 @@ class GoalExecutionBindingService:
         owner_id: str,
         lease_seconds: float = 60.0,
         now: float | None = None,
+        expected_binding: GoalExecutionBinding | None = None,
     ) -> GoalExecutionBinding | None:
         current_time = time.time() if now is None else float(now)
         audit = self._audit_context()
@@ -578,6 +582,8 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if expected_binding is not None and current != expected_binding:
+                return state
             if current.execution_mode != GoalExecutionMode.APPLICATION:
                 raise GoalExecutionBindingConflictError("Project delegation cannot claim application continuation")
             if current.status.value in {
