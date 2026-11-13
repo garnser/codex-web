@@ -413,6 +413,77 @@ assert a.queued_start_receipt.provider_native_turn_id == 'native-turn'
         self.assertEqual(self.saved().status, 'reconciliation_required')
         self.assertFalse(self.runtime._start_captures)
 
+    async def test_pending_rpc_keeps_exact_start_capture_after_retention_ttl(self):
+        # Advance only this runtime's retention clock; do not sleep or alter
+        # asyncio's clock, the finite assignment lease, or canonical timestamps.
+        now = [1000.0]
+        written = asyncio.Event()
+        wire = io.StringIO()
+        self.runtime.proc = SimpleNamespace(poll=lambda: None, stdin=wire)
+
+        async def write_to_external_peer(message, **options):
+            # Exercise the real guarded writer. The external peer deliberately
+            # retains its response while the same original RPC remains pending.
+            await CodexRuntime._send(self.runtime, message, **options)
+            written.set()
+
+        self.runtime._send = write_to_external_peer
+        snapshot = self.saved().queued_turn_snapshot
+        generation = self.runtime.generation
+        with patch('codex_web.runtime.codex.time', SimpleNamespace(monotonic=lambda: now[0])), \
+                patch('codex_web.runtime.codex.request_timeout', return_value=None):
+            request = asyncio.create_task(self.runtime.request(
+                'turn/start', {'threadId': 'thread'}, start_capture=self.capture))
+            writer_observation = asyncio.create_task(written.wait())
+            try:
+                done, _ = await asyncio.wait((request, writer_observation),
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if request in done:
+                    await request  # Surface a real setup/writer error immediately.
+                    self.fail('Original request returned before the external response')
+                await writer_observation
+                messages = [json.loads(line) for line in wire.getvalue().splitlines()]
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(messages[0]['method'], 'turn/start')
+                rpc_id = messages[0]['id']
+                original = self.saved()
+                correlation = original.queued_start_correlation
+                self.assertEqual(correlation.rpc_request_id, rpc_id)
+                self.assertEqual(correlation.runtime_generation, generation)
+                self.assertEqual(correlation.admission_claim_id, self.claim)
+                self.assertEqual(original.queued_turn_snapshot, snapshot)
+                self.assertIsNone(original.queued_start_evidence)
+                self.assertIsNone(original.queued_start_receipt)
+                pending = self.runtime.pending[rpc_id]
+                self.assertFalse(pending.done())
+
+                now[0] += self.runtime.START_CAPTURE_TTL_SECONDS + 1
+                self.assertFalse(request.done())
+                self.assertIs(self.runtime.pending[rpc_id], pending)
+                self.assertFalse(pending.done())
+                response = self.response(rpc_id)
+                await self.runtime._dispatch_message(response, generation=generation)
+                self.assertEqual(await request, response['result'])
+
+                # A successfully returned original RPC must retain its exact
+                # reader-owned evidence, not become UNKNOWN solely with age.
+                saved = self.saved()
+                self.assertEqual(saved.status, 'started')
+                self.assertIsNotNone(saved.queued_start_evidence)
+                self.assertIsNotNone(saved.queued_start_receipt)
+                self.assertEqual(saved.queued_start_receipt.provider_native_turn_id, 'native-turn')
+                self.assertEqual(saved.queued_start_correlation, correlation)
+                self.assertEqual(saved.queued_admission_claim_id, self.claim)
+                self.assertEqual(saved.queued_turn_snapshot, snapshot)
+                self.assertEqual(self.runtime.generation, generation)
+                self.assertEqual(len(wire.getvalue().splitlines()), 1)
+            finally:
+                if not request.done():
+                    request.cancel()
+                if not writer_observation.done():
+                    writer_observation.cancel()
+                await asyncio.gather(request, writer_observation, return_exceptions=True)
+
     async def test_storage_failure_and_capacity_prevent_send_and_preserve_unknown(self):
         with patch.object(self.capture.service.store, 'update', side_effect=RuntimeError('storage unavailable')):
             with self.assertRaises(RuntimeError):
