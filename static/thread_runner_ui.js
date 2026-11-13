@@ -76,8 +76,13 @@ export function runnerFailureText(runner) {
   const timings = Object.entries(failure.timings || {})
     .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
     .map(([phase, seconds]) => `${phase}: ${seconds.toFixed(3)}s`).join(', ');
-  return `${failure.code} · phase ${failure.phase} · cleanup ${failure.cleanup_state}`
-    + (timings ? ` · ${timings}` : '')
+  const stages = {validation:'before validation', renewal:'before renewal', sleep:'before next check'};
+  const stage = failure.phase === 'lease' && Object.hasOwn(stages, failure.lease_budget_stage)
+    ? ` (${stages[failure.lease_budget_stage]})` : '';
+  const samples = failure.timings_scope === 'last_observed_stage_samples_may_precede_failure'
+    ? 'last recorded timings; may precede failure: ' : '';
+  return `${failure.code} · phase ${failure.phase}${stage} · cleanup ${failure.cleanup_state}`
+    + (timings ? ` · ${samples}${timings}` : '')
     + ` · diagnostic ${runner.diagnosticState} · unfinished work outcome unknown. Inspect assignment and evidence; reconcile provider receipts before recovery.`;
 }
 

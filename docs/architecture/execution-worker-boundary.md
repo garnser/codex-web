@@ -896,6 +896,15 @@ cleanup and custody metadata expose the outcome; no new UI action or persisted
 state is introduced. A measured renewal-phase timeout alone does not identify
 which acquisition, callback or commit consumed its budget.
 
+Watchdog lease-budget evaluation is labelled before it runs, including before
+sleep, validation and renewal. If expiry prevents the next stage from being
+invoked, the failure phase is `lease` with its exact `lease_budget_stage`.
+The observation also records the current watchdog cycle and the last invoked
+supervision stage/cycle. Numeric timings remain the last recorded samples and
+may precede the failure; they are not durations of a stage that never started.
+These diagnostics neither establish the cause of expiry nor change renewal,
+lease enforcement, cleanup or recovery authority.
+
 Before each PostgreSQL advisory acquisition, the existing transaction-local
 statement timeout is refreshed from the current remaining cooperative budget.
 PostgreSQL applies that timeout per statement: a second acquisition must not

@@ -78,6 +78,34 @@ test('same-fence failure explains phase cleanup and unknown outcome without chan
   assert.equal(runnerFailureText({...runner,fence:3}),'');
 });
 
+test('lease budget failures distinguish the check from retained timing samples',()=>{
+  const runner={...live('budget-observation'),diagnosticState:'unavailable',
+    failureObservation:{assignment_id:'budget-observation',fence:2,code:'execution_timeout',phase:'lease',
+      cleanup_state:'unavailable',timings:{renewal_seconds:0.023},
+      timings_scope:'last_observed_stage_samples_may_precede_failure'}};
+  for(const [stage,label] of [['validation','before validation'],['renewal','before renewal'],['sleep','before next check']]) {
+    const text=runnerFailureText({...runner,failureObservation:{...runner.failureObservation,lease_budget_stage:stage}});
+    assert.ok(text.includes(`phase lease (${label})`));
+    assert.ok(text.includes('last recorded timings; may precede failure: renewal_seconds: 0.023s'));
+    assert.match(text,/unfinished work outcome unknown/);
+  }
+  assert.equal(runnerFailureText({...runner,assignmentId:'another-assignment'}),'');
+  assert.equal(runnerFailureText({...runner,fence:3}),'');
+});
+
+test('failure detail tolerates old records and ignores unrecognized diagnostic labels',()=>{
+  const failure={assignment_id:'legacy-observation',fence:2,code:'execution_timeout',phase:'validation',
+    cleanup_state:'stopped',timings:{validation_seconds:0.1}};
+  const runner={...live('legacy-observation'),failureObservation:failure};
+  const legacy=runnerFailureText(runner);
+  assert.ok(legacy.includes('phase validation · cleanup stopped · validation_seconds: 0.100s'));
+  assert.equal(runnerFailureText({...runner,failureObservation:{...failure,
+    lease_budget_stage:'<unexpected-stage>',timings_scope:'<unexpected-scope>'}}),legacy);
+  const unknown=runnerFailureText({...runner,failureObservation:{...failure,phase:'lease',lease_budget_stage:'__proto__'}});
+  assert.ok(unknown.includes('phase lease · cleanup stopped'));
+  assert.ok(!unknown.includes('phase lease ('));
+});
+
 test('only current activity with fresh process and lease custody gets active presentation',()=>{
   const now=Date.now()/1000;
   const runner={...live('presentation',now-10,2,now),processRunning:true};
