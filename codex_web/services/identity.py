@@ -1457,6 +1457,10 @@ class _IdentityReadObservation:
         self.require_owner(self._owner)
         return self._owner.actor_for_identity(identity_id, scope=scope, _read_observation=self)
 
+    def require_current(self, owner, raw):
+        self.require_owner(owner)
+        self._raw.require_current(owner.store, raw)
+
     def state(self):
         self.require_owner(self._owner)
         return self._owner.state(_read_observation=self)

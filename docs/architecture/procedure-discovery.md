@@ -14,6 +14,17 @@ renewals are permitted; expiry, revocation or changed ownership/metadata refuse.
 Metadata reads still hold canonical guards and may contend; this separation
 removes physical-attestation coupling, not every possible source of lease delay.
 
+Canonical initial sealing also prepares explicit Definition and Identity read
+observations outside the worker writer. Before cached facts are used, the CAS
+compares their exact raw documents with the already-held guarded rows and
+rechecks the observations' owner, backend, hook identity, thread and lifetime.
+Actor/membership, candidate, credential and live lease/fence judgments rerun;
+the observations retain data, never an authorization result. Changed Identity
+data refuses before the credential updater, and custom owners keep their full
+guarded path. Resource, provider and security metadata can still contend under
+the writer; eliminating the observed Identity reads does not establish every
+preparation delay's cause or replace genuine selected-repository qualification.
+
 Operational procedures remain immutable `agent.skill` Definitions. Discovery uses
 `OperationalProcedure@1.0`, the Skill resolver/security gates, canonical Resources,
 Project scope, current requester identity and existing action authority/policy. No

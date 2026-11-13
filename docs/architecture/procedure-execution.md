@@ -87,10 +87,10 @@ native input guard repeat the same current procedure selection, security, instru
 and attestation checks without that optional retrieval. Ordinary preparation
 still retrieves bounded supporting context; it grants no credential authority.
 
-Initial credential sealing can keep an existing canonical Definition read
+Initial credential sealing can keep existing canonical Definition and Identity read
 observation open across preparation and the writer transaction. Raw metadata
 and reusable decoded data are read before taking the worker writer; the actual
-guarded Definition document must match before those data are used inside the
+guarded Definition and complete Identity documents must match before those data are used inside the
 transaction. The observation remains owner-bound, synchronous and confined to
 one callback/thread. It caches data, never permission: current time-sensitive
 Definition, security, authority, candidate, worker, lease/fence and credential
@@ -99,6 +99,12 @@ owners refuse instead of refreshing a snapshot or repeating an input. Custom
 hooks retain their complete guarded path. This changes no persisted schema,
 lease duration, timeout contract, inspector object or historical UNKNOWN result;
 normal native-input guards remain mandatory.
+Identity actor and membership resolution reruns against the guarded facts;
+an identity disabled between preparation and commit refuses before the credential
+updater. Unused or missing observations cannot stand in for an empty catalog.
+This removes those Identity reads from the worker writer, not every Resource,
+provider or security metadata read; it does not promise that all preparation
+work is independent of renewable worker custody.
 
 An empty-scope candidate consistency refusal inside initial credential sealing
 is a typed local pre-input refusal only when no candidate validator failed.
