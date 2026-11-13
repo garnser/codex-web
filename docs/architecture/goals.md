@@ -6,6 +6,14 @@ The core rule is:
 
 > **Goal state is application data. Models may propose plans for a Goal; they do not own Goal lifecycle, budgets, health, progress, or authority.**
 
+Goal terminal-event subscriptions preserve EventHub's worker-thread delivery and
+perform canonical Session lookup off the application loop. Only terminal-handler
+scheduling crosses back to the existing TurnExecution owner loop, initialized
+during startup; direct async adapters retain their current loop. Unsubscribed or
+closed-loop observers cannot admit a late callback. This notification bridge
+does not replace exact Session/tenant, binding lease, START or usage checks, and
+does not turn provider status into authority to release an uncertain original.
+
 ### Assignment-bound Project continuation
 
 Application continuation for an ordinary Project's existing Codex worker enters

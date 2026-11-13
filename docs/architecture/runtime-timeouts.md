@@ -18,6 +18,12 @@ retain their existing semantics. Poll/watchdog intervals are scheduling controls
 setting those to zero stops the corresponding watchdog, rather than disabling an
 execution limit. No additional model calls or retries are introduced.
 
+Native response-capture retention must not discard attribution while the exact
+original RPC future is still pending, including when its elapsed limit is
+disabled. Capture capacity remains bounded; generation retirement and expiry
+of unowned captures still apply. This does not backfill historical START evidence
+or authorize replay of an uncertain input.
+
 ## Operator configuration
 
 These existing RuntimePolicy duration settings accept either disabled sentinel:

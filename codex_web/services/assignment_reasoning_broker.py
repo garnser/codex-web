@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from codex_web.authority import AuthorityLevel
 from codex_web.control_plane_broker import ControlPlaneBrokerOperation
 from codex_web.procedure_execution import ProcedureStart, ProcedureAdvance
-from codex_web.executive_roles import ExecutiveActivationCreate
+from codex_web.executive_roles import ExecutiveActivationCreate, ExecutiveRoleLifecycle
 from codex_web.identity import PrincipalKind
 from codex_web.definitions import DefinitionContext, reference_for
 from codex_web.services.async_operations import run_settled
@@ -75,6 +75,48 @@ class AssignmentReasoningBroker:
     @staticmethod
     def origin(assignment):
         return f"assignment:{assignment.id}:fence:{assignment.fence}"
+
+    def role_selection_context(self, assignment):
+        """Current published selection data, never an authorization or activation.
+
+        Existing catalog declarations do not establish a live mutation right.
+        CREATE/CONSULT still resolve and authorize their own exact current state.
+        """
+        from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError
+        profiles = self.broker.execution_profiles
+        if profiles is None or not assignment.project_id:
+            return None
+        try:
+            profile, reference = profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+            if (reference != assignment.execution_profile_definition
+                    or 'executive.activation.create' not in profile.control_plane_operations):
+                return None
+        except (AttributeError, LookupError, ValueError, DefinitionCompatibilityError, DefinitionConflictError):
+            return None
+        unavailable = {'status': 'unavailable',
+            'reason': 'current_published_executive_role_context_unavailable',
+            'effective_authority_requires_operation_checks': True,
+            'authorizes_mutation': False}
+        try:
+            actor = self.broker._requester_actor(assignment)
+            if (actor.organization_id, actor.workspace_id) != (assignment.organization_id, assignment.workspace_id):
+                return unavailable
+            catalog, definition = self.executives.roles.resolve(
+                organization_id=actor.organization_id, workspace_id=actor.workspace_id,
+                project_id=assignment.project_id)
+            roles = [{'id': role.id, 'name': role.name, 'title': role.title,
+                      'description': role.description, 'responsibilities': list(role.responsibilities)}
+                     for role in catalog.roles if role.lifecycle == ExecutiveRoleLifecycle.ACTIVE]
+            return {'status': 'available', 'definition': definition.model_dump(mode='json'),
+                'roles': roles, 'max_roles_per_activation': catalog.max_roles_per_activation,
+                'effective_authority_requires_operation_checks': True, 'authorizes_mutation': False}
+        except (AttributeError, LookupError, ValueError, AuthorizationError, ControlPlaneBrokerDeniedError,
+                DefinitionNotFoundError, DefinitionCompatibilityError, DefinitionConflictError):
+            # No guessed default IDs or private exception details. The ordinary
+            # operation guards remain unchanged, including unknown outcomes.
+            return unavailable
 
     def current(self, assignment, worker_actor, operation, target, validator=None):
         if validator is not None:

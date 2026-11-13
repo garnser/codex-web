@@ -43,7 +43,8 @@ class DefinitionBrokerEligibilityTests(unittest.IsolatedAsyncioTestCase):
             'repository_target': target, 'repository_scope': RepositoryExecutionScope.from_target(target)})
         self.f.current_assignment = self.assignment
         self.final_owner = AsyncMock(return_value={'item': {'id': 'same-owned-checkpoint'}})
-        self.f.service.assignment_reasoning = SimpleNamespace(dispatch=self.final_owner)
+        self.f.service.assignment_reasoning = SimpleNamespace(
+            dispatch=self.final_owner, role_selection_context=lambda assignment: None)
         self.factory = DeferredControlPlaneBrokerFactory()
         self.factory.configure(self.f.service)
 

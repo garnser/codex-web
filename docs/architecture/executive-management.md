@@ -38,6 +38,17 @@ An `ExecutiveActivation` is a durable tenant/workspace-scoped record. It stores:
 
 Role selection is deterministic before any model call. Explicitly requested roles are honored only within catalog limits. Otherwise subscriptions and keyword matches determine relevant roles. If nothing matches, the catalog's fallback role is selected. Routine work therefore does not invoke every Executive role.
 
+For an assignment that explicitly declares `executive.activation.create` in its
+current pinned execution Definition, the existing broker operation descriptor
+includes `role_selection_context`: the current tenant/Project-scoped published
+catalog Definition reference, active role IDs and brief selection guidance, and
+the canonical maximum selected roles. This is read-only discovery data, not an
+activation or authority grant; CREATE and CONSULT retain their exact current
+origin, scope, policy and context checks. Unavailable catalog/requester context
+is explicit and supplies no guessed default IDs. No additional role-read route,
+Profile migration or persisted contract is introduced. The existing operator
+request-format details show this same escaped metadata and unavailable state.
+
 Event subscriptions are routing policy, not polling loops. Codex-web does not run free-running Executive model checks. A request, canonical event, or scheduled review must explicitly create an activation.
 
 ## Canonical context
