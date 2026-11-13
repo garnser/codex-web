@@ -689,6 +689,9 @@ class ControlPlaneBrokerService:
                     "method": CONTINUATION_METHOD, "schema": MRObservationRequest.model_json_schema(),
                     "effect": "Current governed MR observation plus managed procedure_input Artifact; stable business fingerprint excludes delivery/time/proof IDs; no QA or merge consent",
                     "continuation": "Use v1 Artifact with published procedure1.2/input.v1; v2 requires procedure1.3/input.v2 and canonical server Configuration. Original policy snapshot is immutable; new same-head facts may start a settled next run. Reconcile exact original source after response loss; never blind replay."}
+                from codex_web.publication_input import METHOD as PUBLICATION_INPUT_METHOD, public_contract
+                result['request_body']['methods'].append(PUBLICATION_INPUT_METHOD)
+                result['request_body']['publication_input'] = public_contract()
             if item.id == "verification.read":
                 result["required_query_parameters"] = ["work_item_ref", "source"]
                 from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
@@ -704,6 +707,11 @@ class ControlPlaneBrokerService:
                 result["MR_observation_query"] = {"required": ["method", "source"],
                     "method": METHOD, "methods": list(MR_METHODS), "source": "sha256:<original assignment/request digest>",
                     "effect": "Read the original historical records; expired observations are not refreshed or replayed"}
+                from codex_web.publication_input import METHOD as PUBLICATION_INPUT_METHOD
+                result['publication_input_query'] = {'required':['method','source'],
+                    'forbidden':['work_item_ref'],'method':PUBLICATION_INPUT_METHOD,
+                    'source':'sha256:<original assignment/fence/method/request_id digest>',
+                    'effect':'Read the same original governed input/INFO only; unknown never permits a new key or origin'}
         if item.id.startswith("repository.read."):
             result["optional_query_parameters"] = ["repository_resource_id"]
         if item.id == "repository.read.pull-requests":
@@ -2414,7 +2422,12 @@ class ControlPlaneBrokerService:
                 from codex_web.services.worker_ci_verifications import CI_METHOD, WorkerCIPrerequisiteVerificationAdapter
                 from codex_web.mr_assignment_review import METHOD as ASSIGNMENT_REVIEW_METHOD
                 from codex_web.services.worker_mr_assignment_reviews import WorkerMRAssignmentReviewAdapter
-                if payload.get('method') == ASSIGNMENT_REVIEW_METHOD:
+                from codex_web.publication_input import METHOD as PUBLICATION_INPUT_METHOD
+                if payload.get('method') == PUBLICATION_INPUT_METHOD:
+                    from codex_web.services.worker_publication_inputs import WorkerPublicationInputAdapter
+                    result = await WorkerPublicationInputAdapter(adapter).create(
+                        assignment, worker_actor, resolved, payload, assignment_validator)
+                elif payload.get('method') == ASSIGNMENT_REVIEW_METHOD:
                     result = await WorkerMRAssignmentReviewAdapter(adapter,
                         execution_roles=self.execution_roles, preflights=self.execution_preflights).create(
                             assignment, worker_actor, resolved, payload, assignment_validator)

@@ -438,6 +438,10 @@ class WorkerVerificationAdapter:
             'next_action': 'No retry on response loss; reconcile exact execution/method/source digest by read-only lookup'}
 
     def read(self, assignment, worker_actor, resolved, validator):
+        from codex_web.publication_input import METHOD as PUBLICATION_INPUT_METHOD
+        if resolved.query.get('method') == [PUBLICATION_INPUT_METHOD]:
+            from codex_web.services.worker_publication_inputs import WorkerPublicationInputAdapter
+            return WorkerPublicationInputAdapter(self).lookup(assignment,worker_actor,resolved,validator)
         worker, requester, _ = self.principals(assignment, worker_actor, resolved, validator, {})
         service = self.service()
         if resolved.operation.id == 'verification.read':

@@ -247,6 +247,36 @@ class GitLabCodeHostProvider:
             web_url=data.get("web_url"),
         )
 
+    async def publication_input(self, binding, resource, number, *, credential, checkpoint):
+        """Read one open same-project MR and its exact existing source ref."""
+        from codex_web.publication_input import PublicationRepositoryFact
+        name = _project_name(resource)
+        project = quote(name, safe='')
+        await checkpoint()
+        repository = await self._get(binding, 'projects/'+project, credential=credential)
+        await checkpoint()
+        mr = await self._get(binding, f'projects/{project}/merge_requests/{number}', credential=credential)
+        await checkpoint()
+        identifier = repository.get('id') if isinstance(repository,dict) else None
+        if (type(identifier) is not int or identifier < 1 or repository.get('path_with_namespace') != name
+                or not isinstance(mr,dict) or type(mr.get('iid')) is not int or mr['iid'] != number
+                or mr.get('state') != 'opened'
+                or any(type(mr.get(key)) is not int or mr[key] != identifier
+                    for key in ('project_id','source_project_id','target_project_id'))):
+            raise CodeHostError('Publication input requires the exact open same-project MR')
+        from codex_web.services.code_host_action_contract import CodeHostActionContract
+        branch = CodeHostActionContract.branch(mr.get('source_branch'),field='source_branch')
+        target = CodeHostActionContract.branch(mr.get('target_branch'),field='target_branch')
+        if branch == target:
+            raise CodeHostError('Publication source cannot be the target branch')
+        remote = await self._get(binding, f'projects/{project}/repository/branches/{quote(branch,safe="")}', credential=credential)
+        await checkpoint()
+        if (not isinstance(remote,dict) or remote.get('name') != branch
+                or remote.get('protected') is not False or remote.get('default') is not False
+                or (remote.get('commit') or {}).get('id') != mr.get('sha')):
+            raise CodeHostError('Publication MR/source branch changed or is protected')
+        return PublicationRepositoryFact(repository=name,number=number,branch=branch,head_revision=mr['sha'],observed_at=time.time())
+
     async def pull_request(
         self,
         binding: CodeHostProviderBinding,
