@@ -276,6 +276,10 @@ class AssignmentBoundAgentProcessSession:
         self._process_cleanup_done = False
         self.managed_validation = None
         self._supervision_timings: dict[str, float] = {}
+        self._watchdog_cycle = 0
+        self._supervision_stage_cycle = None
+        self._supervision_stage_name = None
+        self._supervision_budget_stage = None
 
     @property
     def worker_id(self) -> str:
@@ -1259,6 +1263,9 @@ class AssignmentBoundAgentProcessSession:
         context.run(storage_operation_budget.set, budget)
         submitted = time.monotonic()
         self._supervision_phase = phase
+        self._supervision_budget_stage = None
+        self._supervision_stage_cycle = self._watchdog_cycle
+        self._supervision_stage_name = phase
         completed_at = None
         def run():
             def invoke():
@@ -1396,6 +1403,12 @@ class AssignmentBoundAgentProcessSession:
             "outcome": "unknown", "cleanup_state": "pending",
             "process_exit_code": process.poll() if process else None,
             "phase": getattr(self, "_supervision_phase", "process"),
+            "watchdog_cycle": self._watchdog_cycle,
+            "lease_budget_stage": (self._supervision_budget_stage
+                if getattr(self, "_supervision_phase", None) == "lease" else None),
+            "last_supervision_stage": self._supervision_stage_name,
+            "last_supervision_cycle": self._supervision_stage_cycle,
+            "timings_scope": "last_observed_stage_samples_may_precede_failure",
             "limit_kind": next((name for name in ('disk_bytes','memory_bytes','wall_seconds')
                                 if f'exceeded {name}' in (self.last_error or '')), None),
             "observed_disk_bytes": self.last_disk_bytes,
@@ -1460,10 +1473,19 @@ class AssignmentBoundAgentProcessSession:
                 validation_custody_state=observation.get("validation_custody_state", "unavailable"),
                 timings=dict(self._supervision_timings), observation=observation)
 
+    def _watchdog_lease_budget(self, stage):
+        # Label before evaluation: an expired budget never enters _supervise.
+        # Keep all prior/shared samples; they are observations, not durations
+        # of a stage that was never invoked in the failing watchdog cycle.
+        self._supervision_phase = "lease"
+        self._supervision_budget_stage = stage
+        return self._lease_budget()
+
     async def _watchdog(self) -> None:
         while not self._stopping:
+            self._watchdog_cycle += 1
             try:
-                delay = min(self.watchdog_interval_seconds, self._lease_budget())
+                delay = min(self.watchdog_interval_seconds, self._watchdog_lease_budget("sleep"))
             except TimeoutError:
                 self._supervision_phase = "lease"
                 await self._retire_failed_runtime("execution_timeout", "last validated lease or deadline expired")
@@ -1479,9 +1501,10 @@ class AssignmentBoundAgentProcessSession:
                 await self._retire_failed_runtime("agent_runtime_process_exited", self.last_error)
                 return
             try:
-                assignment = await self._supervise("validation", self.validate_current, seconds=self._lease_budget())
+                assignment = await self._supervise("validation", self.validate_current,
+                    seconds=self._watchdog_lease_budget("validation"))
                 self._bound_assignment = await self._supervise("renewal",
-                    self._heartbeat_and_renew, assignment, seconds=self._lease_budget())
+                    self._heartbeat_and_renew, assignment, seconds=self._watchdog_lease_budget("renewal"))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
