@@ -1,6 +1,7 @@
 import { mergeRequirementsFormHtml } from './merge_requirements_view.js';
 import { coordinationDeclarationHtml } from './project_coordination_view.js';
 import { referenceLink, projectPath } from './reference_navigation.js';
+import { executiveRoleSelectionHtml } from './executive_role_selection_view.js';
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 const link = (kind, id, projectId) => referenceLink(kind, id, {projectId});
@@ -21,7 +22,7 @@ export function brokerDeclarationHtml(item, projectId) {
   return `<small><strong>Brokered control plane:</strong> ${capability.enabled ? 'configured' : 'disabled'} · Project ${esc(item.project_id)} · execution profile ${link('execution_profile', item.execution_profile_id, projectId)}</small>
     <small>Credential material exposed: ${capability.credential_exposed === false ? 'no' : capability.credential_exposed === true ? 'unexpected exposure reported' : 'not reported'}.</small>
     <small>Declared operation allowlist: ${esc((capability.operations || []).map(op => op.id).join(', ') || 'none')}. Each request requires current canonical authority and a live fenced lease.</small>
-    ${formats.length ? `<details><summary>Accepted request formats</summary><small>Canonical request shapes; current scope and authority still apply.</small>${formats.map(op => `<strong>${esc(op.id)}</strong><pre>${esc(JSON.stringify(op.request_body, null, 2))}</pre>`).join('')}</details>` : ''}
+    ${formats.length ? `<details><summary>Accepted request formats</summary><small>Canonical request shapes; current scope and authority still apply.</small>${formats.map(op => `<strong>${esc(op.id)}</strong><pre>${esc(JSON.stringify(op.request_body, null, 2))}</pre>${executiveRoleSelectionHtml(op.role_selection_context, projectId)}`).join('')}</details>` : ''}
     ${evidence ? `<small>Delivery evidence: read-only · supported actions ${esc((evidence.supported_action_ids || []).join(', ') || 'not reported')} · scoped path ${esc(evidence.path_template)}. ${evidence.key_lookup ? `Lost intent ID: GET ${esc(evidence.key_lookup.path_template)} with exact action_id and idempotency_key; unknown never permits replay. ` : ''}Historical receipts require matching requester and repository scope; missing receipts or timestamps alone do not prove provider outcome.</small>` : ''}
     ${pinned ? `<small>Pinned Agent Profile: ${link('agent_profile', pinned.profile_id, projectId)}@r${esc(pinned.profile_revision)} · record ${esc(pinned.profile_record_id)} · Agent Role ${esc(pinned.role_id || 'none')}</small>` : '<small>Pinned Agent Profile: unavailable.</small>'}
     ${admin ? `<small>Declared administrative repository targets: ${(admin.repository_ids || []).map(id => link('resource', id, projectId)).join(', ') || 'none'}. These declarations grant no Git workspace access.</small>

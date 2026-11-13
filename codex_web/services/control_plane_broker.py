@@ -1060,6 +1060,12 @@ class ControlPlaneBrokerService:
                 envelope["inspection_error"] = str(exc)
                 operations = []
             context["declared_administrative_scope"] = envelope
+        if self.assignment_reasoning is not None:
+            for item in operations:
+                if item['id'] == 'executive.activation.create':
+                    selection = self.assignment_reasoning.role_selection_context(assignment)
+                    if selection is not None:
+                        item['role_selection_context'] = selection
         return {
             "enabled": enabled,
             "transport": "assignment-bound-unix-socket" if enabled else None,
