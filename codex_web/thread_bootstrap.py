@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,6 +23,7 @@ class RecipientBootstrapOrigin:
     handoff_requested_at: float | None = None
     binding_id: str | None = None
     actor_id: str | None = None
+    intent: Literal['pending_handoff', 'current_work'] = 'pending_handoff'
 
 
 @dataclass(frozen=True)
