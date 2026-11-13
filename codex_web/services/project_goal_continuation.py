@@ -127,14 +127,44 @@ class ProjectGoalContinuation:
         wait = self.turns.execution.automation_wait_reason(SOURCE+current.id)
         if wait is not None:
             raise ValueError('Current Project Goal automated admission is paused')
-        # Metadata reads may span normal renewal. The sampled finite leases
-        # must still be live when this final admission observation returns.
+        # Metadata reads may span canonical same-owner renewal. Re-read the
+        # finite custody, rather than reject an expired earlier observation of
+        # leases that their owners renewed while still live. Renewal is not a
+        # substitute for unchanged binding/input and worker custody.
+        fresh_goal_state = self.goals.store.goal_state(current.goal_id,
+            organization_id=scope.organization_id, workspace_id=scope.workspace_id)
+        fresh_goal = self.goals._goal(fresh_goal_state, current.goal_id, scope)
+        fresh = self.binding(current.id, scope)
+        fresh_assignment = self.workers.store.assignment(assignment.id)
+        fresh_worker = self.workers.store.worker(assignment.assigned_worker_id)
+        heartbeat_fields = {'lease_expires_at', 'heartbeat_at', 'updated_at', 'updated_by',
+            'change_reason', 'updated_correlation_id', 'updated_causation_id'}
+        if (fresh_goal != goal
+                or fresh.model_dump(exclude=heartbeat_fields) != current.model_dump(exclude=heartbeat_fields)
+                or fresh.lease_expires_at is not None and current.lease_expires_at is not None
+                    and fresh.lease_expires_at < current.lease_expires_at
+                or fresh.heartbeat_at is not None and current.heartbeat_at is not None
+                    and fresh.heartbeat_at < current.heartbeat_at):
+            raise ValueError('Current Project Goal binding changed during admission')
+        if (fresh_assignment is None or self.fingerprint(fresh_assignment) != self.fingerprint(assignment)
+                or fresh_assignment.status != assignment.status or fresh_assignment.lease is None
+                or fresh_assignment.lease.model_dump(exclude={'expires_at', 'renewed_at'})
+                    != assignment.lease.model_dump(exclude={'expires_at', 'renewed_at'})
+                or fresh_assignment.deadline_at != assignment.deadline_at
+                or fresh_assignment.lease.expires_at < assignment.lease.expires_at
+                or assignment.lease.renewed_at is not None and (fresh_assignment.lease.renewed_at is None
+                    or fresh_assignment.lease.renewed_at < assignment.lease.renewed_at)
+                or fresh_worker is None or fresh_worker.lifecycle != 'active'
+                or (fresh_worker.id, fresh_worker.organization_id, fresh_worker.workspace_id,
+                    fresh_worker.service_identity_id) != (worker.id, worker.organization_id,
+                        worker.workspace_id, worker.service_identity_id)):
+            raise ValueError('Current Project Goal worker custody changed during admission')
         now = time.time()
-        if (lease and (current.lease_expires_at is None or current.lease_expires_at <= now)
-                or assignment.lease.expires_at <= now
-                or assignment.deadline_at is not None and assignment.deadline_at <= now):
+        if (lease and (fresh.lease_expires_at is None or fresh.lease_expires_at <= now)
+                or fresh_assignment.lease.expires_at <= now
+                or fresh_assignment.deadline_at is not None and fresh_assignment.deadline_at <= now):
             raise ValueError('Current Project Goal lease expired during admission')
-        return current, goal, actor, assignment
+        return fresh, fresh_goal, actor, fresh_assignment
 
     def mutate(self, binding_id, scope, updater, reason):
         result = []
