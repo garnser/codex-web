@@ -171,6 +171,7 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         result = continuation._finish_binding(old, scope=self.actor.tenant,
             status='blocked', reason='global_autonomy_paused')
         self.assertEqual(result.outcome,'not_dispatched')
+        self.assertEqual(result.reason,'explicit_project_delegation_not_application_continuation')
         self.assertEqual(self.goal_bindings.store.load(),before)
         self.goal_bindings.heartbeat_continuation(old.id, scope=self.actor.tenant,
             owner_id='expired-app-owner')

@@ -222,11 +222,13 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
-            if expected_binding is not None and current != expected_binding:
-                raise GoalExecutionBindingConflictError('execution binding changed before guarded update')
+            # A stale application callback cannot act on explicit delegation.
+            # Return its existing no-op disposition before checking write CAS.
             if application_only and current.execution_mode != GoalExecutionMode.APPLICATION:
                 result = current
                 return state
+            if expected_binding is not None and current != expected_binding:
+                raise GoalExecutionBindingConflictError('execution binding changed before guarded update')
             project = current.project_continuation
             original = project.delivery if project else None
             if (original is not None and original.phase != 'settled'
