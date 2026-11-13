@@ -16,6 +16,18 @@ does not turn provider status into authority to release an uncertain original.
 
 ### Assignment-bound Project continuation
 
+The application continuation dispatcher prepares canonical Goal, progress and
+completion metadata off the application loop through the existing joined
+blocking-operation owner. Cancellation waits for that owner; it does not prove
+that an already committed stop or claim was undone. Before claiming, the
+dispatcher reloads the current binding, Goal revision and autonomy scope. The
+existing binding transaction compares the exact prepared binding before either
+a preparation stop update or continuation claim, preserving an intervening
+operator pause/cancel. These observations are not cached authorization: final
+Project/Home admission still checks current identity, custody, policy and
+budgets. No lease duration, retry policy, persisted schema or model call is
+introduced by the offload.
+
 Application continuation for an ordinary Project's existing Codex worker enters
 the canonical TurnService queue and TurnExecution admission. A ready generic
 AgentSession is not worker-transport attestation; its direct native mutation
@@ -324,6 +336,12 @@ only after successful checkpoint and known usage; deterministic Goal completion,
 concrete blockers, pause or exhausted budgets stop it. There is no idle model poll.
 Existing Goal controls and their canonical binding status/stop reason remain the
 operator surface; an exhausted budget is not a completed Goal.
+
+Home Goal dispatch retains nonblank failure metadata even when an exception has
+an empty or whitespace-only message, using its exception type as the fallback.
+Nonblank diagnostics remain unchanged. This preserves canonical binding decoding;
+it does not change current-owner/operator-stop checks, cancellation propagation,
+or the UNKNOWN barrier for an already reserved original input.
 
 Thread-level idle/error/not-loaded notifications are not exact turn outcomes.
 Assignment-owned active records remain available for the matching terminal event

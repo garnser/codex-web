@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
 from codex_web.agent_runtime import AgentRuntimeTurnRequest
 from codex_web.goal_execution_bindings import (
@@ -18,7 +19,8 @@ from codex_web.identity import (
 )
 from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.autonomy_controller import AutonomyController
-from codex_web.services.goal_execution_bindings import GoalExecutionBindingService
+from codex_web.services.goal_execution_bindings import GoalExecutionBindingService, GoalExecutionBindingConflictError
+from codex_web.services.async_operations import run_settled
 from codex_web.services.goals import GoalService
 
 
@@ -122,18 +124,19 @@ class GoalContinuationService:
         scope: TenantScope,
         status: GoalExecutionBindingStatus,
         reason: str,
+        result_reason: str | None = None,
+        change_reason: str | None = None,
     ) -> GoalContinuationDispatchResult:
-        updated = self.bindings.update(
-            binding.id,
-            GoalExecutionBindingUpdate(
-                status=status,
-                stop_reason=reason,
-                reason=reason,
-            ),
-            scope=scope,
-            actor_id=self.owner_id,
-            application_only=True,
-        )
+        try:
+            updated = self.bindings.update(
+                binding.id,
+                GoalExecutionBindingUpdate(status=status, stop_reason=reason, reason=change_reason or reason),
+                scope=scope, actor_id=self.owner_id, application_only=True,
+                expected_binding=binding,
+            )
+        except GoalExecutionBindingConflictError:
+            return GoalContinuationDispatchResult(binding_id=binding.id, outcome='not_claimed',
+                reason='binding_changed_during_preparation')
         if getattr(updated, "execution_mode", GoalExecutionMode.APPLICATION) != GoalExecutionMode.APPLICATION:
             return GoalContinuationDispatchResult(binding_id=binding.id, outcome="not_dispatched",
                 reason="explicit_project_delegation_not_application_continuation")
@@ -144,16 +147,16 @@ class GoalContinuationService:
                 if status == GoalExecutionBindingStatus.COMPLETED
                 else "blocked"
             ),
-            reason=reason,
+            reason=result_reason or reason,
         )
 
-    async def dispatch_once(
+    def _prepare_dispatch(
         self,
         binding_id: str,
         *,
         scope: TenantScope,
         now: float | None = None,
-    ) -> GoalContinuationDispatchResult:
+    ):
         binding = self.bindings.get(binding_id, scope=scope)
         if getattr(binding, "execution_mode", GoalExecutionMode.APPLICATION) != GoalExecutionMode.APPLICATION:
             return GoalContinuationDispatchResult(binding_id=binding_id, outcome="not_dispatched",
@@ -167,25 +170,11 @@ class GoalContinuationService:
                 reason=f"canonical_goal_{goal.status.value}",
             )
         if goal.revision != binding.goal_revision:
-            self.bindings.update(
-                binding.id,
-                GoalExecutionBindingUpdate(
-                    status=GoalExecutionBindingStatus.BLOCKED,
-                    stop_reason=(
-                        f"canonical Goal revision changed from "
-                        f"{binding.goal_revision} to {goal.revision}"
-                    ),
-                    reason="continuation blocked by canonical Goal revision change",
-                ),
-                scope=scope,
-                actor_id=self.owner_id,
-                application_only=True,
-            )
-            return GoalContinuationDispatchResult(
-                binding_id=binding_id,
-                outcome="blocked",
-                reason="goal_revision_changed",
-            )
+            return self._finish_binding(binding, scope=scope,
+                status=GoalExecutionBindingStatus.BLOCKED,
+                reason=f'canonical Goal revision changed from {binding.goal_revision} to {goal.revision}',
+                result_reason='goal_revision_changed',
+                change_reason='continuation blocked by canonical Goal revision change')
 
         policy_stop = self._policy_stop_reason(binding)
         if policy_stop is not None:
@@ -233,6 +222,39 @@ class GoalContinuationService:
                 reason="canonical_goal_work_graph_blocked",
             )
 
+        return binding, goal
+
+    def _claim_prepared(self, binding, *, scope, now):
+        # Preparation is data, not authority across an await. Existing owners
+        # resolve the current Goal/policy; the binding owner compares the exact
+        # prepared row again inside its actual claim transaction.
+        current = self.bindings.get(binding.id, scope=scope)
+        if current != binding:
+            return GoalContinuationDispatchResult(binding_id=binding.id, outcome='not_claimed',
+                reason='binding_changed_during_preparation')
+        goal = self.goals.get(binding.goal_id, scope=scope)
+        if goal.status != GoalStatus.ACTIVE:
+            return GoalContinuationDispatchResult(binding_id=binding.id, outcome='not_dispatched',
+                reason=f'canonical_goal_{goal.status.value}')
+        if goal.revision != binding.goal_revision:
+            return self._finish_binding(binding, scope=scope, status=GoalExecutionBindingStatus.BLOCKED,
+                reason=f'canonical Goal revision changed from {binding.goal_revision} to {goal.revision}',
+                result_reason='goal_revision_changed',
+                change_reason='continuation blocked by canonical Goal revision change')
+        policy_stop = self._policy_stop_reason(binding)
+        if policy_stop is not None:
+            return self._finish_binding(binding, scope=scope,
+                status=GoalExecutionBindingStatus.BLOCKED, reason=policy_stop)
+        return self.bindings.claim_continuation(binding.id, scope=scope, owner_id=self.owner_id,
+            lease_seconds=self.lease_seconds, now=now, expected_binding=binding)
+
+    async def dispatch_once(self, binding_id: str, *, scope: TenantScope,
+                            now: float | None = None) -> GoalContinuationDispatchResult:
+        prepared = await run_settled(partial(self._prepare_dispatch, binding_id, scope=scope, now=now))
+        if isinstance(prepared, GoalContinuationDispatchResult):
+            return prepared
+        binding, goal = prepared
+
         if self.home_continuation is not None and self.home_continuation.handles(binding):
             retained = await self.home_continuation.reconcile(binding, scope=scope)
             if retained is not None:
@@ -242,13 +264,9 @@ class GoalContinuationService:
             if retained is not None:
                 return retained
 
-        claimed = self.bindings.claim_continuation(
-            binding.id,
-            scope=scope,
-            owner_id=self.owner_id,
-            lease_seconds=self.lease_seconds,
-            now=now,
-        )
+        claimed = await run_settled(partial(self._claim_prepared, binding, scope=scope, now=now))
+        if isinstance(claimed, GoalContinuationDispatchResult):
+            return claimed
         if claimed is None:
             return GoalContinuationDispatchResult(
                 binding_id=binding_id,

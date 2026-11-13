@@ -9,6 +9,7 @@ from codex_web.autonomy import AutonomyControl, AutonomyExclusiveGoalScope, Auto
 from codex_web.goals import GoalHealth, GoalStatus
 from codex_web.identity import TenantScope
 from codex_web.services.goal_continuation import GoalContinuationService
+from codex_web.services.goal_execution_bindings import GoalExecutionBindingConflictError
 
 
 class _Bindings:
@@ -38,7 +39,10 @@ class _Bindings:
         owner_id,
         lease_seconds,
         now=None,
+        expected_binding=None,
     ):
+        if expected_binding is not None and self.binding != expected_binding:
+            return None
         if self.claimed:
             return None
         self.claimed = True
@@ -50,7 +54,10 @@ class _Bindings:
         )
         return self.binding
 
-    def update(self, binding_id, payload, *, scope, actor_id, application_only=False):
+    def update(self, binding_id, payload, *, scope, actor_id, application_only=False,
+               expected_binding=None):
+        if expected_binding is not None and self.binding != expected_binding:
+            raise GoalExecutionBindingConflictError('execution binding changed before guarded update')
         self.updated.append((binding_id, payload, actor_id))
         return self.binding
 

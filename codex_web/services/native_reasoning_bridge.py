@@ -38,6 +38,32 @@ class NativeReasoningPrestartRefused(ModelProviderAdapterError):
     """The original canonical queue owner retained a bound preinput refusal."""
 
 
+class NativeBootstrapPreparationRefused(ModelProviderAdapterError):
+    """Closed controller diagnostics, without retry or effect assertions (#2102)."""
+
+    @staticmethod
+    def diagnostic(refusal):
+        diagnostic = bootstrap_preparation_diagnostic(refusal)
+        if (diagnostic is not None and diagnostic.get('bootstrap_http_status') == 503
+                and diagnostic.get('bootstrap_refusal_code') == 'execution_preflight_blocked'
+                and diagnostic.get('bootstrap_blocker_code') is not None):
+            return diagnostic
+        return None
+
+    def __init__(self, refusal):
+        diagnostic = self.diagnostic(refusal)
+        if diagnostic is None:
+            raise ValueError('Canonical bootstrap preparation diagnostic required')
+        stage = diagnostic['bootstrap_preparation_stage']
+        blocker = diagnostic.get('bootstrap_blocker_code')
+        # Reuse the controller's closed values, never its exception/detail prose.
+        message = f'Native reasoning bootstrap preparation unavailable: {stage}'
+        if blocker is not None:
+            message += f'; {blocker}'
+        message += '. Inspect the original invocation; no retry is authorized.'
+        super().__init__(message, source_native_status=blocker)
+
+
 @dataclass(frozen=True, slots=True)
 class NativeReasoningBinding:
     provider_id: str
@@ -514,6 +540,8 @@ class CanonicalNativeReasoningBridge:
                 raise ModelProviderOutcomeUnknownError(
                     'Native inference original retained; inspect canonical START/usage') from exc
             self._preparation_failed(context, preparation_stage, exc)
+            if preparation_stage == 'thread_bootstrap' and NativeBootstrapPreparationRefused.diagnostic(exc) is not None:
+                raise NativeBootstrapPreparationRefused(exc) from exc
             raise ModelProviderAdapterError('Native reasoning preparation refused') from exc
         finally:
             self.hub.unsubscribe(observe)
