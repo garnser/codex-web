@@ -1772,6 +1772,14 @@ version is introduced; refusal metadata uses the existing extensible blocker.
 
 ### Reasoning-only startup tooling
 
+Assignment-bound Executive CREATE, READ and CONSULT adapt the canonical
+`ExecutiveContextError` to HTTP 409 `executive_context_unavailable`. The response
+and matching broker audit use a fixed scope-safe message and the request's
+correlation ID, without Memory contents, retrieval identifiers or raw exception
+details. This refusal leaves existing context and authority guards in place;
+it grants neither retry permission nor a conclusion about prior effects.
+Unexpected exceptions retain the existing HTTP 500 boundary.
+
 The code-owned reasoning session provisions its canonical scratch workspace,
 worker claim, fence, credential boundary, isolated native process and egress
 relay as usual. Because its runtime refuses operational tools, it does not

@@ -108,6 +108,7 @@ from codex_web.services.assignment_reasoning_broker import (
     CONTEXT_READ_IDS,
 )
 from codex_web.executive_roles import ExecutiveActivationCreate
+from codex_web.services.executive_management import ExecutiveContextError
 
 from codex_web.services.home_operator_host import HOST_INSPECTION
 from codex_web.services.home_host_commands import HOST_COMMAND, HostCommandAdmission, execute_host_command
@@ -2324,8 +2325,18 @@ class ControlPlaneBrokerService:
         if operation.id.startswith(("procedure.", "executive.")) or operation.id in CONTEXT_READ_IDS:
             if self.assignment_reasoning is None:
                 raise ControlPlaneBrokerDeniedError("assignment reasoning adapters unavailable")
-            result = await self.assignment_reasoning.dispatch(assignment, worker_actor,
-                operation, resolved.target_ref, payload, resolved.query, assignment_validator)
+            try:
+                result = await self.assignment_reasoning.dispatch(assignment, worker_actor,
+                    operation, resolved.target_ref, payload, resolved.query, assignment_validator)
+            except ExecutiveContextError as exc:
+                if not operation.id.startswith("executive."):
+                    raise
+                # Canonical context guards can contain private retrieval details.
+                # Adapt only their known domain error; preserve unexpected failures
+                # and make no claim about earlier effects or retry permission.
+                raise ControlPlaneBrokerRequestError(
+                    "Required Executive context is unavailable within the current governed scope.",
+                    status_code=409, code="executive_context_unavailable") from exc
             if isinstance(result.get("item"), dict) and "id" in result["item"]:
                 resolved = _ResolvedOperation(operation, result["item"]["id"], resolved.query)
         elif operation.id == OUTPUT_READ:
