@@ -525,7 +525,8 @@ function renderDetail(payload) {
         </div>`).join('') : '<small>No work-item events recorded.</small>'}</div>
     </section>`;
   installWorkItemActionBar(detail, item, { runItemAction, captureScope, scopedPath, pathRef });
-  installAcceptedRecipientReplacement(detail, item, { request, scopedPath, captureScope, reload: loadDetail, projectId: state.projectId });
+  installAcceptedRecipientReplacement(detail, item, { request, scopedPath, captureScope, reload: loadDetail,
+    projectId: state.projectId, ownerDispatch: state.detailPayload?.owner_dispatch });
   detail.querySelector('.work-projection-retry')?.addEventListener('click', async event => {
     const isCurrent = captureScope();
     event.target.disabled = true;

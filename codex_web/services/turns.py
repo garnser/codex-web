@@ -232,7 +232,8 @@ class TurnService:
         except OwnerRoutingError as exc:
             raise HTTPException(status_code=409, detail={'code': str(exc)}) from exc
         state, binding, witness, profile, requester, _ = context
-        return context, {'eligible': True, 'code': 'accepted_recipient_replacement_available',
+        return context, {'eligible': True, 'code': ('current_work_recipient_replacement_available'
+            if state.handoff is None else 'accepted_recipient_replacement_available'),
             'work_item_ref': state.ref, 'threadId': thread_id,
             'currentThreadId': witness.thread_id, 'assignment_id': witness.assignment_id,
             'fence': witness.fence}
@@ -256,10 +257,17 @@ class TurnService:
                         or not fresh[4].has_same_authority(context[4])):
                     raise HTTPException(status_code=409, detail={'code': 'owner_replacement_context_changed'})
             async def operation():
-                return await self.recovery.replace_accepted_recipient(
-                    thread_id, project=project, context=context, validate=current,
-                    reservation=lambda: self.owner_routing.accepted_replacement_reservation(context),
-                    operator_identity_id=actor.identity_id)
+                from codex_web.owner_routing import OwnerRoutingError
+                try:
+                    return await self.recovery.replace_accepted_recipient(
+                        thread_id, project=project, context=context, validate=current,
+                        reservation=lambda: self.owner_routing.accepted_replacement_reservation(context),
+                        operator_identity_id=actor.identity_id)
+                except OwnerRoutingError as exc:
+                    # Reservation and final guarded reads can refuse after
+                    # inspection. Preserve the same typed boundary there;
+                    # unexpected/provider exceptions remain uncertain errors.
+                    raise HTTPException(status_code=409, detail={'code': str(exc)}) from exc
             async with preparer.queue_lock(name):
                 acquired, replacement = await preparer.ownership.run_exclusive(name, operation)
                 if not acquired:

@@ -872,6 +872,12 @@ class ExecutionPreflightService:
             and item.workspace_id == actor.workspace_id
         ]
 
+    def for_thread_complete(self, thread_id: str, *, actor: AuthenticationActor) -> list[ExecutionPreflightAttempt]:
+        attempts = self.store.for_thread_complete(thread_id)
+        for attempt in attempts:
+            self._authorize(attempt, actor)
+        return attempts
+
     def authorize_retry(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         current = self.get(attempt_id, actor=actor)
         self._authorize(current, actor, require_admin=True)

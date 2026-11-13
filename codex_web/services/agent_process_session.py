@@ -272,6 +272,7 @@ class AssignmentBoundAgentProcessSession:
         self._retirement_lock = asyncio.Lock()
         self._retired = False
         self._owned_process = None
+        self._owned_transport = None
         self._process_cleanup_done = False
         self.managed_validation = None
         self._supervision_timings: dict[str, float] = {}
@@ -884,6 +885,14 @@ class AssignmentBoundAgentProcessSession:
                     self.runtime.restart_on_timeout = self.restart_runtime_on_timeout
                 self.runtime.approval_namespace = assignment.id
                 await self.runtime.start()
+                # Keep the actual adopted transport owner before a watchdog
+                # can retire it. Runtime stop clears proc and rotates generation;
+                # neither absence nor a persisted observation can reconstruct
+                # this process-local ownership after the fact.
+                if (getattr(self.runtime, 'proc', None) is process
+                        and isinstance(getattr(self.runtime, 'generation', None), str)):
+                    self._owned_transport = (self.runtime, process,
+                        self.runtime.generation, getattr(self.runtime, '_pipe_executor', None))
                 self.watchdog_task = asyncio.create_task(
                     self._watchdog(),
                     name=f"agent-worker-session-{self.assignment_id}",
@@ -2008,8 +2017,112 @@ class AssignmentBoundAgentProcessSessionManager:
                 ))
         return completed
 
-    async def stop(self, assignment_id: str, *, expected_terminal: ExecutionAssignment | None = None) -> None:
+    def joined_cleanup_status(self, assignment: ExecutionAssignment):
+        """Observe an owned, correlated terminal process; never infer absence."""
+        from codex_web.services.bootstrap_native_create import creation_attribution_matches, joined_cleanup_matches
+        def refuse():
+            raise AssignmentBoundAgentProcessSessionStaleError('terminal process cleanup ownership is unverified')
+        if (assignment.status not in {AssignmentStatus.LOST, AssignmentStatus.FAILED, AssignmentStatus.SUCCEEDED}
+                or assignment.lease is not None
+                or self.local_worker._pending_assignment(assignment.id) != assignment):
+            refuse()
+        session = self.sessions.get(assignment.id)
+        worker = self.local_worker.worker_service.store.worker(assignment.assigned_worker_id)
+        if session is None:
+            if joined_cleanup_matches(assignment, worker=worker):
+                return None
+            refuse()
+        observed = assignment.bootstrap_create_observation
+        runtime = getattr(session, 'runtime', None)
+        transport = getattr(session, '_owned_transport', None)
+        if not isinstance(transport, tuple) or len(transport) != 4:
+            refuse()
+        owned_runtime, process, generation, pipe_executor = transport
+        status = session.status()
+        if (observed is None or observed.outcome != 'created'
+                or (observed.assignment_id, observed.execution_id, observed.execution_workspace_id,
+                    observed.worker_id, observed.fence) !=
+                   (assignment.id, assignment.execution_id, assignment.execution_workspace_id,
+                    assignment.assigned_worker_id, assignment.fence)
+                or not creation_attribution_matches(assignment, worker=worker)
+                or (status.assignment_id, status.worker_id, status.fence) !=
+                   (assignment.id, assignment.assigned_worker_id, assignment.fence)
+                or runtime is None or runtime is not owned_runtime or process is None
+                or getattr(session, '_owned_process', None) is not process
+                or observed.runtime_generation != generation
+                or (getattr(runtime, 'proc', None) is not None and
+                    (runtime.proc is not process or runtime.generation != generation))
+                or (getattr(runtime, '_pipe_executor', None) is not None and
+                    runtime._pipe_executor is not pipe_executor)
+                or observed.process_pid != getattr(process, 'pid', None)):
+            refuse()
+        executors = tuple(executor for executor in (
+            getattr(session, '_supervision_executor', None),
+            getattr(session, '_diagnostic_executor', None), pipe_executor)
+            if executor is not None)
+        if (getattr(session, '_supervision_executor', None) is None
+                or getattr(session, '_diagnostic_executor', None) is None
+                or any(not callable(getattr(executor, 'shutdown', None)) for executor in executors)):
+            refuse()
+        return session, runtime, process, generation, executors
+
+    async def _stop_joined_terminal(self, assignment: ExecutionAssignment) -> None:
+        from codex_web.services.async_operations import run_settled
+        from codex_web.services.bootstrap_native_create import record_joined_cleanup, joined_cleanup_matches
+        owned = await run_settled(partial(self.joined_cleanup_status, assignment))
+        if owned is None:
+            return
+        session, runtime, process, generation, executors = owned
+        await session.stop()
+        for executor in executors:
+            await run_settled(partial(executor.shutdown, wait=True, cancel_futures=True))
+        # Canonical Codex stop retires its generation and clears proc/pipe
+        # references. Validate that retirement, never borrow a new transport.
+        current_process = getattr(runtime, 'proc', None)
+        current_pipe = getattr(runtime, '_pipe_executor', None)
+        if (self.sessions.get(assignment.id) is not session or session.runtime is not runtime
+                or current_process is not None and current_process is not process
+                or current_pipe is not None and all(current_pipe is not executor for executor in executors)
+                or (runtime.generation != generation and
+                    (current_process is not None or current_pipe is not None
+                     or getattr(runtime, '_retired_transports', ())))
+                or getattr(session, '_owned_process', None) is not process
+                or getattr(session, '_owned_transport', None) !=
+                    (runtime, process, generation, executors[2] if len(executors) > 2 else None)
+                or getattr(session, '_supervision_executor', None) is not executors[0]
+                or getattr(session, '_diagnostic_executor', None) is not executors[1]
+                or self.local_worker._pending_assignment(assignment.id) != assignment
+                or type(process.poll()) is not int):
+            raise AssignmentBoundAgentProcessSessionStaleError('terminal process cleanup custody changed')
+        status = session.status()
+        if (status.running or status.pending_executor_work != 0
+                or (status.assignment_id, status.worker_id, status.fence) !=
+                   (assignment.id, assignment.assigned_worker_id, assignment.fence)):
+            raise AssignmentBoundAgentProcessSessionStaleError('terminal process or executor cleanup is unsettled')
+        await run_settled(partial(record_joined_cleanup,
+            self.local_worker.worker_service, assignment, self.local_worker.control_actor,
+            runtime_generation=generation, process=process, status=status, terminal_original=True))
+        current = await run_settled(partial(self.local_worker._pending_assignment, assignment.id))
+        if (current is None or current.model_dump(exclude={'bootstrap_create_observation'}) !=
+                assignment.model_dump(exclude={'bootstrap_create_observation'})
+                or not joined_cleanup_matches(current, worker=self.local_worker.worker_service.store.worker(
+                    assignment.assigned_worker_id))
+                or self.sessions.get(assignment.id) is not session):
+            raise AssignmentBoundAgentProcessSessionStaleError('terminal cleanup observation was not retained')
+        self.sessions.pop(assignment.id)
+
+    async def stop(self, assignment_id: str, *, expected_terminal: ExecutionAssignment | None = None,
+                   require_joined: bool = False) -> None:
         async with self._assignment_lock(assignment_id):
+            if require_joined:
+                if expected_terminal is None or expected_terminal.id != assignment_id:
+                    raise AssignmentBoundAgentProcessSessionStaleError('strict cleanup requires exact terminal custody')
+                from codex_web.services.async_operations import settle_future
+                # Keep the same lifecycle lock until the owned cleanup joins,
+                # even when its observer is cancelled. No successor is published here.
+                task = asyncio.create_task(self._stop_joined_terminal(expected_terminal))
+                await settle_future(task)
+                return
             if expected_terminal is not None:
                 current = self.local_worker._pending_assignment(assignment_id)
                 if (current != expected_terminal or current.lease is not None
