@@ -1135,7 +1135,8 @@ class ThreadService:
         owner = self.binding_service
         if (self.authentication_preparation is None or type(owner) is not TurnExecutionBindingService
                 or runtime_binding is None
-                or (runtime_binding.provider_id, runtime_binding.runtime_id) != ('openai', 'codex')):
+                or runtime_binding.provider_id != 'openai'
+                or runtime_binding.runtime_id not in {'codex', 'codex-reasoning'}):
             return
         requester = actor or self.control_actor
         if requester is None or (requester.organization_id, requester.workspace_id) != (
@@ -1331,7 +1332,8 @@ class ThreadService:
             stage('bootstrap_reservation')
             defer_authentication = (authentication_prepared is True
                 and runtime_binding is not None
-                and (runtime_binding.provider_id, runtime_binding.runtime_id) == ('openai', 'codex')
+                and runtime_binding.provider_id == 'openai'
+                and runtime_binding.runtime_id in {'codex', 'codex-reasoning'}
                 and can_defer_bootstrap_authentication(binding_service))
             binding = await asyncio.to_thread(
                 binding_service.prepare_bootstrap,

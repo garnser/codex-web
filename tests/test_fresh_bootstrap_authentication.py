@@ -148,6 +148,123 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in self.session.requests], ['thread/start'])
         self.assertEqual(len(self.manager.started), 1)
 
+    def configure_restricted_reasoning_bootstrap(self):
+        from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+        from codex_web.services.codex_reasoning_policy import ReasoningOnlyCodexAdapter
+        # Compose the restricted reasoning contract, not a renamed repository
+        # runtime: published scratch/no-repository/no-network execution profile,
+        # read-only runtime, and the fixed trusted-local authentication policy.
+        registry = self.f.execution_profiles.registry
+        payload = self.f.execution_profiles.record(organization_id=self.f.actor.organization_id,
+            workspace_id=self.f.actor.workspace_id).payload.copy()
+        payload['profiles'] = [*payload['profiles'], dict(id='reasoning-only', name='Reasoning only',
+            description='Canonical restricted native authentication regression',
+            workspace_mode='scratch', repository_access='none', network_enabled=False,
+            required_worker_capabilities=['command_execution'], control_plane_operations=[])]
+        draft = registry.create_draft(DefinitionDraftCreate(definition_id='execution.profiles.default',
+            kind='execution-profile-catalog', definition_schema_version='1.3', scope_type='global',
+            payload=payload, actor=self.f.actor.identity_id))
+        registry.publish(draft.record_id, DefinitionPublishRequest(actor=self.f.actor.identity_id))
+        self.binding = ExecutionRuntimeBinding(provider_id='openai', runtime_id='codex-reasoning',
+            capability_revision=1, sandbox_profiles=('read-only',),
+            authentication_mode='trusted_local_session')
+        self.threads.session_managers[('openai', 'codex-reasoning')] = self.manager
+        def adapter(binding, session):
+            self.assertEqual(binding, self.binding)
+            return ReasoningOnlyCodexAdapter(session)
+        self.threads.runtime_adapter_factory = adapter
+        self.original_request = self.original_request.model_copy(update={
+            'sandbox':'read-only', 'approval_policy':'never', 'execution_profile_id':'reasoning-only',
+            'repository_resource_id':None, 'writable_repository_resource_ids':(),
+            'read_only_repository_resource_ids':()})
+
+    async def test_restricted_reasoning_bootstrap_refreshes_after_canonical_readiness(self):
+        from codex_web.execution_workers import WorkerCapability
+        self.configure_restricted_reasoning_bootstrap()
+        clock = [1000.0]
+        self.account_clock = lambda: clock[0]
+        readiness = self.f.workers.execution_readiness
+        delayed = []
+
+        def inspect_readiness(**kwargs):
+            result = readiness(**kwargs)
+            if not delayed:
+                self.assertTrue(self.available())
+                self.assertEqual(tuple(kwargs['required_capabilities']), (WorkerCapability.COMMAND_EXECUTION,))
+                clock[0] += CodexRuntime.AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS + 1
+                self.assertFalse(self.available())
+                delayed.append(True)
+            return result
+
+        self.f.workers.execution_readiness = inspect_readiness
+        original = self.original_request.model_dump(mode='json')
+        with patch('codex_web.runtime.codex.time', SimpleNamespace(monotonic=self.account_clock)):
+            # Real native reasoning runs this same metadata owner before its
+            # ThreadService call; that earlier positive alone is insufficient.
+            await self.prepare()
+            result = await self.create()
+            self.assertTrue(self.available())
+        self.assertEqual(result['thread']['id'], 'thread-created')
+        assignment = self.f.workers.store.assignments_for_execution('thread-bootstrap-'+'a'*32,
+            organization_id=self.f.actor.organization_id, workspace_id=self.f.actor.workspace_id)[0]
+        self.assertEqual(assignment.runtime_binding, self.binding)
+        self.assertEqual(assignment.execution_profile_id, 'reasoning-only')
+        self.assertEqual(assignment.resource_ids, ())
+        self.assertEqual(assignment.repository_scope.source, 'orchestration_only')
+        self.assertEqual(assignment.sandbox, 'read-only')
+        self.assertFalse(assignment.network.enabled)
+        self.assertEqual(self.account_reads, [{'refreshToken': False}] * 2)
+        self.assertEqual(self.original_request.model_dump(mode='json'), original)
+        self.assertEqual([r[0] for r in self.session.requests], ['thread/start'])
+        self.assertEqual(len(self.manager.started), 1)
+
+    async def test_restricted_reasoning_final_policy_or_context_change_refuses_reservation(self):
+        self.configure_restricted_reasoning_bootstrap()
+        clock = [1000.0]
+        self.account_clock = lambda: clock[0]
+        readiness = self.f.workers.execution_readiness
+        original = self.original_request.model_dump(mode='json')
+        for change in ('policy', 'context'):
+            with self.subTest(change=change):
+                self.proof._authenticated_account_proof = None
+                self.proof._authentication_context = lambda: ('private-context',)
+                self.account_reads.clear()
+                self.f.service.permitted_codex_authentication_modes = None
+                delayed = []
+
+                def inspect_readiness(**kwargs):
+                    result = readiness(**kwargs)
+                    if not delayed:
+                        self.assertTrue(self.available())
+                        clock[0] += CodexRuntime.AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS + 1
+                        delayed.append(True)
+                    return result
+
+                def invalidate():
+                    if len(self.account_reads) == 2:
+                        if change == 'policy':
+                            self.f.service.permitted_codex_authentication_modes = ()
+                        else:
+                            self.proof._authentication_context = lambda: ('changed-context',)
+
+                self.after_refresh = invalidate
+                self.f.workers.execution_readiness = inspect_readiness
+                with patch('codex_web.runtime.codex.time', SimpleNamespace(monotonic=self.account_clock)):
+                    await self.prepare()  # Earlier native bridge authentication owner.
+                    with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
+                        await self.create()
+                blocker = caught.exception.detail['blockers'][0]
+                self.assertEqual(blocker['code'], 'authentication_mode_denied'
+                    if change == 'policy' else 'local_session_unavailable')
+                self.assertEqual(blocker['target_id'], 'openai/codex-reasoning')
+                self.assertEqual(self.account_reads, [{'refreshToken': False}] * 2)
+                self.assertEqual(self.manager.started, [])
+                self.assertEqual(self.session.requests, [])
+                self.assertEqual(self.original_request.model_dump(mode='json'), original)
+                self.assertEqual(self.f.workers.store.assignments_for_execution(
+                    'thread-bootstrap-'+'a'*32, organization_id=self.f.actor.organization_id,
+                    workspace_id=self.f.actor.workspace_id), [])
+
     async def test_negative_account_response_preserves_preprovider_auth_refusal(self):
         self.account_result = {'account': None}
         with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:

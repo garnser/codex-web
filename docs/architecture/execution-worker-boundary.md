@@ -1023,7 +1023,9 @@ as native reasoning and contextual Project readiness. It runs after current
 Project/Profile/runtime selection and before credential preflight; the existing
 current admission guard and binding/worker checks still run afterward. Only a
 selected, permitted trusted-local OpenAI Codex authentication mode may request
-this preparation. Explicit API-key/delegated-token modes and other runtimes do
+this preparation, including the fixed trusted-local `codex-reasoning` runtime.
+Its restricted scratch/read-only/no-repository execution and credential owners
+remain authoritative. Explicit API-key/delegated-token modes and other runtimes do
 not touch the operator account. A fresh proof needs no additional account read;
 negative account/RPC results remain refused. The 120-second proof policy is
 unchanged. Bootstrap-only recovery does not submit a native turn or replay an
