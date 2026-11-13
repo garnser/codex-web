@@ -1827,10 +1827,12 @@ class ExecutionWorkerService:
                     if (not isinstance(origin, RecipientBootstrapOrigin) or type(origin.generation) is not int
                             or origin.generation not in (0, 1)
                             or len(origin.logical_id) != 32 or len(origin.attribution_sha256) != 64
-                            or not origin.work_item_ref or origin.handoff_requested_at is None
+                            or not origin.work_item_ref
+                            or not ((origin.intent == 'pending_handoff' and origin.handoff_requested_at is not None)
+                                or (origin.intent == 'current_work' and origin.handoff_requested_at is None))
                             or not origin.binding_id or not origin.actor_id):
                         raise WorkerConflictError('invalid internal recipient origin')
-                    details.update(logical_id=origin.logical_id, generation=origin.generation,
+                    details.update(intent=origin.intent, logical_id=origin.logical_id, generation=origin.generation,
                         attribution_sha256=origin.attribution_sha256,
                         predecessor_assignment_id=origin.predecessor_assignment_id,
                         work_item_ref=origin.work_item_ref, handoff_requested_at=origin.handoff_requested_at,
@@ -1911,7 +1913,9 @@ class ExecutionWorkerService:
         origin = refusal.origin
         if (type(origin.generation) is not int or origin.generation not in (0, 1)
                 or len(origin.logical_id) != 32 or len(origin.attribution_sha256) != 64
-                or not origin.work_item_ref or origin.handoff_requested_at is None
+                or not origin.work_item_ref
+                or not ((origin.intent == 'pending_handoff' and origin.handoff_requested_at is not None)
+                    or (origin.intent == 'current_work' and origin.handoff_requested_at is None))
                 or not origin.binding_id or not origin.actor_id):
             raise WorkerConflictError('invalid internal recipient origin')
         workspace = self.workspaces.get(original.execution_workspace_id, actor) if self.workspaces else None
@@ -1940,7 +1944,7 @@ class ExecutionWorkerService:
                 'guard_deadline_exceeded': refusal.guard_deadline_exceeded,
                 'error_http_status': refusal.error_http_status,
                 'reservation_fence': original.fence, 'created_by': original.created_by,
-                'logical_id': origin.logical_id, 'generation': origin.generation,
+                'intent': origin.intent, 'logical_id': origin.logical_id, 'generation': origin.generation,
                 'attribution_sha256': origin.attribution_sha256,
                 'predecessor_assignment_id': origin.predecessor_assignment_id,
                 'work_item_ref': origin.work_item_ref,

@@ -203,7 +203,15 @@ class OwnerRecipientPreparationService:
         try:
             bound = self.routing.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
         except ThreadBootstrapBindingNotFoundError:
-            return None
+            if self.existing_assignment(execution_id='thread-bootstrap-' + token) is None:
+                return None  # Ordinary compatible1.1 candidates need no recovery context.
+            # A positively proved pre-provider refusal has no original native
+            # binding. Resolve only its exact finite generation, never an
+            # arbitrary compatible recipient, before issuing a current-Work pin.
+            bound = self.prepared_binding(state, binding, owner, writable,
+                lookup_actor=lookup_actor, originals_checked=originals_checked)
+            if bound is None:
+                return None
         if bound.thread_id != recipient.thread_id:
             exact = self.routing._current_work_chain_binding(state, binding,
                 bound, recipient.thread_id, actor=actor)
@@ -234,12 +242,17 @@ class OwnerRecipientPreparationService:
         return cls.digest(value)
 
     def recoverable(self, assignment, proof, profile, logical_id):
-        # Existing typed finite recovery belongs to a genuine pending nonce.
-        # Current-work UNKNOWN/refusal retains its original reservation instead.
-        if proof.get('intent') == 'current_work':
-            return False
         failure = assignment.failure
         details = failure.details if failure is not None else {}
+        current_work = proof.get('intent') == 'current_work'
+        # Null nonce is not recovery authority. Only the canonical writer's
+        # explicitly typed current-Work refusal can enter the finite branch.
+        if current_work:
+            if (proof['handoff'] is not None or details.get('intent') != 'current_work'
+                    or details.get('handoff_requested_at') is not None):
+                return False
+        elif (proof['handoff'] is None or details.get('intent', 'pending_handoff') != 'pending_handoff'):
+            return False
         scope = assignment.repository_scope
         reference = assignment.execution_profile_definition
         preworker = (assignment.fence == 1 and assignment.assigned_worker_id is None
@@ -286,7 +299,7 @@ class OwnerRecipientPreparationService:
             and details.get('created_by') == assignment.created_by
             and details.get('logical_id') == logical_id
             and details.get('work_item_ref') == proof['work_item_ref']
-            and details.get('handoff_requested_at') == proof['handoff']['requested_at']
+            and details.get('handoff_requested_at') == (None if current_work else proof['handoff']['requested_at'])
             and details.get('binding_id') == proof['binding']['id']
             and details.get('origin_actor_id') == proof['actor_id']
             and details.get('attribution_sha256') == self.attribution(proof))
@@ -332,7 +345,8 @@ class OwnerRecipientPreparationService:
             physical = token
             origin = RecipientBootstrapOrigin(token, 0, self.attribution(proof),
                 work_item_ref=proof['work_item_ref'], handoff_requested_at=(proof['handoff'] or {}).get('requested_at'),
-                binding_id=binding.id, actor_id=proof['actor_id'])
+                binding_id=binding.id, actor_id=proof['actor_id'],
+                intent='current_work' if proof.get('intent') == 'current_work' else 'pending_handoff')
             bootstrap_id = 'bootstrap-' + physical
             try:
                 bound = await asyncio.to_thread(self.routing.bootstraps.get_by_bootstrap,
@@ -352,8 +366,9 @@ class OwnerRecipientPreparationService:
                     physical = self.digest({'logical_id': token, 'predecessor_id': existing.id,
                         'predecessor_fence': existing.fence})[:32]
                     origin = RecipientBootstrapOrigin(token, 1, self.attribution(proof), existing.id,
-                        work_item_ref=proof['work_item_ref'], handoff_requested_at=proof['handoff']['requested_at'],
-                        binding_id=binding.id, actor_id=proof['actor_id'])
+                        work_item_ref=proof['work_item_ref'], handoff_requested_at=(proof['handoff'] or {}).get('requested_at'),
+                        binding_id=binding.id, actor_id=proof['actor_id'],
+                        intent='current_work' if proof.get('intent') == 'current_work' else 'pending_handoff')
                     bootstrap_id = 'bootstrap-' + physical
                     try:
                         bound = await asyncio.to_thread(self.routing.bootstraps.get_by_bootstrap,

@@ -41,6 +41,18 @@ claim. An absent process is not proof of cleanup; stopping a process does not
 prove a persisted native session or other effects never existed. No historical
 assignment lacking correlation is backfilled.
 
+Before a recipient's first provider creation, the existing finite refusal
+recovery also supports no-handoff current Work (#2096). Its internal origin
+explicitly declares current-Work intent and has no handoff nonce; a null nonce
+alone never supplies authority. Canonical failure evidence binds the same Work,
+owner, source custody, binding, Profile, Definitions, repository scope and intent
+checksum. A positively known before-worker refusal or joined post-worker,
+before-provider refusal may select only its deterministic generation1; a second
+failure or uncertain generation1 stays held. The original cancelled reservation
+is retained. Its validated generation1 can carry the normal current-Work1.2 pin.
+Historical unbound cancellations without authenticated phase and teardown proof
+remain unresolved; neither missing Session metadata nor status enables recovery.
+
 An explicit MFA current-Work recipient replacement may also use a canonical
 idle cancellation's already-recorded cleanup. The cancelled assignment must be
 unleased, carry `thread_bootstrap_cancelled`, and be exactly one fence after its
