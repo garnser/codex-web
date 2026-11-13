@@ -211,7 +211,7 @@ class CodexRuntime:
         self.pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
         self.generation = uuid.uuid4().hex
         self.native_runtime_version: str | None = None
-        self._start_captures: dict[str, tuple[float | None, Any, Any]] = {}
+        self._start_captures: dict[str, tuple[float | None, Any, Any, asyncio.Future]] = {}
         self._start_capture_lock = asyncio.Lock()
         self.pending_approvals: dict[int | str, dict[str, Any]] = {}
         self.pending_approval_rpc_ids: dict[int | str, int | str] = {}
@@ -553,9 +553,16 @@ class CodexRuntime:
 
     def _prune_start_captures(self) -> None:
         now = time.monotonic()
-        for key, (deadline, _, _) in tuple(self._start_captures.items()):
+        for key, slot in tuple(self._start_captures.items()):
+            deadline = slot[0]
             if deadline is not None and deadline <= now:
-                self._start_captures.pop(key, None)
+                # Retention bounds historical, unowned observations. It must
+                # not erase evidence for the exact RPC still awaiting its
+                # response, even when its configured elapsed cap is disabled.
+                # Old/unbound slots have no active waiter identity to preserve.
+                waiter = slot[3] if len(slot) > 3 else None
+                if waiter is None or self.pending.get(key) is not waiter or waiter.done():
+                    self._start_captures.pop(key, None)
 
     async def _dispatch_message(self, message: dict[str, Any], *, generation: str | None = None) -> None:
         generation = generation or self.generation
@@ -565,7 +572,7 @@ class CodexRuntime:
             self._prune_start_captures()
             slot = self._start_captures.get(message['id']) if isinstance(message['id'], str) else None
             if slot is not None:
-                _, capture, correlation = slot
+                _, capture, correlation = slot[:3]
                 try:
                     observe = lambda: capture.observe(correlation, generation=generation, message=message)
                     captured = (await run_settled(observe) if capture.rpc_method == 'thread/start'
@@ -836,12 +843,16 @@ class CodexRuntime:
                                else await asyncio.to_thread(prepare))
                 if generation != self.generation:
                     raise RuntimeError('native start transport generation changed during preparation')
-                self._start_captures[message_id] = (
-                    None if method == 'thread/start' else time.monotonic() + self.START_CAPTURE_TTL_SECONDS,
-                    start_capture, correlation)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self.pending[message_id] = future
+        if start_capture is not None:
+            # Bind the exact original waiter before the first native write;
+            # merely finding another pending Future under its RPC ID is not
+            # evidence that this capture still has an active request owner.
+            self._start_captures[message_id] = (
+                None if method == 'thread/start' else time.monotonic() + self.START_CAPTURE_TTL_SECONDS,
+                start_capture, correlation, future)
         try:
             send_options = ({'expected_generation':correlation.runtime_generation,
                              'start_guard':lambda: start_capture.validate_before_send(correlation)}
