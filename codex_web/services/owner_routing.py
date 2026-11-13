@@ -1125,16 +1125,25 @@ class OwnerRoutingService:
         for edge in edges:
             source = self.assignments(bound.assignment_id)
             provenance = edge.get('provenance') or {}
+            source_fence = source.fence if source is not None else None
+            if source is not None and str(source.status) == 'cancelled':
+                from codex_web.services.bootstrap_native_create import joined_cleanup_matches
+                worker = self.workers(source.assigned_worker_id) if self.workers is not None else None
+                if not joined_cleanup_matches(source, worker=worker):
+                    raise OwnerRoutingError('owner_current_work_cleanup_unavailable')
+                # Graph and reservation retain the actual original START
+                # generation, never the later idle-cancellation generation.
+                source_fence = source.bootstrap_create_observation.fence
             if (source is None or edge.get('old_thread_id') != bound.thread_id
                     or provenance.get('current_work_item_ref') != state.ref
                     or provenance.get('current_work_assignment_id') != source.id
-                    or provenance.get('current_work_assignment_fence') != source.fence):
+                    or provenance.get('current_work_assignment_fence') != source_fence):
                 raise OwnerRoutingError('owner_replacement_original_unresolved')
             token = self.recipient_preparer.digest({
                 'purpose': 'current-work-recipient-operator-replacement-v1',
                 'organization_id': state.organization_id, 'workspace_id': state.workspace_id,
                 'project_id': state.project_id, 'work_item_ref': state.ref,
-                'source_assignment_id': source.id, 'source_fence': source.fence,
+                'source_assignment_id': source.id, 'source_fence': source_fence,
                 'binding_id': binding.id})[:32]
             successor = self.bootstraps.get_by_bootstrap('bootstrap-' + token, actor)
             current = self.assignments(successor.assignment_id)
@@ -1165,6 +1174,8 @@ class OwnerRoutingService:
             historical = self._recipient_metadata(state, binding, bound,
                 normalized_owner(actionable_owner_value(state)), lookup_actor=lambda: actor,
                 assignment=source)[0]
+            if historical.fence != source_fence:
+                historical = historical.model_copy(update={'fence': source_fence})
             self._accepted_recovery_credentials(source, current, historical, min(starts))
             self._accepted_recovery_native_custody(state, bound.thread_id,
                 successor.thread_id, source, current)
@@ -1288,7 +1299,7 @@ class OwnerRoutingService:
             bound = self.bootstraps.get_by_thread(target, actor)
         assignment = self.assignments(bound.assignment_id)
         if (assignment is None or assignment.lease is not None
-                or str(assignment.status) not in {'lost', 'failed', 'succeeded'}
+                or str(assignment.status) not in {'lost', 'failed', 'succeeded', 'cancelled'}
                 or assignment.execution_id != bound.execution_id
                 or assignment.execution_workspace_id != bound.execution_workspace_id
                 or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
