@@ -252,6 +252,17 @@ before native input admission do not establish that no provider thread exists.
 
 Diagnostic failure cannot replace the original refusal or its cleanup. Failures
 after native input admission retain their existing unknown-outcome semantics.
+
+A canonical controller-owned HTTP 503 preflight refusal with an allowlisted blocker retains its closed
+stage and blocker through the Model Gateway failure and Executive failure reason
+(#2102). The assignment broker adapts only that exact typed native-bridge/gateway/
+Executive CONSULT cause chain to HTTP 503 `executive_native_preparation_unavailable`.
+Its message contains only existing allowlisted stage/blocker values; provider text,
+paths, credential details and arbitrary exception prose are excluded. Existing
+invocation failure fields retain the typed source code and allowlisted blocker as
+`source_native_status`. Unclassified exceptions and post-input unknown outcomes
+keep their existing error behavior. This diagnostic supplies no permission to
+repeat CONSULT, create a new origin or infer the absence of earlier effects.
 These events confer no retry, replay, START, completion or accounting authority.
 
 Cancellation and finite dependency timeouts also record
