@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
+from codex_web.services.async_operations import run_settled
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -54,8 +55,10 @@ from codex_web.storage.agent_sessions import AgentSessionConflictError
 from codex_web.storage.thread_history import ThreadHistoryRepository
 from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.services.turn_execution_binding import (
+    BootstrapAuthenticationPreparation,
     TurnExecutionBindingError,
     TurnExecutionBindingService,
+    can_defer_bootstrap_authentication,
 )
 
 
@@ -1152,6 +1155,14 @@ class ThreadService:
         if requirement is not None and requirement.local_session and requirement.permitted:
             await PostTurnReadinessService._run_owned(self.authentication_preparation,
                 seconds=RuntimePolicy.local_preparation_timeout(5), name='bootstrap-authentication-metadata')
+            if not can_defer_bootstrap_authentication(owner):
+                return None
+            try:
+                return bool(await asyncio.to_thread(owner.local_session_probe))
+            except Exception:
+                # The unchanged binding preflight owns the typed refusal.
+                return False
+        return None
 
     async def _create(
         self,
@@ -1308,7 +1319,8 @@ class ThreadService:
         execution_id = f"thread-bootstrap-{token}"
 
         stage('authentication_metadata')
-        await self._prepare_bootstrap_authentication(project, runtime_binding, bootstrap_id, actor)
+        authentication_prepared = await self._prepare_bootstrap_authentication(
+            project, runtime_binding, bootstrap_id, actor)
 
         if admission_guard is not None:
             stage('admission_before_reservation')
@@ -1317,6 +1329,10 @@ class ThreadService:
                 name='thread-admission-current-guard')
         try:
             stage('bootstrap_reservation')
+            defer_authentication = (authentication_prepared is True
+                and runtime_binding is not None
+                and (runtime_binding.provider_id, runtime_binding.runtime_id) == ('openai', 'codex')
+                and can_defer_bootstrap_authentication(binding_service))
             binding = await asyncio.to_thread(
                 binding_service.prepare_bootstrap,
                 bootstrap_id=bootstrap_id,
@@ -1333,7 +1349,35 @@ class ThreadService:
                 **({'assignment_admission': assignment_admission} if assignment_admission is not None else {}),
                 **({'writable_repository_ids':writable_repository_resource_ids}
                    if writable_repository_resource_ids else {}),
+                **({'_defer_authentication': True} if defer_authentication else {}),
             )
+            if defer_authentication:
+                if type(binding) is not BootstrapAuthenticationPreparation:
+                    raise TurnExecutionBindingError('Bootstrap authentication preparation is unavailable')
+                prepared = binding
+                try:
+                    # No worker is held while the existing async account owner
+                    # refreshes evidence after expensive metadata preparation.
+                    stage('authentication_metadata')
+                    await self._prepare_bootstrap_authentication(project, runtime_binding, bootstrap_id, actor)
+                    if admission_guard is not None:
+                        stage('admission_before_reservation')
+                        await PostTurnReadinessService._run_owned(
+                            lambda: asyncio.to_thread(admission_guard),
+                            seconds=RuntimePolicy.local_preparation_timeout(5),
+                            name='thread-admission-current-guard')
+                    if not can_defer_bootstrap_authentication(binding_service):
+                        raise TurnExecutionBindingError('Bootstrap authentication owner changed')
+                    stage('bootstrap_reservation')
+                    def reserve():
+                        # Executor queue wait is not permission to use changed
+                        # hooks, or to abandon a reservation already in progress.
+                        if not can_defer_bootstrap_authentication(binding_service):
+                            raise TurnExecutionBindingError('Bootstrap authentication owner changed')
+                        return prepared.reserve()
+                    binding = await run_settled(reserve)
+                finally:
+                    prepared.discard()
         except TurnExecutionBindingError as exc:
             raise HTTPException(
                 status_code=503,

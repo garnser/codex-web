@@ -6,6 +6,7 @@ import time
 import math
 from codex_web.services.runtime_policy import RuntimePolicy
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Callable, Mapping
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
@@ -94,6 +95,27 @@ class TurnExecutionBindingError(RuntimeError):
 
     def public(self) -> dict[str, object]:
         return dict(self.blocker)
+
+
+class BootstrapAuthenticationPreparation:
+    """One ephemeral continuation before authentication or any reservation.
+
+    This is not authentication evidence. Resuming runs the actual current
+    authentication preflight before the existing workspace/assignment owners.
+    """
+
+    def __init__(self, reserve):
+        self._reserve = reserve
+
+    def discard(self):
+        self._reserve = None
+
+    def reserve(self):
+        operation = self._reserve
+        self.discard()
+        if operation is None:
+            raise TurnExecutionBindingError('Bootstrap preparation was already consumed')
+        return operation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -964,6 +986,7 @@ class TurnExecutionBindingService:
         skill_refs: tuple[DefinitionReference, ...] = (),
         assignment_admission=None,
         resource_context: ReadOnlyResourceContext | None = None,
+        _defer_authentication: bool = False,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -1205,7 +1228,7 @@ class TurnExecutionBindingService:
             if getattr(existing,'resource_context',None) != resource_context:
                 raise TurnExecutionBindingError('Immutable assignment Resource context differs; terminal custody and fresh bootstrap required',code='resource_context_rollover_required')
             self.validate_assignment_resource_context(existing)
-            return self._binding_from_existing(
+            resume_existing = partial(self._binding_from_existing,
                 existing,
                 subject=subject,
                 thread_id=thread_id,
@@ -1220,6 +1243,8 @@ class TurnExecutionBindingService:
                 execution_profile_definition=execution_profile_definition,
                 agent_profile=agent_profile,
             )
+            return (BootstrapAuthenticationPreparation(resume_existing)
+                if _defer_authentication else resume_existing())
 
         required_capabilities = (
             tuple(
@@ -1330,6 +1355,28 @@ class TurnExecutionBindingService:
                 blocker=blocker,
             )
 
+        def reserve():
+            return self._reserve_subject(project=project, subject=subject,
+                effective_runtime_binding=effective_runtime_binding,
+                limits=limits, session_seconds=session_seconds, resource_context=resource_context,
+                effective_orchestration_only=effective_orchestration_only,
+                normalized_execution_id=normalized_execution_id, lease_mode=lease_mode,
+                repository_target=repository_target, repository_scope=repository_scope,
+                agent_profile=agent_profile, thread_id=thread_id,
+                execution_contract_version=execution_contract_version,
+                assignment_admission=assignment_admission, required_capabilities=required_capabilities,
+                sandbox=sandbox, approval_policy=approval_policy, network=network,
+                effective_profile_id=effective_profile_id,
+                execution_profile_definition=execution_profile_definition,
+                effective_skill_refs=effective_skill_refs)
+        return BootstrapAuthenticationPreparation(reserve) if _defer_authentication else reserve()
+
+    def _reserve_subject(self, *, project, subject, effective_runtime_binding,
+            limits, session_seconds, resource_context, effective_orchestration_only,
+            normalized_execution_id, lease_mode, repository_target, repository_scope,
+            agent_profile, thread_id, execution_contract_version, assignment_admission,
+            required_capabilities, sandbox, approval_policy, network, effective_profile_id,
+            execution_profile_definition, effective_skill_refs):
         authentication = self._authentication_preflight(
             project,
             subject,
@@ -1687,6 +1734,7 @@ class TurnExecutionBindingService:
         agent_profile: AgentProfileExecutionBinding | None = None,
         assignment_admission=None,
         resource_context: ReadOnlyResourceContext | None = None,
+        _defer_authentication: bool = False,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -1722,4 +1770,18 @@ class TurnExecutionBindingService:
             agent_profile=agent_profile,
             assignment_admission=assignment_admission,
             resource_context=resource_context,
+            _defer_authentication=_defer_authentication,
         )
+
+
+_CANONICAL_BOOTSTRAP_AUTHENTICATION = {name: getattr(TurnExecutionBindingService, name)
+    for name in ('prepare_bootstrap', '_prepare_subject', '_reserve_subject', '_binding_from_existing',
+        '_authentication_preflight')}
+
+
+def can_defer_bootstrap_authentication(owner):
+    # Custom binding implementations retain their complete synchronous path.
+    return (type(owner) is TurnExecutionBindingService
+        and all(getattr(getattr(owner, name), '__self__', None) is owner
+            and getattr(getattr(owner, name), '__func__', None) is original
+            for name, original in _CANONICAL_BOOTSTRAP_AUTHENTICATION.items()))

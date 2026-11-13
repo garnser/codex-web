@@ -1031,6 +1031,21 @@ original whose input outcome is unknown. Existing authentication and recovery
 inspectors retain the authoritative typed refusal; no new UI field or grant is
 introduced.
 
+Canonical fresh bootstrap metadata preparation pauses before authentication or
+workspace/assignment reservation. If initially available trusted-local account
+evidence expires during Skill or worker readiness reads, the async Thread owner
+reuses the coalesced account metadata owner before consuming that one-use
+preparation. No offload worker waits for an async refresh that itself requires
+the offload pool. The final credential preflight still checks actual evidence,
+authentication context, epoch and the unchanged 120-second freshness bound;
+negative account responses and policy changes remain refused. Cancellation
+during refresh discards the preparation without starting a worker or native
+thread. The actual reservation callback rechecks canonical ownership after
+executor queue wait. Cancellation after reservation starts joins that owner
+and retains its canonical result; it does not imply an absent reservation or
+authorize another create. Custom binding implementations retain their existing synchronous path.
+This refresh is not a retry of native creation or an uncertain input.
+
 Authentication evidence remains separate from RPC transport health and execution
 preflight. A runtime with cleared readiness is unavailable even when its recent
 authenticated-account evidence is still fresh. Worker-scoped delegation, actor,
