@@ -851,6 +851,22 @@ class CodeHostService:
             ),
         )
 
+    async def publication_input(self, binding_id, resource_id, number, *, actor, checkpoint):
+        """Internal fixed read, using existing repository/MR/ref permissions."""
+        from codex_web.publication_input import PublicationRepositoryFact
+        binding, provider = self.registry.resolve(binding_id, actor=actor)
+        for capability in (CodeHostCapability.REPOSITORY_READ, CodeHostCapability.PULL_REQUEST_READ,
+                           CodeHostCapability.REFS_READ):
+            self._require_capability(binding, provider, capability)
+        resource = self._resource(resource_id, actor=actor, binding=binding)
+        read = getattr(provider, 'publication_input', None)
+        if read is None:
+            raise CodeHostUnsupportedCapabilityError('Provider has no fixed publication-input read')
+        result = await self._with_credential(binding, actor=actor, resource=resource,
+            operation='code-host.publication-input.read',
+            callback=lambda credential: read(binding, resource, number, credential=credential, checkpoint=checkpoint))
+        return PublicationRepositoryFact.model_validate(result)
+
     async def pull_requests(
         self,
         binding_id: str,
