@@ -361,6 +361,11 @@ class HomeGoalContinuation:
             await asyncio.to_thread(self.mutate,reserved.id,scope,accepted,'Original Home Goal queued '+delivery.id)
             return GoalContinuationDispatchResult(binding_id=reserved.id,outcome='queued')
         except BaseException as exc:
+            reason = str(exc)
+            if not reason.strip():
+                # Binding change_reason must remain nonblank after canonical
+                # decoding, including empty cancellation/coordination errors.
+                reason = type(exc).__name__
             if reserved is not None:
                 def unknown(row, state):
                     d=row.home_continuation.delivery
@@ -373,22 +378,22 @@ class HomeGoalContinuation:
                 await asyncio.to_thread(self.mutate,reserved.id,scope,unknown,'Original Home Goal delivery outcome unknown')
             else:
                 if isinstance(exc,HomeGoalReservationChanged):
-                    return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='not_claimed',reason=str(exc))
+                    return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='not_claimed',reason=reason)
                 # A stale claimant may never block a newer owner's delivery.
                 blocked=[]
                 def block(row, state):
                     if row != current:
                         return row
                     blocked.append(True)
-                    return row.model_copy(update={'status':GoalExecutionBindingStatus.BLOCKED,'stop_reason':str(exc)})
-                stopped=await asyncio.to_thread(self.mutate,claimed.id,scope,block,str(exc))
+                    return row.model_copy(update={'status':GoalExecutionBindingStatus.BLOCKED,'stop_reason':reason})
+                stopped=await asyncio.to_thread(self.mutate,claimed.id,scope,block,reason)
                 if not blocked:
                     if isinstance(exc,asyncio.CancelledError):
                         raise
                     return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='not_claimed',reason='canonical_binding_changed')
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='blocked' if reserved is None else 'unknown',reason=str(exc))
+            return GoalContinuationDispatchResult(binding_id=claimed.id,outcome='blocked' if reserved is None else 'unknown',reason=reason)
 
     def authorize_input(self, *, source, assignment, actor, project, request_checksum=None, input_execution_id=None):
         normalized = source.removeprefix('queued:') if isinstance(source,str) else ''

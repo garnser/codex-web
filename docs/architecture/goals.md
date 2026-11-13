@@ -337,6 +337,12 @@ concrete blockers, pause or exhausted budgets stop it. There is no idle model po
 Existing Goal controls and their canonical binding status/stop reason remain the
 operator surface; an exhausted budget is not a completed Goal.
 
+Home Goal dispatch retains nonblank failure metadata even when an exception has
+an empty or whitespace-only message, using its exception type as the fallback.
+Nonblank diagnostics remain unchanged. This preserves canonical binding decoding;
+it does not change current-owner/operator-stop checks, cancellation propagation,
+or the UNKNOWN barrier for an already reserved original input.
+
 Thread-level idle/error/not-loaded notifications are not exact turn outcomes.
 Assignment-owned active records remain available for the matching terminal event
 to schedule the existing checkpoint/accounting owner, even when idle arrives

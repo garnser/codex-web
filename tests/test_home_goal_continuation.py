@@ -443,6 +443,12 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
 
     async def test_concurrent_claim_reservation_loser_does_not_block_winner(self):
         import asyncio,threading
+        # Exercise duplicate callbacks of ONE real claimed owner. Ordinary
+        # dispatch_once now rejects a stale prepared row before Home.context;
+        # requiring two such callers here cannot reach the reservation race.
+        claimed=self.goal_bindings.claim_continuation(self.goal_binding.id,scope=self.actor.tenant,
+            owner_id=self.goal_continuation.owner_id,lease_seconds=60.,expected_binding=self.goal_binding)
+        self.assertIsNotNone(claimed)
         barrier=threading.Barrier(2,timeout=5.)
         lock=threading.Lock()
         calls=[]
@@ -455,13 +461,50 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
             if wait:barrier.wait()
             return result
         self.home_goal.context=both
-        results=await asyncio.gather(*(self.goal_continuation.dispatch_once(self.goal_binding.id,scope=self.actor.tenant) for _ in range(2)))
+        results=await asyncio.gather(*(self.home_goal.dispatch(claimed,scope=self.actor.tenant) for _ in range(2)))
         self.assertEqual(sorted(r.outcome for r in results),['not_claimed','queued'])
+        loser=next(r for r in results if r.outcome=='not_claimed')
+        self.assertEqual(loser.reason,'Original Goal delivery or binding changed before reservation')
         current=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
         self.assertEqual(current.status,'active')
+        self.assertIsNone(current.stop_reason)
         self.assertEqual(current.home_continuation.reserved_calls,1)
         self.assertEqual(current.home_continuation.delivery.phase,'queued')
-        self.assertEqual(len(self.queue_store.get('operator-thread')),1)
+        queued=self.queue_store.get('operator-thread')
+        self.assertEqual(len(queued),1)
+        self.assertEqual(queued[0].execution_id,current.home_continuation.delivery.requested_execution_id)
+        self.assertEqual(sum(event.reason.startswith('Original Home Goal input reserved ')
+            for event in self.goal_bindings.store.load().events),1)
+
+    async def test_concurrent_prepared_claim_cas_queues_one_home_delivery(self):
+        import asyncio,threading
+        barrier=threading.Barrier(2,timeout=5.)
+        original=self.goal_continuation._prepare_dispatch
+        prepared=[]
+        def both(*args,**kwargs):
+            result=original(*args,**kwargs)
+            self.assertIsInstance(result,tuple)
+            prepared.append(result[0])
+            # Both actual metadata preparations finish before either caller
+            # can claim. The real binding CAS must choose the winner.
+            barrier.wait()
+            return result
+        self.goal_continuation._prepare_dispatch=both
+        results=await asyncio.gather(*(self.goal_continuation.dispatch_once(
+            self.goal_binding.id,scope=self.actor.tenant) for _ in range(2)))
+        self.assertEqual(len(prepared),2)
+        self.assertEqual(prepared[0],prepared[1])
+        self.assertEqual(sorted(r.outcome for r in results),['not_claimed','queued'])
+        loser=next(r for r in results if r.outcome=='not_claimed')
+        self.assertIn(loser.reason,{'binding_changed_during_preparation','lease_or_retry_gate_unavailable'})
+        current=self.goal_bindings.get(self.goal_binding.id,scope=self.actor.tenant)
+        self.assertEqual(current.status,'active')
+        self.assertIsNone(current.stop_reason)
+        self.assertEqual(current.home_continuation.reserved_calls,1)
+        self.assertEqual(current.home_continuation.delivery.phase,'queued')
+        queued=self.queue_store.get('operator-thread')
+        self.assertEqual(len(queued),1)
+        self.assertEqual(queued[0].execution_id,current.home_continuation.delivery.requested_execution_id)
 
     async def test_cancelled_stale_claim_preserves_operator_pause_and_cancellation(self):
         import asyncio
