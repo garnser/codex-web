@@ -2686,6 +2686,9 @@ app.state.goal_continuation_event_service = goal_continuation_event_service
 
 
 async def _recover_goal_continuations_on_startup() -> None:
+    # Import-time subscriptions have no running loop. Reuse the existing turn
+    # execution owner before provider events can need thread-safe scheduling.
+    turn_execution_service._event_loop = asyncio.get_running_loop()
     scopes = {
         (item.organization_id, item.workspace_id)
         for item in goal_execution_binding_store.load().bindings
@@ -2708,14 +2711,13 @@ def _subscribe_goal_continuation_events(
     provider_id: str,
     runtime_id: str,
 ):
-    def listener(event) -> None:
-        # Streaming events cannot continue a Goal. Reject them before the
-        # durable session lookup so token deltas do not block RPC readers.
-        if not goal_continuation_event_service.is_terminal_event(event):
-            return
-        native_session_id = event.provider_native_session_id
-        if not native_session_id:
-            return
+    try:
+        subscribed_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        subscribed_loop = None
+    subscribed = True
+
+    def matching_session(native_session_id):
         matches = [
             session
             for session in agent_session_store.list()
@@ -2723,24 +2725,66 @@ def _subscribe_goal_continuation_events(
             and session.provider_id == provider_id
             and session.runtime_id == runtime_id
         ]
-        if len(matches) != 1:
+        return matches[0] if len(matches) == 1 else None
+
+    async def handle(event, session):
+        if not subscribed:
             return
-        session = matches[0]
+        await goal_continuation_event_service.handle_event(
+            event,
+            scope=TenantScope(
+                organization_id=session.organization_id,
+                workspace_id=session.workspace_id,
+            ),
+        )
+
+    def listener(event) -> None:
+        # Streaming events cannot continue a Goal. Reject them before the
+        # durable session lookup so token deltas do not block RPC readers.
+        if not subscribed or not goal_continuation_event_service.is_terminal_event(event):
+            return
+        native_session_id = event.provider_native_session_id
+        if not native_session_id:
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return
-        loop.create_task(
-            goal_continuation_event_service.handle_event(
-                event,
-                scope=TenantScope(
-                    organization_id=session.organization_id,
-                    workspace_id=session.workspace_id,
-                ),
-            )
-        )
+            loop = subscribed_loop or getattr(turn_execution_service, "_event_loop", None)
+            if loop is None or loop.is_closed():
+                return
+            # EventHub already owns this worker-thread delivery. Keep registry
+            # I/O here, and marshal only handler scheduling onto the owner loop.
+            session = matching_session(native_session_id)
+            if session is None:
+                return
 
-    return adapter.subscribe_events(listener)
+            def schedule():
+                if subscribed:
+                    loop.create_task(handle(event, session))
+
+            try:
+                loop.call_soon_threadsafe(schedule)
+            except RuntimeError:
+                # Shutdown can close the owner after the current lookup.
+                return
+        else:
+            # CLI adapters can publish directly from their async output task.
+            # Their synchronous Session registry must remain off that loop too.
+            async def lookup_and_handle():
+                session = await asyncio.to_thread(matching_session, native_session_id)
+                if session is not None:
+                    await handle(event, session)
+
+            loop.create_task(lookup_and_handle())
+
+    unsubscribe_adapter = adapter.subscribe_events(listener)
+
+    def unsubscribe():
+        nonlocal subscribed
+        subscribed = False
+        unsubscribe_adapter()
+
+    return unsubscribe
 
 
 goal_continuation_event_unsubscribers = []

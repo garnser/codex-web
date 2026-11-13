@@ -37,7 +37,8 @@ class ProjectGoalContinuationCycleTests(ProjectGoalWorkerAdmissionTests):
             task = (previous_factory(_loop, coro, **kwargs) if previous_factory is not None
                     else asyncio.Task(coro, loop=_loop, **kwargs))
             name = getattr(coro, '__qualname__', '')
-            if name.startswith(('TurnExecutionService.', 'GoalContinuationEventService.')):
+            if name.startswith(('TurnExecutionService.', 'GoalContinuationEventService.',
+                                '_subscribe_goal_continuation_events.')):
                 # Retain completed owners too: the production registry removes
                 # them in finally, before a later test observation can join.
                 self.owned_tasks.add(task)
