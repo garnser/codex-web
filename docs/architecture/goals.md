@@ -379,3 +379,37 @@ authoritative at the final writer. See project-home's active Goal restart contra
 for recovery-record1.1 compatibility and lease proof requirements. The existing
 Goal binding UI controls remain the operator surface; no new controller or
 independent Goal completion state is introduced.
+
+### Bounded worker work selection
+
+The existing Goal GET accepts optional `view=runnable&offset=N` (offset0..100000);
+its default snapshot response is unchanged. The assignment broker exposes the
+same view through the existing declared `goal.read` operation and current actor,
+tenant, Project, execution Definition, lease and fence checks. No capability or
+mutation authority is added. The canonical Goal service reads each selected
+Project graph once, applies the existing root/parent-descendant closure, and
+derives counts and headers from those same observed nodes. A Project-filtered
+read filters bindings before graph reads, reports scoped counts and partial-Goal
+health UNKNOWN, and never reads another Project's Work. Existing worker reads
+still refuse Goals spanning other assignment Projects.
+
+`goal-runnable-selection/1.0` returns at most ten runnable and ten blocked headers
+per page, exact refs, scoped counts, Goal revision, a source digest, `next_offset`,
+omitted counts and missing-bound-Work observations. Compact display title/reasons
+have explicit truncation/omission markers; no exact Work ref is dropped for text
+size. Missing Work or omitted pages cannot be interpreted as absent, completed or
+blocked Work. Pages are fresh observations, not an atomic cross-page snapshot or
+admission proof. Changed Goal revision during a read refuses the mixed result;
+later changes remain subject to normal action admission. Readiness does not
+authorize replay, resolve UNKNOWN originals or grant repository authority.
+
+Shared native instructions default to one outstanding broker read. Accepted
+request handles must be joined before more GETs; an actual concurrency429 is an
+incomplete observation, not evidence that a Work or Goal is blocked. A still-needed
+read can proceed serially after those handles finish; other quota/rate refusals
+retain their own limits and never permit busy polling or mutation replay. Blocked
+Work can have a legitimate in-scope prerequisite: the coordinator uses a targeted
+coordination read and current authority rather than stopping the whole Goal after
+a partial root fanout. The existing Goal/operator UI remains unchanged; this is
+an additive bounded read view and worker instruction contract, not another
+selection scheduler, persisted cursor or UI-owned authorization path.

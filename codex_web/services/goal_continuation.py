@@ -77,8 +77,14 @@ class GoalContinuationService:
             f"Continue canonical Goal {binding.goal_id} revision {binding.goal_revision} "
             f"within Project {binding.project_id}, limited to {roots}. "
             "Canonical Goal and Work Graph state remain authoritative. "
-            "Do not broaden scope. Stop when completed, blocked, an approval is required, "
-            "or another canonical stop condition is reached."
+            "Do not broaden scope. Read the advertised bounded canonical Goal selection before "
+            "targeted Work coordination reads; keep broker reads serial rather than fan out over roots. "
+            "A blocked Work is not a blocked Goal. Resolve a supported in-scope blocked-Work prerequisite "
+            "when current authority permits, or consider another legitimate in-scope action. "
+            "Runnable status does not authorize replay or override uncertain custody or provider effects. "
+            "A failed, omitted or rate-limited read leaves that information unknown. "
+            "Stop on canonical Goal completion or a Goal-wide stop condition; an approval or authority "
+            "barrier holds the affected action and is not permission to bypass it or invent another task."
         )
 
     def recovery_attempt_limit(self, goal) -> int:

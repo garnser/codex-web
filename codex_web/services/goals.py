@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import hashlib
+import json
 
 from codex_web.goals import (
     GoalCompletionEvaluation,
@@ -14,6 +16,8 @@ from codex_web.goals import (
     GoalHealthSnapshot,
     GoalPriority,
     GoalProgress,
+    GoalRunnableSelection,
+    GoalSelectionWork,
     GoalRecord,
     GoalRevision,
     GoalRiskLevel,
@@ -775,11 +779,14 @@ class GoalService:
     ) -> tuple[tuple[str, str], ...]:
         return self._bound_graphs(goal, scope=scope)[0]
 
-    def _bound_graphs(self, goal: GoalRecord, *, scope: TenantScope):
+    def _bound_graphs(self, goal: GoalRecord, *, scope: TenantScope, project_id: str | None = None,
+                      report_missing: bool = False):
         """Complete request-local graph headers, never per-root Work histories."""
         refs: set[tuple[str, str]] = set()
         snapshots = {}
         for binding in goal.work_graph_bindings:
+            if project_id is not None and binding.project_id != project_id:
+                continue
             if binding.project_id not in snapshots:
                 snapshots[binding.project_id] = self.work_graph.snapshot(binding.project_id, scope=scope)
             snapshot = snapshots[binding.project_id]
@@ -791,7 +798,7 @@ class GoalService:
                 refs.update((binding.project_id, ref) for ref in visible)
                 continue
             for root in binding.root_work_item_refs:
-                if root not in visible:
+                if root not in visible and not report_missing:
                     raise WorkGraphNotFoundError('work item not found')
             edges = (edge for edge in snapshot.edges if
                 (edge.organization_id, edge.workspace_id, edge.project_id) ==
@@ -830,6 +837,10 @@ class GoalService:
     def progress(self, goal_id: str, *, scope: TenantScope) -> GoalProgress:
         goal = self.get(goal_id, scope=scope)
         bound, snapshots = self._bound_graphs(goal, scope=scope)
+        return self._progress_from_graphs(goal, bound, snapshots)
+
+    @staticmethod
+    def _progress_from_graphs(goal, bound, snapshots) -> GoalProgress:
         bound_refs = set(bound)
         completed = failed = cancelled = blocked = runnable = 0
 
@@ -852,7 +863,7 @@ class GoalService:
         total = len(bound_refs)
         active = total - completed - failed - cancelled
         return GoalProgress(
-            project_count=len({item.project_id for item in goal.work_graph_bindings}),
+            project_count=len(snapshots),
             work_item_count=total,
             completed=completed,
             failed=failed,
@@ -862,6 +873,58 @@ class GoalService:
             blocked=blocked,
             completion_fraction=(completed / total if total else 0.0),
         )
+
+    def runnable_selection(self, goal_id: str, *, scope: TenantScope,
+                           project_id: str | None = None, offset: int = 0) -> GoalRunnableSelection:
+        if type(offset) is not int or not 0 <= offset <= 100000:
+            raise GoalConflictError('Goal selection offset is outside its bounded protocol')
+        goal = self.get(goal_id, scope=scope, project_id=project_id)
+        bound, snapshots = self._bound_graphs(goal, scope=scope, project_id=project_id, report_missing=True)
+        nodes = {(project, node.ref): node for project, graph in snapshots.items() for node in graph.nodes}
+        missing = tuple(pair for pair in bound if pair not in nodes)
+        runnable = [nodes[pair] for pair in bound if pair in nodes
+                    and nodes[pair].readiness.status == WorkReadinessStatus.RUNNABLE]
+        blocked = [nodes[pair] for pair in bound if pair in nodes
+                   and nodes[pair].readiness.status == WorkReadinessStatus.BLOCKED]
+        def header(node):
+            # Every exact ref survives; only display text is shortened, with
+            # explicit loss markers and a targeted canonical Work read path.
+            return GoalSelectionWork(ref=node.ref, project_id=node.project_id, stage=node.stage,
+                readiness_status=node.readiness.status,
+                display_title=node.title[:200] if node.title is not None else None,
+                title_truncated=node.title is not None and len(node.title) > 200,
+                reasons=tuple(reason[:240] for reason in node.readiness.reasons[:5]),
+                omitted_reason_count=max(0,len(node.readiness.reasons)-5),
+                truncated_reason_count=sum(len(reason)>240 for reason in node.readiness.reasons[:5]),
+                blocking_refs=node.readiness.blocking_refs[:5],
+                omitted_blocking_ref_count=max(0,len(node.readiness.blocking_refs)-5),
+                failure_impact_count=len(node.readiness.failure_impacts))
+        selected = [header(node) for node in runnable[offset:offset+10]]
+        selected_blocked = [header(node) for node in blocked[offset:offset+10]]
+        progress = self._progress_from_graphs(goal, bound, snapshots)
+        source = {'goal_id':goal.id, 'goal_revision':goal.revision,
+                  'bindings':[binding.model_dump(mode='json') for binding in goal.work_graph_bindings],
+                  'nodes':[nodes[pair].model_dump(mode='json') for pair in bound if pair in nodes],
+                  'missing_work':missing}
+        if self.get(goal_id, scope=scope, project_id=project_id) != goal:
+            raise GoalConflictError('Goal changed during runnable selection')
+        goal_project_count = len({binding.project_id for binding in goal.work_graph_bindings})
+        return GoalRunnableSelection(goal_id=goal.id, goal_revision=goal.revision, project_id=project_id,
+            goal_project_count=goal_project_count,
+            includes_all_goal_projects=len(snapshots) == goal_project_count,
+            progress=progress, health=(GoalHealthSnapshot(health=GoalHealth.UNKNOWN,
+                reasons=('bound Work is missing or this selection covers only part of the Goal',))
+                if missing or len(snapshots) != goal_project_count else
+                self._health_from_progress(goal, progress, now=time.time())),
+            source_snapshot_sha256=hashlib.sha256(json.dumps(source, sort_keys=True,
+                separators=(',', ':')).encode()).hexdigest(),
+            runnable=tuple(selected), blocked=tuple(selected_blocked),
+            offset=offset, next_offset=(offset+10 if max(len(runnable), len(blocked)) > offset+10 else None),
+            omitted_runnable_count=len(runnable)-len(selected),
+            omitted_blocked_count=len(blocked)-len(selected_blocked),
+            missing_work=missing[:10], missing_work_count=len(missing),
+            complete=not missing and len(snapshots) == goal_project_count and offset == 0
+                and len(selected) == len(runnable) and len(selected_blocked) == len(blocked))
 
     @staticmethod
     def _health_from_progress(

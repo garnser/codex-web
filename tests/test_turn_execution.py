@@ -1865,6 +1865,13 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("existing ActionIntent before retrying", instructions)
         self.assertIn("Discover the catalog once for the current assignment/fence", instructions)
         self.assertIn("every operation still performs current admission checks", instructions)
+        self.assertIn("ONE outstanding broker read", instructions)
+        self.assertIn("join or keep observing", instructions.lower())
+        self.assertIn("concurrency limit was exceeded is an incomplete read", instructions)
+        self.assertIn("GETs serially", instructions)
+        self.assertIn("Never automatically retry", instructions)
+        self.assertIn("view=runnable", instructions)
+        self.assertIn("Omitted or unread Work is unknown", instructions)
 
     async def test_null_work_item_assignment_delivers_broker_discovery(self) -> None:
         for source, bootstrap in (("slack", None), ("autonomy-watchdog", "t1")):
