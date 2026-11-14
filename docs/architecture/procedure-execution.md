@@ -111,9 +111,21 @@ is a typed local pre-input refusal only when no candidate validator failed.
 The exact ordered candidate comparison and supported-exclusion requirement remain
 mandatory. The queue retains that same original as blocked with the existing
 `procedure_native_preparation_changed` code and closed candidate-consistency
-diagnostic. Hidden validator errors, failed discovery (including storage errors)
-and attestor failures remain uncertain;
+diagnostic. When the initial empty-seal owner observes the explicit canonical
+context-resolution refusal (failed discovery with exactly the context's nonempty
+resolution blockers, no candidates/selection and no candidate validation failure),
+it emits the nonretryable typed local refusal
+`procedure_empty_preparation_unavailable` before native resume/input. The failed
+observation grants no authority, credential seal or automatic retry. This applies
+to both attested empty candidate exclusions and the plain zero-candidate seal.
+Opaque failed discovery, including swallowed validator, storage, capacity-reader
+and final-proof exceptions, remains UNKNOWN even with an unchanged or empty
+candidate inventory. Catch-all discovery failure blockers never supply this
+context-refusal provenance, including when context text happens to match them.
+Arbitrary validator, storage and attestor exceptions still propagate unchanged;
 neither their prose nor a transported matching error code proves non-input.
+The existing atomic queue claim/capture guards retain possible native observations
+as UNKNOWN even when a matching typed error arrives after a native write.
 Positive native receipts and changed admission claims retain precedence. Historical
 unknown requests are never reclassified by this change. This reuses existing
 preflight/blocker/inspector contracts and adds no persisted schema version or

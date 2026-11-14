@@ -892,8 +892,25 @@ class ProcedureExecutionService:
                 or _CANONICAL_SKILL_READS['can_observe_metadata_reads'](
                     self.skills, self.identity, self.discovery.resources)))
 
+    def can_observe_initial_seal_projects(self):
+        from codex_web.services.procedure_scope_actor import ProcedureDefinitionScopeActor, _CANONICAL_SCOPE_CHECK
+        from codex_web.storage.projects import _CANONICAL_PROJECT_READS
+        scope = self.skills.procedure_scope_actor
+        return (_CANONICAL_INITIAL_SEAL_CHECK(self)
+            and type(scope) is ProcedureDefinitionScopeActor
+            and _CANONICAL_SCOPE_CHECK(scope, self.identity)
+            and self.discovery.projects is scope.projects
+            and _CANONICAL_PROJECT_READS['can_observe_reads'](scope.projects.repository))
+
+    def can_observe_initial_seal_capacity(self):
+        from codex_web.services.procedure_configuration import (
+            ProcedureContextCapacityResolver, _CANONICAL_CAPACITY_CAN_OBSERVE)
+        return (_CANONICAL_INITIAL_SEAL_CHECK(self)
+            and type(self.discovery.context_capacity_resolver) is ProcedureContextCapacityResolver
+            and _CANONICAL_CAPACITY_CAN_OBSERVE(self.discovery.context_capacity_resolver))
+
     def admit_initial_native_credentials(self, assignment, selected, actor, validate, *, prepare_session=None,
-                                         _definitions=None, _identity=None):
+                                         _definitions=None, _identity=None, _projects=None, _capacity=None):
         """Seal one NEW bootstrap's pending reference custody under canonical locks.
 
         Called only by initial native admission, never by the shared read guard
@@ -901,6 +918,14 @@ class ProcedureExecutionService:
         policy after the writer lock is acquired. No credential is resolved.
         """
         from codex_web.execution_subjects import ExecutionSubjectKind
+        if _projects is not None:
+            from codex_web.storage.projects import _ProjectReadObservation
+            if type(_projects) is not _ProjectReadObservation:
+                raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
+        if _capacity is not None:
+            from codex_web.storage.configuration_registry import _ConfigurationReadObservation
+            if type(_capacity) is not _ConfigurationReadObservation:
+                raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
         custody = assignment.native_credential_custody
         if custody is None or custody.admitted_at is not None:
             self.validate_native_credential_custody(assignment, selected, actor)
@@ -923,6 +948,18 @@ class ProcedureExecutionService:
         if any(repository.store is not store for repository in repositories):
             raise ProcedureExecutionError("procedure_credential_transaction_unavailable")
         guards = {repository.namespace: (None,) for repository in repositories}
+        if _projects is not None:
+            if (not _CANONICAL_INITIAL_PROJECT_SEAL_CHECK(self)
+                    or _projects.repository is not self.discovery.projects.repository
+                    or _projects.repository.store is not store):
+                raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
+            guards[_projects.repository.namespace] = (None,)
+        if _capacity is not None:
+            if (not _CANONICAL_INITIAL_CAPACITY_SEAL_CHECK(self)
+                    or _capacity.repository is not self.discovery.context_capacity_resolver.configuration.store
+                    or _capacity.repository.store is not store):
+                raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
+            guards[_capacity.repository.namespace] = (None,)
         workspace = self.workers.workspaces.store.workspace(assignment.execution_workspace_id)
         workspaces = self.workers.workspaces.store
         if workspaces.store is not store or workspace is None:
@@ -968,10 +1005,21 @@ class ProcedureExecutionService:
                 if not _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK(self):
                     raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
                 _identity.require_current(self.identity, rows[self.identity.store.namespace][None])
+            if _projects is not None:
+                if not _CANONICAL_INITIAL_PROJECT_SEAL_CHECK(self):
+                    raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
+                _projects.require_current(self.discovery.projects.repository,
+                    rows[_projects.repository.namespace][None])
+            if _capacity is not None:
+                if not _CANONICAL_INITIAL_CAPACITY_SEAL_CHECK(self):
+                    raise ProcedureExecutionError('procedure_credential_metadata_owner_changed')
+                _capacity.require_current(self.discovery.context_capacity_resolver.configuration.store,
+                    rows[_capacity.repository.namespace][None])
         with prepared:
             return self.workers.store.transition_assignment(assignment.assigned_worker_id,
                 assignment.id, apply, guard_rows=guards,
-                **({'validate_guards': validate_guards} if _definitions is not None or _identity is not None else {})).assignments[0]
+                **({'validate_guards': validate_guards} if any(view is not None
+                    for view in (_definitions, _identity, _projects, _capacity)) else {})).assignments[0]
 
     def validate_native_preparation_owner(self, assignment, *, _identity=None):
         self._live(assignment, **({"_identity": _identity} if _identity is not None else {}))
@@ -2507,6 +2555,8 @@ _CANONICAL_INITIAL_SEAL_READS = {name: getattr(ProcedureExecutionService, name)
         'validate_native_credential_custody', '_live', '_binding', '_credential_worker_actor')}
 _CANONICAL_INITIAL_SEAL_CHECK = ProcedureExecutionService.can_observe_initial_seal_definitions
 _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK = ProcedureExecutionService.can_observe_initial_seal_identity
+_CANONICAL_INITIAL_PROJECT_SEAL_CHECK = ProcedureExecutionService.can_observe_initial_seal_projects
+_CANONICAL_INITIAL_CAPACITY_SEAL_CHECK = ProcedureExecutionService.can_observe_initial_seal_capacity
 _CANONICAL_SKILL_OBSERVER = SkillService.observe_definition_reads
 
 _CANONICAL_PROVIDER_MEDIATION = {

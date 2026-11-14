@@ -25,6 +25,22 @@ guarded path. Resource, provider and security metadata can still contend under
 the writer; eliminating the observed Identity reads does not establish every
 preparation delay's cause or replace genuine selected-repository qualification.
 
+Canonical initial sealing also observes Project data through its existing
+repository for both direct discovery and procedure scope-actor lookups. The
+synchronous request-local observation retains complete normalized Project data,
+not a scope decision. The existing credential CAS locks and compares the exact
+Projects envelope before any updater, then reruns tenant, visibility and scope
+checks. Backend, canonical hooks, thread and observation lifetime must still
+match. Changed metadata refuses; custom scope/read owners keep the complete
+guarded fallback. No finite worker lease or deadline is extended by this path.
+
+The canonical procedure-context capacity resolver similarly observes the raw
+Configuration registry for this one seal. It reruns typed resolution and current
+feature/time selection on every lookup; no EffectiveConfiguration result becomes
+an authority cache. The existing CAS compares the entire guarded registry before
+the updater. Custom resolvers retain their original current reads, and unsupported
+Definition ancestry enters the complete legacy path without either context view.
+
 Operational procedures remain immutable `agent.skill` Definitions. Discovery uses
 `OperationalProcedure@1.0`, the Skill resolver/security gates, canonical Resources,
 Project scope, current requester identity and existing action authority/policy. No
