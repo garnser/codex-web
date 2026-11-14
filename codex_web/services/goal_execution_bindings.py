@@ -650,15 +650,18 @@ class GoalExecutionBindingService:
         owner_id: str,
         lease_seconds: float = 60.0,
         now: float | None = None,
+        expected_binding: GoalExecutionBinding | None = None,
     ) -> GoalExecutionBinding:
-        current_time = time.time() if now is None else float(now)
         audit = self._audit_context()
         duration = max(1.0, float(lease_seconds))
         result: GoalExecutionBinding | None = None
 
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
+            current_time = time.time() if now is None else float(now)
             current = self._binding(state, binding_id, scope)
+            if expected_binding is not None and current != expected_binding:
+                raise GoalExecutionBindingConflictError('continuation changed before heartbeat')
             if current.execution_mode != GoalExecutionMode.APPLICATION:
                 result = current
                 return state

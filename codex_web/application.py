@@ -5299,6 +5299,7 @@ def _prepare_current_native_input_guard(**kwargs):
 
 turn_execution_service.procedure_admission.input_authorizer = _authorize_current_native_input
 turn_execution_service.native_input_guard_factory = _prepare_current_native_input_guard
+turn_execution_service.queued_preparation_owner = project_goal_continuation.prepare_queued_owned
 home_overview_service = HomeOverviewService(
     projects=project_service,
     work_items=work_item_service,

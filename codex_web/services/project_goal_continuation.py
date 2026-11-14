@@ -18,6 +18,7 @@ from codex_web.services.procedure_discovery import checksum
 from codex_web.services.queued_native_start import validate_attribution
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.runtime.execution import AutomatedAdmissionPaused, ExecutionPrestartRefusal
+from codex_web.services.async_operations import run_settled, settle_future
 
 SOURCE = 'project-goal-continuation:'
 
@@ -271,6 +272,84 @@ class ProjectGoalContinuation:
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+    async def prepare_queued_owned(self, queued, *, attempt_id, claim_id, operation):
+        """Keep ONLY this live claimed preparation's finite custody (#2112).
+
+        No queue adoption or new input is introduced. Current native admission
+        remains authoritative; heartbeat failure cannot imply a native outcome.
+        """
+        binding_id = self.origin(queued.source)
+        if binding_id is None:
+            return await operation()
+        initial = await run_settled(lambda: self.preflight.store.get(attempt_id))
+        if initial is None:
+            raise ValueError('Original Project Goal preparation is unavailable')
+        scope = TenantScope(organization_id=initial.organization_id, workspace_id=initial.workspace_id)
+
+        def heartbeat():
+            attempt = self.preflight.store.get(attempt_id)
+            if attempt is not None and attempt.status == 'started':
+                return False
+            snapshot = queued.model_dump(mode='json')
+            retained_attempts = (attempt.queued_turn_snapshot or {}).get('attempts') if attempt else None
+            snapshot['attempts'] = retained_attempts
+            if (attempt is None or attempt.status != 'reconciliation_required'
+                    or attempt.queued_admission_claim_id != claim_id
+                    or type(retained_attempts) is not int or queued.attempts != retained_attempts + 1
+                    or attempt.queued_turn_snapshot != snapshot
+                    or attempt.scheduling_retirement is not None
+                    or attempt.queued_start_receipt is not None or attempt.started_at is not None):
+                raise ValueError('Original Project Goal preparation claim changed')
+            current, goal, actor, assignment = self.context(self.binding(binding_id, scope))
+            delivery = current.project_continuation.delivery
+            if (delivery.phase not in {'reserved', 'queued'}
+                    or delivery.continuation_owner_id != current.lease_owner_id
+                    or delivery.session_id != current.agent_session_id
+                    or delivery.goal_revision != goal.revision
+                    or delivery.work_item_refs != current.work_item_refs
+                    or current.last_execution_id != delivery.id
+                    or delivery.id != queued.execution_id or delivery.thread_id != queued.thread_id
+                    or delivery.assignment_id != assignment.id
+                    or delivery.assignment_fingerprint != self.fingerprint(assignment)
+                    or delivery.message_sha256 != hashlib.sha256(queued.message.encode()).hexdigest()
+                    or delivery.requested_by != queued.agent_profile_actor_id or delivery.requested_by != actor.identity_id
+                    or delivery.admission_attempt_id not in {None, attempt_id}
+                    or delivery.queued_id not in {None, queued.id}
+                    or attempt.execution_id != delivery.id or attempt.thread_id != delivery.thread_id
+                    or (attempt.organization_id, attempt.workspace_id, attempt.project_id) !=
+                        (current.organization_id, current.workspace_id, current.project_id)
+                    or current.project_id != queued.project_id):
+                raise ValueError('Original Project Goal preparation custody changed')
+            self.bindings.heartbeat_continuation(current.id, scope=scope,
+                owner_id=self.continuation.owner_id, lease_seconds=self.continuation.lease_seconds,
+                expected_binding=current)
+            return True
+
+        async def owned():
+            # Validate before starting the one actual operation. Do not revive
+            # an expired lease or adopt another claim using a task's existence.
+            if not await run_settled(heartbeat):
+                raise ValueError('Original Project Goal input already started')
+            task = asyncio.create_task(operation())
+            try:
+                while True:
+                    done, _ = await asyncio.wait({task},
+                        timeout=max(1., min(60., self.continuation.lease_seconds / 3)))
+                    if done:
+                        return await task
+                    try:
+                        if not await run_settled(heartbeat):
+                            return await settle_future(task)
+                    except Exception:
+                        # Stop renewal on any custody/authority failure. Join
+                        # the SAME preparation; its final current native guards
+                        # and actual response own the outcome, never this timer.
+                        return await settle_future(task)
+            finally:
+                if not task.done():
+                    await settle_future(task)
+        return await settle_future(asyncio.create_task(owned()))
 
     async def dispatch(self, claimed, *, scope):
         reserved = None
