@@ -1451,6 +1451,14 @@ class ExecutionWorkerService:
         return result
 
     def _validate_lease(
+        self, assignment: ExecutionAssignment, worker: ExecutionWorker, *,
+        actor: AuthenticationActor, fence: int, token: str, now: float,
+    ) -> AssignmentLease:
+        # Preserve the existing inspection helper's return contract.
+        return self._validated_lease(assignment, worker, actor=actor,
+            fence=fence, token=token, now=now)[0]
+
+    def _validated_lease(
         self,
         assignment: ExecutionAssignment,
         worker: ExecutionWorker,
@@ -1458,9 +1466,13 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
         fence: int,
         token: str,
-        now: float,
-    ) -> AssignmentLease:
+        now: float | None = None,
+    ) -> tuple[AssignmentLease, float]:
         self._require_worker_actor(worker, actor)
+        # Identity validation may perform canonical I/O while the writer is
+        # held. A pre-read sample cannot authorize revival after expiry (#2113).
+        observed = time.time()
+        now = observed if now is None else max(now, observed)
         lease = assignment.lease
         if (
             assignment.assigned_worker_id != worker.id
@@ -1479,7 +1491,7 @@ class ExecutionWorkerService:
             raise WorkerLeaseError("worker is not trusted to continue assignment")
         if assignment.deadline_at is not None and assignment.deadline_at <= now:
             raise WorkerLeaseError("assignment deadline has expired")
-        return lease
+        return lease, now
 
     def record_runtime_observation(
         self, worker_id: str, assignment_id: str, *, observed_fence: int,
@@ -1557,16 +1569,14 @@ class ExecutionWorkerService:
         updated: list[ExecutionAssignment] = []
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
-            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
-            lease = self._validate_lease(
+            lease, now = self._validated_lease(
                 assignment,
                 worker,
                 actor=actor,
                 fence=payload.fence,
                 token=payload.lease_token,
-                now=now,
             )
             if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}:
                 raise WorkerLeaseError("assignment is not renewable")
@@ -1604,16 +1614,14 @@ class ExecutionWorkerService:
         updated: list[ExecutionAssignment] = []
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
-            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
-            self._validate_lease(
+            _, now = self._validated_lease(
                 assignment,
                 worker,
                 actor=actor,
                 fence=payload.fence,
                 token=payload.lease_token,
-                now=now,
             )
             if assignment.status != AssignmentStatus.CLAIMED:
                 raise WorkerConflictError("assignment must be claimed before start")
@@ -1694,21 +1702,19 @@ class ExecutionWorkerService:
             assignments=[assignment] if assignment else [])
         worker = self._worker(snapshot, worker_id, actor)
         assignment = self._assignment(snapshot, assignment_id, actor)
-        self._validate_lease(assignment, worker, actor=actor, fence=payload.fence,
-            token=payload.lease_token, now=time.time())
+        self._validated_lease(assignment, worker, actor=actor, fence=payload.fence,
+            token=payload.lease_token)
         intents = self._prepare_readiness_retirement(assignment_id)
         updated: list[ExecutionAssignment] = []
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
-            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
-            self._validate_lease(
+            _, now = self._validated_lease(
                 assignment,
                 worker,
                 actor=actor,
                 fence=payload.fence,
                 token=payload.lease_token,
-                now=now,
             )
             if assignment.status != AssignmentStatus.RUNNING:
                 raise WorkerConflictError("assignment must be running before completion")
