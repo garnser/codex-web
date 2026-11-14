@@ -3468,7 +3468,7 @@ turn_execution_service = install_turn_execution_service(
         )
     ),
     work_item_context_resolver=(
-        work_item_execution_lifecycle_service.continuation_delta
+        work_item_execution_lifecycle_service.continuation_delivery
     ),
     work_item_context_recorder=(
         work_item_execution_lifecycle_service.record_continuation_delivery

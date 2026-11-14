@@ -356,6 +356,13 @@ class TurnExecutionService:
                     False,
                 ),
             }
+            snapshot = selection.get("snapshot")
+            context = snapshot.get("work_item_context") if isinstance(snapshot, dict) else None
+            if (isinstance(context, dict) and isinstance(context.get("_projection"), dict)
+                    and context["_projection"].get("schema") == "work-continuation-delivery/1"):
+                # The consumer may be a fresh Session. A verified historical
+                # anchor is not proof this Session has its current task header.
+                delivered["work_item_context"] = context
         else:
             snapshot = selection.get("snapshot")
             snapshot = snapshot if isinstance(snapshot, dict) else {}

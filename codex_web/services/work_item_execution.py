@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import HTTPException
 
@@ -77,7 +78,7 @@ class WorkItemExecutionLifecycleService:
             )
         )
 
-    def _events_for_ref(self, ref: str) -> list[WorkItemEvent]:
+    def _events_for_ref(self, ref: str, *, strict: bool = False) -> list[WorkItemEvent]:
         events: list[WorkItemEvent] = []
         path = self.dependencies.events_file
         if path.exists():
@@ -90,10 +91,14 @@ class WorkItemExecutionLifecycleService:
                                 continue
                             event = WorkItemEvent.model_validate(raw)
                         except (json.JSONDecodeError, ValueError, TypeError):
+                            if strict:
+                                raise
                             continue
                         if event.ref == ref:
                             events.append(event)
             except OSError:
+                if strict:
+                    raise
                 return []
         return events
 
@@ -175,9 +180,53 @@ class WorkItemExecutionLifecycleService:
             return None
         return count, parts[2]
 
-    def continuation_snapshot(self, ref: str) -> dict[str, Any]:
+    def _delivery_context(self, state: WorkItemState, context: dict[str, Any]) -> dict[str, Any]:
+        """Current task plus explicit history references, never a history replay.
+
+        A checkpoint narrative is data, not a trusted execution/delta anchor.
+        Keep every current field intact; oversized required current state still
+        fails the existing transport budget rather than being truncated.
+        """
+        current = dict(context)
+        notes = current.pop("notes")
+        checkpoints = list(state.execution.checkpoint_history)
+        if state.execution.latest_checkpoint is not None and (
+                not checkpoints or checkpoints[-1] != state.execution.latest_checkpoint):
+            checkpoints.append(state.execution.latest_checkpoint)
+        # Runtime delivery bookkeeping must not displace the substantive compact
+        # checkpoint (for example an admitted input reference) on the next turn.
+        checkpoint = next((item for item in reversed(checkpoints)
+            if not (item.source == "turn-execution-runtime"
+                and item.reason == "provider accepted canonical Work Item context")), None)
+        checkpoint_fields = (
+            "id", "sequence", "created_at", "actor", "source", "reason", "summary",
+            "objective", "current_state", "important_decisions", "blockers",
+            "changed_files", "next_actions", "execution_id", "subject_kind", "subject_ref",
+            "resource_ids", "definition_refs", "execution_outcome", "delivery_proven",
+        )
+        payload = checkpoint.model_dump(mode="json") if checkpoint is not None else None
+        current["checkpoint_context"] = ({key: payload[key] for key in checkpoint_fields}
+                                          if payload is not None else None)
+        route = "/api/work-items/" + quote(state.ref, safe="")
+        current["_projection"] = {
+            "schema": "work-continuation-delivery/1",
+            "omitted_fields": ["notes"],
+            "notes": {"count": len(notes), "sha256": self._hash_value(notes)},
+            "canonical_work_item_hash": self._hash_value(context),
+            "retrieval": {"work_item": route,
+                          "notes": route + "?view=history&section=notes&offset=0&byte_offset=0",
+                          "events": route + "?view=history&section=events&offset=0&byte_offset=0",
+                          "checkpoints": route + "?view=history&section=checkpoints&offset=0&byte_offset=0"},
+            "retrieval_requires_current_authority": True,
+            "checkpoint_is_data_not_execution_authority": True,
+        }
+        return current
+
+    def continuation_snapshot(self, ref: str, *, _delivery: bool = False) -> dict[str, Any]:
         state = self._state(ref)
         context = self._work_item_context(state)
+        if _delivery:
+            context = self._delivery_context(state, context)
         events = self._events_for_ref(ref)
         context_hash = self._hash_value(context)
         return {
@@ -201,6 +250,53 @@ class WorkItemExecutionLifecycleService:
             "count": len(events),
             "returned": len(selected),
         }
+
+    def history_page(self, ref: str, *, section: str, offset: int = 0,
+                     byte_offset: int = 0, sha256: str | None = None) -> dict[str, Any]:
+        """One exact historical record, in bounded lossless ASCII JSON chunks.
+
+        Offsets address the retained collection from its beginning, unlike the
+        legacy last-N operator history. A digest pins every continuation chunk
+        and detects collection drift; it is an observation, never authority.
+        """
+        if (section not in {"notes", "events", "checkpoints"}
+                or type(offset) is not int or not 0 <= offset <= 1000000
+                or type(byte_offset) is not int or not 0 <= byte_offset <= 100000000
+                or (sha256 is not None and (not isinstance(sha256, str)
+                    or len(sha256) != 71 or not sha256.startswith("sha256:")
+                    or any(c not in "0123456789abcdef" for c in sha256[7:])))):
+            raise HTTPException(422, "Invalid bounded history selector")
+        if byte_offset and sha256 is None:
+            raise HTTPException(422, "Continuation chunks require the collection sha256")
+        state = self._state(ref)
+        if section == "notes":
+            records = list(state.notes)
+        elif section == "checkpoints":
+            records = [item.model_dump(mode="json") for item in state.execution.checkpoint_history]
+        else:
+            records = [item.model_dump(mode="json") for item in self._events_for_ref(ref, strict=True)]
+        digest = self._hash_value(records)
+        if sha256 is not None and digest != sha256:
+            raise HTTPException(409, "History collection changed; read a fresh first page")
+        if offset > len(records) or (offset == len(records) and byte_offset):
+            raise HTTPException(422, "History offset is outside the retained collection")
+        record = (json.dumps(records[offset], ensure_ascii=True, sort_keys=True,
+                             separators=(",", ":")) if offset < len(records) else "")
+        if byte_offset > len(record) or (record and byte_offset == len(record)):
+            raise HTTPException(422, "History chunk offset is outside the record")
+        chunk = record[byte_offset:byte_offset + 4096]
+        more_chunks = byte_offset + len(chunk) < len(record)
+        more_records = offset + 1 < len(records)
+        return {"ref": ref, "view": "history", "section": section,
+                "count": len(records), "sha256": digest, "offset": offset,
+                "byte_offset": byte_offset, "encoding": "ascii-json",
+                "record_bytes": len(record), "record_sha256": self._hash_value(records[offset])
+                    if offset < len(records) else None,
+                "chunk": chunk, "record_complete": not more_chunks,
+                "incomplete": more_chunks or more_records,
+                "next_offset": offset if more_chunks else offset + 1 if more_records else None,
+                "next_byte_offset": byte_offset + len(chunk) if more_chunks else 0,
+                "requires_current_authority": True}
 
     def execution(self, ref: str) -> dict[str, Any]:
         state = self._state(ref)
@@ -440,6 +536,7 @@ class WorkItemExecutionLifecycleService:
         *,
         max_events: int = 100,
         event_offset: int = 0,
+        _delivery: bool = False,
     ) -> dict[str, Any]:
         """Return a verified checkpoint delta or an explicit full-context fallback."""
         max_events = max(1, min(int(max_events), self.MAX_HISTORY_LIMIT))
@@ -452,7 +549,7 @@ class WorkItemExecutionLifecycleService:
                 "mode": "full",
                 "reason": anchor.get("reason", "checkpoint_untrusted"),
                 "blockers": anchor.get("blockers", []),
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
             }
 
         checkpoint = WorkItemExecutionCheckpoint.model_validate(checkpoint_payload)
@@ -462,7 +559,7 @@ class WorkItemExecutionLifecycleService:
                 "mode": "full",
                 "reason": "checkpoint_schema_incompatible",
                 "checkpoint_schema_version": checkpoint.schema_version,
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
             }
 
         baseline = checkpoint.delivered_work_item_context
@@ -471,14 +568,22 @@ class WorkItemExecutionLifecycleService:
                 "ref": ref,
                 "mode": "full",
                 "reason": "checkpoint_baseline_missing",
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
             }
         if self._hash_value(baseline) != checkpoint.work_item_hash:
             return {
                 "ref": ref,
                 "mode": "full",
                 "reason": "checkpoint_baseline_corrupt",
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
+            }
+
+        projection = baseline.get("_projection")
+        if _delivery and (not isinstance(projection, dict)
+                or projection.get("schema") != "work-continuation-delivery/1"):
+            return {
+                "ref": ref, "mode": "full", "reason": "checkpoint_delivery_projection_missing",
+                "snapshot": self.continuation_snapshot(ref, _delivery=True),
             }
 
         events = self._events_for_ref(ref)
@@ -488,7 +593,7 @@ class WorkItemExecutionLifecycleService:
                 "ref": ref,
                 "mode": "full",
                 "reason": "event_watermark_invalid",
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
             }
         event_count, expected_digest = parsed
         if event_count > len(events):
@@ -496,7 +601,7 @@ class WorkItemExecutionLifecycleService:
                 "ref": ref,
                 "mode": "full",
                 "reason": "event_watermark_ahead",
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
             }
         prefix = events[:event_count]
         prefix_digest = self._event_watermark(prefix).rsplit(":", 1)[1]
@@ -505,11 +610,13 @@ class WorkItemExecutionLifecycleService:
                 "ref": ref,
                 "mode": "full",
                 "reason": "event_watermark_stale_or_corrupt",
-                "snapshot": self.continuation_snapshot(ref),
+                "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
             }
 
         state = self._state(ref)
         current = self._work_item_context(state)
+        if _delivery:
+            current = self._delivery_context(state, current)
         changed_fields = {
             key: value
             for key, value in current.items()
@@ -523,10 +630,23 @@ class WorkItemExecutionLifecycleService:
         next_event_offset = event_offset + len(returned_events)
         has_more_events = next_event_offset < len(new_events)
         baseline_bytes = len(self._stable_json(baseline).encode("utf-8"))
+        event_payloads = [event.model_dump(mode="json") for event in returned_events]
+        if _delivery:
+            # Current canonical state above supplies the task; historical event
+            # payloads remain retrievable, not silently copied into every turn.
+            event_payloads = [{**{key: value for key, value in event.items() if key != "payload"},
+                "_projection": {"omitted_fields": ["payload"],
+                    "payload_sha256": self._hash_value(event.get("payload")),
+                    "event_offset": event_count + event_offset + index,
+                    "retrieval": ("/api/work-items/" + quote(ref, safe="")
+                        + "?view=history&section=events&offset="
+                        + str(event_count + event_offset + index) + "&byte_offset=0"),
+                    "retrieval_requires_current_authority": True}}
+                for index, event in enumerate(event_payloads)]
         delta_payload = {
             "changed_fields": changed_fields,
             "removed_fields": removed_fields,
-            "events": [event.model_dump(mode="json") for event in returned_events],
+            "events": event_payloads,
         }
         delta_bytes = len(self._stable_json(delta_payload).encode("utf-8"))
         return {
@@ -557,8 +677,12 @@ class WorkItemExecutionLifecycleService:
                 "delta_context_bytes": delta_bytes,
                 "estimated_tokens_reused": max(0, (baseline_bytes - delta_bytes) // 4),
             },
-            "snapshot": self.continuation_snapshot(ref),
+            "snapshot": self.continuation_snapshot(ref, _delivery=_delivery),
         }
+
+    def continuation_delivery(self, ref: str) -> dict[str, Any]:
+        """Canonical native-turn selection; public full/history APIs stay intact."""
+        return self.continuation_delta(ref, max_events=10, _delivery=True)
 
     def checkpoint(self, ref: str, payload: WorkItemCheckpointCreate) -> dict[str, Any]:
         state = self._state(ref)
