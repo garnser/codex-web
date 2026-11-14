@@ -437,14 +437,26 @@ traversal and absolute paths; duplicate or empty selectors are rejected. Use
 original artifact members for bounded preview review rather than rebuilding or
 mistaking a truncated ZIP prefix for the full artifact.
 
-The channel is HTTP and does not require MCP tool registration. Task instructions
-include an explicit direct-loopback discovery example with a bounded client
-connection/read deadline. Proxy bypass is local to that broker request; it must
+The channel is HTTP and does not require MCP tool registration. Shared native
+task instructions use `curl --max-time 0` for direct-loopback discovery and
+`urlopen(request, timeout=None)` for Python clients, without an extra short
+connection/read deadline. Disabled application elapsed limits (`0` or `-1`)
+must not become positive client deadlines or nonblocking Python sockets.
+Tool polling continues the same live request handle; it does not resend the
+request. Catalog discovery is retained for the current assignment/fence and
+refreshed for an actual scope change or stale/unsupported operation, rather than
+repeated to abandon a slow read. Retained descriptors grant no authority.
+Proxy bypass is local to that broker request; it must
 not alter model egress or global network policy. Preserve the returned HTTP
-status, denial and correlation evidence. A client timeout is distinct from an
-authority denial, and an ambiguous mutation must reconcile its existing
-ActionIntent before retrying. Client deadlines never extend server-side
-assignment leases, operation deadlines or authorization.
+status, denial and correlation evidence. A client timeout/disconnect is an
+incomplete observation, not an authority denial or evidence of no effects.
+An ambiguous mutation must reconcile its existing ActionIntent; it cannot be
+resent because a client stopped waiting. Finite assignment leases, explicit
+operation/assignment deadlines, authorization and request-framing protections
+remain authoritative. This is the existing worker instruction/transport
+contract, not enforcement of arbitrary model-authored client code. Existing
+thread output and broker status/audit inspectors carry these observations;
+no new UI object, control, retry action or permission is introduced.
 
 The broker distinguishes request-read failures from resolved-operation timeouts.
 Incomplete headers/body retain HTTP400. Once a complete request has resolved an
