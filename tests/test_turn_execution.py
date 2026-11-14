@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import tempfile
 import time
 import unittest
@@ -43,6 +44,7 @@ from codex_web.services.work_item_contracts import assignment_control_plane_inst
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
+from codex_web.timeout_values import normalize_timeout
 from codex_web.services.turn_execution_binding import TurnExecutionBindingError
 from codex_web.services.upgrades import UpgradeAdmissionCoordinator
 from codex_web.storage.runtime_state import RuntimeStateRepositories
@@ -1845,6 +1847,25 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("expected_remote_revision", guidance)
         self.assertIn("do not rename it to the destination branch", guidance)
 
+    def _assert_broker_client_wait_contract(self, instructions: str) -> None:
+        # Inspect the command actually delivered to the native provider, without
+        # executing generated commands or imposing a latency assertion (#2115).
+        command = instructions.split("for example: ", 1)[1].split(". ", 1)[0]
+        args = shlex.split(command)
+        self.assertEqual(args[0], "curl")
+        self.assertEqual(args[args.index("--max-time") + 1], "0")
+        self.assertIsNone(normalize_timeout(float(args[args.index("--max-time") + 1])))
+        self.assertNotIn("--connect-timeout", args)
+        self.assertIn("Disabled elapsed limits (0 or -1)", instructions)
+        self.assertIn("urlopen(request, timeout=None)", instructions)
+        self.assertIn("finite worker leases, explicit assignment/action deadlines", instructions)
+        self.assertIn("keep observing that SAME request", instructions)
+        self.assertIn("incomplete read, not an access denial", instructions)
+        self.assertIn("Never resend a mutation", instructions)
+        self.assertIn("existing ActionIntent before retrying", instructions)
+        self.assertIn("Discover the catalog once for the current assignment/fence", instructions)
+        self.assertIn("every operation still performs current admission checks", instructions)
+
     async def test_null_work_item_assignment_delivers_broker_discovery(self) -> None:
         for source, bootstrap in (("slack", None), ("autonomy-watchdog", "t1")):
             with self.subTest(source=source, bootstrap=bootstrap):
@@ -1875,6 +1896,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("absence of MCP tools", instructions)
                     self.assertIn("expected_remote_absent: true", instructions)
                     self.assertIn("newly authorized", instructions)
+                    self._assert_broker_client_wait_contract(instructions)
                 self.assertEqual(sessions.session.requests[1][0], "turn/start")
 
     async def test_existing_work_item_broker_guidance_is_not_duplicated(self) -> None:
@@ -1892,6 +1914,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         instructions = sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"]
         self.assertIn("Canonical work context", instructions)
         self.assertEqual(instructions.count(guidance), 1)
+        self._assert_broker_client_wait_contract(instructions)
 
     async def test_work_item_delta_is_delivered_and_recorded_after_turn_start(self) -> None:
         recorded = []
