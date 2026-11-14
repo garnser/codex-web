@@ -130,6 +130,12 @@ class ReferencedAssignmentRetentionTests(unittest.TestCase):
         self.assertEqual(before_roots,{name:self.db.get(name) for name in before_roots})
 
     def test_project_goal_13_delivery_preserves_assignment_without_disabling_pruning(self):
+        self._project_goal_delivery_retention('1.3')
+
+    def test_project_goal_14_delivery_preserves_assignment_without_disabling_pruning(self):
+        self._project_goal_delivery_retention('1.4')
+
+    def _project_goal_delivery_retention(self, persisted_version):
         retained = self.terminals[0]
         session = self.session(self.active).model_copy(update={'project_id': 'data'})
         AgentSessionStore(self.db).upsert(session)
@@ -149,13 +155,24 @@ class ReferencedAssignmentRetentionTests(unittest.TestCase):
             project_continuation=ProjectGoalProgress(reserved_calls=1, delivery=delivery))
         store = GoalExecutionBindingStore(self.db)
         store.update(lambda state: GoalExecutionBindingState(bindings=[goal]))
+        current = self.db.get(store.namespace)
+        self.assertEqual(current['schema_version'], '1.4')
+        if persisted_version == '1.3':
+            # A valid persisted predecessor: the Project delivery existed in
+            # 1.3 and this fixture has no new dispatch_failure event metadata.
+            legacy = {**current, 'schema_version': '1.3'}
+            self.db.put(store.namespace, legacy)
+            self.assertEqual(store.load().bindings, [goal])
+            self.assertEqual(self.db.get(store.namespace), legacy)  # read migration is inert
         before = self.db.get(store.namespace)
-        self.assertEqual(before['schema_version'], '1.3')
+        self.assertEqual(before['schema_version'], persisted_version)
+        active_before = self.workers.assignment(self.active.id)
         self.ordinary_worker_update()
         self.assertEqual(self.workers.assignment(retained.id), retained)
+        self.assertEqual(self.workers.assignment(self.active.id), active_before)
         self.assertEqual(self.db.get(store.namespace), before)
-        # A rejected/unknown root schema suppresses all pruning. Prove that the
-        # new schema is understood, with exactly one extra retained predecessor.
+        # A rejected/unknown root schema suppresses all pruning. Prove that
+        # BOTH persisted versions are understood with exactly one extra root.
         self.assertIsNone(self.workers.assignment(self.terminals[1].id))
         self.assertEqual(sum(a.status == 'lost' for a in self.workers.load().assignments), 129)
 

@@ -169,6 +169,24 @@ class GoalExecutionBinding(BaseModel):
         return result
 
 
+ProjectGoalDispatchFailureCode = Literal[
+    "agent_profile_unavailable", "agent_profile_sandbox_conflict",
+    "agent_profile_execution_profile_conflict", "resource_context_requester_work_item_required",
+    "resource_context_requester_changed", "resource_context_work_item_changed",
+    "resource_context_unavailable", "resource_context_rollover_required",
+    "execution_preflight_blocked", "project_goal_preinput_refused",
+]
+
+
+class ProjectGoalDispatchFailure(BaseModel):
+    """Diagnostic facts only; neither native outcome nor retry authority."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stage: Literal["context", "reservation", "project_lookup", "queue_call", "queue_response", "queue_acceptance"]
+    exception_type: Literal["cancelled", "timeout", "prestart_refusal", "admission_paused", "http_error", "permission_error", "lookup_error", "value_error", "os_error", "exception", "base_exception"]
+    code: ProjectGoalDispatchFailureCode | None = None
+
+
 class GoalExecutionBindingEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -181,11 +199,19 @@ class GoalExecutionBindingEvent(BaseModel):
     correlation_id: str | None = None
     causation_id: str | None = None
     occurred_at: float = Field(default_factory=time.time)
+    dispatch_failure: ProjectGoalDispatchFailure | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_absent_dispatch_failure(self, handler):
+        result = handler(self)
+        if self.dispatch_failure is None:
+            result.pop("dispatch_failure", None)
+        return result
 
 
 class GoalExecutionBindingState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.3"] = "1.3"
+    schema_version: Literal["1.4"] = "1.4"
     bindings: list[GoalExecutionBinding] = Field(default_factory=list)
     events: list[GoalExecutionBindingEvent] = Field(default_factory=list)

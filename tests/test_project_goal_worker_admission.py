@@ -143,7 +143,7 @@ class ProjectGoalWorkerAdmissionTests(HomeCanonicalSendTests):
     async def test_project_facet_version_and_cross_scope_invariants(self):
         current = await self.queued_goal()
         state = self.goal_bindings.store.load()
-        self.assertEqual(state.schema_version, '1.3')
+        self.assertEqual(state.schema_version, '1.4')
         with self.assertRaises(ContractCompatibilityError):
             ContractSpec('goal-execution-binding-state', '1.2', ('1.0', '1.1', '1.2')).require(state.schema_version)
         raw = current.model_dump(mode='python')

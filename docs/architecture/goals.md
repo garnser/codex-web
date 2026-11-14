@@ -62,12 +62,42 @@ ceilings do not demand unavailable measurements; a finite corresponding ceiling
 refuses another input while the relevant cumulative measurement is unknown.
 The conservative reservation counter is distinct from measured model calls.
 
-The binding state contract is **1.3**, reading 1.0–1.3 through the canonical
+The binding state contract is **1.4**, reading 1.0–1.4 through the canonical
 additive migrations. Legacy bindings acquire no delivery, grant or new native
 effect; the absent optional facet is omitted in their serialization. Old
-readers that support only 1.2 must reject 1.3; downgrade cannot discard a
+readers that support only 1.3 must reject 1.4; downgrade cannot discard a
 retained original. There is no physical database schema change, parallel
 journal, bulk history rewrite or retrospective native outcome backfill.
+
+Version 1.4 adds optional typed `dispatch_failure` to the existing binding
+event, not to a delivery. Reading 1.3 normalizes the envelope in memory without
+writing history; the next canonical update writes 1.4. Existing events retain
+their fields and omit the absent diagnostic. Writer/reader rollback to 1.3 is
+unsupported after a 1.4 write, including when no diagnostic is present.
+
+A failed Project dispatch records its code-owned stage before each boundary
+(context, reservation, Project lookup, queue call, queue response, or queue
+acceptance). The atomic held-binding event retains a closed exception category
+and, only for a recognized typed refusal, an allowlisted existing code. It never
+stores exception prose, arbitrary class names or response bodies. Its correlation
+is the current observation's correlation or null, not the binding's previous
+claim correlation; causation is the exact reserved delivery ID, when available.
+After a reservation commit loses its acknowledgement, or a genuine START wins
+before queue acceptance fails, the diagnostic can append without changing the
+binding. Inside the same binding transaction it must match the locally prepared
+delivery's complete immutable input/claim fingerprint and current execution ID;
+the proposed ID alone is insufficient. Before a retained delivery exists, only
+the exact unchanged claimed binding can attribute a failure. Advanced START,
+terminal, accounting and operator state stay intact. An unmatched current owner
+gets no misattributed event. The scoped binding-events API and Goal timeline
+expose the diagnostic alongside the plain human reason.
+
+These fields describe the dispatch boundary, not native outcome. In particular,
+`queue_call` includes a failure after durable enqueue but before its response.
+The same reserved input stays UNKNOWN, with no new retry, nonstart, cleanup,
+reconciliation or replay authority. Caller cancellation still joins the owned
+queue operation and is re-raised after retaining the diagnostic. No historical
+UNKNOWN original is reclassified or backfilled.
 
 ## Canonical Goal state
 
@@ -361,11 +391,12 @@ idle alone never settles usage or authorizes replay. The Goal workspace displays
 the canonical Home delivery phase, pending terminal accounting and usage totals
 separately from Goal completion.
 
-Goal execution binding state is **1.2**. Reads migrate legacy 1.0/1.1 in memory;
-ordinary bindings omit the optional Home proof. **Every binding-store write,
-including an ordinary binding write, persists 1.2.** Older readers must reject it.
-A release containing this writer is a state migration and cannot promise rollback
-to a 1.1-only binary after any such write. Cold backup/restore composition must not
+The Home proof introduced binding state **1.2**; the current writer is **1.4**
+as described above. Reads migrate legacy versions in memory; ordinary bindings
+omit the optional Home proof. **Every binding-store write, including an ordinary
+binding write, persists the current version.** Older unsupported readers reject it.
+A release containing a newer writer is a state migration and cannot promise rollback
+to an older-only binary after any such write. Cold backup/restore composition must not
 write binding state before restoring an older service. Rollback then requires a
 qualified compatible reader or an explicitly reviewed data migration; dropping
 Home proof or clearing uncertain inputs is not a rollback operation.
