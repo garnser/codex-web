@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import copy
+import inspect
+import threading
+from contextvars import ContextVar
 
 from codex_web.compatibility import MigrationRegistry
 from codex_web.configuration import CONFIGURATION_CONTRACT, ConfigurationRecord
@@ -25,6 +29,7 @@ class ConfigurationRegistryStore:
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        self._read_observation = ContextVar('codex_web_configuration_read_observation', default=None)
 
     def _decode(self, payload: Any) -> list[ConfigurationRecord]:
         if payload is None:
@@ -54,7 +59,33 @@ class ConfigurationRegistryStore:
         }
 
     def load(self) -> list[ConfigurationRecord]:
+        observation = self._read_observation.get()
+        if observation is not None:
+            return observation.load(self)
         return self._decode(self.store.get(self.namespace))
+
+    def can_observe_reads(self):
+        return (type(self) is ConfigurationRegistryStore and self.store is not None
+            and all(getattr(getattr(self, name, None), '__self__', None) is self
+                and getattr(getattr(self, name, None), '__func__', None) is method
+                for name, method in _CANONICAL_CONFIGURATION_READS.items()))
+
+    def observe_reads(self, callback):
+        """One synchronous raw observation; never retain a resolved value."""
+        if not _CANONICAL_CONFIGURATION_READS['can_observe_reads'](self):
+            return callback(None)
+        observation = _ConfigurationReadObservation(self)
+        token = self._read_observation.set(observation)
+        try:
+            result = callback(observation)
+            if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                    result.close()
+                raise ValueError('Configuration observation callback must be synchronous')
+            return result
+        finally:
+            self._read_observation.reset(token)
+            observation.close()
 
     def replace(self, records: list[ConfigurationRecord]) -> list[ConfigurationRecord]:
         payload = self._encode(records)
@@ -79,3 +110,44 @@ class ConfigurationRegistryStore:
             },
         )
         return self._decode(payload)
+
+
+class _ConfigurationReadObservation:
+    def __init__(self, repository):
+        self.repository = repository
+        self._backend = repository.store
+        self._namespace = repository.namespace
+        self._thread = threading.get_ident()
+        self._active = True
+        self._loaded = False
+        self._raw = None
+
+    def require_owner(self, repository):
+        if (not self._active or repository is not self.repository
+                or repository.store is not self._backend or repository.namespace != self._namespace
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_CONFIGURATION_READS['can_observe_reads'](repository)):
+            raise ValueError('Configuration observation is foreign, closed or changed')
+
+    def load(self, repository):
+        self.require_owner(repository)
+        if not self._loaded:
+            self._raw = copy.deepcopy(self._backend.get(self._namespace))
+            self._loaded = True
+        # Resolve and validate current policy/clock on every caller invocation;
+        # the view stores the exact raw envelope, not models or an effective value.
+        return _CANONICAL_CONFIGURATION_READS['_decode'](repository, copy.deepcopy(self._raw))
+
+    def require_current(self, repository, raw):
+        self.require_owner(repository)
+        if not self._loaded or raw != self._raw:
+            raise ValueError('Configuration observation changed before guarded use')
+
+    def close(self):
+        self._active = False
+        self._raw = None
+        self._loaded = False
+
+
+_CANONICAL_CONFIGURATION_READS = {name: getattr(ConfigurationRegistryStore, name) for name in (
+    'load', '_decode', 'can_observe_reads', 'observe_reads')}

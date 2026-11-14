@@ -32,7 +32,25 @@ def checksum(value: Any) -> str:
 
 
 class _EmptyPreparationUnavailable(ValueError):
-    """An unavailable observation cannot supply a local non-input witness."""
+    """Opaque empty-seal observation failure; never local refusal proof."""
+
+
+class _EmptyPreparationContextUnavailable(_EmptyPreparationUnavailable):
+    """Explicit context-resolution refusal, not a swallowed reader failure."""
+
+
+def _empty_preparation_failure(context, discovery, *, validation_failed=False):
+    # discover returns these exact blockers before candidate enumeration. Its
+    # catch-all instead appends procedure_discovery_failed:<type>; even matching
+    # caller context text cannot promote that opaque exception to refusal proof.
+    closed_context = (not validation_failed and context.resolution_blockers
+        and discovery.outcome == 'failed'
+        and discovery.blockers == context.resolution_blockers
+        and not discovery.candidates and not discovery.selected
+        and not any(reason.startswith('procedure_discovery_failed:')
+                    for reason in discovery.blockers))
+    failure = _EmptyPreparationContextUnavailable if closed_context else _EmptyPreparationUnavailable
+    return failure('Current empty native preparation observation is unavailable')
 
 
 class _EmptyPreparationCandidatesChanged(ValueError):
@@ -674,7 +692,8 @@ class NativeProcedureAdmissionService:
         owner = self.procedure_execution
         from codex_web.services.procedure_execution import (
             ProcedureExecutionService, _CANONICAL_INITIAL_CREDENTIAL_ADMIT, _CANONICAL_INITIAL_SEAL_CHECK,
-            _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK)
+            _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK, _CANONICAL_INITIAL_PROJECT_SEAL_CHECK,
+            _CANONICAL_INITIAL_CAPACITY_SEAL_CHECK)
         # Only the canonical owner opts into explicit data sharing. Extensions
         # keep their original call signature and complete guarded validation.
         def canonical_reads():
@@ -690,10 +709,8 @@ class NativeProcedureAdmissionService:
                 and getattr(self.discovery.discover, '__func__', None) is _CANONICAL_DISCOVER
                 and _CANONICAL_INITIAL_SEAL_CHECK(owner))
         if canonical_pair and canonical_reads():
-            def observed(reader):
+            def observed(reader, projects=None, capacity=None):
                 def with_identity(identity):
-                    if reader is None:
-                        return owner.admit_initial_native_credentials(assignment, selected, actor, validate, **options)
                     read_options = {'_definitions':reader}
                     if identity is not None:
                         read_options['_identity'] = identity
@@ -702,16 +719,34 @@ class NativeProcedureAdmissionService:
                     validate(self._current_preparation_assignment(assignment), **read_options)
                     def current(current_assignment):
                         if (not canonical_reads() or identity is not None
-                                and not _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK(owner)):
+                                and not _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK(owner)
+                                or projects is not None and not _CANONICAL_INITIAL_PROJECT_SEAL_CHECK(owner)
+                                or capacity is not None and not _CANONICAL_INITIAL_CAPACITY_SEAL_CHECK(owner)):
                             raise ValueError('Native preparation metadata owner changed before guarded use')
                         return validate(current_assignment, **read_options)
                     fresh_assignment = self._current_preparation_assignment(assignment)
                     return owner.admit_initial_native_credentials(fresh_assignment, selected, actor, current,
-                        **read_options, **options)
+                        **read_options, **({'_projects':projects} if projects is not None else {}),
+                        **({'_capacity':capacity} if capacity is not None else {}), **options)
                 if _CANONICAL_INITIAL_IDENTITY_SEAL_CHECK(owner):
                     return owner.identity.observe_reads(with_identity)
                 return with_identity(None)
-            return owner.skills.observe_definition_reads(metadata_references or selected, observed)
+            def observe_context(reader, capacity=None):
+                if _CANONICAL_INITIAL_PROJECT_SEAL_CHECK(owner):
+                    return self.discovery.projects.repository.observe_reads(lambda projects:
+                        observed(reader, projects, capacity))
+                return observed(reader, capacity=capacity)
+            def read_context(reader):
+                if reader is None:
+                    # Unsupported Definition ancestry keeps every context read
+                    # current under the original guarded path; no outer view
+                    # may silently remain active without its own raw guard.
+                    return owner.admit_initial_native_credentials(assignment, selected, actor, validate, **options)
+                if _CANONICAL_INITIAL_CAPACITY_SEAL_CHECK(owner):
+                    return self.discovery.context_capacity_resolver.observe_reads(
+                        lambda capacity: observe_context(reader, capacity))
+                return observe_context(reader)
+            return owner.skills.observe_definition_reads(metadata_references or selected, read_context)
         return owner.admit_initial_native_credentials(assignment, selected, actor, validate, **options)
 
     def _admit_initial_native_credentials(self, assignment, selected, actor, project, sandbox, request_checksum, *, _diagnostics=None):
@@ -871,7 +906,8 @@ class NativeProcedureAdmissionService:
             # Check unavailable observations even when another candidate was
             # excluded successfully and the full ordered inventory is unchanged.
             if validation_failed or discovery.outcome == 'failed':
-                raise _EmptyPreparationUnavailable('Current empty native preparation observation is unavailable')
+                raise _empty_preparation_failure(context, discovery,
+                    validation_failed=bool(validation_failed))
             references_changed = tuple(candidate.reference for candidate in discovery.candidates) != tuple(references)
             if not excluded or references_changed:
                 raise _EmptyPreparationCandidatesChanged(no_exclusions=not excluded,
@@ -1069,6 +1105,8 @@ class NativeProcedureAdmissionService:
                     # The plain zero-candidate branch has no empty-proof callback;
                     # it must also preserve errors caught by discovery as unknown.
                     if fresh.outcome == 'failed':
+                        if empty_preparation_references is None:
+                            raise _empty_preparation_failure(fresh_context, fresh)
                         raise _EmptyPreparationUnavailable('Current empty native preparation observation is unavailable')
                     if not fresh.admitted or fresh.selected or fresh.context_checksum != discovery.context_checksum:
                         # This comparison is an authoritative local pre-input
@@ -1084,6 +1122,20 @@ class NativeProcedureAdmissionService:
             try:
                 assignment = await asyncio.to_thread(seal_empty)
             except Exception as exc:
+                if type(exc) is _EmptyPreparationContextUnavailable:
+                    # Only the explicit context-resolution decision is closed;
+                    # opaque validator/storage/final-proof failures stay unknown.
+                    # This boundary supplies the local refusal; failed facts,
+                    # matching prose and transported codes supply no authority.
+                    # The queue's atomic claim/capture guards still decide
+                    # whether this same original may be recorded as blocked.
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                        "code": "procedure_empty_preparation_unavailable",
+                        "message": "Current empty native preparation could not be validated before input.",
+                        "retryable": False,
+                        "native_empty_preparation_diagnostics": [
+                            {"stage": "discovery", "exception_type": "ValueError"}],
+                    }) from exc
                 from codex_web.services.procedure_execution import ProcedureExecutionError
                 if isinstance(exc, ProcedureExecutionError) and exc.code.startswith("procedure_credential_"):
                     # This owner is still before native input. Retain the same

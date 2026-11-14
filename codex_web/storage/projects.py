@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import inspect
+import threading
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -28,6 +30,7 @@ class ProjectRepository:
             "codex_web_projects_snapshot",
             default=None,
         )
+        self._read_observation = ContextVar("codex_web_projects_read_observation", default=None)
 
     def resolve_path(self, value: str | Path) -> Path:
         return self.workspace_mapper.runtime_path(value)
@@ -78,6 +81,9 @@ class ProjectRepository:
                 )
 
     def load(self) -> list[Project]:
+        observation = self._read_observation.get()
+        if observation is not None:
+            return observation.load(self)
         if self.store is None:
             raw_payload = self._legacy_or_default_payload()
         else:
@@ -98,6 +104,29 @@ class ProjectRepository:
             self._write_payload(normalized_payload)
         self._snapshot.set(copy.deepcopy(normalized_payload))
         return projects
+
+    def can_observe_reads(self):
+        return (type(self) is ProjectRepository and self.store is not None
+            and all(getattr(getattr(self, name, None), '__self__', None) is self
+                and getattr(getattr(self, name, None), '__func__', None) is method
+                for name, method in _CANONICAL_PROJECT_READS.items()))
+
+    def observe_reads(self, callback):
+        """Reuse data only during one synchronous, raw-guarded initial seal."""
+        if not _CANONICAL_PROJECT_READS['can_observe_reads'](self):
+            return callback(None)
+        observation = _ProjectReadObservation(self)
+        token = self._read_observation.set(observation)
+        try:
+            result = callback(observation)
+            if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+                if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                    result.close()
+                raise ValueError('Project observation callback must be synchronous')
+            return result
+        finally:
+            self._read_observation.reset(token)
+            observation.close()
 
     def update_home_operator(self, *, organization_id, workspace_id, expected_revision, binding):
         """CAS one navigation field without overwriting concurrent Project edits."""
@@ -121,6 +150,7 @@ class ProjectRepository:
         merged = self.store.update(self.namespace, update, default=[])
         self._snapshot.set(copy.deepcopy(merged))
         self._write_payload(merged)
+
 
     def save(self, projects: list[Project]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,3 +217,48 @@ class ProjectRepository:
                 )
         self._snapshot.set(copy.deepcopy(merged))
         self._write_payload(merged)
+
+
+class _ProjectReadObservation:
+    def __init__(self, owner):
+        self.repository = owner
+        self._backend = owner.store
+        self._namespace = owner.namespace
+        self._mapper = owner.workspace_mapper
+        self._thread = threading.get_ident()
+        self._active = True
+        self._projects = None
+        self._raw = None
+
+    def require_owner(self, owner):
+        if (not self._active or owner is not self.repository
+                or owner.store is not self._backend or owner.namespace != self._namespace
+                or owner.workspace_mapper is not self._mapper
+                or threading.get_ident() != self._thread
+                or not _CANONICAL_PROJECT_READS['can_observe_reads'](owner)):
+            raise ValueError('Project observation is foreign, closed or changed')
+
+    def load(self, owner):
+        self.require_owner(owner)
+        if self._projects is None:
+            token = owner._read_observation.set(None)
+            try:
+                self._projects = _CANONICAL_PROJECT_READS['load'](owner)
+                self._raw = copy.deepcopy(owner._snapshot.get())
+            finally:
+                owner._read_observation.reset(token)
+        return [project.model_copy(deep=True) for project in self._projects]
+
+    def require_current(self, owner, raw):
+        self.require_owner(owner)
+        if self._projects is None or raw != self._raw:
+            raise ValueError('Project observation changed before guarded use')
+
+    def close(self):
+        self._active = False
+        self._projects = self._raw = None
+
+
+_CANONICAL_PROJECT_READS = {name: getattr(ProjectRepository, name) for name in (
+    'load', 'can_observe_reads', 'observe_reads', '_legacy_or_default_payload',
+    '_validate_portable_paths', '_runtime_project', '_storage_payload')}

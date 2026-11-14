@@ -2121,7 +2121,7 @@ app.include_router(build_capacity_router(capacity_service))
 from codex_web.services.procedure_discovery import ProcedureSupportingContextService, ProcedureExecutionCapabilityService
 
 from codex_web.services.procedure_configuration import (
-    PROCEDURE_CONTEXT_CHARACTERS, install_procedure_configuration,
+    PROCEDURE_CONTEXT_CHARACTERS, ProcedureContextCapacityResolver, install_procedure_configuration,
 )
 install_procedure_configuration(configuration_service)
 from codex_web.mr_observation_policy import OBSERVATION_WINDOW
@@ -2129,7 +2129,7 @@ configuration_service.register_spec(OBSERVATION_WINDOW)
 artifact_evidence_service.mr_observation_configuration = configuration_service
 
 procedure_discovery_service = ProcedureDiscoveryService(skill_service, resource_catalog_service,
-    context_capacity_resolver=lambda: configuration_service.resolve(PROCEDURE_CONTEXT_CHARACTERS.key),
+    context_capacity_resolver=ProcedureContextCapacityResolver(configuration_service),
     supporting_context=ProcedureSupportingContextService(organizational_memory_service), projects=project_service,
     execution_capabilities=ProcedureExecutionCapabilityService(execution_worker_service, agent_runtime_registry, agent_provider_service))
 app.state.procedure_discovery_service = procedure_discovery_service
