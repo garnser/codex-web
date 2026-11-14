@@ -51,6 +51,7 @@ class ExecutionPreflightService:
         self.event_sink = event_sink
         self.queued_start_observer = None
         self.queued_disposition_observer = None
+        self.native_preinput_retry_validator = None
 
     def observe_queued_start(self, attempt):
         """Project a committed native fact; metadata failure never permits replay."""
@@ -211,7 +212,8 @@ class ExecutionPreflightService:
     def queued_disposition(self, attempt_id: str, *, status: str,
                            detail: dict[str, Any] | None = None,
                            claim_id: str | None = None,
-                           preinput_refusal: bool = False) -> ExecutionPreflightAttempt:
+                           preinput_refusal: bool = False,
+                           native_preinput_observation=None) -> ExecutionPreflightAttempt:
         """Internal runtime outcome; unknown native starts remain non-retryable.
 
         preinput_refusal is supplied only by the controller's typed local
@@ -282,7 +284,18 @@ class ExecutionPreflightService:
                 witness = {'version': '1.0', 'attempt_id': current.id,
                     'claim_id': claim_id, 'attempt_number': current.attempt_number,
                     'snapshot_sha256': self.queued_snapshot_digest(current.queued_turn_snapshot)}
-            blockers = self._blockers(retained_detail, local_preinput_refusal=witness) if retained_detail else ()
+            native_proof = None
+            if preinput_refusal and disposition == 'blocked':
+                from codex_web.services.queued_native_preinput import (
+                    _NativePreinputObservation, matches_original, no_native_capture)
+                if (type(native_preinput_observation) is _NativePreinputObservation
+                        and (detail or {}).get('code') == native_preinput_observation.proof.code
+                        and current.status in {'admitting', 'reconciliation_required'}
+                        and no_native_capture(current)
+                        and matches_original(self, current, native_preinput_observation.proof)):
+                    native_proof = native_preinput_observation.proof.model_dump(mode='json')
+            blockers = self._blockers(retained_detail, local_preinput_refusal=witness,
+                native_preinput_proof=native_proof) if retained_detail else ()
             history = current.blocker_history
             if (disposition == 'blocked' and preinput_refusal
                     and (detail or {}).get('code') in {'native_session_scope_incompatible', 'native_session_prior_assignment_missing'}
@@ -402,11 +415,16 @@ class ExecutionPreflightService:
                     and attempt.scheduling_retirement is None)
             except ValueError:
                 return False
-        return (self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
+        return (bool(self.recorded_native_preinput_refusal(attempt))
+                or self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
                 or self.recorded_initial_process_refusal(attempt)
                 or self.recorded_custody_refusal(attempt)
                 or self.recorded_reasoning_refusal(attempt)
                 or self.recorded_goal_policy_refusal(attempt))
+
+    def recorded_native_preinput_refusal(self, attempt):
+        from codex_web.services.queued_native_preinput import recorded_proof
+        return recorded_proof(self, attempt)
 
     def recorded_goal_policy_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
         """Only a controller-owned exact Goal input refusal is a nonstart witness."""
@@ -675,7 +693,7 @@ class ExecutionPreflightService:
         return self.store.update(attempt_id, update)
 
     @staticmethod
-    def _blockers(detail: Any, *, local_preinput_refusal=None) -> tuple[ExecutionPreflightBlocker, ...]:
+    def _blockers(detail: Any, *, local_preinput_refusal=None, native_preinput_proof=None) -> tuple[ExecutionPreflightBlocker, ...]:
         if not isinstance(detail, dict):
             return (
                 ExecutionPreflightBlocker(
@@ -702,6 +720,9 @@ class ExecutionPreflightService:
                 value[key] = diagnostics
             # Reserved controller witness cannot be supplied by provider/HTTP detail.
             value.pop('local_preinput_refusal', None)
+            value.pop('native_preinput_refusal', None)
+            if native_preinput_proof is not None and value.get('code') == 'native_context_delivery_limit':
+                value['native_preinput_refusal'] = native_preinput_proof
             if local_preinput_refusal is not None:
                 value['local_preinput_refusal'] = local_preinput_refusal
             value.setdefault(
@@ -1018,12 +1039,34 @@ class ExecutionPreflightService:
             })
 
         claim_id = f"retry-{uuid.uuid4().hex}"
-        updated, claimed = self.store.claim_retry(
-            attempt_id,
-            claim_id=claim_id,
-            now=float(self.clock()),
-            stale_after_seconds=self.RETRY_CLAIM_TTL_SECONDS,
-        )
+        source_guard = None
+        if (self.recorded_native_preinput_refusal(current)
+                and current.bootstrap_recovery is None):
+            if self.native_preinput_retry_validator is None:
+                raise HTTPException(status_code=409, detail={
+                    'code':'native_preinput_bootstrap_recovery_required',
+                    'message':'Inspect exact recipient custody before retrying this original.'})
+            try:
+                source_guard = self.native_preinput_retry_validator(current)
+            except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
+                raise HTTPException(status_code=409, detail={
+                    'code':'native_preinput_bootstrap_recovery_required',
+                    'message':'Current recipient custody cannot retry this original; inspect bootstrap recovery.'}) from exc
+        try:
+            updated, claimed = self.store.claim_retry(
+                attempt_id,
+                claim_id=claim_id,
+                now=float(self.clock()),
+                stale_after_seconds=self.RETRY_CLAIM_TTL_SECONDS,
+                expected_attempt=current if source_guard is not None else None,
+                source_guard=source_guard,
+            )
+        except ValueError as exc:
+            if source_guard is None:
+                raise
+            raise HTTPException(status_code=409, detail={
+                'code':'native_preinput_retry_review_changed',
+                'message':'The reviewed original or recipient custody changed; inspect it again.'}) from exc
         self._authorize(updated, actor, require_admin=True)
         return updated, updated.retry_claim_id, claimed
 
@@ -1216,6 +1259,15 @@ class ExecutionPreflightService:
         payload['bootstrap_recovery_href'] = (
             f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
             f'{attempt.id}/bootstrap-recovery')
+        if any(blocker.code == 'native_context_delivery_limit' for blocker in attempt.blockers):
+            proof = self.recorded_native_preinput_refusal(attempt)
+            payload['native_preinput_recovery'] = {
+                'phase':'before_native_turn_input', 'claim_bound_proof_retained':bool(proof),
+                'reason':('inspect_exact_retired_source' if proof else 'claim_bound_controller_witness_missing'),
+                'message':('Inspect the exact retired source and current authority before bootstrap recovery.'
+                    if proof else 'The retained context refusal has no claim-bound controller witness. '
+                    'A journal known_unstarted flag cannot identify its claim, snapshot and custody; '
+                    'recovery cannot manufacture that historical proof.')}
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
             and ((attempt.status == 'reconciliation_required' and (attempt.queued_start_evidence is not None
                     or (attempt.queued_resume_evidence is not None

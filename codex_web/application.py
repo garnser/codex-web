@@ -4143,6 +4143,8 @@ owner_routing_service = OwnerRoutingService(
     append_event=work_item_state_machine._append_work_item_event,
     preflight=execution_preflight_store,
 )
+queued_bootstrap_recovery_service.owner_routing = owner_routing_service
+execution_preflight_service.native_preinput_retry_validator = owner_routing_service.native_preinput_retry_guard
 from codex_web.services.owner_recipient_preparation import OwnerRecipientPreparationService
 owner_routing_service.recipient_preparer = OwnerRecipientPreparationService(
     routing=owner_routing_service, threads=thread_service,

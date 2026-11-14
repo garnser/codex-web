@@ -1,6 +1,6 @@
 const {test, expect} = require('@playwright/test');
 
-async function setup(page, {pending=false, denied=false, failed=false, deferred=false, successor=false, home=false}={}) {
+async function setup(page, {pending=false, denied=false, failed=false, deferred=false, successor=false, home=false, beforeInput=false}={}) {
   await page.goto('http://127.0.0.1:18766/static/queued_bootstrap_recovery_ui.js');
   await page.evaluate(async values => {
     document.body.innerHTML = '<main id="messages"></main>';
@@ -14,6 +14,7 @@ async function setup(page, {pending=false, denied=false, failed=false, deferred=
           if (values.denied) throw Error('Administrator MFA required');
           return {queued_turn_id:'original', project_id:values.home?'home':'project', original_actor_id:'original-actor',
             ...(values.successor ? {source_thread_id:'fenced-pending-destination'} : {}),
+            ...(values.beforeInput ? {refusal_phase:'before_native_turn_input'} : {}),
             agent_profile_id:'original-profile', agent_profile_revision:6,
             execution_profile_id:'repository-write', writable_repository_resource_ids:['repo'],
             read_only_repository_resource_ids:['docs'], snapshot_sha256:'a'.repeat(64),
@@ -26,8 +27,20 @@ async function setup(page, {pending=false, denied=false, failed=false, deferred=
       loadThread:async thread=>window.loads.push(thread), scheduleRefresh:()=>{}});
     ui.attach({can_recover_bootstrap:true, bootstrap_recovery_href:'/fixture/bootstrap-recovery'},
       document.querySelector('#messages'));
-  }, {pending, denied, failed, deferred, successor, home});
+  }, {pending, denied, failed, deferred, successor, home, beforeInput});
 }
+
+test('before-input recovery distinguishes existing Session and preserves explicit submission', async({page})=>{
+  await setup(page, {beforeInput:true});
+  await page.getByRole('button', {name:'Inspect fresh bootstrap recovery'}).click();
+  await expect(page.locator('pre')).toContainText('its provider Session already existed');
+  await expect(page.locator('pre')).toContainText('retains the same original and handoff');
+  await expect(page.locator('pre')).toContainText('does not settle historical unknown outcomes');
+  expect(await page.evaluate(()=>window.calls.filter(call=>call.options).length)).toBe(0);
+  await page.getByLabel('Fresh bootstrap recovery reason').fill('Recover exact retired recipient');
+  await page.getByRole('button', {name:'Create fresh bootstrap',exact:true}).click();
+  expect(await page.evaluate(()=>window.calls.filter(call=>call.options).length)).toBe(1);
+});
 
 test('successor submission pins the inspected pending destination', async({page})=>{
   await setup(page, {successor:true});

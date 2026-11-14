@@ -66,6 +66,13 @@
       updated_at: 1800000010,
       blockers: [blocker],
     }];
+    if (new URLSearchParams(location.search).has('legacyNativeContext')) {
+      attempts[0].can_recover_bootstrap = false;
+      attempts[0].native_preinput_recovery = {phase:'before_native_turn_input',
+        claim_bound_proof_retained:false, reason:'claim_bound_controller_witness_missing',
+        message:'The retained context refusal has no claim-bound controller witness. A journal known_unstarted flag cannot identify its claim, snapshot and custody; recovery cannot manufacture that historical proof.'};
+      attempts[0].blockers = [{code:'native_context_delivery_limit',message:'Required context exceeds native budget'}];
+    }
     if (new URLSearchParams(location.search).has('nativePreparation')) {
       attempts[0].blockers = [{code: 'native_reasoning_preparation_unavailable',
         message: 'Current canonical tool-free reasoning preparation is unavailable',

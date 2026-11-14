@@ -22,6 +22,10 @@ export function createQueuedBootstrapRecoveryUi({api, loadThread, scheduleRefres
           + `Actor: ${preview.original_actor_id}\nProfile: ${preview.agent_profile_id} revision ${preview.agent_profile_revision}\n`
           + `Execution profile: ${preview.execution_profile_id}\nWritable repositories: ${preview.writable_repository_resource_ids.join(', ')}\n`
           + `Read-only repositories: ${preview.read_only_repository_resource_ids.join(', ')}\nBootstrap state: ${preview.state}`;
+        if (preview.refusal_phase === 'before_native_turn_input') {
+          details.textContent += '\nSource refusal: before native turn input; its provider Session already existed. '
+            + 'Recovery retains the same original and handoff; it does not settle historical unknown outcomes.';
+        }
         container.append(details);
         if (!preview.can_create && !preview.can_reconcile) {
           status.textContent = 'Fresh bootstrap is verified. Use Retry to restore the original request.' + homeReselection;

@@ -91,6 +91,12 @@ class ExecutionPrestartRefusal(HTTPException):
     """Controller-owned routing/profile refusal raised before native turn input."""
 
 
+class _NativeContextPreinputRefusal(ExecutionPrestartRefusal):
+    def __init__(self, *, observation, **kwargs):
+        super().__init__(**kwargs)
+        self.observation = observation
+
+
 class ReadinessOriginPrestartDeferred(ExecutionPrestartRefusal):
     """Local canonical cursor advanced before bootstrap retirement/native input."""
 
@@ -3519,7 +3525,12 @@ class TurnExecutionService:
                 try:
                     render_codex_context(native_context_fragments)
                 except CodexContextLimitError as exc:
-                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                    from codex_web.services.queued_native_preinput import observe_renderer_refusal
+                    observation = await self._settle_custody_call(observe_renderer_refusal, self.queued_preflight,
+                        work_owner=session,
+                        attempt_id=queued_admission_attempt_id, claim_id=queued_admission_claim_id,
+                        thread_id=thread_id, bootstrap=bootstrap, assignment=assignment)
+                    raise _NativeContextPreinputRefusal(observation=observation, status_code=409, detail={
                         "code": "native_context_delivery_limit",
                         "message": "Required context cannot be delivered completely within the native context budget",
                         "retryable": False,
@@ -4691,6 +4702,8 @@ class TurnExecutionService:
                     status='blocked' if known_unstarted else 'reconciliation_required',
                     detail=detail or {'message':str(exc),'code':'native_start_outcome_unknown'},
                     claim_id=admission_claim_id, preinput_refusal=known_unstarted,
+                    **({'native_preinput_observation':exc.observation}
+                        if type(exc) is _NativeContextPreinputRefusal and exc.observation is not None else {}),
                 )
                 # A concurrent positive, possible turn, retirement or changed
                 # claim wins over this local exception's earlier observation.

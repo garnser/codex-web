@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 import hashlib
 import json
+import time
 
 from codex_web.models import (
     ExecutionPreflightAttempt,
@@ -777,6 +778,8 @@ class ExecutionPreflightStore:
         claim_id: str,
         now: float,
         stale_after_seconds: float = 60.0,
+        expected_attempt=None,
+        source_guard=None,
     ) -> tuple[ExecutionPreflightAttempt, bool]:
         key = self._attempt_key(attempt_id)
         acquired = False
@@ -787,6 +790,8 @@ class ExecutionPreflightStore:
             if not isinstance(payload, dict):
                 raise KeyError(attempt_id)
             current = ExecutionPreflightAttempt.model_validate(payload)
+            if expected_attempt is not None and current != expected_attempt:
+                raise ValueError('preflight retry review changed')
             if current.bootstrap_recovery is not None and current.bootstrap_recovery.state != 'created':
                 return current.model_dump(mode="json")
             if current.notification_batch_id is not None:
@@ -807,6 +812,19 @@ class ExecutionPreflightStore:
                 # claim can pass the native gate, so interrupted queue recovery
                 # may acquire a new token without inferring a start outcome.
             acquired = True
+            # Preserve the old claim's sealed observation as history, never as
+            # authority for the newly generated admission claim.
+            sealed = any('native_preinput_refusal' in b.model_dump(mode='json')
+                for b in current.blockers)
+            history = current.blocker_history
+            blockers = current.blockers
+            if sealed:
+                history = (*history, ExecutionPreflightBlockerSnapshot(
+                    blockers=blockers, recorded_at=now,
+                    attempt_number=current.attempt_number))[-20:]
+                blockers = tuple(ExecutionPreflightBlocker.model_validate({
+                    k:v for k,v in b.model_dump(mode='json').items()
+                    if k != 'native_preinput_refusal'}) for b in blockers)
             return current.model_copy(
                 update={
                     "status": "retrying",
@@ -814,18 +832,42 @@ class ExecutionPreflightStore:
                     "retry_claim_id": claim_id,
                     "retry_started_at": now,
                     "last_error": None,
+                    'blockers':blockers, 'blocker_history':history,
                     **({'queued_admission_claim_id':None}
                        if current.queued_turn_snapshot is not None else {}),
                     "updated_at": now,
                 }
             ).model_dump(mode="json")
 
-        payload = self.store.record_update(
-            self.NAMESPACE,
-            key,
-            mutate,
-            default=None,
-        )
+        if source_guard is None:
+            payload = self.store.record_update(self.NAMESPACE, key, mutate, default=None)
+        else:
+            namespace, source_key, expected_source = source_guard
+            committed = {}
+            def guarded(values):
+                from codex_web.services.queued_native_preinput import finite_timestamp, same_retry_custody
+                actual = values[namespace][source_key]
+                if (not isinstance(actual, dict)
+                        or not same_retry_custody(expected_source, actual)):
+                    raise ValueError('preflight retry recipient custody changed')
+                # A healthy same-fence renewal is compatible, but a finite
+                # lease may expire while waiting for this writer. Check its
+                # actual clocks here, without any metadata/policy lookups.
+                fresh_now = time.time()
+                lease = actual.get('lease')
+                if (not finite_timestamp(fresh_now)
+                        or actual.get('status') not in {'claimed', 'running'}
+                        or not isinstance(lease, dict)
+                        or lease.get('worker_id') != actual.get('assigned_worker_id')
+                        or lease.get('fence') != actual.get('fence')
+                        or not lease.get('lease_token')
+                        or lease.get('expires_at', 0) <= fresh_now
+                        or (actual.get('deadline_at') is not None and actual['deadline_at'] <= fresh_now)):
+                    raise ValueError('preflight retry recipient custody expired')
+                committed['payload'] = mutate(values[self.NAMESPACE][key])
+                return {self.NAMESPACE:{key:committed['payload']}}
+            self.store.record_mutate_many({self.NAMESPACE:(key,), namespace:(source_key,)}, guarded)
+            payload = committed['payload']
         attempt = ExecutionPreflightAttempt.model_validate(payload)
         self.store.record_apply(
             self.NAMESPACE,

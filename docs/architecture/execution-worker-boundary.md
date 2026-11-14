@@ -1145,6 +1145,51 @@ restoration event. This adds no persisted field, model call or execution grant.
 
 ### Fresh bootstrap recovery for a retained pre-start refusal
 
+For a scoped Work original refused by the real native context renderer after
+Session creation but before native resume/input, the controller can retain
+`native_preinput_refusal` version `1.0` in the existing blocker metadata. The
+private renderer observation binds the exact original snapshot, admission claim,
+bootstrap binding, assignment, worker, fence and immutable authority checksum.
+Only the same-claim/no-capture disposition accepts that typed observation;
+provider/HTTP detail cannot supply it. This phase is distinct from a failure
+before provider Session creation and does not settle any historical unknown.
+
+If the exact original recipient remains live, correcting context still permits
+ordinary explicit Retry. Current owner/Profile/repository and native custody
+validation runs before claim rotation, outside the writer; one raw transaction
+compares that exact attempt and assignment before archiving the sealed blocker
+in existing history and removing its current proof. A retired or concurrently
+changed source refuses without consuming its recovery witness.
+Healthy same-fence renewal may only advance lease expiry/renewal and assignment
+update timestamps; every other custody field stays exact. The writer samples
+current time and checks the actual finite lease and deadline after locking.
+The old claim's historical proof cannot authorize the new claim or an unknown native outcome;
+final native admission still performs its normal current-authority checks.
+
+An explicit recovery requires the exact source's canonical cancelled fence,
+no lease, unchanged original Profile/actor/repository/runtime scope and current
+Work/nonce/definition authority. Creation reuses the existing finite bootstrap
+reservation; an uncertain or lost reply only reconciles its correlated receipt.
+Final source and destination custody checks share the existing original/edge
+transaction. The replacement edge retains the before-input proof and exact
+successor custody. The original queued snapshot and recipient pin are never
+rewritten: subsequent native admission validates only that declared edge and
+current custody. A real positive START attributes delivery/ACK to the same
+original and handoff, while current custody denial preserves historical facts.
+Recovery creates no business input and makes no joined-cleanup or no-effects
+claim from a missing process, missing START or a cancelled lease.
+
+Legacy `native_context_delivery_limit` blockers without this claim-bound proof
+remain visibly ineligible for fresh-bootstrap recovery. The old controller
+journal's positive `known_unstarted` event is retained evidence, but lacks the
+claim/snapshot/custody binding needed here. A first attempt number and wall-clock
+ordering cannot repair that: queued claims can change without incrementing the
+attempt number. No timestamp-based or caller-supplied boolean qualification is
+performed. The existing preflight UI explains the exact missing evidence and
+distinguishes before-native-input recovery from before-provider-start refusal.
+The additive metadata uses the existing blocker and replacement-edge extension
+surfaces; no preflight row schema, separate queue or ledger is introduced.
+
 The preflight inspector can explicitly request a fresh bootstrap when the
 canonical original thread is archived and a complete historical replacement
 chain is unavailable. Administrator authority and MFA for a human are required.

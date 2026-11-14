@@ -1,5 +1,14 @@
 const { test, expect } = require('@playwright/test');
 
+test('legacy context refusal explains missing claim witness without manufacturing recovery', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?legacyNativeContext');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.locator('.message.tool')).toContainText('no claim-bound controller witness');
+  await expect(page.locator('.message.tool')).toContainText('cannot manufacture that historical proof');
+  await expect(page.getByRole('button', {name:'Inspect fresh bootstrap recovery'})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__apiCalls.filter(call => call.method==='POST'))).toEqual([]);
+});
+
 test('native preparation refusal shows closed diagnostics and original preflight without replay', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?nativePreparation');
   await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);

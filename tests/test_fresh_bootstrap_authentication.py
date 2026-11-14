@@ -80,11 +80,34 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
             writable_repository_resource_ids=(self.f.repository.id,),
             sandbox='workspace-write', approval_policy='on-request')
         self.recovery = QueuedBootstrapRecoveryService(
-            preflight=SimpleNamespace(record_bootstrap_refusal=lambda *a, **k: None), threads=self.threads,
+            preflight=self.preflight_double(), threads=self.threads,
             bootstrap_bindings=self.bindings, assignments=self.f.workers.store.assignment,
             thread_index=None, actor_resolver=None, thread_is_active=lambda _: False)
         self.reservation = SimpleNamespace(id='original-attempt', bootstrap_recovery=SimpleNamespace(
             id='original-recovery', bootstrap_id='bootstrap-'+'a'*32))
+
+    def preflight_double(self):
+        # This fixture exercises authentication for a reserved non-Work input.
+        # It has no claim-bound Work renderer refusal or recovery authority.
+        def no_work_native_preinput_refusal(attempt):
+            self.assertIs(attempt, self.reservation)
+            self.assertIsNone(self.original_request.work_item_ref)
+            self.assertIsNone(self.original_request.owner_routing_pin)
+            return None
+        return SimpleNamespace(record_bootstrap_refusal=lambda *a, **k: None,
+            recorded_native_preinput_refusal=no_work_native_preinput_refusal)
+
+    async def await_preparation_boundary(self, task, entered):
+        waiter = asyncio.create_task(entered.wait())
+        try:
+            done, _ = await asyncio.wait((task, waiter), return_when=asyncio.FIRST_COMPLETED)
+            if task in done:
+                await task  # Propagate an early failure instead of awaiting an unreachable gate.
+                self.fail('Bootstrap creation completed before its controlled preparation boundary.')
+            await waiter
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
 
     async def create(self):
         return await self.recovery.create_reserved(self.reservation, self.original_request,
@@ -351,7 +374,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         with patch('codex_web.runtime.codex.time', SimpleNamespace(monotonic=self.account_clock)):
             task = asyncio.create_task(self.create())
             try:
-                await entered.wait()
+                await self.await_preparation_boundary(task, entered)
                 task.cancel()
                 release.set()
                 with self.assertRaises(asyncio.CancelledError):
@@ -450,7 +473,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
             self.threads._prepare_bootstrap_authentication = prepare_then_queue
             task = asyncio.create_task(self.create())
             try:
-                await ready.wait()
+                await self.await_preparation_boundary(task, ready)
                 self.f.service._authentication_preflight = changed_authentication
                 release.set()
                 with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
@@ -485,7 +508,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         self.f.workspaces.acquire = reserve
         task = asyncio.create_task(self.create())
         try:
-            await entered.wait()
+            await self.await_preparation_boundary(task, entered)
             task.cancel()
             # A scheduling checkpoint, not an elapsed-time assertion: process
             # the cancellation while the actual reservation owner stays gated.
@@ -517,7 +540,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         # RPC failure must be a controller-owned prestart refusal. This direct
         # creation call uses an already reserved original, so record_refusal is
         # the existing recovery boundary, not a new authorization decision.
-        self.recovery.preflight = SimpleNamespace(record_bootstrap_refusal=lambda *a, **k: None)
+        self.recovery.preflight = self.preflight_double()
         self.reservation.id = 'original-attempt'
         self.reservation.bootstrap_recovery.id = 'original-recovery'
         with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
@@ -530,7 +553,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_routing_scope_refusal_happens_before_account_preparation(self):
         self.threads._select_runtime_route.side_effect = HTTPException(status_code=403, detail='scope refused')
-        self.recovery.preflight = SimpleNamespace(record_bootstrap_refusal=lambda *a, **k: None)
+        self.recovery.preflight = self.preflight_double()
         self.reservation.id = 'original-attempt'
         self.reservation.bootstrap_recovery.id = 'original-recovery'
         with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
@@ -542,7 +565,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
     async def test_authority_changed_during_refresh_still_refuses_before_worker(self):
         self.after_refresh = lambda: self.f.resources.update(self.f.repository.id,
             binding_fixture.ResourceUpdate(lifecycle='disabled'), actor=self.f.actor)
-        self.recovery.preflight = SimpleNamespace(record_bootstrap_refusal=lambda *a, **k: None)
+        self.recovery.preflight = self.preflight_double()
         self.reservation.id = 'original-attempt'
         self.reservation.bootstrap_recovery.id = 'original-recovery'
         with self.assertRaises(ThreadBootstrapPrestartRefusal) as caught:
@@ -564,7 +587,7 @@ class FreshBootstrapAuthenticationTests(unittest.IsolatedAsyncioTestCase):
                 self.binding = ExecutionRuntimeBinding(provider_id=provider, runtime_id=runtime,
                     capability_revision=1, authentication_mode=mode)
                 self.f.service.permitted_codex_authentication_modes = allowed
-                self.recovery.preflight = SimpleNamespace(record_bootstrap_refusal=lambda *a, **k: None)
+                self.recovery.preflight = self.preflight_double()
                 self.reservation.id = 'original-attempt'
                 self.reservation.bootstrap_recovery.id = 'original-recovery'
                 with self.assertRaises(ThreadBootstrapPrestartRefusal):
