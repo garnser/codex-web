@@ -102,6 +102,14 @@ reassigned, revoked or stale workers cannot complete an assignment. When a
 claim expires, recovery marks the assignment lost and makes it eligible for an
 explicit control-plane retry/reassignment rather than accepting late output.
 
+Lease validation samples current time after its canonical live worker-identity
+read. Renew/start/complete writer transitions use that same post-read sample for
+expiry/deadline validation and transition timestamps; renewal retains its
+requested finite duration. Waiting for identity I/O cannot revive a lease or
+deadline that expired during that read. The completion precheck remains only
+an observation and is repeated under the canonical writer. This is not a
+reclassification of historical failures or permission to replay an input.
+
 This makes duplicate/stale completion deterministic and replay-resistant at the
 application boundary.
 

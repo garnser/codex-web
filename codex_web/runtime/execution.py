@@ -230,6 +230,7 @@ class TurnExecutionService:
         self.owner_routing_validator = None
         self.procedure_admission = None
         self.native_input_guard_factory = None
+        self.queued_preparation_owner = None
         self.home_restart_recovery = None
         # Observation only: startup already attempted this exact original turn.
         # Fresh canonical retention/final native guards remain the authority.
@@ -4417,121 +4418,132 @@ class TurnExecutionService:
                         'thread_id':thread_id, 'queued_id':queued.id,
                         'preflight_attempt_id':retained_attempt.id})
                     return
-            project = h._project(queued.project_id)
-            # Queue drains bypass ``TurnService.start``, which normally makes
-            # the requested repository/runtime settings durable before an
-            # isolated turn starts.  Persist the same effective settings here
-            # so stale-thread recovery creates its replacement bootstrap for
-            # the queued turn's repository.  Without this, a fresh provider
-            # thread can be created in the previous repository, immediately
-            # rebound to a second app-server for target drift, and then fail
-            # its first ``turn/start`` because that second process has never
-            # seen the provider-native thread id.
-            remember_settings = getattr(
-                h,
-                "_remember_thread_run_settings",
-                None,
-            )
-            if callable(remember_settings):
-                current_settings = h._thread_run_settings(thread_id)
-                remember_settings(
-                    thread_id,
-                    sandbox=(
-                        queued.sandbox
-                        or current_settings.sandbox
-                        or project.sandbox
-                    ),
-                    approval_policy=(
-                        queued.approval_policy
-                        or current_settings.approval_policy
-                        or project.approval_policy
-                    ),
-                    model=(queued.model or current_settings.model or project.model),
-                    reasoning_effort=(
-                        queued.reasoning_effort
-                        or current_settings.reasoning_effort
-                    ),
-                    repository_resource_id=(
-                        queued.repository_resource_id
-                        if queued.canonical_ingress_id else
-                        queued.repository_resource_id or current_settings.repository_resource_id
-                    ),
-                    writable_repository_resource_ids=(
-                        queued.writable_repository_resource_ids
-                        if queued.canonical_ingress_id else
-                        queued.writable_repository_resource_ids or current_settings.writable_repository_resource_ids
-                    ),
-                    read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
-                    **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
-                    execution_profile_id=(
-                        queued.execution_profile_id
-                        or current_settings.execution_profile_id
-                    ),
+            project = None
+            def prepare_settings():
+                nonlocal project, queued_actor
+                project = h._project(queued.project_id)
+                # Queue drains bypass ``TurnService.start``, which normally makes
+                # the requested repository/runtime settings durable before an
+                # isolated turn starts.  Persist the same effective settings here
+                # so stale-thread recovery creates its replacement bootstrap for
+                # the queued turn's repository.  Without this, a fresh provider
+                # thread can be created in the previous repository, immediately
+                # rebound to a second app-server for target drift, and then fail
+                # its first ``turn/start`` because that second process has never
+                # seen the provider-native thread id.
+                remember_settings = getattr(
+                    h,
+                    "_remember_thread_run_settings",
+                    None,
                 )
-            queued_actor = None
-            if queued.agent_profile_id or queued.canonical_ingress_id or queued.agent_profile_actor_id:
-                if (
-                    not queued.agent_profile_actor_id
-                    or self.actor_resolver is None
-                ):
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": "agent_profile_actor_unavailable",
-                            "threadId": thread_id,
-                            "agentProfileId": queued.agent_profile_id,
-                        },
+                if callable(remember_settings):
+                    current_settings = h._thread_run_settings(thread_id)
+                    remember_settings(
+                        thread_id,
+                        sandbox=(
+                            queued.sandbox
+                            or current_settings.sandbox
+                            or project.sandbox
+                        ),
+                        approval_policy=(
+                            queued.approval_policy
+                            or current_settings.approval_policy
+                            or project.approval_policy
+                        ),
+                        model=(queued.model or current_settings.model or project.model),
+                        reasoning_effort=(
+                            queued.reasoning_effort
+                            or current_settings.reasoning_effort
+                        ),
+                        repository_resource_id=(
+                            queued.repository_resource_id
+                            if queued.canonical_ingress_id else
+                            queued.repository_resource_id or current_settings.repository_resource_id
+                        ),
+                        writable_repository_resource_ids=(
+                            queued.writable_repository_resource_ids
+                            if queued.canonical_ingress_id else
+                            queued.writable_repository_resource_ids or current_settings.writable_repository_resource_ids
+                        ),
+                        read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                        **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
+                        execution_profile_id=(
+                            queued.execution_profile_id
+                            or current_settings.execution_profile_id
+                        ),
                     )
-                queued_actor = self.actor_resolver(
-                    queued.agent_profile_actor_id,
-                    project,
-                )
-            restart_context = contextlib.nullcontext()
-            if queued.home_restart_input is not None:
-                if self.home_restart_recovery is None or retained_attempt is None or admission_claim_id is None:
-                    raise ExecutionPrestartRefusal(status_code=409, detail={'code':'home_restart_admission_unavailable'})
-                from codex_web.services.post_turn_readiness import PostTurnReadinessService
-                async def prepare_restart_context():
-                    return await asyncio.to_thread(self.home_restart_recovery.input_context, queued,
-                        attempt_id=retained_attempt.id, claim_id=admission_claim_id)
-                restart_context = await PostTurnReadinessService._run_owned(prepare_restart_context,
-                    seconds=RuntimePolicy.local_preparation_timeout(10), name='home-restart-admission-' + queued.id)
-            reasoning_context = contextlib.nullcontext()
-            if self.native_reasoning_input_context is not None:
-                reasoning_context = self.native_reasoning_input_context(queued)
-            with restart_context, reasoning_context:
-                start_response = await self.start_thread_turn_now(
-                    thread_id,
-                    project=project,
-                    message=queued.message,
-                    sandbox=queued.sandbox or project.sandbox,
-                    approval_policy=queued.approval_policy or project.approval_policy,
-                    model=queued.model,
-                    reasoning_effort=queued.reasoning_effort,
-                    source=f"queued:{queued.source}",
-                    reply_target=queued.reply_target,
-                    execution_id=(queued.execution_id or retained_attempt.execution_id
-                        if retained_attempt is not None else queued.execution_id),
-                    work_item_ref=queued.work_item_ref,
-                    handoff_requested_at=queued.handoff_requested_at,
-                    **({'owner_routing_pin': queued.owner_routing_pin} if queued.owner_routing_pin is not None else {}),
-                    repository_resource_id=queued.repository_resource_id,
-                    writable_repository_resource_ids=queued.writable_repository_resource_ids,
-                    read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
-                    **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
-                    execution_profile_id=queued.execution_profile_id,
-                    **({"ingress_execution_profile_definition": queued.ingress_execution_profile_definition}
-                       if queued.ingress_execution_profile_definition is not None else {}),
-                    actor=queued_actor,
-                    agent_profile_id=queued.agent_profile_id,
-                    agent_profile_revision=queued.agent_profile_revision,
-                    agent_profile_actor_id=queued.agent_profile_actor_id,
-                    **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
-                    **({'operator_admission_validator':operator_admission_validator}
-                       if operator_admission_validator is not None else {}),
-                    **({'queued_admission_attempt_id':retained_attempt.id,
-                        'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
-                )
+                queued_actor = None
+                if queued.agent_profile_id or queued.canonical_ingress_id or queued.agent_profile_actor_id:
+                    if (
+                        not queued.agent_profile_actor_id
+                        or self.actor_resolver is None
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "agent_profile_actor_unavailable",
+                                "threadId": thread_id,
+                                "agentProfileId": queued.agent_profile_id,
+                            },
+                        )
+                    queued_actor = self.actor_resolver(
+                        queued.agent_profile_actor_id,
+                        project,
+                    )
+                return project
+
+            async def prepare_claimed():
+                from codex_web.services.async_operations import run_settled
+                project = await run_settled(prepare_settings)
+                restart_context = contextlib.nullcontext()
+                if queued.home_restart_input is not None:
+                    if self.home_restart_recovery is None or retained_attempt is None or admission_claim_id is None:
+                        raise ExecutionPrestartRefusal(status_code=409, detail={'code':'home_restart_admission_unavailable'})
+                    from codex_web.services.post_turn_readiness import PostTurnReadinessService
+                    async def prepare_restart_context():
+                        return await asyncio.to_thread(self.home_restart_recovery.input_context, queued,
+                            attempt_id=retained_attempt.id, claim_id=admission_claim_id)
+                    restart_context = await PostTurnReadinessService._run_owned(prepare_restart_context,
+                        seconds=RuntimePolicy.local_preparation_timeout(10), name='home-restart-admission-' + queued.id)
+                reasoning_context = contextlib.nullcontext()
+                if self.native_reasoning_input_context is not None:
+                    reasoning_context = self.native_reasoning_input_context(queued)
+                with restart_context, reasoning_context:
+                    return await self.start_thread_turn_now(
+                        thread_id,
+                        project=project,
+                        message=queued.message,
+                        sandbox=queued.sandbox or project.sandbox,
+                        approval_policy=queued.approval_policy or project.approval_policy,
+                        model=queued.model,
+                        reasoning_effort=queued.reasoning_effort,
+                        source=f"queued:{queued.source}",
+                        reply_target=queued.reply_target,
+                        execution_id=(queued.execution_id or retained_attempt.execution_id
+                            if retained_attempt is not None else queued.execution_id),
+                        work_item_ref=queued.work_item_ref,
+                        handoff_requested_at=queued.handoff_requested_at,
+                        **({'owner_routing_pin': queued.owner_routing_pin} if queued.owner_routing_pin is not None else {}),
+                        repository_resource_id=queued.repository_resource_id,
+                        writable_repository_resource_ids=queued.writable_repository_resource_ids,
+                        read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                        **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
+                        execution_profile_id=queued.execution_profile_id,
+                        **({"ingress_execution_profile_definition": queued.ingress_execution_profile_definition}
+                           if queued.ingress_execution_profile_definition is not None else {}),
+                        actor=queued_actor,
+                        agent_profile_id=queued.agent_profile_id,
+                        agent_profile_revision=queued.agent_profile_revision,
+                        agent_profile_actor_id=queued.agent_profile_actor_id,
+                        **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
+                        **({'operator_admission_validator':operator_admission_validator}
+                           if operator_admission_validator is not None else {}),
+                        **({'queued_admission_attempt_id':retained_attempt.id,
+                            'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
+                    )
+
+            start_response = await self._start_queued_preparation(
+                queued, retained_attempt, admission_claim_id, prepare_claimed)
             returned_turn = start_response.get('turn', {}) if isinstance(start_response, dict) else {}
             if retained_attempt is not None:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
@@ -4905,6 +4917,12 @@ class TurnExecutionService:
                 and not self.thread_is_active(thread_id)
             ):
                 asyncio.get_running_loop().call_soon(self.schedule_queue_drain, thread_id)
+
+    async def _start_queued_preparation(self, queued, attempt, claim_id, operation):
+        if self.queued_preparation_owner is not None and attempt is not None and claim_id:
+            return await self.queued_preparation_owner(queued, attempt_id=attempt.id,
+                claim_id=claim_id, operation=operation)
+        return await operation()
 
     def schedule_queue_drain(self, thread_id: str | None) -> None:
         if not thread_id:

@@ -232,6 +232,16 @@ under its write lock and retains its own refusal correlation. A current hold is
 not bypassed, historical unknown inputs are not reclassified, and no automatic
 retry is authorized by the diagnostic.
 
+For application Goal inputs, the existing Project Goal owner keeps its finite
+binding lease during the actual claimed queue-drain preparation, after enqueue
+has returned and before native START. Renewal requires the exact immutable
+original, admission claim, delivery, current Goal/actor and physical custody.
+The heartbeat write compares the current binding under its canonical writer;
+it cannot revive an expired lease or overwrite a concurrent stop. Current input
+and native writer guards still decide admission. Caller cancellation joins the
+same owned preparation; it does not enqueue another input or detach a writer.
+Failure of renewal stops renewal without asserting an outcome for the original.
+
 A new human web message may perform one bounded renewal followed by the existing
 fenced preflight retry. The original is durable before the first renewal await.
 Renewal shares the thread's admission lock and requires the exact authenticated
