@@ -621,6 +621,10 @@ class ControlPlaneBrokerService:
                 "description": "Exact published procedure content requires record_id, revision and checksum; sole view=reference resolves one known Skill ID to current authorized DefinitionReference metadata only. Modes cannot be mixed; execution still requires exact pins."}
                 if item.id == "skill.procedure.read" else {"allowed": False})
             result["request_body"] = {"allowed": False}
+            if item.id == 'goal.read':
+                result['query_parameters'] = {'allowed':True, 'names':['view','offset'],
+                    'values':{'view':['runnable']}, 'description':
+                    'Optional view=runnable with offset0..100000: counts, up to10 runnable and10 blocked headers per page, next_offset and explicit omissions/missing Work. Pages are fresh observations, not a frozen snapshot. Readiness is not execution authority.'}
         work_item_model = {
             "work_item.handoff": WorkItemHandoffCreate,
             "work_item.acknowledge": WorkItemAckCreate,

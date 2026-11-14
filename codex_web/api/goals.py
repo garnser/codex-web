@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -257,10 +257,18 @@ def build_goals_router(
         goal_id: str,
         request: Request,
         project_id: str | None = Query(default=None, min_length=1),
+        view: Literal['runnable'] | None = Query(default=None),
+        offset: int = Query(default=0, ge=0, le=100000),
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
             require_project_goal(goal_id, project_id, actor)
+            if view == 'runnable':
+                selection = await asyncio.to_thread(service.runnable_selection, goal_id,
+                    scope=actor.tenant, project_id=project_id, offset=offset)
+                return {'selection':selection.model_dump(mode='json')}
+            if offset:
+                raise GoalConflictError('Goal selection offset requires view=runnable')
             snapshot = await asyncio.to_thread(
                 service.snapshot,
                 goal_id,

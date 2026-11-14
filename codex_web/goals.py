@@ -3,10 +3,12 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.work_graph import WorkReadinessStatus
 
 
 GOAL_CONTRACT = ContractSpec("goal-state", "1.2", ("1.0", "1.1", "1.2"), deprecated=("1.0",))
@@ -338,6 +340,47 @@ class GoalSnapshot(BaseModel):
     goal: GoalRecord
     progress: GoalProgress
     health: GoalHealthSnapshot
+
+
+class GoalSelectionWork(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    ref: str
+    project_id: str
+    stage: str
+    readiness_status: WorkReadinessStatus
+    display_title: str | None
+    title_truncated: bool
+    reasons: tuple[str, ...]
+    omitted_reason_count: int
+    truncated_reason_count: int
+    blocking_refs: tuple[str, ...]
+    omitted_blocking_ref_count: int
+    failure_impact_count: int
+
+
+class GoalRunnableSelection(BaseModel):
+    """Bounded observation of the canonical Goal subgraph, never admission."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal['goal-runnable-selection/1.0'] = 'goal-runnable-selection/1.0'
+    goal_id: str
+    goal_revision: int
+    project_id: str | None = None
+    goal_project_count: int
+    includes_all_goal_projects: bool
+    progress: GoalProgress
+    health: GoalHealthSnapshot
+    source_snapshot_sha256: str
+    runnable: tuple[GoalSelectionWork, ...] = Field(default=(), max_length=10)
+    blocked: tuple[GoalSelectionWork, ...] = Field(default=(), max_length=10)
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    omitted_runnable_count: int = Field(ge=0)
+    omitted_blocked_count: int = Field(ge=0)
+    missing_work: tuple[tuple[str, str], ...] = Field(default=(), max_length=10)
+    missing_work_count: int = Field(ge=0)
+    complete: bool
+    execution_authorized: Literal[False] = False
 
 
 class GoalState(BaseModel):

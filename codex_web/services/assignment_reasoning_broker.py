@@ -234,6 +234,12 @@ class AssignmentReasoningBroker:
             for binding in item.work_graph_bindings:
                 for ref in binding.root_work_item_refs:
                     self.scoped(self.broker._state_for_target(assignment, ref), assignment, actor, operation)
+            if query.get('view') == ['runnable']:
+                selection = self.executives.goals.runnable_selection(target, scope=actor.tenant,
+                    project_id=assignment.project_id, offset=int(query.get('offset',['0'])[0]))
+                for node in (*selection.runnable, *selection.blocked):
+                    self.scoped(self.broker._state_for_target(assignment, node.ref), assignment, actor, operation)
+                return {'selection':selection.model_dump(mode='json')}
             return {"item": item.model_dump(mode="json")}
         if operation.id == "decision.read":
             item = self.executives.decisions.get(target, actor=actor)
@@ -279,6 +285,14 @@ class AssignmentReasoningBroker:
 
     @staticmethod
     def read_query(operation, query):
+        if operation.id == 'goal.read' and query.get('view') == ['runnable']:
+            if (set(query) <= {'view','offset'} and ('offset' not in query or
+                    isinstance(query['offset'], list) and len(query['offset']) == 1
+                    and isinstance(query['offset'][0], str)
+                    and re.fullmatch(r'0|[1-9][0-9]{0,5}', query['offset'][0])
+                    and int(query['offset'][0]) <= 100000)):
+                return
+            deny('Goal selection accepts only one bounded offset')
         if operation.id != "skill.procedure.read":
             if query:
                 deny("exact object read accepts no query")
