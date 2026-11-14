@@ -2287,3 +2287,15 @@ The original pin is never rewritten. Missing or inconsistent sealing evidence,
 unrecorded references, other authority changes, changed custody/Work/nonce or
 unresolved native originals still refuse. This creates no input, retry, ACK,
 delivery, grant or provider effect, and changes no stored schema or UI control.
+
+### Turn ingress admission guard preparation budget
+
+Both the initial current-admission guard and its final pre-enqueue recheck use
+the shared local-preparation timeout policy (five seconds by default). Positive
+configured values retain a finite local cap; `0` and `-1` disable that local
+elapsed cap. Existing parent storage budgets, cancellation, current authority,
+finite worker/Goal leases and actual assignment deadlines remain authoritative.
+A cancelled waiter joins its existing guard before returning; a failed guard
+cannot enqueue or start a second input. This changes no historical UNKNOWN
+classification or replay authority. Existing refusal surfaces apply; no new UI
+control or domain object is introduced.

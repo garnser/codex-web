@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from codex_web.services.post_turn_readiness import PostTurnReadinessService
+from codex_web.services.runtime_policy import RuntimePolicy
 
 from fastapi import HTTPException
 
@@ -494,7 +495,8 @@ class TurnService:
                     'next_action':'Preserve custody and use supported terminal fence then fresh SAME-thread bootstrap.'})
         if admission_guard is not None:
             await PostTurnReadinessService._run_owned(
-                lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                lambda: asyncio.to_thread(admission_guard),
+                seconds=RuntimePolicy.local_preparation_timeout(5.),
                 name='thread-admission-current-guard')
         self.settings.remember(
             thread_id,
@@ -535,7 +537,8 @@ class TurnService:
         ) -> dict[str, Any]:
             if admission_guard is not None:
                 await PostTurnReadinessService._run_owned(
-                    lambda: asyncio.to_thread(admission_guard), seconds=5.,
+                    lambda: asyncio.to_thread(admission_guard),
+                    seconds=RuntimePolicy.local_preparation_timeout(5.),
                     name='thread-admission-current-guard')
             queued = self.execution.enqueue_turn(
                 thread_id=thread_id,
