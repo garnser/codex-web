@@ -101,6 +101,7 @@ export function createExecutionPreflightUi({
         ].filter(Boolean);
         const lines = [
           `Preflight attempt ${Number(attempt?.attempt_number || 1)} · ${status}`,
+          attempt?.native_preinput_recovery?.message || '',
           batchMember ? `Shared notification admission: ${attempt.notification_batch_id}. Individual recovery is unavailable; inspect the batch receipt and retained originals.`
             : status === 'reconciliation_required'
             ? (attempt.queued_start_evidence

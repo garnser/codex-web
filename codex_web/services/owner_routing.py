@@ -112,6 +112,22 @@ class OwnerRoutingService:
             organization_id=attempt.organization_id, workspace_id=attempt.workspace_id)
         if profile is None or profile.role_id != pin.binding.canonical_owner:
             raise OwnerRoutingError('owner_routing_native_profile_unverified')
+        if attempt.bootstrap_recovery is not None and pin.recipient is not None:
+            recovered = self._native_recovery_destination(attempt, pin, historical=True)
+            if recovered is not None:
+                bound, assignment, _, successor = recovered
+                if (correlation.assignment_id, correlation.execution_id, correlation.worker_id,
+                        correlation.fence, correlation.thread_id) != (successor.assignment_id,
+                            successor.execution_id, successor.worker_id, successor.fence, bound.thread_id):
+                    raise OwnerRoutingError('owner_routing_native_fact_mismatch')
+                # Projection uses the positively observed physical recipient;
+                # the original queued snapshot and its pin remain immutable.
+                pin = pin.model_copy(update={'recipient':pin.recipient.model_copy(update={
+                    'thread_id':bound.thread_id, 'bootstrap_id':bound.id,
+                    'assignment_id':assignment.id, 'execution_id':assignment.execution_id,
+                    'worker_id':correlation.worker_id, 'fence':correlation.fence,
+                    'authority_checksum':successor.authority_checksum,
+                    'work_item_owner_checksum':successor.work_item_owner_checksum})})
         return self.delivery_recorder(pin.work_item_ref,
             expected_requested_at=pin.handoff_requested_at, recipient=profile.role_id,
             organization_id=attempt.organization_id, workspace_id=attempt.workspace_id,
@@ -553,6 +569,66 @@ class OwnerRoutingService:
             raise OwnerRoutingError('owner_recipient_work_item_scope_changed')
         return bound, assignment
 
+    def _accepted_recovered_recipient(self, state, binding, owner, requested, *,
+            lookup_actor=None, metadata_only=False, originals_checked=False):
+        """A positive same-original START/ACK may locate its declared successor."""
+        from codex_web.models import QueuedTurn
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_start import validate_attribution
+        handoff = state.handoff
+        delivery = handoff.delivery
+        if (self.preflight is None or handoff.acknowledged_at is None or delivery is None or delivery.status != 'delivered'
+                or delivery.scope_verified is not True):
+            return None
+        matches = []
+        for attempt in self.preflight.for_work_item(organization_id=state.organization_id,
+                workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref):
+            if attempt.status != 'started' or attempt.bootstrap_recovery is None or not attempt.queued_turn_snapshot:
+                continue
+            original = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+            pin = original.owner_routing_pin
+            if (pin is None or pin.recipient is None or pin.bot_binding_id != binding.id
+                    or pin.original_thread_id != binding.thread_id
+                    or pin.handoff_requested_at != handoff.requested_at
+                    or pin.binding.canonical_owner != owner
+                    or pin.binding.definition != self.snapshot(state).definition):
+                continue
+            recovered = self._native_recovery_destination(attempt, pin, historical=True)
+            if recovered is None:
+                continue
+            bound, admitted, _, successor = recovered
+            correlation, evidence, receipt = (attempt.queued_start_correlation,
+                attempt.queued_start_evidence, attempt.queued_start_receipt)
+            if correlation is None or evidence is None or receipt is None:
+                raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            validate_attribution(ExecutionPreflightService, attempt, correlation)
+            if ((receipt.thread_id, receipt.execution_id, receipt.provider_native_turn_id, receipt.observed_at)
+                    != (delivery.thread_id, delivery.execution_id, delivery.turn_id, delivery.started_at)
+                    or (receipt.thread_id, receipt.execution_id) != (bound.thread_id, admitted.execution_id)
+                    or (correlation.assignment_id, correlation.execution_id, correlation.worker_id, correlation.fence)
+                    != (successor.assignment_id, successor.execution_id, successor.worker_id, successor.fence)
+                    or (evidence.runtime_generation, evidence.rpc_request_id, evidence.provider_native_session_id)
+                    != (correlation.runtime_generation, correlation.rpc_request_id, correlation.provider_native_session_id)
+                    or (receipt.provider_native_turn_id, receipt.provider_native_session_id, receipt.observed_at)
+                    != (evidence.provider_native_turn_id, evidence.provider_native_session_id, evidence.observed_at)
+                    or set(original.writable_repository_resource_ids) != set(requested)
+                    or tuple(original.read_only_repository_resource_ids) != tuple(delivery.read_only_repository_resource_ids)
+                    or set(delivery.writable_repository_resource_ids) != set(requested)
+                    or delivery.execution_profile_id != original.execution_profile_id):
+                raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+            if not metadata_only and (admitted.fence != successor.fence
+                    or admitted.assigned_worker_id != successor.worker_id):
+                raise OwnerRoutingError('owner_recipient_custody_changed')
+            matches.append(bound)
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified')
+        if not originals_checked:
+            self.require_resolved_originals(state)
+        inspect = self._recipient_metadata if metadata_only else self._live_recipient
+        return inspect(state, binding, matches[0], owner, lookup_actor=lookup_actor)
+
     def _accepted_owner_recipient(self, state, binding, owner, requested, *, lookup_actor=None, originals_checked=False, metadata_only=False, replacement_request=False):
         """Select an already delivered recipient, never prepare or replay input.
 
@@ -573,6 +649,15 @@ class OwnerRoutingService:
                 or routing.owner(normalized_owner(handoff.to_agent)) != owner):
             return None
         delivery = handoff.delivery
+        try:
+            recovered = self._accepted_recovered_recipient(state, binding, owner, requested,
+                lookup_actor=lookup_actor, metadata_only=metadata_only, originals_checked=originals_checked)
+        except OwnerRoutingError:
+            raise
+        except (LookupError, ValueError, RuntimeError, HTTPException) as exc:
+            raise OwnerRoutingError('owner_recipient_accepted_lineage_unverified') from exc
+        if recovered is not None:
+            return recovered
         if delivery is None or self.recipient_preparer is None:
             return None
         token = self.recipient_preparer.logical_id(state, binding,
@@ -1781,6 +1866,110 @@ class OwnerRoutingService:
                 or normalized_owner(actionable_owner_value(state)) != pin.binding.configured_owner):
             raise OwnerRoutingError('owner_routing_owner_changed')
 
+    def _native_recovery_destination(self, attempt, pin, *, historical=False):
+        """Exact immutable bootstrap edge, not arbitrary replacement authority."""
+        from codex_web.models import QueuedTurn
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_preinput import NativePreinputProof
+        recovery = attempt.bootstrap_recovery
+        if recovery is None:
+            return None
+        if (pin.recipient is None or recovery.state != 'created'
+                or attempt.queued_turn_snapshot is None
+                or attempt.queued_turn_snapshot.get('owner_routing_pin') != pin.model_dump(mode='json')
+                or recovery.destination_thread_id != attempt.replacement_thread_id
+                or recovery.queued_snapshot_sha256 != ExecutionPreflightService.queued_snapshot_digest(
+                    attempt.queued_turn_snapshot) or self.replacement_lineage is None):
+            raise OwnerRoutingError('owner_recipient_recovery_unverified')
+        lineage = self.replacement_lineage(pin.recipient.thread_id, project_id=attempt.project_id,
+            organization_id=attempt.organization_id, workspace_id=attempt.workspace_id)
+        if not any((edge.get('provenance') or {}).get('native_preinput_refusal') for edge in lineage):
+            return None  # Existing generic recovery keeps its prior admission rules.
+        if len(lineage) != 1:
+            raise OwnerRoutingError('owner_recipient_recovery_unverified')
+        edge = lineage[0]
+        provenance = edge.get('provenance') or {}
+        try:
+            proof = NativePreinputProof.model_validate(provenance.get('native_preinput_refusal'))
+            successor = OwnerRoutingRecipient.model_validate(provenance.get('native_preinput_successor'))
+        except (ValueError, TypeError) as exc:
+            raise OwnerRoutingError('owner_recipient_recovery_unverified') from exc
+        original = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+        if (edge.get('old_thread_id') != pin.recipient.thread_id
+                or edge.get('new_thread_id') != recovery.destination_thread_id
+                or provenance.get('preflight_attempt_id') != attempt.id
+                or provenance.get('fresh_bootstrap_recovery_id') != recovery.id
+                or provenance.get('bootstrap_id') != recovery.bootstrap_id
+                or provenance.get('bootstrap_execution_id') != recovery.execution_id
+                or (proof.attempt_id, proof.snapshot_sha256, proof.thread_id, proof.bootstrap_binding_id,
+                    proof.assignment_id, proof.execution_id, proof.worker_id, proof.fence)
+                    != (attempt.id, recovery.queued_snapshot_sha256, pin.recipient.thread_id,
+                        pin.recipient.bootstrap_id, pin.recipient.assignment_id,
+                        pin.recipient.execution_id, pin.recipient.worker_id, pin.recipient.fence)):
+            raise OwnerRoutingError('owner_recipient_recovery_unverified')
+        source = self.assignments(proof.assignment_id)
+        if (source is None or str(source.status) != 'cancelled' or source.lease is not None
+                or source.fence != proof.fence + 1
+                or source.failure_code != 'thread_bootstrap_cancelled'
+                or self._authority_checksum(source) != proof.assignment_authority_sha256):
+            raise OwnerRoutingError('owner_recipient_recovery_source_changed')
+        bound = self.bootstraps.get_by_thread(recovery.destination_thread_id, self.control_actor())
+        target = self.assignments(bound.assignment_id)
+        if (target is None or (bound.bootstrap_id, bound.execution_id, target.execution_id)
+                != (recovery.bootstrap_id, recovery.execution_id, recovery.execution_id)
+                or target.subject is None or target.subject.kind != 'thread_bootstrap'
+                or target.subject.ref != recovery.bootstrap_id
+                or target.execution_workspace_id != bound.execution_workspace_id
+                or (target.organization_id, target.workspace_id, target.project_id, target.created_by)
+                    != (attempt.organization_id, attempt.workspace_id, attempt.project_id,
+                        original.agent_profile_actor_id)
+                or target.agent_profile != source.agent_profile
+                or target.execution_profile_id != original.execution_profile_id
+                or target.repository_scope != source.repository_scope
+                or target.repository_target != source.repository_target
+                or set(target.resource_ids) != set(source.resource_ids)
+                or target.resource_context != source.resource_context
+                or target.sandbox != original.sandbox or target.approval_policy != original.approval_policy
+                or target.runtime_binding != source.runtime_binding):
+            raise OwnerRoutingError('owner_recipient_recovery_unverified')
+        if ((bound.id, bound.thread_id, target.id, target.execution_id) != (
+                successor.bootstrap_id, successor.thread_id, successor.assignment_id, successor.execution_id)
+                or (not historical and (target.fence != successor.fence
+                    or target.assigned_worker_id != successor.worker_id))
+                or (self._authority_checksum(target) != successor.authority_checksum
+                    and not self._initial_seal_authority_compatible(target, successor))):
+            raise OwnerRoutingError('owner_recipient_recovery_unverified')
+        return bound, target, proof, successor
+
+    def native_preinput_retry_guard(self, attempt):
+        """Inspect live exact custody before rotating a sealed original claim.
+
+        Policy reads stay outside the retry writer; it later compares only the
+        exact observed assignment and attempt in one existing raw transaction.
+        """
+        from codex_web.models import QueuedTurn
+        from codex_web.services.queued_native_preinput import same_retry_custody
+        queued = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+        pin = queued.owner_routing_pin
+        assignment_store = getattr(self.assignments, '__self__', None)
+        if (pin is None or pin.recipient is None or assignment_store is None
+                or assignment_store.store is not self.preflight.store):
+            raise OwnerRoutingError('owner_recipient_custody_unavailable')
+        source = self.assignments(pin.recipient.assignment_id)
+        project = self.projects.get(attempt.project_id, scope=TenantScope(
+            organization_id=attempt.organization_id, workspace_id=attempt.workspace_id))
+        self.validate_native(pin, thread_id=attempt.replacement_thread_id or attempt.thread_id,
+            project=project, work_item_ref=queued.work_item_ref,
+            handoff_requested_at=queued.handoff_requested_at,
+            agent_profile_id=queued.agent_profile_id, agent_profile_revision=queued.agent_profile_revision,
+            agent_profile_actor_id=queued.agent_profile_actor_id, queued_admission_attempt_id=attempt.id,
+            writable_repository_resource_ids=queued.writable_repository_resource_ids,
+            read_only_repository_resource_ids=queued.read_only_repository_resource_ids)
+        if not same_retry_custody(source.model_dump(mode='json'),
+                self.assignments(source.id).model_dump(mode='json')):
+            raise OwnerRoutingError('owner_recipient_custody_changed')
+        return assignment_store.assignment_namespace, source.id, source.model_dump(mode='json')
+
     def validate_native(self, pin, *, thread_id, project, work_item_ref, handoff_requested_at,
                         agent_profile_id, agent_profile_revision, agent_profile_actor_id,
                         queued_admission_attempt_id=None, writable_repository_resource_ids=(),
@@ -1793,13 +1982,23 @@ class OwnerRoutingService:
                 or work_item_ref != pin.work_item_ref or handoff_requested_at != pin.handoff_requested_at):
             raise OwnerRoutingError('owner_routing_request_mismatch')
         if pin.recipient is not None:
-            if thread_id != pin.recipient.thread_id:
-                raise OwnerRoutingError('owner_recipient_thread_changed')
             sources = [item for item in self.load_bindings() if item.id == pin.bot_binding_id]
             if len(sources) != 1:
                 raise OwnerRoutingError('owner_executor_binding_changed')
-            profile, actor = self.recipient_context(pin, state, sources[0])
-            scope = self.assignments(pin.recipient.assignment_id).repository_scope
+            recovered = (self._native_recovery_destination(self.preflight.get(queued_admission_attempt_id), pin)
+                if thread_id != pin.recipient.thread_id and queued_admission_attempt_id else None)
+            if recovered is not None:
+                bound, assignment, _, _ = recovered
+                if (thread_id != bound.thread_id or sources[0].thread_id != pin.original_thread_id
+                        or self._work_item_owner_checksum(state) != pin.recipient.work_item_owner_checksum):
+                    raise OwnerRoutingError('owner_recipient_thread_changed')
+                _, profile, actor = self._live_recipient(state, sources[0], bound, pin.binding.canonical_owner)
+                scope = assignment.repository_scope
+            else:
+                if thread_id != pin.recipient.thread_id:
+                    raise OwnerRoutingError('owner_recipient_thread_changed')
+                profile, actor = self.recipient_context(pin, state, sources[0])
+                scope = self.assignments(pin.recipient.assignment_id).repository_scope
             if (set(writable_repository_resource_ids) != set(scope.writable_repository_ids)
                     or set(read_only_repository_resource_ids) != set(scope.read_only_repository_ids)):
                 raise OwnerRoutingError('owner_recipient_request_scope_changed')
