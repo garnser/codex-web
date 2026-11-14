@@ -152,6 +152,16 @@ A → B → A navigation, so a late error cannot replace the current Project's v
 
 ## Deterministic progress
 
+Rooted Goal reads derive parent/downstream membership from the complete scoped
+Work Graph snapshot, reusing that same request-local snapshot for progress or
+completion counts. Overlapping roots are deduplicated; blocking edges do not
+expand Goal membership. This avoids loading full Work histories once per root.
+There is no persistent cache or graph truncation: each new read observes current
+canonical headers and edges. Missing or inaccessible roots refuse; dangling
+parent descendants remain bound missing Work and cannot pass completion.
+Existing Goal/Work inspectors consume the same canonical result fields; no new
+UI object, admission permission, lease change or background activity is added.
+
 Goal progress is derived from canonical Work Graph nodes, not agent prose. Over the unique set of bound Work Items the service records:
 
 - project/work-item count;
