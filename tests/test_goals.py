@@ -45,6 +45,8 @@ from codex_web.storage.goals import GoalStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.work_graph import (
     WorkGraphCriticalPath,
+    WorkGraphEdge,
+    WorkGraphRelation,
     WorkGraphProgress,
     WorkGraphSnapshot,
     WorkGraphNode,
@@ -106,7 +108,10 @@ class _Graph:
             workspace_id=scope.workspace_id,
             project_id=project_id,
             nodes=nodes,
-            edges=(),
+            edges=((WorkGraphEdge(organization_id=scope.organization_id,
+                workspace_id=scope.workspace_id, project_id=project_id,
+                relation=WorkGraphRelation.PARENT, source_ref='root-a', target_ref='child-a',
+                created_by='fixture'),) if project_id == 'project-a' else ()),
             runnable_refs=tuple(
                 item.ref
                 for item in nodes

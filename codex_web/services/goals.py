@@ -29,6 +29,7 @@ from codex_web.identity import TenantScope
 from codex_web.services.projects import ProjectNotFoundError, ProjectService
 from codex_web.services.work_graph import (
     WorkGraphError,
+    WorkGraphNotFoundError,
     WorkGraphService,
 )
 from codex_web.storage.goals import GoalStore
@@ -446,10 +447,11 @@ class GoalService:
         *,
         scope: TenantScope,
     ) -> tuple[GoalWorkItemCompletionEvaluation, ...]:
-        bound_refs = set(self._bound_refs(goal, scope=scope))
+        bound, snapshots = self._bound_graphs(goal, scope=scope)
+        bound_refs = set(bound)
         rows: list[GoalWorkItemCompletionEvaluation] = []
         for project_id in sorted({project for project, _ in bound_refs}):
-            snapshot = self.work_graph.snapshot(project_id, scope=scope)
+            snapshot = snapshots[project_id]
             by_ref = {node.ref: node for node in snapshot.nodes}
             for _project, ref in sorted(
                 item for item in bound_refs if item[0] == project_id
@@ -771,22 +773,42 @@ class GoalService:
         *,
         scope: TenantScope,
     ) -> tuple[tuple[str, str], ...]:
+        return self._bound_graphs(goal, scope=scope)[0]
+
+    def _bound_graphs(self, goal: GoalRecord, *, scope: TenantScope):
+        """Complete request-local graph headers, never per-root Work histories."""
         refs: set[tuple[str, str]] = set()
+        snapshots = {}
         for binding in goal.work_graph_bindings:
-            snapshot = self.work_graph.snapshot(binding.project_id, scope=scope)
+            if binding.project_id not in snapshots:
+                snapshots[binding.project_id] = self.work_graph.snapshot(binding.project_id, scope=scope)
+            snapshot = snapshots[binding.project_id]
+            if (snapshot.organization_id, snapshot.workspace_id, snapshot.project_id) != (
+                    scope.organization_id, scope.workspace_id, binding.project_id):
+                raise GoalScopeError('Work Graph snapshot scope differs')
+            visible = {node.ref for node in snapshot.nodes if node.project_id == binding.project_id}
             if not binding.root_work_item_refs:
-                refs.update((binding.project_id, node.ref) for node in snapshot.nodes)
+                refs.update((binding.project_id, ref) for ref in visible)
                 continue
             for root in binding.root_work_item_refs:
-                refs.add((binding.project_id, root))
-                descendants = self.work_graph.traverse(
-                    root,
-                    scope=scope,
-                    relation=WorkGraphRelation.PARENT,
-                    direction="downstream",
-                )
-                refs.update((binding.project_id, ref) for ref in descendants)
-        return tuple(sorted(refs))
+                if root not in visible:
+                    raise WorkGraphNotFoundError('work item not found')
+            edges = (edge for edge in snapshot.edges if
+                (edge.organization_id, edge.workspace_id, edge.project_id) ==
+                (scope.organization_id, scope.workspace_id, binding.project_id))
+            children = WorkGraphService._adjacency(edges, WorkGraphRelation.PARENT)
+            pending = list(binding.root_work_item_refs)
+            seen = set()
+            while pending:
+                ref = pending.pop()
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                pending.extend(children.get(ref, ()))
+            # Preserve dangling parent descendants as missing bound Work, so
+            # completion evaluation still refuses rather than shrinking scope.
+            refs.update((binding.project_id, ref) for ref in seen)
+        return tuple(sorted(refs)), snapshots
 
     def goals_for_work_item(
         self,
@@ -807,11 +829,12 @@ class GoalService:
 
     def progress(self, goal_id: str, *, scope: TenantScope) -> GoalProgress:
         goal = self.get(goal_id, scope=scope)
-        bound_refs = set(self._bound_refs(goal, scope=scope))
+        bound, snapshots = self._bound_graphs(goal, scope=scope)
+        bound_refs = set(bound)
         completed = failed = cancelled = blocked = runnable = 0
 
         for project_id in sorted({project for project, _ in bound_refs}):
-            snapshot = self.work_graph.snapshot(project_id, scope=scope)
+            snapshot = snapshots[project_id]
             for node in snapshot.nodes:
                 if (project_id, node.ref) not in bound_refs:
                     continue

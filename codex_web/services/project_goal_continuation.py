@@ -17,9 +17,13 @@ from codex_web.services.goal_continuation import GoalContinuationDispatchResult
 from codex_web.services.procedure_discovery import checksum
 from codex_web.services.queued_native_start import validate_attribution
 from codex_web.services.autonomy_controller import AutonomyController
-from codex_web.runtime.execution import AutomatedAdmissionPaused
+from codex_web.runtime.execution import AutomatedAdmissionPaused, ExecutionPrestartRefusal
 
 SOURCE = 'project-goal-continuation:'
+
+
+class _ProjectGoalPolicyRefusal(ValueError):
+    """Canonical policy denial; remains ValueError-compatible outside input admission."""
 
 
 class ProjectGoalContinuation:
@@ -76,7 +80,7 @@ class ProjectGoalContinuation:
             raise ValueError('Current Project Goal roots changed')
         reason = self.continuation._policy_stop_reason(current)
         if reason:
-            raise ValueError(reason)
+            raise _ProjectGoalPolicyRefusal(reason)
         if lease and (current.lease_owner_id != self.continuation.owner_id
                 or current.lease_expires_at is None or current.lease_expires_at <= time.time()):
             raise ValueError('Current Project Goal continuation lease unavailable')
@@ -189,7 +193,16 @@ class ProjectGoalContinuation:
         binding_id = self.origin(source)
         if binding_id is None:
             return None
-        current, goal, owner, snapshot = self.context(self.binding(binding_id, actor.tenant))
+        try:
+            current, goal, owner, snapshot = self.context(self.binding(binding_id, actor.tenant))
+        except _ProjectGoalPolicyRefusal as exc:
+            # This owner is called before native input, and again by the real
+            # native writer guard. Never classify arbitrary ValueError/provider
+            # prose as evidence that an input was not sent (#2110).
+            raise ExecutionPrestartRefusal(status_code=409, detail={
+                'code': 'project_goal_preinput_refused', 'message': str(exc),
+                'goal_binding_id': binding_id,
+            }) from exc
         progress = current.project_continuation
         d = progress.delivery if progress else None
         if (d is None or d.phase not in {'reserved', 'queued'} or not actor.has_same_authority(owner)
