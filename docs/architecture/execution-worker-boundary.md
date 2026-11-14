@@ -2152,6 +2152,39 @@ before resume/native input rather than being silently omitted. The adapter
 also checks its boundary before a turn RPC or write capture. No elapsed timer,
 lease, policy, resource authority or mutation replay rule changes.
 
+Canonical Work continuation delivery uses a current-state projection rather
+than replaying accumulated notes. The complete current handoff, owner/stage,
+resources, blockers, next action and references remain present, including on a
+verified delta and a fresh Session. A substantive compact checkpoint is included
+as untrusted data; operator admission or pending/failed execution checkpoints do
+not become trusted delta anchors. Automatic delivery-bookkeeping checkpoints do
+not displace that substantive checkpoint. Historical notes and event payloads
+remain canonical and unchanged, with explicit omitted-field counts/hashes and
+worker-broker retrieval references; a reference grants no read authority.
+The existing `work_item.read` operation accepts `view=history` with the closed
+`section=notes|events|checkpoints` selector and absolute record `offset`.
+Each response carries one record as lossless `ascii-json` chunks of at most4096
+bytes, explicit collection count/hash, record hash/length, `byte_offset`, next
+offsets and `incomplete`. Concatenate a record's chunks before JSON decoding;
+Unicode is preserved through JSON escapes. Hashes use canonical sorted compact
+JSON encoded as UTF-8. Supply the returned collection `sha256` for subsequent
+chunks/pages; a changed collection refuses with409 instead of mixing generations.
+Nonzero chunk offsets require that digest. Unsupported/mixed selectors refuse;
+this view retains the same current assignment/fence, Project, resource and role
+checks and bypasses the full-Work coordination compactor. It neither grants a
+mutation nor promotes historical data into authority. Oversized individual
+records remain progressively readable rather than silently losing their payload.
+Default public history continues to return the last bounded set of full events;
+its limit is not an absolute cursor. The worker references use the explicit
+broker projection, not an unsupported public-history route through the broker.
+Delivery pages at most10 historical event headers and reports a remaining offset.
+Default public continuation snapshot/delta/history reads retain their existing
+full-data behavior. The runtime stores the exact projected baseline and hash it
+actually delivered; a legacy full baseline moves through one explicit compact
+full fallback before subsequent verified projected deltas. Oversized required
+current state still receives the existing pre-input refusal. No transport budget,
+trust class, native receipt, authority or historical input is weakened or repaired.
+
 Every generation contains a trusted current-source revision manifest and
 explicit unused-slot/legacy-entry tombstones. Slot trust classes never change.
 Each source has its own revision, so changing Work data need not resend unchanged
