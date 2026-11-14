@@ -710,12 +710,12 @@ class HomeGoalContinuationTests(HomeCanonicalSendTests):
         raw['schema_version']='1.1'
         self.f.sqlite.put(self.goal_bindings.store.namespace,raw)
         migrated=self.goal_bindings.store.load()
-        self.assertEqual(migrated.schema_version,'1.3')
+        self.assertEqual(migrated.schema_version,'1.4')
         # Reading is inert: no new contract may be written by cold composition.
         self.assertEqual(self.f.sqlite.get(self.goal_bindings.store.namespace)['schema_version'],'1.1')
         self.goal_bindings.store.update(lambda state:state)
         written=self.f.sqlite.get(self.goal_bindings.store.namespace)
-        self.assertEqual(written['schema_version'],'1.3')
+        self.assertEqual(written['schema_version'],'1.4')
         self.assertNotIn('project_continuation',written['bindings'][0])
         old=ContractSpec('goal-execution-binding-state','1.1',('1.0','1.1'))
         with self.assertRaises(Exception):old.require(written['schema_version'])

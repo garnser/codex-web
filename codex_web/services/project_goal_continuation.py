@@ -8,8 +8,11 @@ import asyncio
 import hashlib
 import time
 import uuid
+from typing import get_args
 
-from codex_web.goal_execution_bindings import GoalExecutionBindingEvent, GoalExecutionBindingStatus as Status
+from fastapi import HTTPException
+
+from codex_web.goal_execution_bindings import GoalExecutionBindingEvent, GoalExecutionBindingStatus as Status, ProjectGoalDispatchFailure, ProjectGoalDispatchFailureCode
 from codex_web.identity import TenantScope
 from codex_web.models import QueuedTurn, TurnCreate
 from codex_web.project_goal_delivery import ProjectGoalDelivery, ProjectGoalProgress
@@ -21,6 +24,25 @@ from codex_web.runtime.execution import AutomatedAdmissionPaused, ExecutionPrest
 from codex_web.services.async_operations import run_settled, settle_future
 
 SOURCE = 'project-goal-continuation:'
+
+
+def _dispatch_failure(stage, exc):
+    # Persist code-owned categories, never exception prose, arbitrary class
+    # names, HTTP bodies, or an unvalidated provider-supplied error code.
+    categories = ((asyncio.CancelledError, 'cancelled'),
+        (ExecutionPrestartRefusal, 'prestart_refusal'),
+        (AutomatedAdmissionPaused, 'admission_paused'), (HTTPException, 'http_error'),
+        (TimeoutError, 'timeout'), (PermissionError, 'permission_error'),
+        (LookupError, 'lookup_error'), (ValueError, 'value_error'),
+        (OSError, 'os_error'), (Exception, 'exception'))
+    category = next((name for cls, name in categories if isinstance(exc, cls)), 'base_exception')
+    code = None
+    if isinstance(exc, (ExecutionPrestartRefusal, HTTPException)):
+        detail = exc.detail
+        candidate = detail.get('code') if type(detail) is dict else None
+        if type(candidate) is str and candidate in get_args(ProjectGoalDispatchFailureCode):
+            code = candidate
+    return ProjectGoalDispatchFailure(stage=stage, exception_type=category, code=code)
 
 
 class _ProjectGoalPolicyRefusal(ValueError):
@@ -171,20 +193,41 @@ class ProjectGoalContinuation:
             raise ValueError('Current Project Goal lease expired during admission')
         return fresh, fresh_goal, actor, fresh_assignment
 
-    def mutate(self, binding_id, scope, updater, reason):
+    @staticmethod
+    def _same_dispatch_delivery(row, expected):
+        """Attribute a diagnostic without treating it as custody/outcome proof."""
+        progress = row.project_continuation
+        actual = progress.delivery if progress is not None else None
+        if expected is None or actual is None or row.last_execution_id != expected.id:
+            return False
+        observations = {'phase', 'queued_id', 'admission_attempt_id', 'native_turn_id',
+            'completion_succeeded', 'usage_id'}
+        return actual.model_dump(exclude=observations) == expected.model_dump(exclude=observations)
+
+    def mutate(self, binding_id, scope, updater, reason, *, dispatch_failure=None,
+               failure_delivery=None, failure_claim=None):
         result = []
+        audit = self.bindings._audit_context() if dispatch_failure is not None else {}
         def apply(state):
             row = self.bindings._binding(state, binding_id, scope)
             updated = updater(row)
-            if row != updated:
+            changed = row != updated
+            same_delivery = self._same_dispatch_delivery(row, failure_delivery) if dispatch_failure is not None else False
+            report_failure = dispatch_failure is not None and (same_delivery or row == failure_claim)
+            if changed:
                 # Validate new typed joins before committing canonical state,
                 # rather than discovering a malformed write on the next read.
                 updated = type(row).model_validate(updated.model_dump(mode='python'))
                 updated = updated.model_copy(update={'updated_at': time.time(),
                     'updated_by': self.continuation.owner_id, 'change_reason': reason})
                 state.bindings = [updated if item.id == row.id else item for item in state.bindings]
+            if report_failure or changed and dispatch_failure is None:
                 state.events.append(GoalExecutionBindingEvent(binding_id=row.id, goal_id=row.goal_id,
-                    event_type='binding_project_continuation', actor_id=self.continuation.owner_id, reason=reason))
+                    event_type='binding_project_dispatch_failure' if dispatch_failure is not None else 'binding_project_continuation',
+                    actor_id=self.continuation.owner_id,
+                    reason=reason if changed else 'Project Goal dispatch failed; current state preserved without replay',
+                    dispatch_failure=dispatch_failure, correlation_id=audit.get('correlation_id'),
+                    causation_id=failure_delivery.id if same_delivery else None))
             result.append(updated)
             return state
         self.bindings.store.update(apply)
@@ -353,6 +396,8 @@ class ProjectGoalContinuation:
 
     async def dispatch(self, claimed, *, scope):
         reserved = None
+        expected_delivery = None
+        stage = 'context'
         try:
             current, goal, actor, assignment = await asyncio.to_thread(self.context, claimed)
             progress = current.project_continuation or ProjectGoalProgress()
@@ -372,22 +417,27 @@ class ProjectGoalContinuation:
                 continuation_owner_id=current.lease_owner_id, session_id=current.agent_session_id,
                 thread_id=current.thread_id, assignment_id=assignment.id, assignment_fingerprint=self.fingerprint(assignment),
                 message=message, message_sha256=hashlib.sha256(message.encode()).hexdigest())
+            expected_delivery = delivery
             def reserve(row):
                 if row != current:
                     raise ValueError('Project Goal reservation changed before commit')
                 return row.model_copy(update={'last_execution_id': delivery.id, 'last_turn_id': None,
                     'project_continuation': progress.model_copy(update={'reserved_calls': progress.reserved_calls+1, 'delivery': delivery})})
+            stage = 'reservation'
             reserved = await asyncio.to_thread(self.mutate, current.id, scope, reserve, 'Original Project Goal input reserved')
+            stage = 'project_lookup'
             project = self.turns.projects.get(current.project_id)
             def guard():
                 return self.authorize_input(source=SOURCE+current.id, assignment=assignment, actor=actor, project=project,
                     request_checksum=delivery.message_sha256, input_execution_id=delivery.id)
             pin = assignment.agent_profile
+            stage = 'queue_call'
             result = await self.enqueue_owned(reserved, lambda: self.turns.start(delivery.thread_id,
                 TurnCreate(project_id=current.project_id, message=message,
                     execution_profile_id=assignment.execution_profile_id, agent_profile_id=pin.profile_id,
                     agent_profile_revision=pin.profile_revision, defer_start=True), actor=actor, admission_guard=guard,
                 execution_id=delivery.id, source=SOURCE+current.id, allow_assignment_renewal=False), guard)
+            stage = 'queue_response'
             queued_id = result.get('queuedId')
             if not queued_id:
                 raise ValueError('Original Project Goal queue outcome unknown')
@@ -399,6 +449,7 @@ class ProjectGoalContinuation:
                 return row.model_copy(update={'project_continuation': row.project_continuation.model_copy(update={
                     'delivery': d.model_copy(update={'phase': 'queued', 'queued_id': queued_id,
                         'admission_attempt_id': 'preflight-queued-'+queued_id})})})
+            stage = 'queue_acceptance'
             await asyncio.to_thread(self.mutate, current.id, scope, accepted, 'Original Project Goal input queued')
             return GoalContinuationDispatchResult(binding_id=current.id, outcome='queued', reason='canonical_project_goal_queue')
         except BaseException as exc:
@@ -414,7 +465,9 @@ class ProjectGoalContinuation:
                 if row != claimed:
                     return row
                 return row.model_copy(update={'status': Status.BLOCKED, 'stop_reason': 'project_goal_admission_unavailable'})
-            await asyncio.to_thread(self.mutate, claimed.id, scope, held, 'Project Goal original held; no implicit replay')
+            await asyncio.to_thread(self.mutate, claimed.id, scope, held, 'Project Goal original held; no implicit replay',
+                dispatch_failure=_dispatch_failure(stage, exc),
+                failure_delivery=expected_delivery, failure_claim=claimed)
             if isinstance(exc, asyncio.CancelledError):
                 raise
             return GoalContinuationDispatchResult(binding_id=claimed.id, outcome='unknown' if reserved else 'blocked', reason=type(exc).__name__)

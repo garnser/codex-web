@@ -217,6 +217,8 @@ async function mockGoalApis(page, posts) {
         }],
         count: 1,
       };
+    } else if (pathname === '/api/goals/goal-a/execution-binding-events') {
+      body = { items: [], count: 0 };
     } else if (pathname === '/api/goals/goal-a/completion-evaluation') {
       body = { item: completion(completionEligible) };
     } else if (pathname === '/api/goals/goal-a/decompositions/events') {
@@ -308,6 +310,53 @@ test('Goal workspace exposes canonical health, provenance, decomposition and com
   await expect(dialog).toContainText('Revision 4');
   expect(posts).toEqual([]);
 });
+
+test('Goal timeline displays typed dispatch boundaries and escaped original references alongside legacy events', async ({ page }) => {
+  const posts = [];
+  await mockGoalApis(page, posts);
+  await page.route('**/api/goals/goal-a/execution-binding-events?*', async route => {
+    expect(new URL(route.request().url()).searchParams.get('project_id')).toBe('project-a');
+    expect(route.request().method()).toBe('GET');
+    await route.fulfill({ json: { items: [
+      { event_type: 'binding_created', binding_id: 'binding-old', actor_id: 'admin',
+        reason: 'Legacy binding event remains visible', occurred_at: 1889998001 },
+      { event_type: 'binding_project_dispatch_failure', binding_id: '<img src=x onerror="window.injected=true">',
+        actor_id: '<script>window.injected=true</script>', causation_id: 'project-goal-original',
+        reason: 'Project Goal original held; no implicit replay', occurred_at: 1889999001,
+        dispatch_failure: { stage: 'queue_response', exception_type: 'timeout', code: 'execution_preflight_blocked' } },
+    ], count: 2 } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  const detail = page.locator('.goal-detail');
+  await expect(detail).toContainText('Dispatch stopped while reading the queue response (timeout; code execution_preflight_blocked).');
+  await expect(detail).toContainText('This diagnostic does not establish a native outcome or permission to replay.');
+  await expect(detail).toContainText('Causation: project-goal-original');
+  await expect(detail).toContainText('Legacy binding event remains visible');
+  await expect(detail).toContainText('<img src=x onerror="window.injected=true">');
+  await expect(detail.locator('img, script')).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(posts).toEqual([]);
+});
+
+for (const failure of ['denied', 'unavailable', 'malformed']) {
+  test(`Goal binding event ${failure} is visible without replacing readable Goal detail with a fake empty history`, async ({ page }) => {
+    await mockGoalApis(page, []);
+    await page.route('**/api/goals/goal-a/execution-binding-events?*', async route => {
+      await route.fulfill({ status: failure === 'denied' ? 403 : failure === 'unavailable' ? 503 : 200,
+        json: failure === 'malformed' ? { count: 0 } : { detail: 'Private diagnostic response must not be displayed' } });
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+    await page.locator('#goals-button').click();
+    const detail = page.locator('.goal-detail');
+    await expect(detail).toContainText('Ship verified Goal flow');
+    await expect(detail).toContainText(failure === 'denied'
+      ? 'Access denied to execution binding events.' : 'Execution binding events could not be loaded.');
+    await expect(detail).toContainText('commit Goal work');
+    await expect(detail).not.toContainText('No Goal, decomposition or execution binding events.');
+    await expect(detail).not.toContainText('Private diagnostic response');
+  });
+}
 
 for (const phase of ['started', 'terminal_pending_usage', 'settled']) {
   test(`Goal Home delivery distinguishes ${phase} from Goal completion`, async ({ page }) => {
@@ -474,7 +523,7 @@ async function mockProjectScopedGoalReads(page, { listDelay = {} } = {}) {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ item: null }) });
       return;
     }
-    if (url.pathname.endsWith('/execution-bindings')) {
+    if (url.pathname.endsWith('/execution-bindings') || url.pathname.endsWith('/execution-binding-events')) {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) });
       return;
     }
@@ -562,6 +611,33 @@ test('late Goal detail failures cannot replace the newly selected Project', asyn
   await page.evaluate(() => new Promise(requestAnimationFrame));
   await expect(page.locator('.goal-detail')).toContainText('Project B Goal');
   await expect(page.locator('#goals-dialog')).not.toContainText('Old Project A detail failed');
+});
+
+test('binding event loading and late responses respect the selected Project', async ({ page }) => {
+  await mockProjectScopedGoalReads(page);
+  let release;
+  let pending = false;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/goals/goal-a/execution-binding-events?*', async route => {
+    expect(new URL(route.request().url()).searchParams.get('project_id')).toBe('project-a');
+    pending = true;
+    await held;
+    await route.fulfill({ json: { items: [{ event_type: 'binding_created', binding_id: 'old-binding',
+      actor_id: 'admin', reason: 'Old Project A binding event', occurred_at: 1889999000 }], count: 1 } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  await expect.poll(() => pending).toBe(true);
+  await expect(page.locator('.goal-detail')).toContainText('Loading Goal detail…');
+  await switchProject(page, 'project-b');
+  await expect(page.locator('.goal-detail')).toContainText('Project B Goal');
+  const response = page.waitForResponse('**/api/goals/goal-a/execution-binding-events?*');
+  release();
+  await (await response).finished();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(page.locator('.goal-detail')).toContainText('Project B Goal');
+  await expect(page.locator('.goal-detail')).toContainText('No Goal, decomposition or execution binding events.');
+  await expect(page.locator('#goals-dialog')).not.toContainText('Old Project A binding event');
 });
 
 test('Goal mutation responses are fenced even after A to B to A navigation', async ({ page }) => {

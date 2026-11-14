@@ -15,6 +15,8 @@ const state = {
   decompositionEvents: [],
   completion: null,
   executionBindings: [],
+  bindingEvents: [],
+  bindingEventsError: '',
   unboundRuntimeObjectives: [],
 };
 
@@ -49,6 +51,8 @@ function clearProjectState(projectId) {
   state.decompositionEvents = [];
   state.completion = null;
   state.executionBindings = [];
+  state.bindingEvents = [];
+  state.bindingEventsError = '';
   state.unboundRuntimeObjectives = [];
   renderGoalList();
   const detail = document.querySelector('.goal-detail');
@@ -222,6 +226,7 @@ async function loadGoal(
       completion,
       executionBindings,
       unboundRuntimeObjectives,
+      bindingEvents,
     ] = await Promise.all([
       goalRequest(`/api/goals/${encoded}`, undefined, projectId),
       goalRequest(`/api/goals/${encoded}/revisions`, undefined, projectId),
@@ -231,6 +236,15 @@ async function loadGoal(
       goalRequest(`/api/goals/${encoded}/completion-evaluation`, undefined, projectId),
       goalRequest(`/api/goals/${encoded}/execution-bindings`, undefined, projectId),
       goalRequest('/api/goals/runtime-objectives/unbound', undefined, projectId),
+      goalRequest(`/api/goals/${encoded}/execution-binding-events`, undefined, projectId)
+        .then((payload) => {
+          if (!Array.isArray(payload?.items)) throw new Error('Invalid event response');
+          return { items: payload.items, error: '' };
+        })
+        .catch((error) => ({ items: [], error: error.status === 403
+          ? 'Access denied to execution binding events.'
+          : error.status === 401 ? 'Sign in to read execution binding events.'
+            : 'Execution binding events could not be loaded.' })),
     ]);
     if (!current()) return;
     state.detail = detailPayload?.snapshot || null;
@@ -240,6 +254,8 @@ async function loadGoal(
     state.decompositionEvents = decompositionEvents?.items || [];
     state.completion = completion?.item || null;
     state.executionBindings = executionBindings?.items || [];
+    state.bindingEvents = bindingEvents.items;
+    state.bindingEventsError = bindingEvents.error;
     state.unboundRuntimeObjectives = unboundRuntimeObjectives?.items || [];
     renderGoalDetail();
   } catch (error) {
@@ -405,6 +421,37 @@ function renderCompletion(goal) {
     </section>`;
 }
 
+function dispatchFailureSummary(failure) {
+  if (!failure || typeof failure !== 'object') return '';
+  const stages = {
+    context: 'checking current context',
+    reservation: 'reserving the original input',
+    project_lookup: 'loading the Project',
+    queue_call: 'submitting to the queue',
+    queue_response: 'reading the queue response',
+    queue_acceptance: 'recording queue acceptance',
+  };
+  const categories = {
+    cancelled: 'cancelled', timeout: 'timeout', prestart_refusal: 'prestart refusal',
+    admission_paused: 'admission paused', http_error: 'request error',
+    permission_error: 'permission error', lookup_error: 'lookup error',
+    value_error: 'validation error', os_error: 'system error',
+    exception: 'failure', base_exception: 'failure',
+  };
+  const codes = new Set([
+    'agent_profile_unavailable', 'agent_profile_sandbox_conflict',
+    'agent_profile_execution_profile_conflict', 'resource_context_requester_work_item_required',
+    'resource_context_requester_changed', 'resource_context_work_item_changed',
+    'resource_context_unavailable', 'resource_context_rollover_required',
+    'execution_preflight_blocked', 'project_goal_preinput_refused',
+  ]);
+  const stage = Object.hasOwn(stages, failure.stage) ? stages[failure.stage] : 'an unrecognized dispatch boundary';
+  const category = Object.hasOwn(categories, failure.exception_type) ? categories[failure.exception_type] : 'unrecognized failure';
+  const code = codes.has(failure.code)
+    ? `; code ${failure.code}` : '';
+  return `Dispatch stopped while ${stage} (${category}${code}). This diagnostic does not establish a native outcome or permission to replay.`;
+}
+
 function renderTimeline() {
   const rows = [
     ...state.events.map((event) => ({
@@ -421,13 +468,25 @@ function renderTimeline() {
       reason: event.reason,
       source: 'decomposition',
     })),
+    ...state.bindingEvents.map((event) => ({
+      at: event.occurred_at,
+      type: event.event_type,
+      actor: event.actor_id,
+      reason: dispatchFailureSummary(event.dispatch_failure) || event.reason,
+      source: 'execution binding',
+      bindingId: event.binding_id,
+      originalId: event.causation_id,
+    })),
   ].sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
-  if (!rows.length) return '<p class="goal-muted">No Goal/decomposition events.</p>';
-  return rows.map((event) => `
+  const unavailable = state.bindingEventsError
+    ? `<p class="goal-error" role="status">${esc(state.bindingEventsError)}</p>` : '';
+  if (!rows.length) return unavailable || '<p class="goal-muted">No Goal, decomposition or execution binding events.</p>';
+  return unavailable + rows.map((event) => `
     <div class="goal-timeline-row">
       <strong>${esc(event.type)}</strong>
       <span>${esc(event.actor || 'system')} · ${esc(event.source)}</span>
       <small>${esc(event.reason || '')} · ${esc(fmtTime(event.at))}</small>
+      ${event.bindingId ? `<small>Binding: ${esc(event.bindingId)}${event.originalId ? ` · Causation: ${esc(event.originalId)}` : ''}</small>` : ''}
     </div>
   `).join('');
 }
@@ -627,7 +686,7 @@ function renderGoalDetail() {
         </div>
       </section>
       <section class="goal-card">
-        <h3>Goal & decomposition timeline</h3>
+        <h3>Goal & execution timeline</h3>
         <div class="goal-timeline">${renderTimeline()}</div>
       </section>
     </div>`;
