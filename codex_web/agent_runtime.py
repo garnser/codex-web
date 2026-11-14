@@ -4,7 +4,7 @@ import time
 import uuid
 from enum import StrEnum
 from collections.abc import Callable
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -132,6 +132,15 @@ class AgentRuntimeObjectiveRequest(BaseModel):
     token_budget: int | None = Field(default=None, ge=1)
 
 
+class AgentRuntimeContextFragment(BaseModel):
+    """Owner-labelled context, before provider-specific rendering or flattening."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")
+    kind: Literal["application", "untrusted"]
+    text: str
+
+
 class AgentRuntimeTurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -143,6 +152,7 @@ class AgentRuntimeTurnRequest(BaseModel):
     approval_reviewer: str | None = None
     sandbox_policy: dict[str, Any] | None = None
     developer_instructions: str | None = None
+    context_fragments: tuple[AgentRuntimeContextFragment, ...] | None = None
 
 
 class AgentRuntimeEvent(BaseModel):

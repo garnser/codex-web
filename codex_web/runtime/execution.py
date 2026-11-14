@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.agent_runtime import (
+    AgentRuntimeContextFragment,
     AgentRuntimeEvent,
     AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
@@ -2526,6 +2527,11 @@ class TurnExecutionService:
             thread_id,
             settings.developer_instructions,
         )
+        native_context_fragments = []
+        if effective_developer_instructions:
+            native_context_fragments.append(AgentRuntimeContextFragment(
+                source="thread-instructions", kind="application",
+                text=effective_developer_instructions))
         requested_execution_id = execution_id or self._new_execution_id()
         requested_writable_repositories = tuple(
             dict.fromkeys(
@@ -3288,6 +3294,8 @@ class TurnExecutionService:
                     source=source, request_checksum=hashlib.sha256(message.encode()).hexdigest(),
                 )
                 if procedure_text:
+                    native_context_fragments.append(AgentRuntimeContextFragment(
+                        source="procedure-discovery", kind="untrusted", text=procedure_text))
                     effective_developer_instructions = "\n\n".join(
                         item for item in (effective_developer_instructions, procedure_text) if item)
 
@@ -3379,6 +3387,8 @@ class TurnExecutionService:
                     or ""
                 ).strip()
                 if skill_text:
+                    native_context_fragments.append(AgentRuntimeContextFragment(
+                        source="selected-skills", kind="untrusted", text=skill_text))
                     effective_developer_instructions = "\n\n".join(
                         item
                         for item in (
@@ -3400,6 +3410,8 @@ class TurnExecutionService:
                 effective_work_item_ref
             )
             if work_item_context_text:
+                native_context_fragments.append(AgentRuntimeContextFragment(
+                    source="work-continuation", kind="untrusted", text=work_item_context_text))
                 effective_developer_instructions = "\n\n".join(
                     item
                     for item in (
@@ -3411,6 +3423,10 @@ class TurnExecutionService:
 
             if assignment is not None:
                 broker_instructions = assignment_control_plane_instructions()
+                # Current assignment protocol is an owner-supplied source, not
+                # text extracted from a potentially untrusted Skill or Work.
+                native_context_fragments.append(AgentRuntimeContextFragment(
+                    source="assignment-protocol", kind="application", text=broker_instructions))
                 if broker_instructions not in (effective_developer_instructions or ""):
                     effective_developer_instructions = "\n\n".join(
                         item
@@ -3491,6 +3507,23 @@ class TurnExecutionService:
                 runtime_binding,
                 session,
             )
+            if isinstance(runtime_adapter, CodexAgentRuntimeAdapter):
+                from codex_web.services.codex_context import CodexContextLimitError, render_codex_context
+                try:
+                    render_codex_context(native_context_fragments)
+                except CodexContextLimitError as exc:
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
+                        "code": "native_context_delivery_limit",
+                        "message": "Required context cannot be delivered completely within the native context budget",
+                        "retryable": False,
+                    }) from exc
+                # Do not inject a second, developer-role copy of Skill/Work
+                # data through resume before its untrusted per-turn delivery.
+                runtime_session_request = runtime_session_request.model_copy(update={
+                    "developer_instructions": "\n\n".join(
+                        item.text for item in native_context_fragments
+                        if item.kind == "application") or None,
+                })
             native_session_id = (
                 getattr(getattr(session, "runtime", None), "native_session_id", None)
                 or thread_id
@@ -3756,6 +3789,7 @@ class TurnExecutionService:
                 approval_policy=effective_approval_policy,
                 sandbox_policy=params.get("sandboxPolicy"),
                 developer_instructions=effective_developer_instructions,
+                context_fragments=tuple(native_context_fragments),
             )
             history_started = False
             queued_native_start_confirmed = False
