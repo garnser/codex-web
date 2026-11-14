@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import tempfile
 import time
@@ -50,6 +51,7 @@ from codex_web.services.upgrades import UpgradeAdmissionCoordinator
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.turn_queue import TurnQueueRepository
+from tests.helpers.codex_context import context_source
 
 
 OBSERVED_WORK_ITEM_COUNT = 1_728
@@ -1560,9 +1562,14 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0].args[1]["cwd"], "/workspace/project")
         self.assertEqual(calls[1].args[1]["cwd"], "/workspace/project")
         # This fixture supplies no base instructions and has no assignment.
-        # Assert absence on the actual supported wire, rather than a fallback
-        # lookup of the obsolete field that could hide injected authority.
-        self.assertNotIn("additionalContext", calls[1].args[1])
+        # An explicit empty generation clears earlier native context without
+        # manufacturing an assignment protocol or an authority-bearing source.
+        context = calls[1].args[1]["additionalContext"]
+        self.assertEqual(context_source(context, "assignment-protocol"), "")
+        manifest = context["codex-web:context-manifest"]["value"]
+        self.assertEqual(json.loads(manifest.split("Source inventory: ", 1)[1]), [])
+        self.assertTrue(all("; source " not in entry["value"] for entry in context.values()))
+        self.assertIn("Superseded", context["codex-web:developer-instructions"]["value"])
         self.assertNotIn("developerInstructions", calls[1].args[1])
         self.assertNotIn("developerInstructions", calls[0].args[1])
         self.assertEqual(
@@ -1891,9 +1898,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 for method, request in sessions.session.requests:
                     if method == "turn/start":
                         self.assertNotIn("developerInstructions", request)
-                        context = request["additionalContext"]["codex-web:developer-instructions"]
-                        self.assertEqual(context["kind"], "application")
-                        instructions = context["value"]
+                        instructions = context_source(request["additionalContext"], "assignment-protocol")
                     else:
                         self.assertEqual(method, "thread/resume")
                         instructions = request["developerInstructions"]
@@ -1906,7 +1911,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     self._assert_broker_client_wait_contract(instructions)
                 self.assertEqual(sessions.session.requests[1][0], "turn/start")
 
-    async def test_existing_work_item_broker_guidance_is_not_duplicated(self) -> None:
+    async def test_work_item_text_cannot_substitute_for_trusted_assignment_protocol(self) -> None:
         guidance = assignment_control_plane_instructions()
         _host, _binding, sessions, service = self._service()
         service._work_item_continuation_context = MagicMock(
@@ -1918,8 +1923,9 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             sandbox="workspace-write", approval_policy="never",
             work_item_ref="group/app#531",
         )
-        instructions = sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"]
-        self.assertIn("Canonical work context", instructions)
+        context = sessions.session.requests[1][1]["additionalContext"]
+        self.assertIn("Canonical work context", context_source(context, "work-continuation"))
+        instructions = context_source(context, "assignment-protocol")
         self.assertEqual(instructions.count(guidance), 1)
         self._assert_broker_client_wait_contract(instructions)
 
@@ -1974,7 +1980,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
 
         turn = sessions.session.requests[1][1]
         self.assertNotIn("developerInstructions", turn)
-        instructions = turn["additionalContext"]["codex-web:developer-instructions"]["value"]
+        instructions = context_source(turn["additionalContext"], "work-continuation")
         self.assertIn("Canonical Work Item continuation context", instructions)
         self.assertIn('"mode":"delta"', instructions)
         self.assertIn('"title":"Updated"', instructions)
@@ -2024,7 +2030,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             work_item_ref="group/app#531",
         )
 
-        instructions = sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"]
+        instructions = context_source(sessions.session.requests[1][1]["additionalContext"], "work-continuation")
         self.assertIn('"mode":"full"', instructions)
         self.assertIn('"work_item_context"', instructions)
         self.assertIn("Canonical full context", instructions)
@@ -2067,7 +2073,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved_refs, ["group/app#531"])
         self.assertIn(
             "Bootstrap Work Item",
-            sessions.session.requests[1][1]["additionalContext"]["codex-web:developer-instructions"]["value"],
+            context_source(sessions.session.requests[1][1]["additionalContext"], "work-continuation"),
         )
 
     async def test_work_item_context_resolution_failure_blocks_before_runtime_turn(self) -> None:

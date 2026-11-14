@@ -16,6 +16,7 @@ from codex_web.agent_runtime import (
     AgentRuntimeTurnRequest,
 )
 from codex_web.agent_providers import AgentProviderCapability
+from codex_web.services.codex_context import render_codex_context
 
 
 class CodexAgentRuntimeAdapter:
@@ -421,7 +422,9 @@ class CodexAgentRuntimeAdapter:
             params["model"] = request.model
         if request.reasoning_effort:
             params["effort"] = request.reasoning_effort
-        if request.developer_instructions:
+        if request.context_fragments is not None:
+            params["additionalContext"] = render_codex_context(request.context_fragments)
+        elif request.developer_instructions:
             # Codex turn/start has no developerInstructions field. Deliver the
             # already composed context even when the first turn skips resume.
             # Preserve its explicit untrusted Skill wrapper without parsing it.

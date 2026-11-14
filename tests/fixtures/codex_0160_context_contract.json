@@ -1,0 +1,21 @@
+{
+  "native_version": "0.160.0",
+  "source_commit": "a956835d020762cb2b570053af06f643a11c0ecc",
+  "additional_context_value_tokens": 1000,
+  "approximate_bytes_per_token": 4,
+  "missing_keys_emit_tombstones": false,
+  "sources": [
+    {
+      "path": "codex-rs/context-fragments/src/additional_context.rs",
+      "sha256": "2a837d023deec9416dff460789555b015892d3dc714a0888e1d1135cb1a5e760"
+    },
+    {
+      "path": "codex-rs/core/src/state/additional_context.rs",
+      "sha256": "049db3b8f6d13ef7460aca4134b25ff4727c6fff9e9e3363e78da55e267c7db2"
+    },
+    {
+      "path": "codex-rs/utils/string/src/truncate.rs",
+      "sha256": "d5755286344f10d10b4bd9f93bb3bff6f1b85270a15df378254051b147ad38ad"
+    }
+  ]
+}

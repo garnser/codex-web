@@ -2130,6 +2130,44 @@ changes their trust, scope or permission rules. It does not inject assignment
 broker authority into unbound sessions or depend on resume overriding a loaded
 thread. Other runtime adapters and native START/custody guards are unchanged.
 
+The native0.160 implementation additionally middle-truncates **each context
+value** at1000 approximate tokens (4000 UTF-8 bytes), before adding its wrapper.
+A valid RPC payload therefore does not establish complete model-visible
+instructions. Canonical turn composition retains owner-labelled sources:
+thread developer/security/role instructions and assignment protocol are
+application instructions; selected Procedure, Skill and Work continuation
+material are untrusted data. Codex receives complete, bounded source parts in
+separate native entries. Classification comes from the composing owner, never
+from instruction-marker parsing. A second developer-role copy of untrusted
+material is not sent through Codex resume. Other runtime adapters retain their
+existing flattened instruction contract.
+
+The transport representation has12 application slots and24 untrusted slots,
+2700-byte payload parts, at most3000 bytes per complete value,96000 source
+bytes, and120000 bytes each for serialized context and rendered wrappers.
+These finite byte limits do not replace or enlarge existing Procedure/Skill
+selection budgets. Multibyte material can reach the transport limit before a
+character limit; required context then receives `native_context_delivery_limit`
+before resume/native input rather than being silently omitted. The adapter
+also checks its boundary before a turn RPC or write capture. No elapsed timer,
+lease, policy, resource authority or mutation replay rule changes.
+
+Every generation contains a trusted current-source revision manifest and
+explicit unused-slot/legacy-entry tombstones. Slot trust classes never change.
+Each source has its own revision, so changing Work data need not resend unchanged
+role or broker parts; the manifest records the current source set and revisions.
+This is necessary because native context diffing does not emit a deletion when
+a map key disappears, including after an application process restart. Tombstones
+supersede current context; they do not erase native history or settle any old
+execution. Untrusted parts each retain a complete native external-data wrapper
+and their source/revision/part provenance, including exact Definition references.
+The application does not infer trust from embedded closing tags or Skill text.
+
+UI impact: no new domain object or control surface is introduced. Existing
+preflight refusal rendering exposes the bounded-delivery refusal; raw selected
+context and credentials remain private. Source/render regressions establish
+delivery, while useful live worker behavior remains a separate observation.
+
 ### Repository READ custody
 
 A repository execution with an effective READ lease (including `repository-write`

@@ -473,8 +473,10 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
             ["thread/resume", "turn/start"],
         )
         turn_start_call = session.request.await_args_list[1]
+        from tests.helpers.codex_context import context_source
+        context = turn_start_call.args[1]["additionalContext"]
         self.assertEqual(
-            turn_start_call.args[1]["additionalContext"]["codex-web:developer-instructions"]["value"],
+            context_source(context, "thread-instructions") + "\n\n" + context_source(context, "assignment-protocol"),
             f"base instructions\n\n{security_boundary_instructions()}\n\ncontract"
             f"\n\n{assignment_control_plane_instructions()}",
         )
