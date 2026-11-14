@@ -257,7 +257,8 @@ class ExecutionPreflightService:
                 or current.queued_resume_correlation is not None) else status
             retained_detail = detail
             if (preinput_refusal and disposition == 'blocked'
-                    and (detail or {}).get('code') == 'native_reasoning_preparation_unavailable'
+                    and (detail or {}).get('code') in {
+                        'native_reasoning_preparation_unavailable', 'project_goal_preinput_refused'}
                     and claim_id and current.queued_admission_claim_id == claim_id
                     and all(value is None for value in (
                         current.queued_start_correlation, current.queued_start_evidence,
@@ -404,7 +405,33 @@ class ExecutionPreflightService:
         return (self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
                 or self.recorded_initial_process_refusal(attempt)
                 or self.recorded_custody_refusal(attempt)
-                or self.recorded_reasoning_refusal(attempt))
+                or self.recorded_reasoning_refusal(attempt)
+                or self.recorded_goal_policy_refusal(attempt))
+
+    def recorded_goal_policy_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
+        """Only a controller-owned exact Goal input refusal is a nonstart witness."""
+        snapshot = attempt.queued_turn_snapshot
+        prefix = 'project-goal-continuation:'
+        source = str(attempt.source or '').removeprefix('queued:')
+        if (attempt.status != 'blocked' or snapshot is None
+                or not source.startswith(prefix) or not source[len(prefix):]
+                or snapshot.get('source') != attempt.source
+                or attempt.scheduling_retirement is not None
+                or not attempt.queued_admission_claim_id
+                or any(value is not None for value in (
+                    attempt.queued_start_correlation, attempt.queued_start_evidence,
+                    attempt.queued_start_receipt, attempt.queued_resume_correlation,
+                    attempt.queued_resume_evidence, attempt.started_at))):
+            return False
+        return any(row.get('code') == 'project_goal_preinput_refused'
+            and row.get('phase') == 'before_turn_input'
+            and row.get('goal_binding_id') == source[len(prefix):]
+            and row.get('preflight_attempt_id') == attempt.id
+            and row.get('admission_claim_id') == attempt.queued_admission_claim_id
+            and row.get('threadId') == (attempt.replacement_thread_id or attempt.thread_id)
+            and row.get('execution_id') == attempt.execution_id
+            and row.get('snapshot_sha256') == self.queued_snapshot_digest(snapshot)
+            for row in (blocker.model_dump(mode='json') for blocker in attempt.blockers))
 
     def recorded_reasoning_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
         """Only a committed controller claim/snapshot witness proves preinput."""

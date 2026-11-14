@@ -223,6 +223,15 @@ raises a typed controller refusal before native input; the ordinary message API
 retains the complete original in the existing execution-preflight domain and
 shows its blocker in the thread inspector.
 
+Project Goal policy refusals during canonical pre-input authorization retain a
+typed `project_goal_preinput_refused` blocker bound to the original Goal binding,
+queued admission claim, execution and immutable request digest. This evidence
+belongs to the existing preflight owner; arbitrary exception text or absent RPC
+responses cannot create it. The native writer still rechecks current admission
+under its write lock and retains its own refusal correlation. A current hold is
+not bypassed, historical unknown inputs are not reclassified, and no automatic
+retry is authorized by the diagnostic.
+
 A new human web message may perform one bounded renewal followed by the existing
 fenced preflight retry. The original is durable before the first renewal await.
 Renewal shares the thread's admission lock and requires the exact authenticated
